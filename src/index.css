@@ -1229,7 +1229,7 @@ del.diff-deletion:hover {
 /* PORTRAIT LAYOUT: bottom tabs, overlay drawers, larger tap targets */
 /* ------------------------------------------ */
 .layout-portrait .app-main {
-  flex-direction: column;
+  flex-direction: column-reverse;
   position: relative;
 }
 
