@@ -144,66 +144,6 @@ Click "Restore" → Document reverts to that version
 | Timeline UI | Scrollable list of versions with labels and timestamps |
 | Diff between versions | Show what changed between any two snapshots |
 
-### 3.3 Mobile UI & Responsive Layouts
-
-Web Canvas dynamically adapts to different screen sizes and orientations through a custom 4-state layout engine (`desktop` | `portrait` | `landscape` | `tablet-square`).
-
-#### 3.3.1 Mobile Portrait Layout
-
-In Portrait orientation, the UI is stacked vertically. The Rich Text Editor occupies the top half, while the Assistant Chat resides in a collapsible bottom drawer/toolbar:
-
-**A) Collapsed State (Default writing focus):**
-```
-┌──────────────────────────────────────┐
-│  [Logo]                 [Settings] ☼ │  ← App Header (56px)
-├──────────────────────────────────────┤
-│                                      │
-│  Chapter Title Input                 │
-│                                      │
-│  The quick brown fox jumps over the  │  ← Editor Viewport (flex-grow)
-│  lazy dog. |                         │
-│                                      │
-├──────────────────────────────────────┤
-│  [💬] [Write instructions...]    [➔] │  ← Collapsed Chat Toolbar (72px)
-└──────────────────────────────────────┘
-   └─ Toggle Drawer Button (MessageSquare icon)
-```
-
-**B) Expanded State (Conversational reviews):**
-```
-┌──────────────────────────────────────┐
-│  [Logo]                 [Settings] ☼ │
-├──────────────────────────────────────┤
-│  Chapter Title Input                 │  ← Editor Viewport (top 50% height)
-│  The quick brown fox jumps over...   │
-├──────────────────────────────────────┤
-│  Assistant Chat (Gemini)         [X] │  ← Drawer Header
-│  ┌────────────────────────────────┐  │
-│  │ User: Make this paragraph flow │  │
-│  │ Assistant: Streamed response...│  │  ← Messages List (overflow-y)
-│  └────────────────────────────────┘  │
-│  [▼] [Write instructions...]    [➔] │  ← Input Wrapper
-└──────────────────────────────────────┘
-   └─ Collapse Drawer Button (ChevronDown icon)
-```
-
-#### 3.3.2 Mobile Landscape & Tablet/Square Layout
-
-In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios, the UI splits side-by-side. Sidebars slide over the canvas as overlay drawers rather than squeezing the panels:
-
-```
-┌──────────────────────────────────────┐
-│  [Logo]                 [Settings] ☼ │  ← Compact Header (44px)
-├───────────────────┬──────────────────┤
-│ Assistant Chat    │ Document Editor  │
-│                   │                  │
-│ • Message History │ • Editor View    │  ← Side-by-side Split View
-│                   │ • Text selection │
-│                   │   quick menu     │
-│ [Write...]    [➔] │                  │
-└───────────────────┴──────────────────┘
-```
-
 ---
 
 ## 4. Data Model
@@ -303,29 +243,89 @@ For documents exceeding the model's context window:
 
 ## 6. UI / UX Design
 
-### 6.1 Layout
+### 6.1 Desktop Layout
 
 ```
-┌─────────────────────────────────────────────────────┐
+┌──────────────────────────────────────┐
 │  ▪ Web Canvas            [Settings] [History] [Export]│
-├──────────────┬──────────────────────────────────────┤
-│              │                                      │
+├──────────────┬───────────────────────┤
+│              │                       │
 │   Chat       │          Document Canvas             │
-│   Panel      │                                      │
-│   (30%)      │          (70%)                       │
-│              │                                      │
-│              │                                      │
-│              │                                      │
-│              │                                      │
-│  ┌────────┐  │                                      │
-│  │  💬    │  │                                      │
-│  └────────┘  │                                      │
-├──────────────┴──────────────────────────────────────┤
+│   Panel      │                       │
+│   (30%)      │          (70%)        │
+│              │                       │
+│              │                       │
+│              │                       │
+│              │                       │
+│  ┌────────┐  │                       │
+│  │  💬    │  │                       │
+│  └────────┘  │                       │
+├──────────────┴───────────────────────┤
 │  Status bar: Provider: GPT-4o  │  Words: 1,234     │
-└─────────────────────────────────────────────────────┘
+└──────────────────────────────────────┘
 ```
 
-### 6.2 Visual Design Direction
+### 6.2 Mobile & Responsive Layouts
+
+Web Canvas dynamically adapts to different screen sizes and orientations through a custom 4-state layout engine (`desktop` | `portrait` | `landscape` | `tablet-square`).
+
+#### 6.2.1 Mobile Portrait Layout
+
+In Portrait orientation, the UI is stacked vertically. The Rich Text Editor occupies the top half, while the Assistant Chat resides in a collapsible bottom drawer/toolbar:
+
+**A) Collapsed State (Default writing focus):**
+```
+┌──────────────────────────────────────┐
+│  [Logo]                 [Settings] ☼ │  ← App Header (56px)
+├──────────────────────────────────────┤
+│                                      │
+│  Chapter Title Input                 │
+│                                      │
+│  The quick brown fox jumps over the  │  ← Editor Viewport (flex-grow)
+│  lazy dog. |                         │
+│                                      │
+├──────────────────────────────────────┤
+│  [💬] [Write instructions...]    [➔] │  ← Collapsed Chat Toolbar (72px)
+└──────────────────────────────────────┘
+   └─ Toggle Drawer Button (MessageSquare icon)
+```
+
+**B) Expanded State (Conversational reviews):**
+```
+┌──────────────────────────────────────┐
+│  [Logo]                 [Settings] ☼ │
+├──────────────────────────────────────┤
+│  Chapter Title Input                 │  ← Editor Viewport (top 50% height)
+│  The quick brown fox jumps over...   │
+├──────────────────────────────────────┤
+│  Assistant Chat (Gemini)         [X] │  ← Drawer Header
+│  ┌────────────────────────────────┐  │
+│  │ User: Make this paragraph flow │  │
+│  │ Assistant: Streamed response...│  │  ← Messages List (overflow-y)
+│  └────────────────────────────────┘  │
+│  [▼] [Write instructions...]    [➔] │  ← Input Wrapper
+└──────────────────────────────────────┘
+   └─ Collapse Drawer Button (ChevronDown icon)
+```
+
+#### 6.2.2 Mobile Landscape & Tablet/Square Layout
+
+In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios, the UI splits side-by-side. Sidebars slide over the canvas as overlay drawers rather than squeezing the panels:
+
+```
+┌──────────────────────────────────────┐
+│  [Logo]                 [Settings] ☼ │  ← Compact Header (44px)
+├───────────────────┬──────────────────┤
+│ Assistant Chat    │ Document Editor  │
+│                   │                  │
+│ • Message History │ • Editor View    │  ← Side-by-side Split View
+│                   │ • Text selection │
+│                   │   quick menu     │
+│ [Write...]    [➔] │                  │
+└───────────────────┴──────────────────┘
+```
+
+### 6.3 Visual Design Direction
 
 - **Color palette**: Dark mode default with warm accent colors (amber/gold
   for actions, soft greens/reds for diffs).
@@ -335,7 +335,7 @@ For documents exceeding the model's context window:
 - **Animations**: Smooth panel resize, fade-in for streamed text, subtle
   pulse on the "thinking" indicator.
 
-### 6.3 Interaction Patterns
+### 6.4 Interaction Patterns
 
 | Action | Trigger | Result |
 |--------|---------|--------|
