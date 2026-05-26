@@ -220,7 +220,131 @@ export const Editor: React.FC<EditorProps> = ({
   }
 
   return (
-    <div style={{ position: 'relative', width: '100%', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', position: 'relative' }}>
+      {/* Fixed Formatting Toolbar */}
+      {editor && (
+        <div className="editor-toolbar" style={{
+          display: 'flex',
+          gap: '6px',
+          padding: '8px 16px',
+          borderBottom: '1px solid var(--border-color)',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          position: 'sticky',
+          top: 0,
+          zIndex: 10,
+          backgroundColor: 'var(--bg-glass)',
+          backdropFilter: 'blur(12px)',
+          WebkitBackdropFilter: 'blur(12px)',
+        }}>
+          <button
+            onClick={() => editor.chain().focus().toggleBold().run()}
+            className={`btn-icon ${editor.isActive('bold') ? 'active' : ''}`}
+            title="Bold (Ctrl+B)"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('bold') ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('bold') ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Bold size={16} />
+          </button>
+          <button
+            onClick={() => editor.chain().focus().toggleItalic().run()}
+            className={`btn-icon ${editor.isActive('italic') ? 'active' : ''}`}
+            title="Italic (Ctrl+I)"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('italic') ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('italic') ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Italic size={16} />
+          </button>
+          
+          <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
+
+          <button
+            onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
+            className={`btn-icon ${editor.isActive('heading', { level: 1 }) ? 'active' : ''}`}
+            title="Heading 1"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('heading', { level: 1 }) ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('heading', { level: 1 }) ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Heading1 size={16} />
+          </button>
+          <button
+            onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
+            className={`btn-icon ${editor.isActive('heading', { level: 2 }) ? 'active' : ''}`}
+            title="Heading 2"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('heading', { level: 2 }) ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('heading', { level: 2 }) ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Heading2 size={16} />
+          </button>
+
+          <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
+
+          <button
+            onClick={() => editor.chain().focus().toggleBulletList().run()}
+            className={`btn-icon ${editor.isActive('bulletList') ? 'active' : ''}`}
+            title="Bullet List"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('bulletList') ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('bulletList') ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <List size={16} />
+          </button>
+          <button
+            onClick={() => editor.chain().focus().toggleOrderedList().run()}
+            className={`btn-icon ${editor.isActive('orderedList') ? 'active' : ''}`}
+            title="Numbered List"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('orderedList') ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('orderedList') ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <ListOrdered size={16} />
+          </button>
+
+          <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
+
+          <button
+            onClick={() => editor.chain().focus().toggleBlockquote().run()}
+            className={`btn-icon ${editor.isActive('blockquote') ? 'active' : ''}`}
+            title="Blockquote"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('blockquote') ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('blockquote') ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Quote size={16} />
+          </button>
+          <button
+            onClick={() => editor.chain().focus().toggleCode().run()}
+            className={`btn-icon ${editor.isActive('code') ? 'active' : ''}`}
+            title="Inline Code"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('code') ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('code') ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Code size={16} />
+          </button>
+        </div>
+      )}
+
       {/* Floating Bubble Menu for Text Selection */}
       {editor && (
         <BubbleMenu 
@@ -302,142 +426,43 @@ export const Editor: React.FC<EditorProps> = ({
             }
 
             // Normal text selection formatting & quick actions toolbar
+            if (!onQuickAction) return null
+
             return (
-              <>
+              <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                 <button
-                  onClick={() => editor.chain().focus().toggleBold().run()}
-                  className={`btn-icon ${editor.isActive('bold') ? 'active' : ''}`}
-                  title="Bold"
+                  onClick={() => onQuickAction('rewrite')}
+                  className="btn-icon"
+                  title="Rewrite selection"
                   type="button"
-                  style={{
-                    backgroundColor: editor.isActive('bold') ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('bold') ? 'var(--accent)' : 'inherit',
-                  }}
                 >
-                  <Bold size={16} />
+                  <Sparkles size={16} style={{ color: 'var(--accent)' }} />
                 </button>
                 <button
-                  onClick={() => editor.chain().focus().toggleItalic().run()}
-                  className={`btn-icon ${editor.isActive('italic') ? 'active' : ''}`}
-                  title="Italic"
+                  onClick={() => onQuickAction('shorten')}
+                  className="btn-icon"
+                  title="Shorten text"
                   type="button"
-                  style={{
-                    backgroundColor: editor.isActive('italic') ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('italic') ? 'var(--accent)' : 'inherit',
-                  }}
                 >
-                  <Italic size={16} />
+                  <ArrowDownToLine size={16} />
                 </button>
                 <button
-                  onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-                  className={`btn-icon ${editor.isActive('heading', { level: 1 }) ? 'active' : ''}`}
-                  title="Heading 1"
+                  onClick={() => onQuickAction('expand')}
+                  className="btn-icon"
+                  title="Expand text"
                   type="button"
-                  style={{
-                    backgroundColor: editor.isActive('heading', { level: 1 }) ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('heading', { level: 1 }) ? 'var(--accent)' : 'inherit',
-                  }}
                 >
-                  <Heading1 size={16} />
+                  <ArrowUpFromLine size={16} />
                 </button>
                 <button
-                  onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-                  className={`btn-icon ${editor.isActive('heading', { level: 2 }) ? 'active' : ''}`}
-                  title="Heading 2"
+                  onClick={() => onQuickAction('grammar')}
+                  className="btn-icon"
+                  title="Fix grammar & spelling"
                   type="button"
-                  style={{
-                    backgroundColor: editor.isActive('heading', { level: 2 }) ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('heading', { level: 2 }) ? 'var(--accent)' : 'inherit',
-                  }}
                 >
-                  <Heading2 size={16} />
+                  <Languages size={16} />
                 </button>
-                <button
-                  onClick={() => editor.chain().focus().toggleBulletList().run()}
-                  className={`btn-icon ${editor.isActive('bulletList') ? 'active' : ''}`}
-                  title="Bullet List"
-                  type="button"
-                  style={{
-                    backgroundColor: editor.isActive('bulletList') ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('bulletList') ? 'var(--accent)' : 'inherit',
-                  }}
-                >
-                  <List size={16} />
-                </button>
-                <button
-                  onClick={() => editor.chain().focus().toggleOrderedList().run()}
-                  className={`btn-icon ${editor.isActive('orderedList') ? 'active' : ''}`}
-                  title="Numbered List"
-                  type="button"
-                  style={{
-                    backgroundColor: editor.isActive('orderedList') ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('orderedList') ? 'var(--accent)' : 'inherit',
-                  }}
-                >
-                  <ListOrdered size={16} />
-                </button>
-                <button
-                  onClick={() => editor.chain().focus().toggleBlockquote().run()}
-                  className={`btn-icon ${editor.isActive('blockquote') ? 'active' : ''}`}
-                  title="Quote"
-                  type="button"
-                  style={{
-                    backgroundColor: editor.isActive('blockquote') ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('blockquote') ? 'var(--accent)' : 'inherit',
-                  }}
-                >
-                  <Quote size={16} />
-                </button>
-                <button
-                  onClick={() => editor.chain().focus().toggleCode().run()}
-                  className={`btn-icon ${editor.isActive('code') ? 'active' : ''}`}
-                  title="Inline Code"
-                  type="button"
-                  style={{
-                    backgroundColor: editor.isActive('code') ? 'var(--bg-tertiary)' : 'transparent',
-                    color: editor.isActive('code') ? 'var(--accent)' : 'inherit',
-                  }}
-                >
-                  <Code size={16} />
-                </button>
-                {onQuickAction && (
-                  <>
-                    <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
-                    <button
-                      onClick={() => onQuickAction('rewrite')}
-                      className="btn-icon"
-                      title="Rewrite selection"
-                      type="button"
-                    >
-                      <Sparkles size={16} style={{ color: 'var(--accent)' }} />
-                    </button>
-                    <button
-                      onClick={() => onQuickAction('shorten')}
-                      className="btn-icon"
-                      title="Shorten text"
-                      type="button"
-                    >
-                      <ArrowDownToLine size={16} />
-                    </button>
-                    <button
-                      onClick={() => onQuickAction('expand')}
-                      className="btn-icon"
-                      title="Expand text"
-                      type="button"
-                    >
-                      <ArrowUpFromLine size={16} />
-                    </button>
-                    <button
-                      onClick={() => onQuickAction('grammar')}
-                      className="btn-icon"
-                      title="Fix grammar & spelling"
-                      type="button"
-                    >
-                      <Languages size={16} />
-                    </button>
-                  </>
-                )}
-              </>
+              </div>
             )
           })()}
         </BubbleMenu>
