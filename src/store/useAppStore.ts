@@ -10,6 +10,54 @@ export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   grok: ['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
 }
 
+const safeLocalStorage = {
+  setItem: (key: string, value: string) => {
+    if (typeof window === 'undefined') return
+    if (key === 'web_canvas_storage_mode' || key === 'web_canvas_auto_sync') {
+      window.localStorage.setItem(key, value)
+      return
+    }
+
+    let autoSync = false
+    let storageMode = 'server'
+    try {
+      if (typeof useAppStore !== 'undefined' && useAppStore.getState) {
+        const state = useAppStore.getState()
+        autoSync = state.autoSyncEnabled
+        storageMode = state.storageMode
+      } else {
+        autoSync = window.localStorage.getItem('web_canvas_auto_sync') === 'true'
+        storageMode = window.localStorage.getItem('web_canvas_storage_mode') || 'server'
+      }
+    } catch {
+      autoSync = window.localStorage.getItem('web_canvas_auto_sync') === 'true'
+      storageMode = window.localStorage.getItem('web_canvas_storage_mode') || 'server'
+    }
+
+    if (autoSync || storageMode === 'client') {
+      window.localStorage.setItem(key, value)
+    }
+  },
+  getItem: (key: string) => {
+    if (typeof window === 'undefined') return null
+    return window.localStorage.getItem(key)
+  },
+  removeItem: (key: string) => {
+    if (typeof window === 'undefined') return
+    return window.localStorage.removeItem(key)
+  },
+  key: (index: number) => {
+    if (typeof window === 'undefined') return null
+    return window.localStorage.key(index)
+  },
+  get length() {
+    if (typeof window === 'undefined') return 0
+    return window.localStorage.length
+  }
+}
+
+const localStorage = safeLocalStorage
+
 export interface GeminiSafetySetting {
   category: string
   threshold: string
