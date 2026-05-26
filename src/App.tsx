@@ -17,7 +17,7 @@ import {
   Save,
   SquarePen,
   ChevronDown,
-  MessageSquare
+  ChevronUp
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
@@ -1395,7 +1395,7 @@ ${activeDoc.content}
                     title={isChatExpanded ? "Collapse Chat History" : "Expand Chat History"}
                     style={{ marginRight: '0.25rem', padding: '0.25rem' }}
                   >
-                    {isChatExpanded ? <ChevronDown size={18} /> : <MessageSquare size={18} />}
+                    {isChatExpanded ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
                   </button>
                 )}
                 <textarea
