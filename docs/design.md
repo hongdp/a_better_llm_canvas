@@ -411,6 +411,9 @@ In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios
 - [x] Create two version of the configs, use the local one that contains the actual config related to the local enviorment, but commit only the version that shown as example to others that need to use this repo.
 - [x] Come up with a design of Mobile UI, adapting to portrait, landscape and square aspect ratio.
 - [x] Implement the mobile friendly UI while keeping all the functionality of the desktop web version.
+- [x] Implement user registration and login with secure HttpOnly session cookies, CSRF protection, and user-isolated server-side document storage paths.
+- [x] Optimize portrait layout headers by moving provider model and system prompt selections to the Settings Modal, keeping the mobile header compact.
+- [x] Ensure the user interface is strictly constrained to the screen size (horizontal and vertical viewport boundaries) on all devices and orientations.
 
 
 ---

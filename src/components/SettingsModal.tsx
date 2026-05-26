@@ -1,6 +1,6 @@
 import React from 'react'
 import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert, Database, UploadCloud, DownloadCloud, CheckCircle2, RefreshCw, AlertTriangle } from 'lucide-react'
-import { useAppStore, type LLMProvider } from '../store/useAppStore'
+import { useAppStore, type LLMProvider, PROVIDER_MODELS } from '../store/useAppStore'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -12,12 +12,16 @@ interface SettingsModalProps {
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, errorMsg, setErrorMsg }) => {
   const { 
     activeProvider,
+    setProvider,
     providerConfigs, 
     updateProviderConfig,
+    availableGeminiModels,
     customSystemPrompts,
     addSystemPrompt,
     updateSystemPrompt,
     deleteSystemPrompt,
+    activeSystemPromptId,
+    setActiveSystemPromptId,
     debugMode,
     setDebugMode,
     storageMode,
@@ -42,7 +46,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
   const currentConfig = (activeTab !== 'storage' ? providerConfigs[activeTab] : null) || providerConfigs.gemini
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens', value: string | number) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model', value: string | number) => {
     if (activeTab !== 'storage') {
       updateProviderConfig(activeTab, { [field]: value })
     }
@@ -331,6 +335,59 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
             </div>
           ) : (
             <>
+              {/* Active Provider Toggle */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.75rem', borderRadius: '8px', backgroundColor: 'var(--bg-tertiary)', border: '1px solid var(--border-color)' }}>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.2rem' }}>
+                  <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>Active LLM Provider</span>
+                  <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
+                    {activeProvider === activeTab ? 'This provider is currently active.' : 'Configure and set as current provider.'}
+                  </span>
+                </div>
+                {activeProvider === activeTab ? (
+                  <span style={{ 
+                    fontSize: '0.75rem', 
+                    fontWeight: 600, 
+                    color: 'var(--accent)', 
+                    backgroundColor: 'rgba(var(--accent-rgb), 0.1)', 
+                    padding: '0.25rem 0.5rem', 
+                    borderRadius: '4px',
+                    border: '1px solid var(--accent)'
+                  }}>
+                    Active
+                  </span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => setProvider(activeTab as LLMProvider)}
+                    className="btn-primary"
+                    style={{ fontSize: '0.75rem', padding: '0.35rem 0.6rem', borderRadius: '6px' }}
+                  >
+                    Set Active
+                  </button>
+                )}
+              </div>
+
+              {/* Model Selector Dropdown */}
+              <div className="form-group">
+                <label htmlFor="model-select">Active Model</label>
+                <select
+                  id="model-select"
+                  value={currentConfig.model}
+                  onChange={(e) => handleConfigChange('model', e.target.value)}
+                  className="select-styled"
+                  style={{ width: '100%' }}
+                >
+                  {(activeTab === 'gemini' && availableGeminiModels && availableGeminiModels.length > 0
+                    ? availableGeminiModels
+                    : (PROVIDER_MODELS[activeTab as LLMProvider] || [])
+                  ).map(model => (
+                    <option key={model} value={model}>
+                      {model}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
               {/* API Key Input */}
               <div className="form-group">
                 <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -557,6 +614,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
                   </div>
                 </div>
               )}
+
+              {/* Active System Prompt Selector */}
+              <div className="form-group" style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+                <label htmlFor="active-prompt-select" style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-secondary)', display: 'block', marginBottom: '0.35rem' }}>
+                  Active Prompt Preset
+                </label>
+                <select
+                  id="active-prompt-select"
+                  value={activeSystemPromptId}
+                  onChange={(e) => setActiveSystemPromptId(e.target.value)}
+                  className="select-styled"
+                  style={{ width: '100%' }}
+                >
+                  {customSystemPrompts.map(prompt => (
+                    <option key={prompt.id} value={prompt.id}>
+                      {prompt.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
               {/* Presets Management Header */}
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>

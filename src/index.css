@@ -74,14 +74,17 @@
   padding: 0;
 }
 
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
 body {
   font-family: var(--font-ui);
   background-color: var(--bg-primary);
   color: var(--text-primary);
   line-height: 1.5;
-  overflow: hidden;
-  height: 100vh;
-  width: 100vw;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   transition: background-color var(--transition-md), color var(--transition-md);
@@ -317,9 +320,10 @@ body {
 .app-container {
   display: flex;
   flex-direction: column;
-  height: 100vh;
-  width: 100vw;
+  height: 100%;
+  width: 100%;
   background-color: var(--bg-primary);
+  overflow: hidden;
 }
 
 .app-header {
@@ -363,7 +367,7 @@ body {
 .app-main {
   display: flex;
   flex: 1;
-  height: calc(100vh - 56px);
+  height: calc(100% - 56px);
   overflow: hidden;
   position: relative;
 }
@@ -630,11 +634,14 @@ body {
   z-index: 100;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
+  padding: 1rem;
 }
 
 .modal-content {
   width: 90%;
   max-width: 520px;
+  max-height: 90%;
+  overflow-y: auto;
   padding: 2rem;
   border-radius: 14px;
   display: flex;
@@ -1245,7 +1252,7 @@ del.diff-deletion:hover {
 }
 
 .layout-portrait .chat-panel.expanded {
-  height: 50vh; /* Expanded height takes 50% of viewport */
+  height: 50%; /* Expanded height takes 50% of parent .app-main */
 }
 
 /* Hide chat panel components when collapsed */
@@ -1329,7 +1336,7 @@ del.diff-deletion:hover {
 .layout-landscape .app-main {
   flex-direction: row;
   position: relative;
-  height: calc(100vh - 44px);
+  height: calc(100% - 44px);
 }
 
 .layout-landscape .app-header {

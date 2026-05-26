@@ -2,6 +2,14 @@ import { create } from 'zustand'
 
 export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
 
+export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
+  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
+  openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+  anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet'],
+  ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
+  grok: ['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
+}
+
 export interface GeminiSafetySetting {
   category: string
   threshold: string
@@ -129,6 +137,16 @@ interface AppState {
   downloadFromServer: () => Promise<void>
   isStoreInitialized: boolean
   setIsStoreInitialized: (initialized: boolean) => void
+
+  // Auth state
+  user: { username: string } | null
+  csrfToken: string | null
+  setUser: (user: { username: string } | null) => void
+  setCsrfToken: (token: string | null) => void
+  login: (username: string, password: string) => Promise<void>
+  register: (username: string, password: string) => Promise<void>
+  logout: () => Promise<void>
+  checkSession: () => Promise<void>
 }
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
@@ -1067,7 +1085,10 @@ export const useAppStore = create<AppState>((set) => {
       try {
         const res = await fetch('/api/storage', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': state.csrfToken || ''
+          },
           body: JSON.stringify({
             documents: state.documents,
             versions: state.versions,
@@ -1157,6 +1178,82 @@ export const useAppStore = create<AppState>((set) => {
     },
     isStoreInitialized: false,
     setIsStoreInitialized: (initialized) => set({ isStoreInitialized: initialized }),
+
+    // Auth implementation
+    user: null,
+    csrfToken: null,
+    setUser: (user) => set({ user }),
+    setCsrfToken: (token) => set({ csrfToken: token }),
+    login: async (username, password) => {
+      const state = useAppStore.getState()
+      const res = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': state.csrfToken || ''
+        },
+        body: JSON.stringify({ username, password })
+      })
+      if (!res.ok) {
+        const errData = await res.json()
+        throw new Error(errData.error || 'Login failed.')
+      }
+      const data = await res.json()
+      set({ user: { username: data.username }, csrfToken: data.csrfToken || state.csrfToken })
+      
+      // Perform sync verification for this logged in user
+      await initializeStoreFromServer()
+    },
+    register: async (username, password) => {
+      const state = useAppStore.getState()
+      const res = await fetch('/api/auth/register', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': state.csrfToken || ''
+        },
+        body: JSON.stringify({ username, password })
+      })
+      if (!res.ok) {
+        const errData = await res.json()
+        throw new Error(errData.error || 'Registration failed.')
+      }
+    },
+    logout: async () => {
+      const state = useAppStore.getState()
+      try {
+        await fetch('/api/auth/logout', {
+          method: 'POST',
+          headers: {
+            'X-CSRF-Token': state.csrfToken || ''
+          }
+        })
+      } catch (e) {
+        console.error('Logout request failed', e)
+      }
+      set({ user: null })
+      // Clear localStorage cache to be completely secure and avoid PII leaks
+      localStorage.removeItem('web_canvas_documents')
+      localStorage.removeItem('web_canvas_versions')
+      localStorage.removeItem('web_canvas_book_title')
+      localStorage.removeItem('web_canvas_active_document_id')
+    },
+    checkSession: async () => {
+      try {
+        const res = await fetch('/api/auth/session')
+        if (res.ok) {
+          const data = await res.json()
+          set({ csrfToken: data.csrfToken })
+          if (data.loggedIn) {
+            set({ user: { username: data.username } })
+          } else {
+            set({ user: null })
+          }
+        }
+      } catch (e) {
+        console.error('Failed to check session', e)
+      }
+    }
   }
 })
 
@@ -1189,6 +1286,34 @@ const isStateDifferent = (local: any, server: any) => {
 }
 
 export const initializeStoreFromServer = async () => {
+  // 1. Fetch current session status first
+  let loggedInUser: string | null = null
+  let csrfToken: string | null = null
+  try {
+    const sessionRes = await fetch('/api/auth/session')
+    if (sessionRes.ok) {
+      const sessionData = await sessionRes.json()
+      csrfToken = sessionData.csrfToken || null
+      useAppStore.setState({ csrfToken })
+      if (sessionData.loggedIn) {
+        loggedInUser = sessionData.username
+        useAppStore.setState({ user: { username: sessionData.username as string } })
+      } else {
+        useAppStore.setState({ user: null })
+      }
+    }
+  } catch (e) {
+    console.error('Session verification failed', e)
+  }
+
+  // 2. If not logged in, stop and wait for auth (AuthForm will be shown)
+  if (!loggedInUser) {
+    useAppStore.setState({ isStoreInitialized: true })
+    isInitialized = true
+    return
+  }
+
+  // 3. Continue initialization for logged-in user
   const mode = localStorage.getItem('web_canvas_storage_mode') || 'server'
   if (mode === 'client') {
     useAppStore.setState({ isStoreInitialized: true, syncStatus: 'client-mode' })
@@ -1261,13 +1386,17 @@ let saveTimeout: ReturnType<typeof setTimeout> | null = null
 useAppStore.subscribe((state) => {
   if (!isInitialized) return
   if (state.storageMode === 'client') return
+  if (!state.user) return // Don't auto-save if user is not logged in
 
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
     try {
       await fetch('/api/storage', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': state.csrfToken || ''
+        },
         body: JSON.stringify({
           documents: state.documents,
           versions: state.versions,

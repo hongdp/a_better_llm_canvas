@@ -17,13 +17,15 @@ import {
   Save,
   SquarePen,
   ChevronDown,
-  ChevronUp
+  ChevronUp,
+  LogOut
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { SyncConflictModal } from './components/SyncConflictModal'
-import { useAppStore } from './store/useAppStore'
+import { AuthForm } from './components/AuthForm'
+import { useAppStore, PROVIDER_MODELS } from './store/useAppStore'
 import type { CanvasDocument, LLMProvider } from './store/useAppStore'
 import { streamLLM } from './services/llm'
 import type { LLMMessage } from './services/llm'
@@ -39,13 +41,6 @@ const FALLBACK_GEMINI_MODELS = [
   'gemini-1.5-pro',
   'gemini-1.5-flash-8b'
 ]
-
-const PROVIDER_MODELS: Record<string, string[]> = {
-  openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-  anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet'],
-  ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
-  grok: ['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
-}
 
 function getTimestampId(prefix: string) {
   return `${prefix}-${Date.now()}`
@@ -108,7 +103,9 @@ function App() {
     syncConflict,
     resolveSyncConflict,
     storageMode,
-    syncStatus
+    syncStatus,
+    user,
+    logout
   } = useAppStore()
 
   // Local UI state
@@ -1129,8 +1126,8 @@ ${activeDoc.content}
         flexDirection: 'column',
         alignItems: 'center',
         justifyContent: 'center',
-        height: '100vh',
-        width: '100vw',
+        height: '100%',
+        width: '100%',
         backgroundColor: 'var(--bg-primary)',
         color: 'var(--text-primary)',
         gap: '1.5rem',
@@ -1152,6 +1149,10 @@ ${activeDoc.content}
         </div>
       </div>
     )
+  }
+
+  if (!user) {
+    return <AuthForm />
   }
 
   return (
@@ -1197,42 +1198,46 @@ ${activeDoc.content}
           </div>
 
           {/* Dynamic Model Selector Dropdown */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Model:</span>
-            <select 
-              className="select-styled" 
-              value={activeConfig.model} 
-              onChange={handleModelChange}
-              title={`Select ${activeProvider} Model`}
-              disabled={activeProvider === 'gemini' && isLoadingModels}
-            >
-              {getAvailableModels().map(model => (
-                <option key={model} value={model}>
-                  {model}
-                </option>
-              ))}
-            </select>
-            {activeProvider === 'gemini' && isLoadingModels && (
-              <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
-            )}
-          </div>
+          {layoutMode !== 'portrait' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Model:</span>
+              <select 
+                className="select-styled" 
+                value={activeConfig.model} 
+                onChange={handleModelChange}
+                title={`Select ${activeProvider} Model`}
+                disabled={activeProvider === 'gemini' && isLoadingModels}
+              >
+                {getAvailableModels().map(model => (
+                  <option key={model} value={model}>
+                    {model}
+                  </option>
+                ))}
+              </select>
+              {activeProvider === 'gemini' && isLoadingModels && (
+                <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
+              )}
+            </div>
+          )}
 
           {/* System Prompt Selector Dropdown */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Prompt:</span>
-            <select 
-              className="select-styled" 
-              value={activeSystemPromptId} 
-              onChange={(e) => setActiveSystemPromptId(e.target.value)}
-              title="Select System Prompt Preset"
-            >
-              {customSystemPrompts.map(prompt => (
-                <option key={prompt.id} value={prompt.id}>
-                  {prompt.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {layoutMode !== 'portrait' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Prompt:</span>
+              <select 
+                className="select-styled" 
+                value={activeSystemPromptId} 
+                onChange={(e) => setActiveSystemPromptId(e.target.value)}
+                title="Select System Prompt Preset"
+              >
+                {customSystemPrompts.map(prompt => (
+                  <option key={prompt.id} value={prompt.id}>
+                    {prompt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
 
           {/* Settings Button */}
           <button 
@@ -1253,6 +1258,29 @@ ${activeDoc.content}
           >
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
           </button>
+
+          {/* User Profile & Logout */}
+          {user && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '0.25rem', borderLeft: '1px solid var(--border-color)', paddingLeft: '0.75rem' }}>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
+                Hi, <strong style={{ color: 'var(--text-primary)' }}>{user.username}</strong>
+              </span>
+              <button
+                onClick={async () => {
+                  if (window.confirm('Are you sure you want to log out?')) {
+                    await logout()
+                    window.location.reload()
+                  }
+                }}
+                className="btn-icon"
+                title="Log Out"
+                type="button"
+                style={{ color: '#ef4444' }}
+              >
+                <LogOut size={16} />
+              </button>
+            </div>
+          )}
         </div>
       </header>
 
