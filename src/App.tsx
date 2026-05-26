@@ -105,7 +105,9 @@ function App() {
     storageMode,
     syncStatus,
     user,
-    logout
+    logout,
+    autoSyncEnabled,
+    downloadFromServer
   } = useAppStore()
 
   // Local UI state
@@ -224,6 +226,50 @@ function App() {
       window.removeEventListener('click', handleOutsideClick)
     }
   }, [isExportDropdownOpen])
+
+  // Local auto-sync polling effect
+  useEffect(() => {
+    if (!autoSyncEnabled || storageMode !== 'server' || !user || isStreaming) {
+      return
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const res = await fetch('/api/storage')
+        if (res.ok) {
+          const serverData = await res.json()
+          if (serverData && typeof serverData === 'object' && Object.keys(serverData).length > 0) {
+            const localData = {
+              bookTitle: useAppStore.getState().bookTitle,
+              documents: useAppStore.getState().documents
+            }
+            const localDocs = localData.documents || []
+            const serverDocs = serverData.documents || []
+            let diff = (localData.bookTitle || 'Untitled Book') !== (serverData.bookTitle || 'Untitled Book') || localDocs.length !== serverDocs.length
+            if (!diff) {
+              for (let i = 0; i < localDocs.length; i++) {
+                const ld = localDocs[i]
+                const sd = serverDocs.find((d: any) => d.id === ld.id)
+                if (!sd || sd.title !== ld.title || sd.content !== ld.content) {
+                  diff = true
+                  break
+                }
+              }
+            }
+
+            if (diff) {
+              console.log('Auto-sync: downloading server-side changes to local')
+              await downloadFromServer()
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Auto-sync polling error', err)
+      }
+    }, 5000)
+
+    return () => clearInterval(intervalId)
+  }, [autoSyncEnabled, storageMode, user, isStreaming, downloadFromServer])
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const isResizingRef = useRef(false)

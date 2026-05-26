@@ -137,6 +137,8 @@ interface AppState {
   downloadFromServer: () => Promise<void>
   isStoreInitialized: boolean
   setIsStoreInitialized: (initialized: boolean) => void
+  autoSyncEnabled: boolean
+  setAutoSyncEnabled: (enabled: boolean) => void
 
   // Auth state
   user: { username: string } | null
@@ -972,6 +974,11 @@ export const useAppStore = create<AppState>((set) => {
         useAppStore.getState().checkSyncStatus()
       }
     },
+    autoSyncEnabled: localStorage.getItem('web_canvas_auto_sync') === 'true',
+    setAutoSyncEnabled: (enabled) => {
+      localStorage.setItem('web_canvas_auto_sync', String(enabled))
+      set({ autoSyncEnabled: enabled })
+    },
     syncConflict: null,
     setSyncConflict: (conflict) => set({ syncConflict: conflict }),
     resolveSyncConflict: async (choice) => {
@@ -1037,6 +1044,12 @@ export const useAppStore = create<AppState>((set) => {
         }
         set(updates)
         set({ syncStatus: 'in-sync' })
+        
+        // Ask to enable local auto-sync for server changes
+        if (window.confirm('You have chosen the server-side version. Would you like to enable local auto-sync to automatically sync server-side changes to local?')) {
+          localStorage.setItem('web_canvas_auto_sync', 'true')
+          set({ autoSyncEnabled: true })
+        }
       }
 
       set({ syncConflict: null, isStoreInitialized: true })
