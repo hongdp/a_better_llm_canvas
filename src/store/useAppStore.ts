@@ -6,6 +6,7 @@ export interface ProviderConfig {
   apiKey: string
   model: string
   baseUrl: string
+  systemPrompt?: string
 }
 
 export interface ChatMessage {
@@ -59,26 +60,55 @@ interface AppState {
   setMessages: (messages: ChatMessage[]) => void
 }
 
+// TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
+// in server-side HttpOnly cookies instead of exposing them to client-side JS.
+const getCookie = (name: string): string => {
+  if (typeof document === 'undefined') return ''
+  const nameEQ = name + '='
+  const ca = document.cookie.split(';')
+  for (let i = 0; i < ca.length; i++) {
+    let c = ca[i]
+    while (c.charAt(0) === ' ') c = c.substring(1, c.length)
+    if (c.indexOf(nameEQ) === 0) return decodeURIComponent(c.substring(nameEQ.length, c.length))
+  }
+  return ''
+}
+
+const setCookie = (name: string, value: string, days = 365) => {
+  if (typeof document === 'undefined') return
+  let expires = ''
+  if (days) {
+    const date = new Date()
+    date.setTime(date.getTime() + days * 24 * 60 * 60 * 1000)
+    expires = '; expires=' + date.toUTCString()
+  }
+  document.cookie = name + '=' + encodeURIComponent(value || '') + expires + '; path=/; SameSite=Lax; Secure'
+}
+
 const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
   openai: {
     apiKey: '',
     model: 'gpt-4o',
     baseUrl: 'https://api.openai.com/v1',
+    systemPrompt: '',
   },
   gemini: {
     apiKey: '',
     model: 'gemini-1.5-pro',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    systemPrompt: '',
   },
   anthropic: {
     apiKey: '',
     model: 'claude-3-5-sonnet',
     baseUrl: 'https://api.anthropic.com/v1',
+    systemPrompt: '',
   },
   ollama: {
     apiKey: 'ollama-no-key',
     model: 'llama3',
     baseUrl: 'http://localhost:11434/v1',
+    systemPrompt: '',
   },
 }
 
@@ -104,28 +134,87 @@ const MOCK_DOCUMENTS: CanvasDocument[] = [
   },
 ]
 
-// Load initial configs and documents from localStorage
-const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
-  const saved = localStorage.getItem('web_canvas_providers')
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved)
-      const merged = { ...DEFAULT_CONFIGS }
+const CURRENT_SETTINGS_VERSION = 1
+
+interface VersionedCookieData<T> {
+  version: number
+  data: T
+}
+
+const saveConfigsToCookie = (configs: Record<LLMProvider, ProviderConfig>) => {
+  const envelope: VersionedCookieData<Record<LLMProvider, ProviderConfig>> = {
+    version: CURRENT_SETTINGS_VERSION,
+    data: configs,
+  }
+  setCookie('__Secure-web_canvas_providers', JSON.stringify(envelope))
+}
+
+const migrateProvidersConfig = (savedString: string): Record<LLMProvider, ProviderConfig> => {
+  try {
+    const parsed = JSON.parse(savedString)
+    
+    // Case 1: Legacy unversioned structure (direct Record<LLMProvider, ProviderConfig>)
+    if (!parsed || typeof parsed !== 'object' || !('version' in parsed)) {
+      console.log('Migrating legacy (v0) LLM configs to v1')
+      const migratedData = { ...DEFAULT_CONFIGS }
+      const rawData = parsed as any
       for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
-        if (parsed[p]) {
-          merged[p] = { ...DEFAULT_CONFIGS[p], ...parsed[p] }
+        if (rawData && rawData[p]) {
+          migratedData[p] = {
+            ...DEFAULT_CONFIGS[p],
+            ...rawData[p],
+            systemPrompt: rawData[p].systemPrompt || '',
+          }
         }
       }
-      return merged
-    } catch (e) {
-      console.error('Failed to parse saved LLM configurations', e)
+      // Save versioned cookie immediately
+      saveConfigsToCookie(migratedData)
+      return migratedData
     }
+
+    // Case 2: Versioned structure
+    const versioned = parsed as VersionedCookieData<Record<LLMProvider, ProviderConfig>>
+    let currentData = versioned.data
+    let version = versioned.version
+
+    // Run migrations step-by-step
+    if (version < 1) {
+      version = 1
+    }
+    
+    // Save back if version was updated during migration
+    if (version !== versioned.version) {
+      saveConfigsToCookie(currentData)
+    }
+
+    // Ensure all required properties for all providers exist in returning data
+    const merged = { ...DEFAULT_CONFIGS }
+    for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
+      if (currentData[p]) {
+        merged[p] = {
+          ...DEFAULT_CONFIGS[p],
+          ...currentData[p],
+        }
+      }
+    }
+    return merged
+  } catch (e) {
+    console.error('Failed to parse and migrate saved configs, resetting to default', e)
+    return DEFAULT_CONFIGS
+  }
+}
+
+// Load initial configs and documents from cookies/localStorage
+const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
+  const saved = getCookie('__Secure-web_canvas_providers')
+  if (saved) {
+    return migrateProvidersConfig(saved)
   }
   return DEFAULT_CONFIGS
 }
 
 const loadSavedProvider = (): LLMProvider => {
-  const saved = localStorage.getItem('web_canvas_active_provider')
+  const saved = getCookie('__Secure-web_canvas_active_provider')
   if (saved && ['openai', 'gemini', 'anthropic', 'ollama'].includes(saved)) {
     return saved as LLMProvider
   }
@@ -161,16 +250,16 @@ export const useAppStore = create<AppState>((set) => {
 
   return {
     // Theme state
-    theme: (localStorage.getItem('web_canvas_theme') as 'dark' | 'light') || 'dark',
+    theme: (getCookie('__Secure-web_canvas_theme') as 'dark' | 'light') || 'dark',
     setTheme: (theme) => {
-      localStorage.setItem('web_canvas_theme', theme)
+      setCookie('__Secure-web_canvas_theme', theme)
       set({ theme })
     },
 
     // Multi-document state
     documents: initialDocs,
     activeDocumentId: initialActiveId,
-    isSidebarOpen: localStorage.getItem('web_canvas_sidebar_open') !== 'false',
+    isSidebarOpen: getCookie('__Secure-web_canvas_sidebar_open') !== 'false',
     selectedReferenceIds: [],
 
     setActiveDocumentId: (id) => {
@@ -266,7 +355,7 @@ export const useAppStore = create<AppState>((set) => {
     toggleSidebar: () => {
       set((state) => {
         const isOpen = !state.isSidebarOpen
-        localStorage.setItem('web_canvas_sidebar_open', String(isOpen))
+        setCookie('__Secure-web_canvas_sidebar_open', String(isOpen))
         return { isSidebarOpen: isOpen }
       })
     },
@@ -276,7 +365,7 @@ export const useAppStore = create<AppState>((set) => {
     providerConfigs: loadSavedConfigs(),
     availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
     setProvider: (provider) => {
-      localStorage.setItem('web_canvas_active_provider', provider)
+      setCookie('__Secure-web_canvas_active_provider', provider)
       set({ activeProvider: provider })
     },
     setAvailableGeminiModels: (models) => {
@@ -291,7 +380,7 @@ export const useAppStore = create<AppState>((set) => {
             ...newConfig,
           },
         }
-        localStorage.setItem('web_canvas_providers', JSON.stringify(updatedConfigs))
+        saveConfigsToCookie(updatedConfigs)
         return { providerConfigs: updatedConfigs }
       })
     },

@@ -380,4 +380,6 @@ Record significant design decisions here as the project evolves.
 |------|----------|-----------|
 | 2026-05-25 | Project kick-off | Initial principles established |
 | 2026-05-25 | Created separate feature spec for multi-document references | Registered separate document [multi_document_references.md](file:///home/hongdp/Workspace/web_canvas/docs/features/multi_document_references.md) to detail chapter outline and context loading. |
+| 2026-05-25 | Custom System Prompt & Cookie Settings Migration | Added systemPrompt field and UI inputs to allow user-defined instructions, and migrated user preferences/configurations to client-side __Secure- cookies. |
+
 

@@ -91,6 +91,12 @@ experience of the document over the chat experience.
 - **E2E tests** for critical user flows: create document → chat edit → review
   diff → accept/reject.
 
+### 2.6 Persistent Data Versioning
+- **Versioned Envelopes**: Any persistent structures stored client-side (cookies, localStorage, or IndexedDB) that are subject to future updates MUST be stored in a versioned envelope `{ version: number, data: T }`.
+- **Sequential Schema Migrations**: When updating a schema, increment the version number and write a safe, sequential migration pipeline (e.g., `v0 ➔ v1 ➔ v2`) to dynamically parse, map, and rewrite the stored state without destroying existing user settings.
+- **Default Fallback Merging**: Migrated structures MUST always be merged with default configuration models to guarantee that newly introduced fields are correctly initialized for existing installations.
+- **Self-Healing Persistent Layer**: Migrations must be triggered during store initialization, automatically rewriting the updated, validated, and versioned state back to client storage.
+
 ---
 
 ## 3. Operation Principles

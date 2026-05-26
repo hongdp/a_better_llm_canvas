@@ -17,7 +17,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl', value: string) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'systemPrompt', value: string) => {
     updateProviderConfig('gemini', { [field]: value })
   }
 
@@ -68,6 +68,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               onChange={(e) => handleConfigChange('baseUrl', e.target.value)}
               placeholder="e.g. https://generativelanguage.googleapis.com/v1beta"
               className="form-input"
+            />
+          </div>
+
+          {/* System Prompt / Custom Instructions */}
+          <div className="form-group">
+            <label htmlFor="system-prompt-input">System Prompt / Custom Instructions</label>
+            <textarea
+              id="system-prompt-input"
+              value={geminiConfig.systemPrompt || ''}
+              onChange={(e) => handleConfigChange('systemPrompt', e.target.value)}
+              placeholder="e.g. Write in a formal tone. Use concise explanations. Focus on readability..."
+              className="form-input"
+              rows={4}
+              style={{ resize: 'vertical' }}
             />
           </div>
 

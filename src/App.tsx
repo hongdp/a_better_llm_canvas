@@ -243,13 +243,15 @@ function App() {
       .map(d => `- ${d.title}${d.id === activeDocumentId ? ' (Active / Editing Target)' : ''}`)
       .join('\n')
 
+    const customPromptText = geminiConfig.systemPrompt || ''
+
     // Create system instruction prompt
     const systemPrompt: LLMMessage = {
       role: 'system',
       content: `You are an expert document writing and editing assistant.
 You help the user write, edit, and polish the ACTIVE document shown on their screen.
 
-CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
+${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${customPromptText}\n\n` : ''}CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
 ${outlineList}
 ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
 
