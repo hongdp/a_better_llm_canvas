@@ -347,10 +347,10 @@ For documents exceeding the model's context window:
 - [x] Improve output token efficiency when using selected edit to allow LLM to decide only output modification to the selected text, not whole document. 
 
 ### M7 — Cross Device optimization.
-- [ ] When the UI get started, allow a start up flag to set a local server directory to store the local storage data. This allows cross session materialization.
+- [x] When the UI get started, allow a start up flag to set a local server directory to store the local storage data. This allows cross session materialization.
 - [x] Create two version of the configs, use the local one that contains the actual config related to the local enviorment, but commit only the version that shown as example to others that need to use this repo.
-- [ ] Come up with a design of Mobile UI, adapting to portrait, landscape and square aspect ratio.
-- [ ] Implement the mobile friendly UI while keeping all the functionality of the desktop web version.
+- [x] Come up with a design of Mobile UI, adapting to portrait, landscape and square aspect ratio.
+- [x] Implement the mobile friendly UI while keeping all the functionality of the desktop web version.
 
 
 ---
@@ -407,3 +407,5 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Fixed Formatting Toolbar & Clean Bubble Menu | Added a sticky translucent formatting toolbar at the top of the editor for formatting tags, leaving the text-selection BubbleMenu dedicated purely to AI generation actions and diff resolutions. |
 | 2026-05-25 | Book Title UI Design Alignment | Redesigned the Book Title sidebar input to match the Document Title UI styling, utilizing a borderless transparent style, `Book` icon, and hover/focus transitions for visual cohesion. |
 | 2026-05-25 | Revert & Edit Past Chat & Selection Replacement (Milestone 6) | Implemented capability to edit and resubmit past user prompts, truncating history from that point. Upgraded the streaming engine to parse and splice selection-replace token optimization blocks directly into the active editor range, computing and applying HTML diffs on completion. |
+| 2026-05-26 | Cross-Device Optimization & Collapsible Chat Drawer (Milestone 7) | Implemented local storage server-side serialization with `--storage-dir` CLI flag support. Refactored layout architecture into a 4-state dynamic layout engine (`desktop` | `portrait` | `landscape` | `tablet-square`). Configured mobile landscape/tablet layouts as side-by-side splits with collapsible sidebars and overlay drawers. Designed and implemented mobile portrait layout as a vertical stack: Editor in main viewport and a collapsible/expandable Chat drawer toolbar at the bottom that automatically slides up on generation and keeps selection editing fully functional. |
+
