@@ -61,6 +61,7 @@ interface AppState {
   
   setActiveDocumentId: (id: string) => void
   addDocument: (title?: string, content?: string) => string
+  importAllDocuments: (docs: { title: string; content: string }[]) => void
   deleteDocument: (id: string) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
   toggleReference: (id: string) => void
@@ -578,6 +579,29 @@ export const useAppStore = create<AppState>((set) => {
         }
       })
       return docId
+    },
+
+    importAllDocuments: (newDocs) => {
+      if (newDocs.length === 0) return
+
+      const formattedDocs: CanvasDocument[] = newDocs.map((doc, idx) => ({
+        id: `doc-${Date.now()}-${idx}`,
+        title: doc.title || `Chapter ${idx + 1}`,
+        content: doc.content || '<p></p>',
+        selectedReferenceIds: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }))
+
+      set(() => {
+        localStorage.setItem('web_canvas_documents', JSON.stringify(formattedDocs))
+        localStorage.setItem('web_canvas_active_document_id', formattedDocs[0].id)
+        return {
+          documents: formattedDocs,
+          activeDocumentId: formattedDocs[0].id,
+          selectedReferenceIds: []
+        }
+      })
     },
 
     deleteDocument: (id) => {

@@ -325,3 +325,178 @@ export function sanitizeHtml(html: string): string {
   return doc.body.innerHTML
 }
 
+/**
+ * Splits combined HTML draft into separate chapters.
+ */
+export function splitHtmlToChapters(html: string): { title: string; content: string }[] {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(html, 'text/html')
+  const body = doc.body
+
+  const chapters: { title: string; content: string }[] = []
+  let currentTitle = ''
+  let currentContent = ''
+
+  const children = Array.from(body.childNodes)
+
+  for (const node of children) {
+    if (node.nodeType === Node.ELEMENT_NODE) {
+      const element = node as HTMLElement
+      const tagName = element.tagName.toUpperCase()
+
+      if (tagName === 'HR') {
+        if (currentTitle || currentContent.trim()) {
+          chapters.push({
+            title: currentTitle || 'Untitled Chapter',
+            content: sanitizeHtml(currentContent.trim())
+          })
+          currentTitle = ''
+          currentContent = ''
+        }
+        continue
+      }
+
+      if (tagName === 'H1') {
+        if (currentTitle || currentContent.trim()) {
+          chapters.push({
+            title: currentTitle || 'Untitled Chapter',
+            content: sanitizeHtml(currentContent.trim())
+          })
+          currentContent = ''
+        }
+        currentTitle = element.innerText || element.textContent || 'Untitled Chapter'
+        continue
+      }
+      
+      currentContent += element.outerHTML + '\n'
+    } else if (node.nodeType === Node.TEXT_NODE) {
+      const text = node.textContent?.trim()
+      if (text) {
+        currentContent += text + '\n'
+      }
+    }
+  }
+
+  if (currentTitle || currentContent.trim()) {
+    chapters.push({
+      title: currentTitle || 'Untitled Chapter',
+      content: sanitizeHtml(currentContent.trim())
+    })
+  }
+
+  return chapters
+}
+
+/**
+ * Splits combined Markdown draft into separate chapters.
+ */
+export function splitMarkdownToChapters(markdown: string): { title: string; content: string }[] {
+  const lines = markdown.replace(/\r\n/g, '\n').split('\n')
+  const chapters: { title: string; content: string }[] = []
+  
+  let currentTitle = ''
+  let currentLines: string[] = []
+  let inCodeBlock = false
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmed = line.trim()
+
+    if (trimmed.startsWith('```')) {
+      inCodeBlock = !inCodeBlock
+      currentLines.push(line)
+      continue
+    }
+
+    if (inCodeBlock) {
+      currentLines.push(line)
+      continue
+    }
+
+    if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
+      if (currentTitle || currentLines.length > 0) {
+        chapters.push({
+          title: currentTitle || 'Untitled Chapter',
+          content: markdownToHtml(currentLines.join('\n'))
+        })
+        currentTitle = ''
+        currentLines = []
+      }
+      continue
+    }
+
+    const headingMatch = line.match(/^#\s+(.*)$/)
+    if (headingMatch) {
+      if (currentTitle || currentLines.length > 0) {
+        chapters.push({
+          title: currentTitle || 'Untitled Chapter',
+          content: markdownToHtml(currentLines.join('\n'))
+        })
+        currentLines = []
+      }
+      currentTitle = headingMatch[1].trim()
+      continue
+    }
+
+    currentLines.push(line)
+  }
+
+  if (currentTitle || currentLines.length > 0) {
+    chapters.push({
+      title: currentTitle || 'Untitled Chapter',
+      content: markdownToHtml(currentLines.join('\n'))
+    })
+  }
+
+  return chapters
+}
+
+/**
+ * Splits combined Plain Text draft into separate chapters.
+ */
+export function splitTxtToChapters(text: string): { title: string; content: string }[] {
+  const lines = text.replace(/\r\n/g, '\n').split('\n')
+  const chapters: { title: string; content: string }[] = []
+  
+  let currentTitle = ''
+  let currentLines: string[] = []
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+    const trimmed = line.trim()
+    
+    const nextLine = lines[i + 1]
+    const nextLineTrimmed = nextLine !== undefined ? nextLine.trim() : ''
+    
+    if (
+      trimmed.length > 0 &&
+      nextLineTrimmed.length > 0 && 
+      /^[=]+$/.test(nextLineTrimmed) &&
+      Math.abs(nextLineTrimmed.length - trimmed.length) <= 3
+    ) {
+      if (currentTitle || currentLines.length > 0) {
+        chapters.push({
+          title: currentTitle || 'Untitled Chapter',
+          content: txtToHtml(currentLines.join('\n'))
+        })
+        currentLines = []
+      }
+      currentTitle = trimmed
+      i++ // Skip divider line
+      continue
+    }
+
+    currentLines.push(line)
+  }
+
+  if (currentTitle || currentLines.length > 0) {
+    chapters.push({
+      title: currentTitle || 'Untitled Chapter',
+      content: txtToHtml(currentLines.join('\n'))
+    })
+  }
+
+  return chapters
+}
+
+
