@@ -24,10 +24,24 @@ console.log(`[Storage Server] Materializing local storage in: ${absoluteStorageD
 const modeIdx = args.indexOf('--mode')
 const mode = (modeIdx !== -1 && args[modeIdx + 1]) ? args[modeIdx + 1] : undefined
 
+// Check if host is provided to expose server (e.g. --host or --host 0.0.0.0)
+const hostIdx = args.indexOf('--host')
+let host = undefined
+if (hostIdx !== -1) {
+  if (args[hostIdx + 1] && !args[hostIdx + 1].startsWith('-')) {
+    host = args[hostIdx + 1]
+  } else {
+    host = true
+  }
+}
+
 // Start Vite dev server programmatically
 try {
   const server = await createServer({
-    mode
+    mode,
+    server: {
+      host
+    }
   })
   await server.listen()
   server.printUrls()
