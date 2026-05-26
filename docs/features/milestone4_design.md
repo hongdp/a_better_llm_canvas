@@ -88,7 +88,9 @@ The export module supports HTML, Markdown, and Plain Text downloads using client
 #### A. Export Dropdown Panel
 Adjacent to the document header's actions, a relative positioning container exposes a floating glassmorphic dropdown:
 * Trigger: Clicking the `Download` (or export) button toggles the dropdown overlay.
-* Items: "Export as HTML", "Export as Markdown", "Export as Text".
+* Items:
+  - **Active Chapter**: Export the current chapter's content as HTML, Markdown, or Plain Text.
+  - **All Chapters (Combined)**: Compiles all chapters in outline order (separated by rules or headings) and downloads the consolidated draft as HTML, Markdown, or Plain Text.
 * Outside Clicks: A window-level click listener automatically dismisses the dropdown when clicking outside.
 
 #### B. Version History Timeline Drawer
