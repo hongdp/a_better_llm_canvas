@@ -19,6 +19,7 @@ import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { useAppStore } from './store/useAppStore'
+import type { CanvasDocument } from './store/useAppStore'
 import { streamLLM } from './services/llm'
 import type { LLMMessage } from './services/llm'
 import { diffHtml } from './utils/diff'
@@ -401,7 +402,7 @@ CRITICAL RULES:
 1. If your response updates the ACTIVE document, wrap the updated document text in a "<canvas>" XML block.
    Make sure to return the FULL updated document inside "<canvas>", not just the selection or parts of it. Do not truncate the document.
 2. Write conversational feedback/explanations OUTSIDE the "<canvas>" tags for the chat panel.
-3. Output the document as clean HTML inside the "<canvas>" block (using tags like h1, h2, p, ul, ol, li, strong, em, blockquote, pre, code).
+3. Output the document as clean HTML inside the "<canvas>" block (using tags like h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). Do NOT output Heading 1 (<h1>) tags, as the chapter title is managed separately by the UI.
 4. If the user instruction is just conversational and does not require updating the document, DO NOT output any "<canvas>" block. Just write a conversational reply.
 
 ${selectionContext}
@@ -713,7 +714,13 @@ ${activeDoc.content}
       let bodyContent = ''
       if (exportAll) {
         documents.forEach((doc, idx) => {
-          bodyContent += `<h1>${doc.title}</h1>\n${doc.content}\n`
+          const contentTrimmed = doc.content.trim()
+          const startsWithH1 = contentTrimmed.startsWith('<h1') || contentTrimmed.startsWith('<h1>')
+          if (startsWithH1) {
+            bodyContent += `${doc.content}\n`
+          } else {
+            bodyContent += `<h1>${doc.title}</h1>\n${doc.content}\n`
+          }
           if (idx < documents.length - 1) {
             bodyContent += `<hr style="margin: 3rem 0; border: none; border-top: 1px solid #cbd5e1;" />\n`
           }
@@ -744,7 +751,13 @@ ${activeDoc.content}
     } else if (format === 'markdown') {
       if (exportAll) {
         documents.forEach((doc, idx) => {
-          content += `# ${doc.title}\n\n${htmlToMarkdown(doc.content)}\n`
+          const markdownContent = htmlToMarkdown(doc.content)
+          const startsWithH1 = markdownContent.trim().startsWith('# ')
+          if (startsWithH1) {
+            content += `${markdownContent}\n`
+          } else {
+            content += `# ${doc.title}\n\n${markdownContent}\n`
+          }
           if (idx < documents.length - 1) {
             content += `\n---\n\n`
           }
@@ -757,7 +770,14 @@ ${activeDoc.content}
     } else {
       if (exportAll) {
         documents.forEach((doc, idx) => {
-          content += `${doc.title}\n${'='.repeat(doc.title.length)}\n\n${htmlToPlainText(doc.content)}\n`
+          const plainTextContent = htmlToPlainText(doc.content)
+          const lines = plainTextContent.trim().split('\n')
+          const startsWithHeading = lines.length > 1 && lines[1].trim().length > 0 && /^[=]+$/.test(lines[1].trim())
+          if (startsWithHeading) {
+            content += `${plainTextContent}\n`
+          } else {
+            content += `${doc.title}\n${'='.repeat(doc.title.length)}\n\n${plainTextContent}\n`
+          }
           if (idx < documents.length - 1) {
             content += `\n\n\n`
           }
@@ -1221,7 +1241,21 @@ ${activeDoc.content}
               <div className="canvas-editor-container">
                 <Editor 
                   content={activeDoc.content} 
-                  onChange={(html) => updateActiveDocument({ content: html })} 
+                  onChange={(html) => {
+                    const updates: Partial<CanvasDocument> = { content: html }
+                    
+                    // Sync title if the document starts with an <h1> tag
+                    const tempDiv = document.createElement('div')
+                    tempDiv.innerHTML = html
+                    const firstChild = tempDiv.firstElementChild
+                    if (firstChild && firstChild.tagName.toUpperCase() === 'H1') {
+                      const extractedTitle = firstChild.textContent?.trim()
+                      if (extractedTitle && extractedTitle !== activeDoc.title) {
+                        updates.title = extractedTitle
+                      }
+                    }
+                    updateActiveDocument(updates)
+                  }} 
                   onQuickAction={handleQuickAction}
                 />
               </div>

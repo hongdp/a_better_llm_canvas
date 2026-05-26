@@ -326,6 +326,30 @@ export function sanitizeHtml(html: string): string {
 }
 
 /**
+ * Extract the first H1 element as the chapter title and strip it from the body content.
+ */
+export function extractChapterTitleFromContent(htmlContent: string, defaultTitle: string): { title: string; content: string } {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(htmlContent, 'text/html')
+  const body = doc.body
+
+  const firstChild = body.firstElementChild
+  if (firstChild && firstChild.tagName.toUpperCase() === 'H1') {
+    const extractedTitle = firstChild.textContent?.trim() || defaultTitle
+    firstChild.remove()
+    return {
+      title: extractedTitle,
+      content: body.innerHTML
+    }
+  }
+
+  return {
+    title: defaultTitle,
+    content: htmlContent
+  }
+}
+
+/**
  * Splits combined HTML draft into separate chapters.
  */
 export function splitHtmlToChapters(html: string): { title: string; content: string }[] {
@@ -334,7 +358,6 @@ export function splitHtmlToChapters(html: string): { title: string; content: str
   const body = doc.body
 
   const chapters: { title: string; content: string }[] = []
-  let currentTitle = ''
   let currentContent = ''
 
   const children = Array.from(body.childNodes)
@@ -345,43 +368,26 @@ export function splitHtmlToChapters(html: string): { title: string; content: str
       const tagName = element.tagName.toUpperCase()
 
       if (tagName === 'HR') {
-        if (currentTitle || currentContent.trim()) {
-          chapters.push({
-            title: currentTitle || 'Untitled Chapter',
-            content: sanitizeHtml(currentContent.trim())
-          })
-          currentTitle = ''
+        if (currentContent.trim()) {
+          const { title, content } = extractChapterTitleFromContent(currentContent.trim(), 'Untitled Chapter')
+          chapters.push({ title, content: sanitizeHtml(content) })
           currentContent = ''
         }
-        continue
-      }
-
-      if (tagName === 'H1') {
-        if (currentTitle || currentContent.trim()) {
-          chapters.push({
-            title: currentTitle || 'Untitled Chapter',
-            content: sanitizeHtml(currentContent.trim())
-          })
-          currentContent = ''
-        }
-        currentTitle = element.innerText || element.textContent || 'Untitled Chapter'
         continue
       }
       
       currentContent += element.outerHTML + '\n'
     } else if (node.nodeType === Node.TEXT_NODE) {
-      const text = node.textContent?.trim()
+      const text = node.textContent
       if (text) {
-        currentContent += text + '\n'
+        currentContent += text
       }
     }
   }
 
-  if (currentTitle || currentContent.trim()) {
-    chapters.push({
-      title: currentTitle || 'Untitled Chapter',
-      content: sanitizeHtml(currentContent.trim())
-    })
+  if (currentContent.trim()) {
+    const { title, content } = extractChapterTitleFromContent(currentContent.trim(), 'Untitled Chapter')
+    chapters.push({ title, content: sanitizeHtml(content) })
   }
 
   return chapters
@@ -394,7 +400,6 @@ export function splitMarkdownToChapters(markdown: string): { title: string; cont
   const lines = markdown.replace(/\r\n/g, '\n').split('\n')
   const chapters: { title: string; content: string }[] = []
   
-  let currentTitle = ''
   let currentLines: string[] = []
   let inCodeBlock = false
 
@@ -414,38 +419,22 @@ export function splitMarkdownToChapters(markdown: string): { title: string; cont
     }
 
     if (trimmed === '---' || trimmed === '***' || trimmed === '___') {
-      if (currentTitle || currentLines.length > 0) {
-        chapters.push({
-          title: currentTitle || 'Untitled Chapter',
-          content: markdownToHtml(currentLines.join('\n'))
-        })
-        currentTitle = ''
+      if (currentLines.length > 0) {
+        const htmlContent = markdownToHtml(currentLines.join('\n'))
+        const { title, content } = extractChapterTitleFromContent(htmlContent, 'Untitled Chapter')
+        chapters.push({ title, content })
         currentLines = []
       }
-      continue
-    }
-
-    const headingMatch = line.match(/^#\s+(.*)$/)
-    if (headingMatch) {
-      if (currentTitle || currentLines.length > 0) {
-        chapters.push({
-          title: currentTitle || 'Untitled Chapter',
-          content: markdownToHtml(currentLines.join('\n'))
-        })
-        currentLines = []
-      }
-      currentTitle = headingMatch[1].trim()
       continue
     }
 
     currentLines.push(line)
   }
 
-  if (currentTitle || currentLines.length > 0) {
-    chapters.push({
-      title: currentTitle || 'Untitled Chapter',
-      content: markdownToHtml(currentLines.join('\n'))
-    })
+  if (currentLines.length > 0) {
+    const htmlContent = markdownToHtml(currentLines.join('\n'))
+    const { title, content } = extractChapterTitleFromContent(htmlContent, 'Untitled Chapter')
+    chapters.push({ title, content })
   }
 
   return chapters
@@ -475,10 +464,10 @@ export function splitTxtToChapters(text: string): { title: string; content: stri
       Math.abs(nextLineTrimmed.length - trimmed.length) <= 3
     ) {
       if (currentTitle || currentLines.length > 0) {
-        chapters.push({
-          title: currentTitle || 'Untitled Chapter',
-          content: txtToHtml(currentLines.join('\n'))
-        })
+        const htmlContent = txtToHtml(currentLines.join('\n'))
+        const finalTitle = currentTitle || 'Untitled Chapter'
+        const { title, content } = extractChapterTitleFromContent(htmlContent, finalTitle)
+        chapters.push({ title, content })
         currentLines = []
       }
       currentTitle = trimmed
@@ -490,13 +479,14 @@ export function splitTxtToChapters(text: string): { title: string; content: stri
   }
 
   if (currentTitle || currentLines.length > 0) {
-    chapters.push({
-      title: currentTitle || 'Untitled Chapter',
-      content: txtToHtml(currentLines.join('\n'))
-    })
+    const htmlContent = txtToHtml(currentLines.join('\n'))
+    const finalTitle = currentTitle || 'Untitled Chapter'
+    const { title, content } = extractChapterTitleFromContent(htmlContent, finalTitle)
+    chapters.push({ title, content })
   }
 
   return chapters
 }
+
 
 
