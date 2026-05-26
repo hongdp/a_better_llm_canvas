@@ -1589,7 +1589,7 @@ ${activeDoc.content}
                       <img 
                         src={img} 
                         alt="Upload preview" 
-                        style={{ width: '48px', height: '48px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} 
+                        className="chat-upload-preview-img"
                       />
                       <button
                         type="button"

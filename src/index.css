@@ -1306,7 +1306,8 @@ del.diff-deletion:hover {
 
 .layout-portrait .chat-panel {
   width: 100% !important;
-  height: 72px; /* Collapsed state fixed height */
+  height: auto; /* Allow dynamic growth for upload previews */
+  min-height: 72px; /* Collapsed state minimum height */
   flex-shrink: 0;
   transition: height var(--transition-md);
   border-top: 1px solid var(--border-color);
@@ -1604,11 +1605,25 @@ del.diff-deletion:hover {
 .chat-upload-previews {
   transition: all var(--transition-fast) ease-in-out;
 }
-.chat-upload-previews img {
+.chat-upload-preview-img {
+  width: 48px;
+  height: 48px;
+  border-radius: 4px;
+  object-fit: cover;
+  border: 1px solid var(--border-color);
   transition: transform var(--transition-fast);
 }
-.chat-upload-previews img:hover {
+.chat-upload-preview-img:hover {
   transform: scale(1.05);
+}
+
+.layout-portrait .chat-upload-preview-img {
+  width: 36px;
+  height: 36px;
+}
+.layout-portrait .chat-upload-previews {
+  padding: 6px 10px !important;
+  gap: 6px !important;
 }
 
 /* Chat bubble images styling */
