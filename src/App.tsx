@@ -12,7 +12,8 @@ import {
   RefreshCw,
   AlertCircle,
   Menu,
-  Paperclip
+  Paperclip,
+  X
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
@@ -52,7 +53,11 @@ function App() {
     clearChat,
     setMessages,
     isStreaming,
-    setStreaming
+    setStreaming,
+    customSystemPrompts,
+    activeSystemPromptId,
+    setActiveSystemPromptId,
+    debugMode
   } = useAppStore()
 
   // Local UI state
@@ -123,18 +128,23 @@ function App() {
               if (!filtered.includes(geminiConfig.model)) {
                 updateProviderConfig('gemini', { model: filtered[0] })
               }
+              setErrorMsg(null)
             } else {
               setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
+              setErrorMsg('No compatible generation models returned from Gemini API.')
             }
           } else {
             setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
+            setErrorMsg('Invalid model list response format from Gemini API.')
           }
         } else {
           setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
+          setErrorMsg(`Failed to load official Gemini models: ${res.status} ${res.statusText}. Using fallback models.`)
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error('Failed to fetch official Gemini models, using fallbacks', err)
         setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
+        setErrorMsg(`Failed to connect to Gemini API: ${err.message || err}. Using fallback models.`)
       } finally {
         setIsLoadingModels(false)
       }
@@ -243,7 +253,8 @@ function App() {
       .map(d => `- ${d.title}${d.id === activeDocumentId ? ' (Active / Editing Target)' : ''}`)
       .join('\n')
 
-    const customPromptText = geminiConfig.systemPrompt || ''
+    const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
+    const customPromptText = activePromptItem?.content || ''
 
     // Create system instruction prompt
     const systemPrompt: LLMMessage = {
@@ -301,7 +312,7 @@ ${activeDoc.content}
     try {
       await streamLLM(
         apiMessages,
-        { ...geminiConfig, provider: 'gemini' },
+        { ...geminiConfig, provider: 'gemini', debug: debugMode },
         {
           onChunk: (chunk: string) => {
             accumulatedTextRef.current += chunk
@@ -508,6 +519,23 @@ ${activeDoc.content}
             )}
           </div>
 
+          {/* System Prompt Selector Dropdown */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Prompt:</span>
+            <select 
+              className="select-styled" 
+              value={activeSystemPromptId} 
+              onChange={(e) => setActiveSystemPromptId(e.target.value)}
+              title="Select System Prompt Preset"
+            >
+              {customSystemPrompts.map(prompt => (
+                <option key={prompt.id} value={prompt.id}>
+                  {prompt.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {/* Settings Button */}
           <button 
             onClick={() => setIsSettingsOpen(true)} 
@@ -583,10 +611,22 @@ ${activeDoc.content}
               fontSize: '0.85rem',
               display: 'flex',
               alignItems: 'center',
+              justifyContent: 'space-between',
               gap: '0.5rem'
             }}>
-              <AlertCircle size={16} style={{ flexShrink: 0 }} />
-              <span>{errorMsg}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                <span>{errorMsg}</span>
+              </div>
+              <button 
+                onClick={() => setErrorMsg(null)} 
+                className="btn-icon" 
+                title="Dismiss error"
+                type="button"
+                style={{ padding: '2px', color: '#f87171' }}
+              >
+                <X size={14} />
+              </button>
             </div>
           )}
 
@@ -702,6 +742,8 @@ ${activeDoc.content}
       <SettingsModal 
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)} 
+        errorMsg={errorMsg}
+        setErrorMsg={setErrorMsg}
       />
     </div>
   )

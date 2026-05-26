@@ -9,6 +9,12 @@ export interface ProviderConfig {
   systemPrompt?: string
 }
 
+export interface SystemPromptTemplate {
+  id: string
+  name: string
+  content: string
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant'
@@ -50,6 +56,16 @@ interface AppState {
   updateProviderConfig: (provider: LLMProvider, config: Partial<ProviderConfig>) => void
   availableGeminiModels: string[]
   setAvailableGeminiModels: (models: string[]) => void
+  debugMode: boolean
+  setDebugMode: (enabled: boolean) => void
+
+  // System prompts list
+  customSystemPrompts: SystemPromptTemplate[]
+  activeSystemPromptId: string
+  setActiveSystemPromptId: (id: string) => void
+  addSystemPrompt: (name?: string, content?: string) => string
+  updateSystemPrompt: (id: string, updates: Partial<SystemPromptTemplate>) => void
+  deleteSystemPrompt: (id: string) => void
 
   // Chat state
   messages: ChatMessage[]
@@ -90,25 +106,21 @@ const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     apiKey: '',
     model: 'gpt-4o',
     baseUrl: 'https://api.openai.com/v1',
-    systemPrompt: '',
   },
   gemini: {
     apiKey: '',
     model: 'gemini-1.5-pro',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
-    systemPrompt: '',
   },
   anthropic: {
     apiKey: '',
     model: 'claude-3-5-sonnet',
     baseUrl: 'https://api.anthropic.com/v1',
-    systemPrompt: '',
   },
   ollama: {
     apiKey: 'ollama-no-key',
     model: 'llama3',
     baseUrl: 'http://localhost:11434/v1',
-    systemPrompt: '',
   },
 }
 
@@ -134,11 +146,72 @@ const MOCK_DOCUMENTS: CanvasDocument[] = [
   },
 ]
 
-const CURRENT_SETTINGS_VERSION = 1
+const CURRENT_SETTINGS_VERSION = 2
 
 interface VersionedCookieData<T> {
   version: number
   data: T
+}
+
+export const DEFAULT_SYSTEM_PROMPTS: SystemPromptTemplate[] = [
+  {
+    id: 'prompt-none',
+    name: 'General Assistant',
+    content: '',
+  },
+  {
+    id: 'prompt-academic',
+    name: 'Academic Style',
+    content: 'Write in a highly academic, formal, and rigorous tone. Use precise terminology and passive voice where appropriate for scientific style.',
+  },
+  {
+    id: 'prompt-concise',
+    name: 'Concise Editor',
+    content: 'Be extremely concise. Eliminate all unnecessary words, explanations, and redundant sentences. Focus on high information density.',
+  },
+  {
+    id: 'prompt-creative',
+    name: 'Creative Storyteller',
+    content: 'Emphasize narrative flow, engaging vocabulary, sensory details, and vivid imagery. Adapt tone to be highly expressive.',
+  }
+]
+
+const CURRENT_PROMPTS_VERSION = 1
+
+interface VersionedPromptsData {
+  version: number
+  prompts: SystemPromptTemplate[]
+  activePromptId: string
+}
+
+const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePromptId: string) => {
+  const envelope: VersionedPromptsData = {
+    version: CURRENT_PROMPTS_VERSION,
+    prompts,
+    activePromptId,
+  }
+  setCookie('__Secure-web_canvas_system_prompts', JSON.stringify(envelope))
+}
+
+const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
+  const saved = getCookie('__Secure-web_canvas_system_prompts')
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved)
+      if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
+        return {
+          prompts: parsed.prompts || DEFAULT_SYSTEM_PROMPTS,
+          activePromptId: parsed.activePromptId || 'prompt-none'
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse saved system prompts from cookie', e)
+    }
+  }
+  return {
+    prompts: DEFAULT_SYSTEM_PROMPTS,
+    activePromptId: 'prompt-none'
+  }
 }
 
 const saveConfigsToCookie = (configs: Record<LLMProvider, ProviderConfig>) => {
@@ -155,18 +228,34 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
     
     // Case 1: Legacy unversioned structure (direct Record<LLMProvider, ProviderConfig>)
     if (!parsed || typeof parsed !== 'object' || !('version' in parsed)) {
-      console.log('Migrating legacy (v0) LLM configs to v1')
+      console.log('Migrating legacy (v0) LLM configs to v2')
       const migratedData = { ...DEFAULT_CONFIGS }
       const rawData = parsed as any
+      let legacyPromptText = ''
       for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
         if (rawData && rawData[p]) {
           migratedData[p] = {
             ...DEFAULT_CONFIGS[p],
             ...rawData[p],
-            systemPrompt: rawData[p].systemPrompt || '',
           }
+          if (rawData[p].systemPrompt && !legacyPromptText) {
+            legacyPromptText = rawData[p].systemPrompt
+          }
+          // Clean up legacy prompt field
+          delete (migratedData[p] as any).systemPrompt
         }
       }
+
+      if (legacyPromptText && legacyPromptText.trim()) {
+        const importedId = `prompt-imported-${Date.now()}`
+        const importedPrompt: SystemPromptTemplate = {
+          id: importedId,
+          name: 'Imported Preset',
+          content: legacyPromptText,
+        }
+        saveSystemPromptsToCookie([...DEFAULT_SYSTEM_PROMPTS, importedPrompt], importedId)
+      }
+      
       // Save versioned cookie immediately
       saveConfigsToCookie(migratedData)
       return migratedData
@@ -177,11 +266,28 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
     let currentData = versioned.data
     let version = versioned.version
 
-    // Run migrations step-by-step
-    if (version < 1) {
-      version = 1
+    if (version === 1) {
+      console.log('Migrating version 1 LLM configs to v2')
+      let legacyPromptText = ''
+      for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
+        if (currentData[p] && (currentData[p] as any).systemPrompt) {
+          legacyPromptText = (currentData[p] as any).systemPrompt
+          // Clean up legacy prompt field
+          delete (currentData[p] as any).systemPrompt
+        }
+      }
+      if (legacyPromptText && legacyPromptText.trim()) {
+        const importedId = `prompt-imported-${Date.now()}`
+        const importedPrompt: SystemPromptTemplate = {
+          id: importedId,
+          name: 'Imported Preset',
+          content: legacyPromptText,
+        }
+        saveSystemPromptsToCookie([...DEFAULT_SYSTEM_PROMPTS, importedPrompt], importedId)
+      }
+      version = 2
     }
-    
+
     // Save back if version was updated during migration
     if (version !== versioned.version) {
       saveConfigsToCookie(currentData)
@@ -247,6 +353,8 @@ const loadSavedActiveDocId = (docs: CanvasDocument[]): string => {
 export const useAppStore = create<AppState>((set) => {
   const initialDocs = loadSavedDocuments()
   const initialActiveId = loadSavedActiveDocId(initialDocs)
+  const initialPromptsData = loadSavedSystemPromptsData()
+  const initialDebugMode = getCookie('__Secure-web_canvas_debug_mode') === 'true'
 
   return {
     // Theme state
@@ -382,6 +490,61 @@ export const useAppStore = create<AppState>((set) => {
         }
         saveConfigsToCookie(updatedConfigs)
         return { providerConfigs: updatedConfigs }
+      })
+    },
+    debugMode: initialDebugMode,
+    setDebugMode: (enabled) => {
+      setCookie('__Secure-web_canvas_debug_mode', String(enabled))
+      set({ debugMode: enabled })
+    },
+
+    // System prompts state
+    customSystemPrompts: initialPromptsData.prompts,
+    activeSystemPromptId: initialPromptsData.activePromptId,
+    setActiveSystemPromptId: (id) => {
+      set((state) => {
+        saveSystemPromptsToCookie(state.customSystemPrompts, id)
+        return { activeSystemPromptId: id }
+      })
+    },
+    addSystemPrompt: (name = 'New Preset', content = '') => {
+      const newPrompt: SystemPromptTemplate = {
+        id: `prompt-${Date.now()}`,
+        name,
+        content
+      }
+      let promptId = newPrompt.id
+      set((state) => {
+        const updated = [...state.customSystemPrompts, newPrompt]
+        saveSystemPromptsToCookie(updated, state.activeSystemPromptId)
+        return { customSystemPrompts: updated }
+      })
+      return promptId
+    },
+    updateSystemPrompt: (id, updates) => {
+      set((state) => {
+        const updated = state.customSystemPrompts.map((p) => {
+          if (p.id === id) {
+            return { ...p, ...updates }
+          }
+          return p
+        })
+        saveSystemPromptsToCookie(updated, state.activeSystemPromptId)
+        return { customSystemPrompts: updated }
+      })
+    },
+    deleteSystemPrompt: (id) => {
+      set((state) => {
+        const updated = state.customSystemPrompts.filter((p) => p.id !== id)
+        let activeId = state.activeSystemPromptId
+        if (state.activeSystemPromptId === id) {
+          activeId = updated[0]?.id || 'prompt-none'
+        }
+        saveSystemPromptsToCookie(updated, activeId)
+        return { 
+          customSystemPrompts: updated,
+          activeSystemPromptId: activeId
+        }
       })
     },
 

@@ -381,5 +381,6 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Project kick-off | Initial principles established |
 | 2026-05-25 | Created separate feature spec for multi-document references | Registered separate document [multi_document_references.md](file:///home/hongdp/Workspace/web_canvas/docs/features/multi_document_references.md) to detail chapter outline and context loading. |
 | 2026-05-25 | Custom System Prompt & Cookie Settings Migration | Added systemPrompt field and UI inputs to allow user-defined instructions, and migrated user preferences/configurations to client-side __Secure- cookies. |
-
-
+| 2026-05-25 | Multiple System Prompts & Selector Manager | Added global SystemPromptTemplate presets, header selector dropdown, settings modal preset editor card manager, and upgraded providers configuration cookie schema to version 2 with automated backward-compatible migrations. |
+| 2026-05-25 | Dismissible UI API Error Alerts | Upgraded dynamic model fetch effect to catch and report connection/auth errors to local state, added dismiss button (X) to main error banner, and integrated a dismissible alert inside the Settings Modal to warn users about key/network issues. |
+| 2026-05-25 | LLM Debug Mode & Credential Masking | Implemented a developer toggle in Settings to console-log raw LLM API requests and responses, with robust credential masking filters matching secure coding principles. |

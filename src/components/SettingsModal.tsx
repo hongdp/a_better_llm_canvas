@@ -1,23 +1,31 @@
 import React from 'react'
-import { X, Key, Shield, HelpCircle, Save } from 'lucide-react'
+import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 
 interface SettingsModalProps {
   isOpen: boolean
   onClose: () => void
+  errorMsg?: string | null
+  setErrorMsg?: (msg: string | null) => void
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, errorMsg, setErrorMsg }) => {
   const { 
     providerConfigs, 
-    updateProviderConfig 
+    updateProviderConfig,
+    customSystemPrompts,
+    addSystemPrompt,
+    updateSystemPrompt,
+    deleteSystemPrompt,
+    debugMode,
+    setDebugMode
   } = useAppStore()
 
   if (!isOpen) return null
 
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'systemPrompt', value: string) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl', value: string) => {
     updateProviderConfig('gemini', { [field]: value })
   }
 
@@ -30,6 +38,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           border: '1px solid var(--border-color)',
           backgroundColor: 'var(--bg-secondary)',
           color: 'var(--text-primary)',
+          maxWidth: '560px'
         }}
       >
         <div className="modal-header">
@@ -42,7 +51,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
           </button>
         </div>
 
-        <div className="modal-body">
+        <div className="modal-body" style={{ maxHeight: '55vh', overflowY: 'auto', paddingRight: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+          {/* Error Alert Display */}
+          {errorMsg && (
+            <div style={{
+              padding: '0.75rem',
+              borderRadius: '8px',
+              backgroundColor: 'rgba(239, 68, 68, 0.15)',
+              border: '1px solid rgba(239, 68, 68, 0.3)',
+              color: '#f87171',
+              fontSize: '0.85rem',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '0.5rem'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                <span>{errorMsg}</span>
+              </div>
+              <button 
+                onClick={() => setErrorMsg?.(null)} 
+                className="btn-icon" 
+                title="Dismiss error"
+                type="button"
+                style={{ padding: '2px', color: '#f87171' }}
+              >
+                <X size={14} />
+              </button>
+            </div>
+          )}
+
           {/* API Key Input */}
           <div className="form-group">
             <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
@@ -71,18 +110,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
             />
           </div>
 
-          {/* System Prompt / Custom Instructions */}
-          <div className="form-group">
-            <label htmlFor="system-prompt-input">System Prompt / Custom Instructions</label>
-            <textarea
-              id="system-prompt-input"
-              value={geminiConfig.systemPrompt || ''}
-              onChange={(e) => handleConfigChange('systemPrompt', e.target.value)}
-              placeholder="e.g. Write in a formal tone. Use concise explanations. Focus on readability..."
-              className="form-input"
-              rows={4}
-              style={{ resize: 'vertical' }}
+          {/* Debug Mode Checkbox */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+            <input 
+              id="debug-mode-checkbox"
+              type="checkbox"
+              checked={debugMode}
+              onChange={(e) => setDebugMode(e.target.checked)}
+              style={{
+                width: '16px',
+                height: '16px',
+                accentColor: 'var(--accent)',
+                cursor: 'pointer'
+              }}
             />
+            <label 
+              htmlFor="debug-mode-checkbox"
+              style={{
+                fontSize: '0.85rem',
+                fontWeight: 600,
+                color: 'var(--text-secondary)',
+                cursor: 'pointer',
+                userSelect: 'none'
+              }}
+            >
+              Enable Debug Mode (logs request/response in console)
+            </label>
           </div>
 
           {/* Help Info Box */}
@@ -110,6 +163,75 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               </a>
               . The default base URL is <code>https://generativelanguage.googleapis.com/v1beta</code>.
             </span>
+          </div>
+
+          {/* Presets Management Header */}
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+              <Edit size={16} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-secondary)' }}>System Prompt Presets</span>
+            </div>
+            <button 
+              onClick={() => addSystemPrompt('New Preset', '')}
+              className="btn-icon" 
+              title="Add New Preset"
+              type="button"
+              style={{ padding: '4px', borderRadius: '4px', backgroundColor: 'var(--bg-tertiary)', color: 'var(--accent)' }}
+            >
+              <Plus size={16} />
+            </button>
+          </div>
+
+          {/* Presets Management List */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {customSystemPrompts.map((prompt) => (
+              <div 
+                key={prompt.id} 
+                style={{
+                  padding: '0.75rem',
+                  borderRadius: '8px',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  border: '1px solid var(--border-color)',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '0.5rem'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <input
+                    type="text"
+                    value={prompt.name}
+                    onChange={(e) => updateSystemPrompt(prompt.id, { name: e.target.value })}
+                    placeholder="Preset Name..."
+                    className="form-input"
+                    style={{ flex: 1, fontWeight: 600, padding: '0.35rem 0.6rem', fontSize: '0.85rem' }}
+                  />
+                  
+                  <button 
+                    onClick={() => deleteSystemPrompt(prompt.id)}
+                    className="btn-icon" 
+                    title="Delete Preset"
+                    type="button"
+                    disabled={customSystemPrompts.length <= 1}
+                    style={{ 
+                      color: customSystemPrompts.length <= 1 ? 'var(--text-muted)' : 'var(--text-secondary)',
+                      cursor: customSystemPrompts.length <= 1 ? 'default' : 'pointer'
+                    }}
+                  >
+                    <Trash2 size={16} />
+                  </button>
+                </div>
+                
+                <textarea
+                  value={prompt.content}
+                  onChange={(e) => updateSystemPrompt(prompt.id, { content: e.target.value })}
+                  placeholder="System instruction contents..."
+                  className="form-input"
+                  rows={3}
+                  style={{ resize: 'vertical', width: '100%', fontSize: '0.85rem', padding: '0.4rem 0.6rem', fontFamily: 'inherit' }}
+                />
+              </div>
+            ))}
           </div>
         </div>
 

@@ -12,14 +12,54 @@ export interface StreamCallbacks {
 }
 
 /**
+ * Mask sensitive credentials inside requests for safe debug logging.
+ */
+function maskRequestDetails(url: string, headers: Record<string, string>, body: any) {
+  const maskedHeaders = { ...headers }
+  if (maskedHeaders['Authorization']) {
+    maskedHeaders['Authorization'] = 'Bearer ***'
+  }
+  if (maskedHeaders['x-api-key']) {
+    maskedHeaders['x-api-key'] = '***'
+  }
+  const maskedUrl = url.replace(/key=[^&]+/, 'key=***')
+  return {
+    url: maskedUrl,
+    headers: maskedHeaders,
+    body: typeof body === 'string' ? JSON.parse(body) : body
+  }
+}
+
+/**
  * Normalizes messages and streams responses from the configured LLM provider.
  */
 export async function streamLLM(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string },
+  config: ProviderConfig & { provider: string; debug?: boolean },
   callbacks: StreamCallbacks
 ): Promise<void> {
-  const { provider, apiKey } = config
+  const { provider, apiKey, debug } = config
+
+  const debugCallbacks: StreamCallbacks = {
+    onChunk: (chunk: string) => {
+      if (debug) {
+        console.log('[DEBUG] Incoming LLM Chunk:', chunk)
+      }
+      callbacks.onChunk(chunk)
+    },
+    onDone: (fullText: string) => {
+      if (debug) {
+        console.log('[DEBUG] LLM Stream Completed. Full Response Text:', fullText)
+      }
+      callbacks.onDone(fullText)
+    },
+    onError: (err: Error) => {
+      if (debug) {
+        console.error('[DEBUG] LLM Stream Error:', err)
+      }
+      callbacks.onError(err)
+    }
+  }
 
   try {
     if (!apiKey && provider !== 'ollama') {
@@ -27,11 +67,11 @@ export async function streamLLM(
     }
 
     if (provider === 'openai' || provider === 'ollama') {
-      await streamOpenAI(messages, config, callbacks)
+      await streamOpenAI(messages, config, debugCallbacks)
     } else if (provider === 'gemini') {
-      await streamGemini(messages, config, callbacks)
+      await streamGemini(messages, config, debugCallbacks)
     } else if (provider === 'anthropic') {
-      await streamAnthropic(messages, config, callbacks)
+      await streamAnthropic(messages, config, debugCallbacks)
     } else {
       throw new Error(`Unsupported LLM provider: ${provider}`)
     }
@@ -45,7 +85,7 @@ export async function streamLLM(
  */
 async function streamOpenAI(
   messages: LLMMessage[],
-  config: ProviderConfig,
+  config: ProviderConfig & { debug?: boolean },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const headers: Record<string, string> = {
@@ -56,14 +96,21 @@ async function streamOpenAI(
     headers['Authorization'] = `Bearer ${config.apiKey}`
   }
 
-  const response = await fetch(`${config.baseUrl}/chat/completions`, {
+  const url = `${config.baseUrl}/chat/completions`
+  const body = {
+    model: config.model,
+    messages: messages,
+    stream: true,
+  }
+
+  if (config.debug) {
+    console.log('[DEBUG] Outgoing OpenAI Request:', maskRequestDetails(url, headers, body))
+  }
+
+  const response = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({
-      model: config.model,
-      messages: messages,
-      stream: true,
-    }),
+    body: JSON.stringify(body),
   })
 
   if (!response.ok) {
@@ -90,7 +137,7 @@ async function streamOpenAI(
  */
 async function streamGemini(
   messages: LLMMessage[],
-  config: ProviderConfig,
+  config: ProviderConfig & { debug?: boolean },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
@@ -115,6 +162,10 @@ async function streamGemini(
   const modelName = config.model.startsWith('models/') ? config.model.slice(7) : config.model
   const url = `${config.baseUrl}/models/${modelName}:streamGenerateContent?key=${config.apiKey}`
   
+  if (config.debug) {
+    console.log('[DEBUG] Outgoing Gemini Request:', maskRequestDetails(url, { 'Content-Type': 'application/json' }, body))
+  }
+
   const response = await fetch(url, {
     method: 'POST',
     headers: {
@@ -200,7 +251,7 @@ async function streamGemini(
  */
 async function streamAnthropic(
   messages: LLMMessage[],
-  config: ProviderConfig,
+  config: ProviderConfig & { debug?: boolean },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
@@ -215,13 +266,20 @@ async function streamAnthropic(
     body['system'] = systemMessage.content
   }
 
-  const response = await fetch(`${config.baseUrl}/messages`, {
+  const url = `${config.baseUrl}/messages`
+  const headers = {
+    'Content-Type': 'application/json',
+    'x-api-key': config.apiKey,
+    'anthropic-version': '2023-06-01',
+  }
+
+  if (config.debug) {
+    console.log('[DEBUG] Outgoing Anthropic Request:', maskRequestDetails(url, headers, body))
+  }
+
+  const response = await fetch(url, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-api-key': config.apiKey,
-      'anthropic-version': '2023-06-01',
-    },
+    headers,
     body: JSON.stringify(body),
   })
 
