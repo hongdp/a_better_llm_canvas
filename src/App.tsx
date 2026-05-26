@@ -236,6 +236,13 @@ function App() {
     const intervalId = setInterval(async () => {
       try {
         const res = await fetch('/api/storage')
+        if (res.status === 401) {
+          clearInterval(intervalId)
+          useAppStore.setState({ user: null })
+          alert('You have been logged out because another session has started on the server.')
+          window.location.reload()
+          return
+        }
         if (res.ok) {
           const serverData = await res.json()
           if (serverData && typeof serverData === 'object' && Object.keys(serverData).length > 0) {

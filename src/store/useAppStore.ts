@@ -1085,6 +1085,12 @@ export const useAppStore = create<AppState>((set) => {
             set({ syncStatus: 'in-sync' })
           }
         } else {
+          if (res.status === 401) {
+            useAppStore.setState({ user: null })
+            alert('You have been logged out because another session has started on the server.')
+            window.location.reload()
+            return
+          }
           set({ syncStatus: 'unknown' })
         }
       } catch (e) {
@@ -1119,6 +1125,12 @@ export const useAppStore = create<AppState>((set) => {
         if (res.ok) {
           set({ syncStatus: 'in-sync' })
         } else {
+          if (res.status === 401) {
+            useAppStore.setState({ user: null })
+            alert('You have been logged out because another session has started on the server.')
+            window.location.reload()
+            return
+          }
           set({ syncStatus: 'unknown' })
         }
       } catch (e) {
@@ -1181,6 +1193,12 @@ export const useAppStore = create<AppState>((set) => {
             set({ syncStatus: 'in-sync' })
           }
         } else {
+          if (res.status === 401) {
+            useAppStore.setState({ user: null })
+            alert('You have been logged out because another session has started on the server.')
+            window.location.reload()
+            return
+          }
           set({ syncStatus: 'unknown' })
         }
       } catch (e) {
@@ -1404,7 +1422,7 @@ useAppStore.subscribe((state) => {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
     try {
-      await fetch('/api/storage', {
+      const res = await fetch('/api/storage', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',
@@ -1424,6 +1442,11 @@ useAppStore.subscribe((state) => {
           debugMode: state.debugMode
         })
       })
+      if (res.status === 401) {
+        useAppStore.setState({ user: null })
+        alert('You have been logged out because another session has started on the server.')
+        window.location.reload()
+      }
     } catch {
       // Server storage API not running
     }

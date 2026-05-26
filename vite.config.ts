@@ -185,6 +185,11 @@ function storagePlugin() {
             const expiresAt = new Date()
             expiresAt.setDate(expiresAt.getDate() + 7) // 7 days
 
+            // Invalidate all other active sessions globally to ensure only one user is logged in
+            for (const key of Object.keys(sessions)) {
+              delete sessions[key]
+            }
+
             sessions[sessionId] = { username, expiresAt: expiresAt.toISOString() }
             saveJSONFile(sessionsFile, sessions)
 
