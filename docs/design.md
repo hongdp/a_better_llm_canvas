@@ -134,7 +134,7 @@ Click "Restore" → Document reverts to that version
 | State management | Single source of truth for current document content |
 | Persistence | Auto-save to `localStorage`; export to file |
 | Serialization | Convert between editor model ↔ Markdown ↔ plain text |
-| Multi-document | Tab-based interface for multiple documents (v1: single doc is fine) |
+| Multi-document | Collapsible vertical Chapters sidebar for multi-chapter writing (see [Feature Specification](file:///home/hongdp/Workspace/web_canvas/docs/features/multi_document_references.md)) |
 
 #### 3.2.5 Version / History Manager
 | Responsibility | Details |
@@ -317,10 +317,10 @@ For documents exceeding the model's context window:
 - [x] Dark/light theme with CSS variables
 
 ### M2 — LLM Integration (Week 2)
-- [ ] Provider abstraction layer
-- [ ] OpenAI provider implementation (streaming)
-- [ ] Chat message flow: user input → LLM → streamed response in chat
-- [ ] Document editing: LLM output replaces / appends to canvas content
+- [x] Provider abstraction layer
+- [x] OpenAI provider implementation (streaming)
+- [x] Chat message flow: user input → LLM → streamed response in chat
+- [x] Document editing: LLM output replaces / appends to canvas content
 
 ### M3 — Inline Editing (Week 3)
 - [ ] Selection-aware prompting (send selected text as context)
@@ -379,4 +379,5 @@ Record significant design decisions here as the project evolves.
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-05-25 | Project kick-off | Initial principles established |
+| 2026-05-25 | Created separate feature spec for multi-document references | Registered separate document [multi_document_references.md](file:///home/hongdp/Workspace/web_canvas/docs/features/multi_document_references.md) to detail chapter outline and context loading. |
 

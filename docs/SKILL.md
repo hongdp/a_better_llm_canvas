@@ -51,11 +51,7 @@ experience of the document over the chat experience.
   server is required for v1.
 - **Component-based UI**: Use a modern component framework. Keep components small,
   focused, and composable.
-- **State management**: A single source of truth for:
-  - Document content (current state + history)
-  - Chat messages
-  - LLM request/response lifecycle
-  - UI state (panel layout, selection, active tool)
+- **State management**: A single source of truth for document content, chat messages, and streaming lifecycle. Note: Asynchronous stream callbacks must query the fresh store state dynamically (e.g., `useAppStore.getState().messages`) rather than closing over local variable snapshots to prevent stale closure bugs.
 
 ### 2.2 Document Engine
 - Use a battle-tested rich-text editing library (e.g., TipTap / ProseMirror,
@@ -64,6 +60,7 @@ experience of the document over the chat experience.
   - **Operational transforms or CRDTs** for future collaborative editing.
   - **Structured diffs** so LLM edits can be shown as additions/deletions.
   - **Serialization** to Markdown and plain text for LLM prompt construction.
+- **TipTap Sync Hook**: TipTap only reads content once on mount. To synchronize programmatically updated content (e.g., LLM streams), implement a `useEffect` hook that checks for updates and calls `editor.commands.setContent(content, { emitUpdate: false })` to avoid loop recursion.
 
 ### 2.3 LLM Integration
 - **Provider-agnostic**: Abstract the LLM API behind a provider interface.
@@ -75,6 +72,8 @@ experience of the document over the chat experience.
   context, instruction) behind the scenes.
 - **Context windowing**: For long documents, send only relevant sections (around
   the selection or the full document if small enough), not the entire history.
+- **Canvas Markup Protocol**: Restructure streaming data separating conversational response text from document updates using XML-like blocks. The LLM wraps document updates inside `<canvas>...</canvas>` blocks, which the frontend extracts to stream directly to the editor canvas while routing outer text to the chat.
+- **Dynamic Model Discovery**: Fetch available models dynamically via Google's ListModels API or provider configuration endpoints when the API key is set, falling back to static offline model lists if configuration is missing.
 
 ### 2.4 Code Quality
 - TypeScript everywhere. No `any` types except at API boundaries with explicit
@@ -138,6 +137,9 @@ experience of the document over the chat experience.
 - `main` is always deployable.
 - Feature branches named `feat/<short-description>`.
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`.
+- **Pre-commit Verification**: Always execute comprehensive testing and compilation validation (e.g., run `npx tsc --noEmit` and build verification) **before** committing changes to ensure no broken code enters the branch history.
+- **User Approval**: Never perform git commits unless explicit instruction or approval is obtained from the user.
+- **Pre-commit Security Check**: Always perform a careful security scan (e.g., check `git diff` or staged files) **before** committing to ensure no private information, API keys, or local deployment configurations are accidentally staged or checked in.
 
 ### 4.2 Review Checklist
 Before merging any feature:
@@ -146,6 +148,11 @@ Before merging any feature:
 - [ ] Are LLM edits reviewable and reversible?
 - [ ] Does it work in both light and dark mode?
 - [ ] Are there no regressions in existing E2E tests?
+
+### 4.3 Documentation Rules
+- Every separate design or feature specification document created must be registered in the **Decision Log** inside the main design document ([design.md](file:///home/hongdp/Workspace/web_canvas/docs/design.md#L375)) to maintain clear traceability.
+- Always ensure all related design documents, feature specifications, and Decision Log entries are fully updated **before** committing changes or concluding a phase of work.
+
 
 
 
