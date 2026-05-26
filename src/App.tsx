@@ -13,7 +13,8 @@ import {
   AlertCircle,
   Menu,
   Paperclip,
-  X
+  X,
+  Save
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
@@ -98,6 +99,46 @@ function App() {
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [availableGrokModels, setAvailableGrokModels] = useState<string[]>(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
   const [storageSize, setStorageSize] = useState('0.00 KB')
+
+  // Save status state
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'unsaved'>('saved')
+  const saveTimeoutRef = useRef<number | null>(null)
+
+  const triggerUnsaved = () => {
+    setSaveStatus('unsaved')
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+    }
+    saveTimeoutRef.current = window.setTimeout(() => {
+      setSaveStatus('saved')
+    }, 1500)
+  }
+
+  const forceSave = () => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = null
+    }
+    setSaveStatus('saved')
+  }
+
+  // Clear timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) {
+        clearTimeout(saveTimeoutRef.current)
+      }
+    }
+  }, [])
+
+  // Clear timeout and reset to saved when active document changes
+  useEffect(() => {
+    if (saveTimeoutRef.current) {
+      clearTimeout(saveTimeoutRef.current)
+      saveTimeoutRef.current = null
+    }
+    setSaveStatus('saved')
+  }, [activeDocumentId])
 
   // Calculate total localStorage usage in bytes, then format to KB
   const updateStorageSize = () => {
@@ -492,6 +533,7 @@ ${activeDoc.content}
             // Update document in real-time with raw text stream
             if (canvasText.trim()) {
               updateActiveDocument({ content: canvasText })
+              setSaveStatus('unsaved')
             }
           },
           onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
@@ -554,6 +596,7 @@ ${activeDoc.content}
               const diffed = diffHtml(originalDocContent, finalCanvasText)
               updateActiveDocument({ content: diffed })
             }
+            forceSave()
           },
           onError: (err: Error) => {
             setStreaming(false)
@@ -578,6 +621,7 @@ ${activeDoc.content}
 
             // Revert document to original state before the edit attempt if error occurs
             updateActiveDocument({ content: originalDocContent })
+            forceSave()
           }
         }
       )
@@ -627,6 +671,7 @@ ${activeDoc.content}
         .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '')
       updateActiveDocument({ content: cleaned })
     }
+    triggerUnsaved()
   }
 
   // Reject all additions and restore all deleted text in active document
@@ -667,6 +712,7 @@ ${activeDoc.content}
         .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '$1')
       updateActiveDocument({ content: cleaned })
     }
+    triggerUnsaved()
   }
 
   // Route editor selection quick action toolbar commands to LLM
@@ -1098,7 +1144,10 @@ ${activeDoc.content}
                   <input
                     type="text"
                     value={activeDoc.title}
-                    onChange={e => updateActiveDocument({ title: e.target.value })}
+                    onChange={e => {
+                      triggerUnsaved()
+                      updateActiveDocument({ title: e.target.value })
+                    }}
                     className="canvas-title-input"
                     placeholder="Untitled Document"
                     title="Document Title"
@@ -1106,6 +1155,28 @@ ${activeDoc.content}
                 </div>
                 
                 <div className="canvas-actions">
+                  {/* Save Status Button */}
+                  <button
+                    onClick={() => {
+                      if (saveStatus === 'unsaved') {
+                        forceSave()
+                      }
+                    }}
+                    className={`btn-icon ${saveStatus === 'unsaved' ? 'is-dirty' : ''}`}
+                    title={saveStatus === 'unsaved' ? 'Unsaved changes (click to save now)' : 'All changes saved to local storage'}
+                    type="button"
+                    style={{
+                      color: saveStatus === 'unsaved' ? 'var(--accent)' : '#10b981',
+                      cursor: saveStatus === 'unsaved' ? 'pointer' : 'default',
+                    }}
+                  >
+                    {saveStatus === 'unsaved' ? (
+                      <RefreshCw size={18} className="animate-spin" />
+                    ) : (
+                      <Save size={18} />
+                    )}
+                  </button>
+
                   <button 
                     onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
                     className={`btn-icon ${isHistoryOpen ? 'active' : ''}`} 
@@ -1246,6 +1317,7 @@ ${activeDoc.content}
                 <Editor 
                   content={activeDoc.content} 
                   onChange={(html) => {
+                    triggerUnsaved()
                     const updates: Partial<CanvasDocument> = { content: html }
                     
                     // Sync title if the document starts with an <h1> tag
