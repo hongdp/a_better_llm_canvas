@@ -22,6 +22,7 @@ import { useAppStore } from './store/useAppStore'
 import { streamLLM } from './services/llm'
 import type { LLMMessage } from './services/llm'
 import { diffHtml } from './utils/diff'
+import { htmlToMarkdown, htmlToPlainText } from './utils/convert'
 
 // Fallback standard Gemini models
 const FALLBACK_GEMINI_MODELS = [
@@ -75,7 +76,11 @@ function App() {
     sessionCacheHitTokens,
     sessionCacheMissTokens,
     addSessionTokens,
-    resetSessionTokens
+    resetSessionTokens,
+    versions,
+    createVersionSnapshot,
+    restoreVersion,
+    deleteVersionSnapshot
   } = useAppStore()
 
   // Local UI state
@@ -83,6 +88,10 @@ function App() {
   const [chatWidth, setChatWidth] = useState(380)
   const [isResizing, setIsResizing] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const [activeMobileTab, setActiveMobileTab] = useState<'chat' | 'editor'>('editor')
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [availableGrokModels, setAvailableGrokModels] = useState<string[]>(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
@@ -100,10 +109,35 @@ function App() {
     setStorageSize((total / 1024).toFixed(2) + ' KB')
   }
 
-  // Update storage usage when documents, theme or LLM configurations change
+  // Update storage usage when documents, versions, theme or LLM configurations change
   useEffect(() => {
     updateStorageSize()
-  }, [documents, theme, providerConfigs])
+  }, [documents, versions, theme, providerConfigs])
+
+  // Track window size for mobile responsive layouts
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768)
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [])
+
+  // Dismiss export dropdown on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      const target = e.target as HTMLElement
+      if (!target.closest('#export-dropdown-trigger')) {
+        setIsExportDropdownOpen(false)
+      }
+    }
+    if (isExportDropdownOpen) {
+      window.addEventListener('click', handleOutsideClick)
+    }
+    return () => {
+      window.removeEventListener('click', handleOutsideClick)
+    }
+  }, [isExportDropdownOpen])
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const isResizingRef = useRef(false)
@@ -278,6 +312,9 @@ function App() {
 
     setErrorMsg(null)
     const originalDocContent = activeDoc.content
+    
+    // Create an auto-save snapshot before LLM modifications
+    createVersionSnapshot(`Auto-save before: "${promptText.substring(0, 30)}${promptText.length > 30 ? '...' : ''}"`)
     
     if (!customPrompt) {
       setChatInput('')
@@ -661,10 +698,17 @@ ${activeDoc.content}
     setTheme(theme === 'dark' ? 'light' : 'dark')
   }
 
-  // Download document as HTML
-  const handleDownloadDoc = () => {
+  // Export document handler
+  const handleExport = (format: 'html' | 'markdown' | 'txt') => {
     const element = document.createElement("a")
-    const styledHtml = `<!DOCTYPE html>
+    let content = ''
+    let filename = ''
+    let mimeType = ''
+    
+    const baseFilename = activeDoc.title.toLowerCase().replace(/\s+/g, '-')
+
+    if (format === 'html') {
+      content = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -681,9 +725,21 @@ ${activeDoc.content}
   ${activeDoc.content}
 </body>
 </html>`
-    const file = new Blob([styledHtml], {type: 'text/html'})
+      filename = `${baseFilename}.html`
+      mimeType = 'text/html'
+    } else if (format === 'markdown') {
+      content = htmlToMarkdown(activeDoc.content)
+      filename = `${baseFilename}.md`
+      mimeType = 'text/markdown'
+    } else {
+      content = htmlToPlainText(activeDoc.content)
+      filename = `${baseFilename}.txt`
+      mimeType = 'text/plain'
+    }
+
+    const file = new Blob([content], { type: mimeType })
     element.href = URL.createObjectURL(file)
-    element.download = `${activeDoc.title.toLowerCase().replace(/\s+/g, '-')}.html`
+    element.download = filename
     document.body.appendChild(element)
     element.click()
     document.body.removeChild(element)
@@ -816,219 +872,373 @@ ${activeDoc.content}
         </div>
       </header>
 
+      {/* Mobile Tab Switcher */}
+      {isMobile && (
+        <div className="mobile-tabs-bar">
+          <button 
+            onClick={() => setActiveMobileTab('chat')} 
+            className={`mobile-tab-btn ${activeMobileTab === 'chat' ? 'active' : ''}`}
+            type="button"
+          >
+            Assistant Chat
+          </button>
+          <button 
+            onClick={() => setActiveMobileTab('editor')} 
+            className={`mobile-tab-btn ${activeMobileTab === 'editor' ? 'active' : ''}`}
+            type="button"
+          >
+            Document Editor
+          </button>
+        </div>
+      )}
+
       {/* Main split work area */}
       <main className="app-main">
         {/* Chapters Left Sidebar */}
         <ChaptersSidebar />
 
         {/* Resizable Chat Panel */}
-        <section 
-          className="chat-panel" 
-          style={{ width: `${chatWidth}px` }}
-        >
-          <div className="chat-header">
-            <h2>Assistant Chat ({getProviderLabel(activeProvider)})</h2>
-            <button 
-              onClick={handleClearChat} 
-              className="btn-icon" 
-              title="Clear chat history"
-              type="button"
-            >
-              <Trash2 size={16} />
-            </button>
-          </div>
+        {(!isMobile || activeMobileTab === 'chat') && (
+          <section 
+            className="chat-panel" 
+            style={{ width: isMobile ? '100%' : `${chatWidth}px` }}
+          >
+            <div className="chat-header">
+              <h2>Assistant Chat ({getProviderLabel(activeProvider)})</h2>
+              <button 
+                onClick={handleClearChat} 
+                className="btn-icon" 
+                title="Clear chat history"
+                type="button"
+              >
+                <Trash2 size={16} />
+              </button>
+            </div>
 
-          <div className="chat-messages">
-            {messages.map(msg => (
-              <div key={msg.id} className={`chat-message ${msg.role}`}>
-                <div className="chat-message-bubble">
-                  {msg.content}
+            <div className="chat-messages">
+              {messages.map(msg => (
+                <div key={msg.id} className={`chat-message ${msg.role}`}>
+                  <div className="chat-message-bubble">
+                    {msg.content}
+                  </div>
+                  <span className="chat-message-info">
+                    {getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
-                <span className="chat-message-info">
-                  {getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                </span>
-              </div>
-            ))}
-            {isStreaming && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                <RefreshCw size={12} className="animate-spin" />
-                <span>{getProviderLabel(activeProvider)} is streaming changes...</span>
+              ))}
+              {isStreaming && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                  <RefreshCw size={12} className="animate-spin" />
+                  <span>{getProviderLabel(activeProvider)} is streaming changes...</span>
+                </div>
+              )}
+              <div ref={chatEndRef} />
+            </div>
+
+            {errorMsg && (
+              <div style={{
+                margin: '0.75rem',
+                padding: '0.75rem',
+                borderRadius: '8px',
+                backgroundColor: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#f87171',
+                fontSize: '0.85rem',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                gap: '0.5rem'
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
+                  <span>{errorMsg}</span>
+                </div>
+                <button 
+                  onClick={() => setErrorMsg(null)} 
+                  className="btn-icon" 
+                  title="Dismiss error"
+                  type="button"
+                  style={{ padding: '2px', color: '#f87171' }}
+                >
+                  <X size={14} />
+                </button>
               </div>
             )}
-            <div ref={chatEndRef} />
-          </div>
 
-          {errorMsg && (
-            <div style={{
-              margin: '0.75rem',
-              padding: '0.75rem',
-              borderRadius: '8px',
-              backgroundColor: 'rgba(239, 68, 68, 0.15)',
-              border: '1px solid rgba(239, 68, 68, 0.3)',
-              color: '#f87171',
-              fontSize: '0.85rem',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              gap: '0.5rem'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <AlertCircle size={16} style={{ flexShrink: 0 }} />
-                <span>{errorMsg}</span>
+            {/* Reference Document Context Attach Bar */}
+            {documents.length > 1 && (
+              <div className="reference-selector-bar">
+                <span className="reference-title-label">
+                  <Paperclip size={10} /> Reference Context (Optional):
+                </span>
+                {documents
+                  .filter(doc => doc.id !== activeDocumentId)
+                  .map(doc => {
+                    const isSelected = selectedReferenceIds.includes(doc.id)
+                    return (
+                      <button
+                        key={doc.id}
+                        onClick={() => toggleReference(doc.id)}
+                        className={`reference-tag ${isSelected ? 'active' : ''}`}
+                        disabled={isStreaming}
+                        type="button"
+                      >
+                        {doc.title}
+                      </button>
+                    )
+                  })
+                }
               </div>
-              <button 
-                onClick={() => setErrorMsg(null)} 
-                className="btn-icon" 
-                title="Dismiss error"
-                type="button"
-                style={{ padding: '2px', color: '#f87171' }}
-              >
-                <X size={14} />
-              </button>
-            </div>
-          )}
+            )}
 
-          {/* Reference Document Context Attach Bar */}
-          {documents.length > 1 && (
-            <div className="reference-selector-bar">
-              <span className="reference-title-label">
-                <Paperclip size={10} /> Reference Context (Optional):
-              </span>
-              {documents
-                .filter(doc => doc.id !== activeDocumentId)
-                .map(doc => {
-                  const isSelected = selectedReferenceIds.includes(doc.id)
-                  return (
-                    <button
-                      key={doc.id}
-                      onClick={() => toggleReference(doc.id)}
-                      className={`reference-tag ${isSelected ? 'active' : ''}`}
-                      disabled={isStreaming}
-                      type="button"
-                    >
-                      {doc.title}
-                    </button>
-                  )
-                })
-              }
-            </div>
-          )}
-
-          <form onSubmit={handleSendMessage} className="chat-input-container">
-            <div className="chat-input-wrapper">
-              <textarea
-                value={chatInput}
-                onChange={e => setChatInput(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    handleSendMessage()
-                  }
-                }}
-                placeholder={`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
-                className="chat-textarea"
-                rows={1}
-                disabled={isStreaming}
-              />
-              <button 
-                type="submit" 
-                className="btn-icon" 
-                title="Send instruction"
-                disabled={!chatInput.trim() || isStreaming}
-                style={{ 
-                  color: chatInput.trim() && !isStreaming ? 'var(--accent)' : 'var(--text-muted)',
-                  cursor: chatInput.trim() && !isStreaming ? 'pointer' : 'default'
-                }}
-              >
-                <Send size={18} />
-              </button>
-            </div>
-          </form>
-        </section>
+            <form onSubmit={handleSendMessage} className="chat-input-container">
+              <div className="chat-input-wrapper">
+                <textarea
+                  value={chatInput}
+                  onChange={e => setChatInput(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      handleSendMessage()
+                    }
+                  }}
+                  placeholder={`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
+                  className="chat-textarea"
+                  rows={1}
+                  disabled={isStreaming}
+                />
+                <button 
+                  type="submit" 
+                  className="btn-icon" 
+                  title="Send instruction"
+                  disabled={!chatInput.trim() || isStreaming}
+                  style={{ 
+                    color: chatInput.trim() && !isStreaming ? 'var(--accent)' : 'var(--text-muted)',
+                    cursor: chatInput.trim() && !isStreaming ? 'pointer' : 'default'
+                  }}
+                >
+                  <Send size={18} />
+                </button>
+              </div>
+            </form>
+          </section>
+        )}
 
         {/* Resizing Divider Gutter */}
-        <div 
-          className={`resize-handle ${isResizing ? 'active' : ''}`}
-          onMouseDown={startResizing}
-        />
+        {!isMobile && (
+          <div 
+            className={`resize-handle ${isResizing ? 'active' : ''}`}
+            onMouseDown={startResizing}
+          />
+        )}
 
         {/* Right Side: Document Canvas Panel */}
-        <section className="canvas-panel">
-          <div className="canvas-header">
-            <div className="canvas-title-wrapper">
-              <BookOpen size={16} style={{ color: 'var(--text-secondary)' }} />
-              <input
-                type="text"
-                value={activeDoc.title}
-                onChange={e => updateActiveDocument({ title: e.target.value })}
-                className="canvas-title-input"
-                placeholder="Untitled Document"
-                title="Document Title"
-              />
-            </div>
-            
-            <div className="canvas-actions">
-              <button className="btn-icon" title="View snapshots history" type="button">
-                <History size={18} />
-              </button>
-              <button 
-                onClick={handleDownloadDoc} 
-                className="btn-icon" 
-                title="Download HTML"
-                type="button"
-              >
-                <Download size={18} />
-              </button>
-            </div>
-          </div>
-
-          {hasPendingDiffs && (
-            <div className="diff-review-banner">
-              <span className="diff-banner-text">Review proposed edits to this chapter:</span>
-              <div className="diff-banner-actions">
-                <button 
-                  onClick={handleAcceptAllDiffs} 
-                  className="diff-banner-btn accept"
-                  type="button"
-                >
-                  Accept All
-                </button>
-                <button 
-                  onClick={handleRejectAllDiffs} 
-                  className="diff-banner-btn reject"
-                  type="button"
-                >
-                  Reject All
-                </button>
+        {(!isMobile || activeMobileTab === 'editor') && (
+          <section className="canvas-panel" style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', overflow: 'hidden' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', overflow: 'hidden' }}>
+              <div className="canvas-header">
+                <div className="canvas-title-wrapper">
+                  <BookOpen size={16} style={{ color: 'var(--text-secondary)' }} />
+                  <input
+                    type="text"
+                    value={activeDoc.title}
+                    onChange={e => updateActiveDocument({ title: e.target.value })}
+                    className="canvas-title-input"
+                    placeholder="Untitled Document"
+                    title="Document Title"
+                  />
+                </div>
+                
+                <div className="canvas-actions">
+                  <button 
+                    onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
+                    className={`btn-icon ${isHistoryOpen ? 'active' : ''}`} 
+                    title="View snapshots history" 
+                    type="button"
+                    style={{ color: isHistoryOpen ? 'var(--accent)' : 'inherit' }}
+                  >
+                    <History size={18} />
+                  </button>
+                  
+                  {/* Export Dropdown relative wrapper */}
+                  <div style={{ position: 'relative', display: 'inline-block' }}>
+                    <button 
+                      onClick={() => setIsExportDropdownOpen(!isExportDropdownOpen)} 
+                      className={`btn-icon ${isExportDropdownOpen ? 'active' : ''}`} 
+                      title="Export document"
+                      type="button"
+                      id="export-dropdown-trigger"
+                    >
+                      <Download size={18} />
+                    </button>
+                    {isExportDropdownOpen && (
+                      <div 
+                        className="glass-panel dropdown-menu" 
+                        style={{
+                          position: 'absolute',
+                          right: 0,
+                          top: 'calc(100% + 6px)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          width: '160px',
+                          borderRadius: '8px',
+                          boxShadow: 'var(--shadow-lg)',
+                          zIndex: 30,
+                          padding: '4px'
+                        }}
+                      >
+                        <button
+                          onClick={() => {
+                            handleExport('html')
+                            setIsExportDropdownOpen(false)
+                          }}
+                          className="dropdown-item"
+                          type="button"
+                        >
+                          Export as HTML
+                        </button>
+                        <button
+                          onClick={() => {
+                            handleExport('markdown')
+                            setIsExportDropdownOpen(false)
+                          }}
+                          className="dropdown-item"
+                          type="button"
+                        >
+                          Export as Markdown
+                        </button>
+                        <button
+                          onClick={() => {
+                            handleExport('txt')
+                            setIsExportDropdownOpen(false)
+                          }}
+                          className="dropdown-item"
+                          type="button"
+                        >
+                          Export as Text
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
-            </div>
-          )}
 
-          <div className="canvas-editor-container">
-            <Editor 
-              content={activeDoc.content} 
-              onChange={(html) => updateActiveDocument({ content: html })} 
-              onQuickAction={handleQuickAction}
-            />
-          </div>
+              {hasPendingDiffs && (
+                <div className="diff-review-banner">
+                  <span className="diff-banner-text">Review proposed edits to this chapter:</span>
+                  <div className="diff-banner-actions">
+                    <button 
+                      onClick={handleAcceptAllDiffs} 
+                      className="diff-banner-btn accept"
+                      type="button"
+                    >
+                      Accept All
+                    </button>
+                    <button 
+                      onClick={handleRejectAllDiffs} 
+                      className="diff-banner-btn reject"
+                      type="button"
+                    >
+                      Reject All
+                    </button>
+                  </div>
+                </div>
+              )}
 
-          <footer className="canvas-footer">
-            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-              <span>Words: {activeDoc.content.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length}</span>
-              <span style={{ opacity: 0.3 }}>|</span>
-              <span>
-                Session Tokens: In: {sessionInputTokens.toLocaleString()} 
-                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
-                  (Hit: {sessionCacheHitTokens.toLocaleString()} / Miss: {sessionCacheMissTokens.toLocaleString()})
-                </span> 
-                / Out: {sessionOutputTokens.toLocaleString()}
-              </span>
-              <span style={{ opacity: 0.3 }}>|</span>
-              <span>Storage: {storageSize}</span>
+              <div className="canvas-editor-container">
+                <Editor 
+                  content={activeDoc.content} 
+                  onChange={(html) => updateActiveDocument({ content: html })} 
+                  onQuickAction={handleQuickAction}
+                />
+              </div>
+
+              <footer className="canvas-footer">
+                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                  <span>Words: {activeDoc.content.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length}</span>
+                  <span style={{ opacity: 0.3 }}>|</span>
+                  <span>
+                    Session Tokens: In: {sessionInputTokens.toLocaleString()} 
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
+                      (Hit: {sessionCacheHitTokens.toLocaleString()} / Miss: {sessionCacheMissTokens.toLocaleString()})
+                    </span> 
+                    / Out: {sessionOutputTokens.toLocaleString()}
+                  </span>
+                  <span style={{ opacity: 0.3 }}>|</span>
+                  <span>Storage: {storageSize}</span>
+                </div>
+                <div>Active Chapter: {activeDoc.title}</div>
+              </footer>
             </div>
-            <div>Active Chapter: {activeDoc.title}</div>
-          </footer>
-        </section>
+
+            {/* Version History Sidebar Drawer */}
+            {isHistoryOpen && (
+              <aside className="history-sidebar">
+                <div className="history-header">
+                  <h3>Version History</h3>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    <button
+                      onClick={() => createVersionSnapshot('Manual Snapshot')}
+                      className="btn-icon"
+                      title="Save manual snapshot"
+                      type="button"
+                    >
+                      <Sparkles size={16} style={{ color: 'var(--accent)' }} />
+                    </button>
+                    <button
+                      onClick={() => setIsHistoryOpen(false)}
+                      className="btn-icon"
+                      title="Close history"
+                      type="button"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                </div>
+                <div className="history-list">
+                  {versions.filter(v => v.documentId === activeDocumentId).length === 0 ? (
+                    <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                      No snapshots taken yet for this chapter.
+                    </div>
+                  ) : (
+                    versions
+                      .filter(v => v.documentId === activeDocumentId)
+                      .map((version) => (
+                        <div key={version.id} className="history-item">
+                          <span className="history-item-title">{version.title}</span>
+                          <span className="history-item-time">
+                            {new Date(version.timestamp).toLocaleString([], {
+                              month: '2-digit',
+                              day: '2-digit',
+                              hour: '2-digit',
+                              minute: '2-digit',
+                              second: '2-digit'
+                            })}
+                          </span>
+                          <div className="history-item-actions">
+                            <button
+                              onClick={() => restoreVersion(version.id)}
+                              className="history-item-btn restore"
+                              type="button"
+                            >
+                              Restore
+                            </button>
+                            <button
+                              onClick={() => deleteVersionSnapshot(version.id)}
+                              className="history-item-btn delete"
+                              type="button"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </div>
+                      ))
+                  )}
+                </div>
+              </aside>
+            )}
+          </section>
+        )}
       </main>
 
       {/* Settings Modal Overlay */}

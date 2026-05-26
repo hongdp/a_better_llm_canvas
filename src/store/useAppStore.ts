@@ -31,10 +31,19 @@ export interface ChatMessage {
   model?: string
 }
 
+export interface DocumentVersion {
+  id: string
+  documentId: string
+  timestamp: string
+  title: string
+  content: string
+}
+
 export interface CanvasDocument {
   id: string
   title: string
   content: string
+  selectedReferenceIds?: string[]
   createdAt: string
   updatedAt: string
 }
@@ -57,6 +66,12 @@ interface AppState {
   toggleReference: (id: string) => void
   clearReferences: () => void
   toggleSidebar: () => void
+
+  // Version history state
+  versions: DocumentVersion[]
+  createVersionSnapshot: (title?: string) => void
+  restoreVersion: (versionId: string) => void
+  deleteVersionSnapshot: (versionId: string) => void
 
   // LLM configurations
   activeProvider: LLMProvider
@@ -489,6 +504,21 @@ const loadSavedActiveDocId = (docs: CanvasDocument[]): string => {
   return docs[0]?.id || ''
 }
 
+const loadSavedVersions = (): DocumentVersion[] => {
+  const saved = localStorage.getItem('web_canvas_versions')
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved)
+      if (Array.isArray(parsed)) {
+        return parsed
+      }
+    } catch (e) {
+      console.error('Failed to parse saved versions', e)
+    }
+  }
+  return []
+}
+
 export const useAppStore = create<AppState>((set) => {
   const initialDocs = loadSavedDocuments()
   const initialActiveId = loadSavedActiveDocId(initialDocs)
@@ -512,11 +542,17 @@ export const useAppStore = create<AppState>((set) => {
     documents: initialDocs,
     activeDocumentId: initialActiveId,
     isSidebarOpen: loadSavedSidebarOpen(),
-    selectedReferenceIds: [],
+    selectedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.selectedReferenceIds || [],
 
     setActiveDocumentId: (id) => {
       localStorage.setItem('web_canvas_active_document_id', id)
-      set({ activeDocumentId: id })
+      set((state) => {
+        const targetDoc = state.documents.find((d) => d.id === id)
+        return { 
+          activeDocumentId: id,
+          selectedReferenceIds: (targetDoc?.selectedReferenceIds || []).filter(refId => refId !== id)
+        }
+      })
     },
 
     addDocument: (title = 'New Chapter', content = '<p>Start writing...</p>') => {
@@ -524,6 +560,7 @@ export const useAppStore = create<AppState>((set) => {
         id: `doc-${Date.now()}`,
         title,
         content,
+        selectedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
@@ -536,7 +573,8 @@ export const useAppStore = create<AppState>((set) => {
         docId = newDoc.id
         return { 
           documents: updatedDocs,
-          activeDocumentId: newDoc.id
+          activeDocumentId: newDoc.id,
+          selectedReferenceIds: []
         }
       })
       return docId
@@ -557,6 +595,7 @@ export const useAppStore = create<AppState>((set) => {
             id: `doc-${Date.now()}`,
             title: 'Chapter 1: Welcome',
             content: '<h1>Getting Started</h1><p>Start writing...</p>',
+            selectedReferenceIds: [],
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
@@ -598,11 +637,120 @@ export const useAppStore = create<AppState>((set) => {
         const refs = state.selectedReferenceIds.includes(id)
           ? state.selectedReferenceIds.filter((refId) => refId !== id)
           : [...state.selectedReferenceIds, id]
-        return { selectedReferenceIds: refs }
+
+        const updatedDocs = state.documents.map((d) => {
+          if (d.id === state.activeDocumentId) {
+            return {
+              ...d,
+              selectedReferenceIds: refs,
+              updatedAt: new Date().toISOString(),
+            }
+          }
+          return d
+        })
+        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        return { 
+          selectedReferenceIds: refs,
+          documents: updatedDocs
+        }
       })
     },
 
-    clearReferences: () => set({ selectedReferenceIds: [] }),
+    clearReferences: () => {
+      set((state) => {
+        const updatedDocs = state.documents.map((d) => {
+          if (d.id === state.activeDocumentId) {
+            return {
+              ...d,
+              selectedReferenceIds: [],
+              updatedAt: new Date().toISOString(),
+            }
+          }
+          return d
+        })
+        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        return {
+          selectedReferenceIds: [],
+          documents: updatedDocs
+        }
+      })
+    },
+
+    // Version history state
+    versions: loadSavedVersions(),
+
+    createVersionSnapshot: (title = 'Manual Snapshot') => {
+      set((state) => {
+        const activeDoc = state.documents.find(d => d.id === state.activeDocumentId)
+        if (!activeDoc) return {}
+
+        const newVersion: DocumentVersion = {
+          id: `ver-${Date.now()}`,
+          documentId: state.activeDocumentId,
+          timestamp: new Date().toISOString(),
+          title,
+          content: activeDoc.content,
+        }
+
+        let updatedVersions = [newVersion, ...state.versions]
+        if (updatedVersions.length > 50) {
+          updatedVersions = updatedVersions.slice(0, 50)
+        }
+
+        localStorage.setItem('web_canvas_versions', JSON.stringify(updatedVersions))
+        return { versions: updatedVersions }
+      })
+    },
+
+    restoreVersion: (versionId) => {
+      set((state) => {
+        const version = state.versions.find(v => v.id === versionId)
+        if (!version) return {}
+
+        // Create an undo snapshot first
+        const activeDoc = state.documents.find(d => d.id === state.activeDocumentId)
+        let updatedVersions = state.versions
+        if (activeDoc) {
+          const preRestoreVersion: DocumentVersion = {
+            id: `ver-${Date.now()}`,
+            documentId: state.activeDocumentId,
+            timestamp: new Date().toISOString(),
+            title: `Auto-save before restoring "${version.title}"`,
+            content: activeDoc.content,
+          }
+          updatedVersions = [preRestoreVersion, ...state.versions]
+          if (updatedVersions.length > 50) {
+            updatedVersions = updatedVersions.slice(0, 50)
+          }
+          localStorage.setItem('web_canvas_versions', JSON.stringify(updatedVersions))
+        }
+
+        const updatedDocs = state.documents.map((d) => {
+          if (d.id === state.activeDocumentId) {
+            return {
+              ...d,
+              content: version.content,
+              updatedAt: new Date().toISOString(),
+            }
+          }
+          return d
+        })
+        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+
+        return {
+          documents: updatedDocs,
+          versions: updatedVersions
+        }
+      })
+    },
+
+    deleteVersionSnapshot: (versionId) => {
+      set((state) => {
+        const filteredVersions = state.versions.filter(v => v.id !== versionId)
+        localStorage.setItem('web_canvas_versions', JSON.stringify(filteredVersions))
+        return { versions: filteredVersions }
+      })
+    },
 
     toggleSidebar: () => {
       set((state) => {
