@@ -229,10 +229,26 @@ const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePrompt
 }
 
 const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
-  const saved = getCookie('__Secure-web_canvas_system_prompts')
   let parsed: any = null
 
-  // Try loading from cookie first
+  // 1. Try loading from localStorage backup first (prioritized)
+  const backup = localStorage.getItem('web_canvas_system_prompts_backup')
+  if (backup) {
+    try {
+      parsed = JSON.parse(backup)
+      if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
+        return {
+          prompts: parsed.prompts || DEFAULT_SYSTEM_PROMPTS,
+          activePromptId: parsed.activePromptId || 'prompt-none'
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse system prompts backup from localStorage', e)
+    }
+  }
+
+  // 2. Fallback to cookie
+  const saved = getCookie('__Secure-web_canvas_system_prompts')
   if (saved) {
     try {
       parsed = JSON.parse(saved)
@@ -253,23 +269,7 @@ const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; active
         }
       }
     } catch (e) {
-      console.error('Failed to parse saved system prompts from cookie, trying fallback', e)
-    }
-  }
-
-  // If cookie was empty or failed, load from localStorage backup
-  const backup = localStorage.getItem('web_canvas_system_prompts_backup')
-  if (backup) {
-    try {
-      parsed = JSON.parse(backup)
-      if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
-        return {
-          prompts: parsed.prompts || DEFAULT_SYSTEM_PROMPTS,
-          activePromptId: parsed.activePromptId || 'prompt-none'
-        }
-      }
-    } catch (e) {
-      console.error('Failed to parse system prompts backup from localStorage', e)
+      console.error('Failed to parse saved system prompts from cookie', e)
     }
   }
 
@@ -387,13 +387,13 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
 
 // Load initial configs and documents from cookies/localStorage
 const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
-  const saved = getCookie('__Secure-web_canvas_providers')
-  if (saved) {
-    return migrateProvidersConfig(saved)
-  }
   const backup = localStorage.getItem('web_canvas_providers_backup')
   if (backup) {
     return migrateProvidersConfig(backup)
+  }
+  const saved = getCookie('__Secure-web_canvas_providers')
+  if (saved) {
+    return migrateProvidersConfig(saved)
   }
   return DEFAULT_CONFIGS
 }
