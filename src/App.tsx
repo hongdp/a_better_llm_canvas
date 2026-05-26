@@ -1243,14 +1243,26 @@ ${activeDoc.content}
           >
             <div className="chat-header">
               <h2>Assistant Chat ({getProviderLabel(activeProvider)})</h2>
-              <button 
-                onClick={handleClearChat} 
-                className="btn-icon" 
-                title="Clear chat history"
-                type="button"
-              >
-                <Trash2 size={16} />
-              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <button 
+                  onClick={handleClearChat} 
+                  className="btn-icon" 
+                  title="Clear chat history"
+                  type="button"
+                >
+                  <Trash2 size={16} />
+                </button>
+                {layoutMode === 'portrait' && (
+                  <button 
+                    onClick={() => setIsChatExpanded(false)} 
+                    className="btn-icon" 
+                    title="Collapse chat history"
+                    type="button"
+                  >
+                    <ChevronDown size={18} />
+                  </button>
+                )}
+              </div>
             </div>
 
             <div className="chat-messages">
