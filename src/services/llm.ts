@@ -97,10 +97,14 @@ async function streamOpenAI(
   }
 
   const url = `${config.baseUrl}/chat/completions`
-  const body = {
+  const body: Record<string, any> = {
     model: config.model,
     messages: messages,
     stream: true,
+  }
+
+  if (config.maxOutputTokens) {
+    body['max_tokens'] = config.maxOutputTokens
   }
 
   if (config.debug) {
@@ -155,6 +159,16 @@ async function streamGemini(
   if (systemMessage) {
     body['systemInstruction'] = {
       parts: [{ text: systemMessage.content }],
+    }
+  }
+
+  if (config.geminiSafetySettings && config.geminiSafetySettings.length > 0) {
+    body['safetySettings'] = config.geminiSafetySettings
+  }
+
+  if (config.maxOutputTokens) {
+    body['generationConfig'] = {
+      maxOutputTokens: config.maxOutputTokens
     }
   }
 
@@ -258,7 +272,7 @@ async function streamAnthropic(
   const body: Record<string, any> = {
     model: config.model,
     messages: messages.filter((m) => m.role !== 'system'),
-    max_tokens: 4096,
+    max_tokens: Math.min(config.maxOutputTokens || 8192, 8192),
     stream: true,
   }
 

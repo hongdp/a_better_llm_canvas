@@ -1,5 +1,5 @@
 import React from 'react'
-import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle } from 'lucide-react'
+import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 
 interface SettingsModalProps {
@@ -25,7 +25,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
 
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl', value: string) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens', value: string | number) => {
     updateProviderConfig('gemini', { [field]: value })
   }
 
@@ -110,6 +110,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
             />
           </div>
 
+          {/* Max Output Tokens Input */}
+          <div className="form-group">
+            <label htmlFor="max-tokens-input">Max Output Tokens (up to 65536)</label>
+            <input
+              id="max-tokens-input"
+              type="number"
+              value={geminiConfig.maxOutputTokens || 16384}
+              onChange={(e) => handleConfigChange('maxOutputTokens', parseInt(e.target.value) || 16384)}
+              placeholder="e.g. 16384"
+              min={1024}
+              max={65536}
+              step={1024}
+              className="form-input"
+            />
+          </div>
+
           {/* Debug Mode Checkbox */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
             <input 
@@ -163,6 +179,69 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
               </a>
               . The default base URL is <code>https://generativelanguage.googleapis.com/v1beta</code>.
             </span>
+          </div>
+
+          {/* Gemini Safety Settings Section */}
+          <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
+              <ShieldAlert size={16} style={{ color: 'var(--accent)' }} />
+              <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Gemini Safety Thresholds</span>
+            </div>
+            
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.75rem' }}>
+              {(() => {
+                const safetyCategories = [
+                  { id: 'HARM_CATEGORY_HARASSMENT', label: 'Harassment' },
+                  { id: 'HARM_CATEGORY_HATE_SPEECH', label: 'Hate Speech' },
+                  { id: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', label: 'Sexually Explicit' },
+                  { id: 'HARM_CATEGORY_DANGEROUS_CONTENT', label: 'Dangerous Content' },
+                ]
+                
+                const thresholds = [
+                  { value: 'HARM_BLOCK_THRESHOLD_UNSPECIFIED', label: 'Default / Unspecified' },
+                  { value: 'BLOCK_NONE', label: 'Block None (Show All)' },
+                  { value: 'BLOCK_ONLY_HIGH', label: 'Block High Risk' },
+                  { value: 'BLOCK_MEDIUM_AND_ABOVE', label: 'Block Medium & Above' },
+                  { value: 'BLOCK_LOW_AND_ABOVE', label: 'Block Low & Above' },
+                ]
+                
+                const currentSettings = geminiConfig.geminiSafetySettings || []
+                
+                return safetyCategories.map(cat => {
+                  const currentSetting = currentSettings.find(s => s.category === cat.id)
+                  const currentValue = currentSetting?.threshold || 'BLOCK_MEDIUM_AND_ABOVE'
+                  
+                  return (
+                    <div key={cat.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
+                      <span style={{ fontSize: '0.8rem', fontWeight: 500, color: 'var(--text-secondary)' }}>
+                        {cat.label}
+                      </span>
+                      <select
+                        value={currentValue}
+                        onChange={(e) => {
+                          const updated = currentSettings.map(s => 
+                            s.category === cat.id ? { ...s, threshold: e.target.value } : s
+                          )
+                          // In case the list was empty or missing this category
+                          if (!currentSettings.some(s => s.category === cat.id)) {
+                            updated.push({ category: cat.id, threshold: e.target.value })
+                          }
+                          updateProviderConfig('gemini', { geminiSafetySettings: updated })
+                        }}
+                        className="select-styled"
+                        style={{ width: '100%', fontSize: '0.8rem', padding: '0.35rem 0.5rem' }}
+                      >
+                        {thresholds.map(t => (
+                          <option key={t.value} value={t.value}>
+                            {t.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )
+                })
+              })()}
+            </div>
           </div>
 
           {/* Presets Management Header */}

@@ -2,11 +2,18 @@ import { create } from 'zustand'
 
 export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama'
 
+export interface GeminiSafetySetting {
+  category: string
+  threshold: string
+}
+
 export interface ProviderConfig {
   apiKey: string
   model: string
   baseUrl: string
   systemPrompt?: string
+  geminiSafetySettings?: GeminiSafetySetting[]
+  maxOutputTokens?: number
 }
 
 export interface SystemPromptTemplate {
@@ -106,21 +113,31 @@ const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     apiKey: '',
     model: 'gpt-4o',
     baseUrl: 'https://api.openai.com/v1',
+    maxOutputTokens: 16384,
   },
   gemini: {
     apiKey: '',
     model: 'gemini-1.5-pro',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    geminiSafetySettings: [
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+    ],
+    maxOutputTokens: 16384,
   },
   anthropic: {
     apiKey: '',
     model: 'claude-3-5-sonnet',
     baseUrl: 'https://api.anthropic.com/v1',
+    maxOutputTokens: 16384,
   },
   ollama: {
     apiKey: 'ollama-no-key',
     model: 'llama3',
     baseUrl: 'http://localhost:11434/v1',
+    maxOutputTokens: 16384,
   },
 }
 
@@ -185,9 +202,27 @@ interface VersionedPromptsData {
 }
 
 const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePromptId: string) => {
+  // 1. Save to localStorage as a fallback backup to bypass 4KB cookie limits or secure context issues
+  try {
+    localStorage.setItem('web_canvas_system_prompts_backup', JSON.stringify({
+      version: CURRENT_PROMPTS_VERSION,
+      prompts,
+      activePromptId
+    }))
+  } catch (e) {
+    console.error('Failed to save prompts backup to localStorage', e)
+  }
+
+  // 2. Only save custom prompts or modified default prompts to the cookie to save space (cookie limit is 4KB)
+  const promptsToSave = prompts.filter(p => {
+    const defaultPrompt = DEFAULT_SYSTEM_PROMPTS.find(d => d.id === p.id)
+    if (!defaultPrompt) return true // User-created prompt
+    return p.name !== defaultPrompt.name || p.content !== defaultPrompt.content // Modified default prompt
+  })
+
   const envelope: VersionedPromptsData = {
     version: CURRENT_PROMPTS_VERSION,
-    prompts,
+    prompts: promptsToSave,
     activePromptId,
   }
   setCookie('__Secure-web_canvas_system_prompts', JSON.stringify(envelope))
@@ -195,9 +230,38 @@ const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePrompt
 
 const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
   const saved = getCookie('__Secure-web_canvas_system_prompts')
+  let parsed: any = null
+
+  // Try loading from cookie first
   if (saved) {
     try {
-      const parsed = JSON.parse(saved)
+      parsed = JSON.parse(saved)
+      if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
+        const savedPrompts = parsed.prompts || []
+        const mergedPrompts = [...DEFAULT_SYSTEM_PROMPTS]
+        savedPrompts.forEach((sp: SystemPromptTemplate) => {
+          const defaultIndex = mergedPrompts.findIndex(d => d.id === sp.id)
+          if (defaultIndex !== -1) {
+            mergedPrompts[defaultIndex] = sp
+          } else {
+            mergedPrompts.push(sp)
+          }
+        })
+        return {
+          prompts: mergedPrompts,
+          activePromptId: parsed.activePromptId || 'prompt-none'
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse saved system prompts from cookie, trying fallback', e)
+    }
+  }
+
+  // If cookie was empty or failed, load from localStorage backup
+  const backup = localStorage.getItem('web_canvas_system_prompts_backup')
+  if (backup) {
+    try {
+      parsed = JSON.parse(backup)
       if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
         return {
           prompts: parsed.prompts || DEFAULT_SYSTEM_PROMPTS,
@@ -205,9 +269,10 @@ const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; active
         }
       }
     } catch (e) {
-      console.error('Failed to parse saved system prompts from cookie', e)
+      console.error('Failed to parse system prompts backup from localStorage', e)
     }
   }
+
   return {
     prompts: DEFAULT_SYSTEM_PROMPTS,
     activePromptId: 'prompt-none'
@@ -219,7 +284,17 @@ const saveConfigsToCookie = (configs: Record<LLMProvider, ProviderConfig>) => {
     version: CURRENT_SETTINGS_VERSION,
     data: configs,
   }
-  setCookie('__Secure-web_canvas_providers', JSON.stringify(envelope))
+  const jsonStr = JSON.stringify(envelope)
+  
+  // 1. Save to localStorage as a fallback backup
+  try {
+    localStorage.setItem('web_canvas_providers_backup', jsonStr)
+  } catch (e) {
+    console.error('Failed to save configs backup to localStorage', e)
+  }
+
+  // 2. Save to cookie
+  setCookie('__Secure-web_canvas_providers', jsonStr)
 }
 
 const migrateProvidersConfig = (savedString: string): Record<LLMProvider, ProviderConfig> => {
@@ -316,15 +391,57 @@ const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
   if (saved) {
     return migrateProvidersConfig(saved)
   }
+  const backup = localStorage.getItem('web_canvas_providers_backup')
+  if (backup) {
+    return migrateProvidersConfig(backup)
+  }
   return DEFAULT_CONFIGS
 }
 
 const loadSavedProvider = (): LLMProvider => {
-  const saved = getCookie('__Secure-web_canvas_active_provider')
+  const saved = localStorage.getItem('web_canvas_active_provider')
   if (saved && ['openai', 'gemini', 'anthropic', 'ollama'].includes(saved)) {
     return saved as LLMProvider
   }
+  const cookieSaved = getCookie('__Secure-web_canvas_active_provider')
+  if (cookieSaved && ['openai', 'gemini', 'anthropic', 'ollama'].includes(cookieSaved)) {
+    localStorage.setItem('web_canvas_active_provider', cookieSaved)
+    return cookieSaved as LLMProvider
+  }
   return 'gemini'
+}
+
+const loadSavedTheme = (): 'dark' | 'light' => {
+  const saved = localStorage.getItem('web_canvas_theme')
+  if (saved === 'dark' || saved === 'light') return saved
+  const cookieSaved = getCookie('__Secure-web_canvas_theme')
+  if (cookieSaved === 'dark' || cookieSaved === 'light') {
+    localStorage.setItem('web_canvas_theme', cookieSaved)
+    return cookieSaved
+  }
+  return 'dark'
+}
+
+const loadSavedSidebarOpen = (): boolean => {
+  const saved = localStorage.getItem('web_canvas_sidebar_open')
+  if (saved !== null) return saved !== 'false'
+  const cookieSaved = getCookie('__Secure-web_canvas_sidebar_open')
+  if (cookieSaved !== '') {
+    localStorage.setItem('web_canvas_sidebar_open', cookieSaved)
+    return cookieSaved !== 'false'
+  }
+  return true
+}
+
+const loadSavedDebugMode = (): boolean => {
+  const saved = localStorage.getItem('web_canvas_debug_mode')
+  if (saved !== null) return saved === 'true'
+  const cookieSaved = getCookie('__Secure-web_canvas_debug_mode')
+  if (cookieSaved !== '') {
+    localStorage.setItem('web_canvas_debug_mode', cookieSaved)
+    return cookieSaved === 'true'
+  }
+  return false
 }
 
 const loadSavedDocuments = (): CanvasDocument[] => {
@@ -354,12 +471,17 @@ export const useAppStore = create<AppState>((set) => {
   const initialDocs = loadSavedDocuments()
   const initialActiveId = loadSavedActiveDocId(initialDocs)
   const initialPromptsData = loadSavedSystemPromptsData()
-  const initialDebugMode = getCookie('__Secure-web_canvas_debug_mode') === 'true'
+  if (!localStorage.getItem('web_canvas_system_prompts') && !getCookie('__Secure-web_canvas_system_prompts')) {
+    saveSystemPromptsToCookie(initialPromptsData.prompts, initialPromptsData.activePromptId)
+  }
+  const isEnvDebug = import.meta.env.VITE_DEBUG === 'true' || import.meta.env.MODE === 'debug'
+  const initialDebugMode = isEnvDebug || loadSavedDebugMode() || (localStorage.getItem('web_canvas_debug_mode') === null && getCookie('__Secure-web_canvas_debug_mode') === '' && import.meta.env.DEV)
 
   return {
     // Theme state
-    theme: (getCookie('__Secure-web_canvas_theme') as 'dark' | 'light') || 'dark',
+    theme: loadSavedTheme(),
     setTheme: (theme) => {
+      localStorage.setItem('web_canvas_theme', theme)
       setCookie('__Secure-web_canvas_theme', theme)
       set({ theme })
     },
@@ -367,7 +489,7 @@ export const useAppStore = create<AppState>((set) => {
     // Multi-document state
     documents: initialDocs,
     activeDocumentId: initialActiveId,
-    isSidebarOpen: getCookie('__Secure-web_canvas_sidebar_open') !== 'false',
+    isSidebarOpen: loadSavedSidebarOpen(),
     selectedReferenceIds: [],
 
     setActiveDocumentId: (id) => {
@@ -463,6 +585,7 @@ export const useAppStore = create<AppState>((set) => {
     toggleSidebar: () => {
       set((state) => {
         const isOpen = !state.isSidebarOpen
+        localStorage.setItem('web_canvas_sidebar_open', String(isOpen))
         setCookie('__Secure-web_canvas_sidebar_open', String(isOpen))
         return { isSidebarOpen: isOpen }
       })
@@ -473,6 +596,7 @@ export const useAppStore = create<AppState>((set) => {
     providerConfigs: loadSavedConfigs(),
     availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
     setProvider: (provider) => {
+      localStorage.setItem('web_canvas_active_provider', provider)
       setCookie('__Secure-web_canvas_active_provider', provider)
       set({ activeProvider: provider })
     },
@@ -494,6 +618,7 @@ export const useAppStore = create<AppState>((set) => {
     },
     debugMode: initialDebugMode,
     setDebugMode: (enabled) => {
+      localStorage.setItem('web_canvas_debug_mode', String(enabled))
       setCookie('__Secure-web_canvas_debug_mode', String(enabled))
       set({ debugMode: enabled })
     },
