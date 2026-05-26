@@ -14,17 +14,19 @@ import {
   Menu,
   Paperclip,
   X,
-  Save
+  Save,
+  SquarePen
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { useAppStore } from './store/useAppStore'
-import type { CanvasDocument } from './store/useAppStore'
+import type { CanvasDocument, LLMProvider } from './store/useAppStore'
 import { streamLLM } from './services/llm'
 import type { LLMMessage } from './services/llm'
 import { diffHtml } from './utils/diff'
 import { htmlToMarkdown, htmlToPlainText } from './utils/convert'
+import { DOMParser as ProseMirrorDOMParser, Node as ProseMirrorNode, Mark as ProseMirrorMark } from '@tiptap/pm/model'
 
 // Fallback standard Gemini models
 const FALLBACK_GEMINI_MODELS = [
@@ -40,6 +42,10 @@ const PROVIDER_MODELS: Record<string, string[]> = {
   anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet'],
   ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
   grok: ['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
+}
+
+function getTimestampId(prefix: string) {
+  return `${prefix}-${Date.now()}`
 }
 
 function App() {
@@ -100,6 +106,15 @@ function App() {
   const [availableGrokModels, setAvailableGrokModels] = useState<string[]>(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
   const [storageSize, setStorageSize] = useState('0.00 KB')
 
+  // Revert & Edit Past Message state
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
+  const [editingMessageText, setEditingMessageText] = useState('')
+
+  // Text selection tracking refs for token optimization replacement
+  const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
+  const selectionEndRef = useRef<number | null>(null)
+  const originalSelectedTextRef = useRef<string>('')
+
   // Save status state
   const [saveStatus, setSaveStatus] = useState<'saved' | 'unsaved'>('saved')
   const saveTimeoutRef = useRef<number | null>(null)
@@ -137,6 +152,7 @@ function App() {
       clearTimeout(saveTimeoutRef.current)
       saveTimeoutRef.current = null
     }
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSaveStatus('saved')
   }, [activeDocumentId])
 
@@ -154,6 +170,7 @@ function App() {
 
   // Update storage usage when documents, versions, theme or LLM configurations change
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     updateStorageSize()
   }, [documents, versions, theme, providerConfigs])
 
@@ -231,13 +248,13 @@ function App() {
           const data = await res.json()
           if (data.models && Array.isArray(data.models)) {
             const filtered = data.models
-              .filter((m: any) => 
+              .filter((m: { name: string; supportedGenerationMethods?: string[] }) => 
                 (m.supportedGenerationMethods?.includes('generateContent') || 
                  m.supportedGenerationMethods?.includes('streamGenerateContent')) &&
                 !m.name.includes('embedding') &&
                 !m.name.includes('aqa')
               )
-              .map((m: any) => {
+              .map((m: { name: string }) => {
                 return m.name.startsWith('models/') ? m.name.slice(7) : m.name
               })
 
@@ -259,10 +276,11 @@ function App() {
           setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
           setErrorMsg(`Failed to load official Gemini models: ${res.status} ${res.statusText}. Using fallback models.`)
         }
-      } catch (err: any) {
+      } catch (e) {
+        const err = e instanceof Error ? e : new Error(String(e))
         console.error('Failed to fetch official Gemini models, using fallbacks', err)
         setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-        setErrorMsg(`Failed to connect to Gemini API: ${err.message || err}. Using fallback models.`)
+        setErrorMsg(`Failed to connect to Gemini API: ${err.message}. Using fallback models.`)
       } finally {
         setIsLoadingModels(false)
       }
@@ -289,7 +307,7 @@ function App() {
           const data = await res.json()
           if (data.data && Array.isArray(data.data)) {
             const list = data.data
-              .map((m: any) => m.id)
+              .map((m: { id: string }) => m.id)
               .sort((a: string, b: string) => {
                 if (a.startsWith('grok-3') && !b.startsWith('grok-3')) return -1
                 if (!a.startsWith('grok-3') && b.startsWith('grok-3')) return 1
@@ -346,6 +364,295 @@ function App() {
     }
   }, [])
 
+  // System prompt construction helper
+  const buildSystemPrompt = (finalReferenceIds: string[]) => {
+    let referenceDocsContext = ''
+    finalReferenceIds.forEach(refId => {
+      const refDoc = documents.find(d => d.id === refId)
+      if (refDoc) {
+        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\n${refDoc.content}\n"""\n`
+      }
+    })
+
+    // Build overall project outline context
+    const outlineList = documents
+      .map(d => `- ${d.title}${d.id === activeDocumentId ? ' (Active / Editing Target)' : ''}`)
+      .join('\n')
+
+    const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
+    const customPromptText = activePromptItem?.content || ''
+
+    // Construct selection context block
+    const selectionContext = selectedText
+      ? `\nCURRENT SELECTED TEXT IN ACTIVE DOCUMENT (Focus your edits ONLY on this section if the user instructs so):\n"""\n${selectedText}\n"""\n`
+      : ''
+
+    return {
+      role: 'system' as const,
+      content: `You are an expert document writing and editing assistant.
+You help the user write, edit, and polish the ACTIVE document shown on their screen.
+
+${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${customPromptText}\n\n` : ''}CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
+${outlineList}
+${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
+
+CRITICAL RULES:
+1. If your response updates the ACTIVE document, you have two options depending on scope:
+   a. [PREFERRED FOR SELECTED EDITS]: If the user has selected text (provided in "CURRENT SELECTED TEXT IN ACTIVE DOCUMENT") and you are only updating/modifying that selection, output ONLY the updated selection content wrapped inside "<selection_replace>" XML tags. Do not output the rest of the document. This is highly preferred to save output tokens and speed up the reply.
+   b. [FOR FULL DOCUMENT EDITS]: If you are rewriting the entire document or editing multiple non-contiguous parts of it, wrap the FULL updated document text inside "<canvas>" XML tags.
+2. Write conversational feedback/explanations OUTSIDE the XML tags (either outside "<canvas>" or outside "<selection_replace>") for the chat panel.
+3. Output the document content (inside "<canvas>" or "<selection_replace>") as clean HTML (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of a full document inside "<canvas>" to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
+4. If the user instruction is just conversational and does not require updating the document, DO NOT output any XML block. Just write a conversational reply.
+
+${selectionContext}
+CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
+"""
+${activeDoc.content}
+"""`
+    }
+  }
+
+  // Shared LLM Streaming engine
+  const startLLMStreaming = async (
+    apiMessages: LLMMessage[],
+    assistantMsgId: string,
+    originalDocContent: string,
+    attachmentsText: string,
+    estimatedInputTokens: number
+  ) => {
+    // Capture and store current selection indices before streaming starts
+    if (activeEditor && selectedText) {
+      selectionRangeRef.current = {
+        from: activeEditor.state.selection.from,
+        to: activeEditor.state.selection.to
+      }
+      selectionEndRef.current = activeEditor.state.selection.to
+      originalSelectedTextRef.current = selectedText
+    } else {
+      selectionRangeRef.current = null
+      selectionEndRef.current = null
+      originalSelectedTextRef.current = ''
+    }
+
+    try {
+      await streamLLM(
+        apiMessages,
+        { ...activeConfig, provider: activeProvider, debug: debugMode },
+        {
+          onChunk: (chunk: string) => {
+            accumulatedTextRef.current += chunk
+            const raw = accumulatedTextRef.current
+
+            let chatText: string
+            let canvasText = ''
+            let selectionReplaceText = ''
+            let isSelectionEdit = false
+
+            const canvasStart = '<canvas>'
+            const canvasEnd = '</canvas>'
+            const selectionStart = '<selection_replace>'
+            const selectionEndTag = '</selection_replace>'
+
+            const canvasIdx = raw.indexOf(canvasStart)
+            const selectionIdx = raw.indexOf(selectionStart)
+
+            if (selectionIdx !== -1) {
+              isSelectionEdit = true
+              chatText = raw.substring(0, selectionIdx).trim()
+              const rest = raw.substring(selectionIdx + selectionStart.length)
+              const endIdx = rest.indexOf(selectionEndTag)
+              if (endIdx !== -1) {
+                selectionReplaceText = rest.substring(0, endIdx)
+                chatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
+              } else {
+                selectionReplaceText = rest
+              }
+            } else if (canvasIdx !== -1) {
+              chatText = raw.substring(0, canvasIdx).trim()
+              const rest = raw.substring(canvasIdx + canvasStart.length)
+              const endIdx = rest.indexOf(canvasEnd)
+              if (endIdx !== -1) {
+                canvasText = rest.substring(0, endIdx)
+                chatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
+              } else {
+                canvasText = rest
+              }
+            } else {
+              chatText = raw
+            }
+
+            // Prepend visual attachment details to conversational text
+            const displayChatText = attachmentsText 
+              ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
+              : (chatText || 'Updating document...')
+
+            // Update assistant message from fresh store state
+            const latestMessages = useAppStore.getState().messages
+            setMessages(
+              latestMessages.map(m => {
+                if (m.id === assistantMsgId) {
+                  return {
+                    ...m,
+                    content: displayChatText
+                  }
+                }
+                return m
+              })
+            )
+
+            // Dynamic document insertion
+            if (isSelectionEdit) {
+              if (selectionReplaceText && activeEditor && selectionRangeRef.current) {
+                const { from } = selectionRangeRef.current
+                const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
+
+                const tempDiv = document.createElement('div')
+                tempDiv.innerHTML = selectionReplaceText
+                const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+
+                const tr = activeEditor.state.tr
+                tr.replace(from, currentEnd, slice)
+                activeEditor.view.dispatch(tr)
+
+                selectionEndRef.current = from + slice.size
+                updateActiveDocument({ content: activeEditor.getHTML() })
+                setSaveStatus('unsaved')
+              }
+            } else if (canvasText.trim()) {
+              updateActiveDocument({ content: canvasText })
+              setSaveStatus('unsaved')
+            }
+          },
+          onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
+            setStreaming(false)
+            // Clear reference attachments selection on submit completion
+            clearReferences()
+
+            // Calculate final response output tokens using API metadata or fallback estimations
+            let finalInputTokens = estimatedInputTokens
+            let finalOutputTokens = Math.ceil(fullText.length / 4)
+            let cacheHits = 0
+
+            if (usage) {
+              finalInputTokens = usage.promptTokens
+              finalOutputTokens = usage.completionTokens
+              cacheHits = usage.cachedPromptTokens || 0
+            }
+
+            addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
+
+            let finalChatText: string
+            let finalCanvasText = ''
+            let finalSelectionReplaceText = ''
+            let isSelectionEdit = false
+
+            const canvasStart = '<canvas>'
+            const canvasEnd = '</canvas>'
+            const selectionStart = '<selection_replace>'
+            const selectionEndTag = '</selection_replace>'
+
+            const canvasIdx = fullText.indexOf(canvasStart)
+            const selectionIdx = fullText.indexOf(selectionStart)
+
+            if (selectionIdx !== -1) {
+              isSelectionEdit = true
+              finalChatText = fullText.substring(0, selectionIdx).trim()
+              const rest = fullText.substring(selectionIdx + selectionStart.length)
+              const endIdx = rest.indexOf(selectionEndTag)
+              if (endIdx !== -1) {
+                finalSelectionReplaceText = rest.substring(0, endIdx)
+                finalChatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
+              } else {
+                finalSelectionReplaceText = rest
+              }
+            } else if (canvasIdx !== -1) {
+              finalChatText = fullText.substring(0, canvasIdx).trim()
+              const rest = fullText.substring(canvasIdx + canvasStart.length)
+              const endIdx = rest.indexOf(canvasEnd)
+              if (endIdx !== -1) {
+                finalCanvasText = rest.substring(0, endIdx)
+                finalChatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
+              } else {
+                finalCanvasText = rest
+              }
+            } else {
+              finalChatText = fullText
+            }
+
+            const displayChatText = attachmentsText 
+              ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
+              : (finalChatText.trim() || 'Document updated successfully.')
+
+            const latestMessages = useAppStore.getState().messages
+            setMessages(
+              latestMessages.map(m => {
+                if (m.id === assistantMsgId) {
+                  return {
+                    ...m,
+                    content: displayChatText
+                  }
+                }
+                return m
+              })
+            )
+
+            // Apply HTML-aware diff highlights on completion
+            if (isSelectionEdit) {
+              if (finalSelectionReplaceText && activeEditor && selectionRangeRef.current) {
+                const diffed = diffHtml(originalSelectedTextRef.current, finalSelectionReplaceText)
+                const { from } = selectionRangeRef.current
+                const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
+
+                const tempDiv = document.createElement('div')
+                tempDiv.innerHTML = diffed
+                const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+
+                const tr = activeEditor.state.tr
+                tr.replace(from, currentEnd, slice)
+                activeEditor.view.dispatch(tr)
+
+                updateActiveDocument({ content: activeEditor.getHTML() })
+              }
+            } else if (finalCanvasText.trim()) {
+              const diffed = diffHtml(originalDocContent, finalCanvasText)
+              updateActiveDocument({ content: diffed })
+            }
+            forceSave()
+          },
+          onError: (err: Error) => {
+            setStreaming(false)
+            setErrorMsg(err.message)
+            
+            const displayChatText = attachmentsText
+              ? `${attachmentsText}\n\n⚠️ Error during stream: ${err.message}`
+              : `⚠️ Error during stream: ${err.message}`
+
+            const latestMessages = useAppStore.getState().messages
+            setMessages(
+              latestMessages.map(m => {
+                if (m.id === assistantMsgId) {
+                  return {
+                    ...m,
+                    content: displayChatText
+                  }
+                }
+                return m
+              })
+            )
+
+            // Revert document to original state before the edit attempt if error occurs
+            updateActiveDocument({ content: originalDocContent })
+            forceSave()
+          }
+        }
+      )
+    } catch (e) {
+      const err = e instanceof Error ? e : new Error(String(e))
+      setStreaming(false)
+      setErrorMsg(err.message || 'Failed to initialize LLM stream.')
+    }
+  }
+
   // Send message handler (streaming and parsing)
   const handleSendMessage = async (e?: React.FormEvent, customPrompt?: string) => {
     e?.preventDefault()
@@ -382,7 +689,7 @@ function App() {
     const finalReferenceIds = Array.from(new Set([...selectedReferenceIds, ...autoDetectedIds]))
 
     // 2. Add user message
-    const userMsgId = `user-${Date.now()}`
+    const userMsgId = getTimestampId('user')
     const userMsg = {
       id: userMsgId,
       role: 'user' as const,
@@ -394,7 +701,7 @@ function App() {
     addMessage(userMsg)
 
     // 3. Add assistant placeholder
-    const assistantMsgId = `assistant-${Date.now()}`
+    const assistantMsgId = getTimestampId('assistant')
     const assistantPlaceholder = {
       id: assistantMsgId,
       role: 'assistant' as const,
@@ -408,51 +715,8 @@ function App() {
 
     accumulatedTextRef.current = ''
 
-    // 4. Build referenced document contents context
-    let referenceDocsContext = ''
-    finalReferenceIds.forEach(refId => {
-      const refDoc = documents.find(d => d.id === refId)
-      if (refDoc) {
-        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\n${refDoc.content}\n"""\n`
-      }
-    })
-
-    // Build overall project outline context
-    const outlineList = documents
-      .map(d => `- ${d.title}${d.id === activeDocumentId ? ' (Active / Editing Target)' : ''}`)
-      .join('\n')
-
-    const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
-    const customPromptText = activePromptItem?.content || ''
-
-    // Construct selection context block
-    const selectionContext = selectedText
-      ? `\nCURRENT SELECTED TEXT IN ACTIVE DOCUMENT (Focus your edits ONLY on this section if the user instructs so):\n"""\n${selectedText}\n"""\n`
-      : ''
-
-    // Create system instruction prompt
-    const systemPrompt: LLMMessage = {
-      role: 'system',
-      content: `You are an expert document writing and editing assistant.
-You help the user write, edit, and polish the ACTIVE document shown on their screen.
-
-${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${customPromptText}\n\n` : ''}CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
-${outlineList}
-${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
-
-CRITICAL RULES:
-1. If your response updates the ACTIVE document, wrap the updated document text in a "<canvas>" XML block.
-   Make sure to return the FULL updated document inside "<canvas>", not just the selection or parts of it. Do not truncate the document.
-2. Write conversational feedback/explanations OUTSIDE the "<canvas>" tags for the chat panel.
-3. Output the document as clean HTML inside the "<canvas>" block (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of the document to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
-4. If the user instruction is just conversational and does not require updating the document, DO NOT output any "<canvas>" block. Just write a conversational reply.
-
-${selectionContext}
-CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
-"""
-${activeDoc.content}
-"""`
-    }
+    // 4. Build system prompt
+    const systemPrompt = buildSystemPrompt(finalReferenceIds)
 
     // Map chat history to LLM provider structure
     const historyMessages: LLMMessage[] = messages
@@ -480,155 +744,93 @@ ${activeDoc.content}
       .filter(Boolean)
       .join('\n')
 
-    try {
-      await streamLLM(
-        apiMessages,
-        { ...activeConfig, provider: activeProvider, debug: debugMode },
-        {
-          onChunk: (chunk: string) => {
-            accumulatedTextRef.current += chunk
-            const raw = accumulatedTextRef.current
+    await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens)
+  }
 
-            // Canvas Markup Protocol Parser
-            let chatText = ''
-            let canvasText = ''
-            const canvasStart = '<canvas>'
-            const canvasEnd = '</canvas>'
+  // Edit and Resubmit message handler
+  const handleResubmitMessage = async (msgId: string, newContent: string) => {
+    const trimmed = newContent.trim()
+    if (!trimmed || isStreaming) return
 
-            const startIdx = raw.indexOf(canvasStart)
-            if (startIdx !== -1) {
-              chatText = raw.substring(0, startIdx).trim()
-              const rest = raw.substring(startIdx + canvasStart.length)
-              
-              const endIdx = rest.indexOf(canvasEnd)
-              if (endIdx !== -1) {
-                canvasText = rest.substring(0, endIdx)
-                chatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
-              } else {
-                canvasText = rest
-              }
-            } else {
-              chatText = raw
-            }
+    setEditingMessageId(null)
+    setErrorMsg(null)
 
-            // Prepend visual attachment details to conversational text
-            const displayChatText = attachmentsText 
-              ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
-              : (chatText || 'Updating document...')
+    // Find the message index
+    const targetIdx = messages.findIndex(m => m.id === msgId)
+    if (targetIdx === -1) return
 
-            // Update assistant message from fresh store state
-            const latestMessages = useAppStore.getState().messages
-            setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return {
-                    ...m,
-                    content: displayChatText
-                  }
-                }
-                return m
-              })
-            )
-
-            // Update document in real-time with raw text stream
-            if (canvasText.trim()) {
-              updateActiveDocument({ content: canvasText })
-              setSaveStatus('unsaved')
-            }
-          },
-          onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
-            setStreaming(false)
-            // Clear reference attachments selection on submit completion
-            clearReferences()
-
-            // Calculate final response output tokens using API metadata or fallback estimations
-            let finalInputTokens = estimatedInputTokens
-            let finalOutputTokens = Math.ceil(fullText.length / 4)
-            let cacheHits = 0
-
-            if (usage) {
-              finalInputTokens = usage.promptTokens
-              finalOutputTokens = usage.completionTokens
-              cacheHits = usage.cachedPromptTokens || 0
-            }
-
-            addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
-
-            const canvasStart = '<canvas>'
-            const canvasEnd = '</canvas>'
-            const startIdx = fullText.indexOf(canvasStart)
-            let finalChatText = ''
-            let finalCanvasText = ''
-
-            if (startIdx !== -1) {
-              finalChatText = fullText.substring(0, startIdx).trim()
-              const rest = fullText.substring(startIdx + canvasStart.length)
-              const endIdx = rest.indexOf(canvasEnd)
-              if (endIdx !== -1) {
-                finalCanvasText = rest.substring(0, endIdx)
-                finalChatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
-              } else {
-                finalCanvasText = rest
-              }
-            } else {
-              finalChatText = fullText
-            }
-
-            const displayChatText = attachmentsText 
-              ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
-              : (finalChatText.trim() || 'Document updated successfully.')
-
-            const latestMessages = useAppStore.getState().messages
-            setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return {
-                    ...m,
-                    content: displayChatText
-                  }
-                }
-                return m
-              })
-            )
-
-            // Apply HTML-aware diff highlights on completion
-            if (finalCanvasText.trim()) {
-              const diffed = diffHtml(originalDocContent, finalCanvasText)
-              updateActiveDocument({ content: diffed })
-            }
-            forceSave()
-          },
-          onError: (err: Error) => {
-            setStreaming(false)
-            setErrorMsg(err.message)
-            
-            const displayChatText = attachmentsText
-              ? `${attachmentsText}\n\n⚠️ Error during stream: ${err.message}`
-              : `⚠️ Error during stream: ${err.message}`
-
-            const latestMessages = useAppStore.getState().messages
-            setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return {
-                    ...m,
-                    content: displayChatText
-                  }
-                }
-                return m
-              })
-            )
-
-            // Revert document to original state before the edit attempt if error occurs
-            updateActiveDocument({ content: originalDocContent })
-            forceSave()
-          }
+    // Truncate message history from target message index, replacing the edited content
+    const truncatedMessages = messages.slice(0, targetIdx + 1).map((m, idx) => {
+      if (idx === targetIdx) {
+        return {
+          ...m,
+          content: trimmed,
+          timestamp: new Date().toISOString()
         }
-      )
-    } catch (e: any) {
-      setStreaming(false)
-      setErrorMsg(e.message || 'Failed to initialize LLM stream.')
+      }
+      return m
+    })
+
+    const originalDocContent = activeDoc.content
+    createVersionSnapshot(`Auto-save before edit: "${trimmed.substring(0, 30)}${trimmed.length > 30 ? '...' : ''}"`)
+
+    // Update store state with truncated history
+    setMessages(truncatedMessages)
+
+    // Add new assistant reply placeholder
+    const assistantMsgId = getTimestampId('assistant')
+    const assistantPlaceholder = {
+      id: assistantMsgId,
+      role: 'assistant' as const,
+      content: 'Thinking...',
+      timestamp: new Date().toISOString(),
+      provider: activeProvider,
+      model: activeConfig.model
     }
+    setMessages([...truncatedMessages, assistantPlaceholder])
+    setStreaming(true)
+
+    accumulatedTextRef.current = ''
+
+    // Scan user prompt for other chapter title mentions
+    const autoDetectedIds: string[] = []
+    documents.forEach(doc => {
+      if (doc.id !== activeDocumentId) {
+        const cleanTitle = doc.title.toLowerCase().replace(/chapter\s*\d+\s*:\s*/g, '')
+        if (
+          trimmed.toLowerCase().includes(doc.title.toLowerCase()) ||
+          (cleanTitle.length > 3 && trimmed.toLowerCase().includes(cleanTitle))
+        ) {
+          autoDetectedIds.push(doc.id)
+        }
+      }
+    })
+
+    const finalReferenceIds = Array.from(new Set([...selectedReferenceIds, ...autoDetectedIds]))
+
+    // Build system prompt
+    const systemPrompt = buildSystemPrompt(finalReferenceIds)
+
+    // Map history to provider messages
+    const historyMessages: LLMMessage[] = truncatedMessages
+      .filter(m => m.id !== 'welcome')
+      .map(m => ({
+        role: m.role,
+        content: m.content
+      }))
+
+    const apiMessages = [systemPrompt, ...historyMessages]
+    const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
+
+    const attachmentsText = finalReferenceIds
+      .map(id => {
+        const doc = documents.find(d => d.id === id)
+        return doc ? `[Attached Context: ${doc.title}]` : ''
+      })
+      .filter(Boolean)
+      .join('\n')
+
+    await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens)
   }
 
   const hasPendingDiffs = activeDoc.content.includes('data-diff-id')
@@ -641,9 +843,9 @@ ${activeDoc.content}
       const tr = state.tr
       const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
 
-      doc.descendants((node, pos) => {
+      doc.descendants((node: ProseMirrorNode, pos: number) => {
         if (node.isText) {
-          node.marks.forEach(mark => {
+          node.marks.forEach((mark: ProseMirrorMark) => {
             if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
               changes.push({
                 from: pos,
@@ -682,9 +884,9 @@ ${activeDoc.content}
       const tr = state.tr
       const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
 
-      doc.descendants((node, pos) => {
+      doc.descendants((node: ProseMirrorNode, pos: number) => {
         if (node.isText) {
-          node.marks.forEach(mark => {
+          node.marks.forEach((mark: ProseMirrorMark) => {
             if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
               changes.push({
                 from: pos,
@@ -750,8 +952,8 @@ ${activeDoc.content}
   const handleExport = (format: 'html' | 'markdown' | 'txt', exportAll: boolean) => {
     const element = document.createElement("a")
     let content = ''
-    let filename = ''
-    let mimeType = ''
+    let filename: string
+    let mimeType: string
     
     const cleanBookTitle = bookTitle.trim().replace(/[/\\?%*:|"<>\s]+/g, '_').replace(/_+/g, '_') || 'Book'
     const cleanChapterTitle = activeDoc.title.trim().replace(/[/\\?%*:|"<>\s]+/g, '_').replace(/_+/g, '_') || 'Chapter'
@@ -903,7 +1105,7 @@ ${activeDoc.content}
             <select
               className="select-styled"
               value={activeProvider}
-              onChange={(e) => setProvider(e.target.value as any)}
+              onChange={(e) => setProvider(e.target.value as LLMProvider)}
               title="Select LLM Provider"
             >
               <option value="gemini">Gemini</option>
@@ -1020,12 +1222,56 @@ ${activeDoc.content}
             <div className="chat-messages">
               {messages.map(msg => (
                 <div key={msg.id} className={`chat-message ${msg.role}`}>
-                  <div className="chat-message-bubble">
-                    {msg.content}
-                  </div>
-                  <span className="chat-message-info">
-                    {getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
+                  {editingMessageId === msg.id ? (
+                    <div className="chat-message-edit-container">
+                      <textarea
+                        value={editingMessageText}
+                        onChange={(e) => setEditingMessageText(e.target.value)}
+                        className="chat-message-edit-textarea"
+                      />
+                      <div className="chat-message-edit-actions">
+                        <button
+                          onClick={() => setEditingMessageId(null)}
+                          className="btn-secondary"
+                          type="button"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => handleResubmitMessage(msg.id, editingMessageText)}
+                          className="btn-primary"
+                          type="button"
+                        >
+                          Save & Submit
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="chat-message-bubble">
+                        {msg.content}
+                      </div>
+                      <span className="chat-message-info" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                        <span>{getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                        {msg.role === 'user' && editingMessageId !== msg.id && !isStreaming && (
+                          <button
+                            onClick={() => {
+                              setEditingMessageId(msg.id)
+                              setEditingMessageText(msg.content)
+                            }}
+                            className="btn-icon"
+                            title="Edit message"
+                            type="button"
+                            style={{ padding: '0.1rem', background: 'transparent', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', opacity: 0.6 }}
+                            onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                            onMouseLeave={e => e.currentTarget.style.opacity = '0.6'}
+                          >
+                            <SquarePen size={12} />
+                          </button>
+                        )}
+                      </span>
+                    </>
+                  )}
                 </div>
               ))}
               {isStreaming && (

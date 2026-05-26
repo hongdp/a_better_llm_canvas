@@ -334,14 +334,17 @@ For documents exceeding the model's context window:
 - [x] Export to Markdown / plain text / HTML
 - [x] Settings panel (provider config, model selection, theme)
 - [x] Responsive layout for tablet/mobile
+- [x] Import from file (HTML, Markdown, Plain Text with auto-splitting)
 
 ### M5 — Multi-Provider & Beyond (Week 5+)
 - [x] Gemini provider
 - [x] Anthropic provider
 - [x] Ollama provider
-- [x] Import from file (HTML, Markdown, Plain Text with auto-splitting)
-- [ ] Keyboard shortcuts
-- [ ] PDF export
+- [x] OpenAI provider
+
+### M6 — Chat agent optimization
+- [x] Add capability to revert and edit the past chat user input. 
+- [x] Improve output token efficiency when using selected edit to allow LLM to decide only output modification to the selected text, not whole document. 
 
 ---
 
@@ -396,3 +399,4 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Live Save Status Indicator | Added a toolbar button showing save status: a rotating `RefreshCw` icon for unsaved edits (debounced for 1.5 seconds) and an emerald green `Save` disk icon once saved. Clicking the button forces saving immediately. |
 | 2026-05-25 | Fixed Formatting Toolbar & Clean Bubble Menu | Added a sticky translucent formatting toolbar at the top of the editor for formatting tags, leaving the text-selection BubbleMenu dedicated purely to AI generation actions and diff resolutions. |
 | 2026-05-25 | Book Title UI Design Alignment | Redesigned the Book Title sidebar input to match the Document Title UI styling, utilizing a borderless transparent style, `Book` icon, and hover/focus transitions for visual cohesion. |
+| 2026-05-25 | Revert & Edit Past Chat & Selection Replacement (Milestone 6) | Implemented capability to edit and resubmit past user prompts, truncating history from that point. Upgraded the streaming engine to parse and splice selection-replace token optimization blocks directly into the active editor range, computing and applying HTML diffs on completion. |
