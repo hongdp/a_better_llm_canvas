@@ -707,10 +707,12 @@ ${activeDoc.content}
     let filename = ''
     let mimeType = ''
     
-    const slugifiedBookTitle = bookTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'book'
+    const cleanBookTitle = bookTitle.trim().replace(/[/\\?%*:|"<>\s]+/g, '_').replace(/_+/g, '_') || 'Book'
+    const cleanChapterTitle = activeDoc.title.trim().replace(/[/\\?%*:|"<>\s]+/g, '_').replace(/_+/g, '_') || 'Chapter'
     const baseFilename = exportAll 
-      ? slugifiedBookTitle 
-      : `${slugifiedBookTitle}-${activeDoc.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`
+      ? cleanBookTitle 
+      : `${cleanBookTitle}_${cleanChapterTitle}`
+
 
     if (format === 'html') {
       let bodyContent = ''
