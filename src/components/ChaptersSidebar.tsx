@@ -19,9 +19,15 @@ export const ChaptersSidebar: React.FC = () => {
 
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
   const [pendingChapters, setPendingChapters] = useState<{ title: string; content: string }[]>([])
+  const [localBookTitle, setLocalBookTitle] = useState(bookTitle)
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const replaceFileInputRef = useRef<HTMLInputElement>(null)
+
+  // Keep local state in sync with global store changes (e.g. if updated via storage)
+  React.useEffect(() => {
+    setLocalBookTitle(bookTitle)
+  }, [bookTitle])
 
   if (!isSidebarOpen) return null
 
@@ -163,8 +169,15 @@ export const ChaptersSidebar: React.FC = () => {
         <label style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Book Title</label>
         <input
           type="text"
-          value={bookTitle}
-          onChange={(e) => setBookTitle(e.target.value)}
+          value={localBookTitle}
+          onChange={(e) => setLocalBookTitle(e.target.value)}
+          onBlur={() => setBookTitle(localBookTitle)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              setBookTitle(localBookTitle)
+              e.currentTarget.blur()
+            }
+          }}
           placeholder="Untitled Book"
           className="form-input"
           style={{
