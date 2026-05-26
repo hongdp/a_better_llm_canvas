@@ -1047,6 +1047,15 @@ export const useAppStore = create<AppState>((set) => {
           console.error('Failed to resolve sync conflict to server', e)
         }
       } else {
+        // Cancel any pending save timeout to prevent concurrent server modifications
+        if (saveTimeout) {
+          clearTimeout(saveTimeout)
+          saveTimeout = null
+        }
+        // Temporarily disable auto-save subscription during server sync conflict resolution
+        const wasInitialized = isInitialized
+        isInitialized = false
+
         // Keep server state, apply to local store and save to localStorage
         const server = state.syncConflict.serverState
         const updates: Partial<AppState> = {}
@@ -1098,6 +1107,9 @@ export const useAppStore = create<AppState>((set) => {
           localStorage.setItem('web_canvas_auto_sync', 'true')
           set({ autoSyncEnabled: true })
         }
+
+        // Restore initialization flag
+        isInitialized = wasInitialized
       }
 
       set({ syncConflict: null, isStoreInitialized: true })
@@ -1194,6 +1206,15 @@ export const useAppStore = create<AppState>((set) => {
         if (res.ok) {
           const server = await res.json()
           if (server && typeof server === 'object' && Object.keys(server).length > 0) {
+            // Cancel any pending save timeout to prevent concurrent server modifications
+            if (saveTimeout) {
+              clearTimeout(saveTimeout)
+              saveTimeout = null
+            }
+            // Temporarily disable auto-save subscription during manual server download
+            const wasInitialized = isInitialized
+            isInitialized = false
+
             const updates: Partial<AppState> = {}
             if (server.documents) {
               updates.documents = server.documents
@@ -1237,6 +1258,9 @@ export const useAppStore = create<AppState>((set) => {
             }
             set(updates)
             set({ syncStatus: 'in-sync' })
+
+            // Restore initialization flag
+            isInitialized = wasInitialized
           } else {
             set({ syncStatus: 'in-sync' })
           }

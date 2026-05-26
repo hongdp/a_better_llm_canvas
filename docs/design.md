@@ -144,6 +144,12 @@ Click "Restore" → Document reverts to that version
 | Timeline UI | Scrollable list of versions with labels and timestamps |
 | Diff between versions | Show what changed between any two snapshots |
 
+#### 3.2.6 Storage & Synchronization Manager
+| Responsibility | Details |
+|---------------|---------|
+| Server Data Sync | Pulls and applies server-side storage to browser local storage. Triggered either manually or when choosing server option post-login. |
+| Transactional Safety | Prevents concurrent server updates during sync by cancelling pending auto-saves (`saveTimeout`) and temporarily disabling state subscription listeners. |
+
 ---
 
 ## 4. Data Model
@@ -471,4 +477,5 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Book Title UI Design Alignment | Redesigned the Book Title sidebar input to match the Document Title UI styling, utilizing a borderless transparent style, `Book` icon, and hover/focus transitions for visual cohesion. |
 | 2026-05-25 | Revert & Edit Past Chat & Selection Replacement (Milestone 6) | Implemented capability to edit and resubmit past user prompts, truncating history from that point. Upgraded the streaming engine to parse and splice selection-replace token optimization blocks directly into the active editor range, computing and applying HTML diffs on completion. |
 | 2026-05-26 | Cross-Device Optimization & Collapsible Chat Drawer (Milestone 7) | Implemented local storage server-side serialization with `--storage-dir` CLI flag support. Refactored layout architecture into a 4-state dynamic layout engine (`desktop` | `portrait` | `landscape` | `tablet-square`). Configured mobile landscape/tablet layouts as side-by-side splits with collapsible sidebars and overlay drawers. Designed and implemented mobile portrait layout as a vertical stack: Editor in main viewport and a collapsible/expandable Chat drawer toolbar at the bottom that automatically slides up on generation and keeps selection editing fully functional. |
+| 2026-05-26 | Transactional Storage Synchronization Safety | Ensured that pulling server data to sync to local only occurs on post-login selection or manual pull trigger. Added execution safety to prevent concurrent modifications by canceling pending `saveTimeout` debounced writes and pausing auto-save state listeners during pulls. |
 
