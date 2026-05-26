@@ -115,6 +115,20 @@ interface AppState {
   sessionCacheMissTokens: number
   addSessionTokens: (input: number, output: number, cacheHit?: number) => void
   resetSessionTokens: () => void
+
+  // Storage & Sync state
+  storageMode: 'client' | 'server'
+  setStorageMode: (mode: 'client' | 'server') => void
+  syncConflict: { localState: any; serverState: any } | null
+  setSyncConflict: (conflict: { localState: any; serverState: any } | null) => void
+  resolveSyncConflict: (choice: 'local' | 'server') => Promise<void>
+  syncStatus: 'checking' | 'in-sync' | 'mismatch' | 'unknown' | 'client-mode'
+  setSyncStatus: (status: 'checking' | 'in-sync' | 'mismatch' | 'unknown' | 'client-mode') => void
+  checkSyncStatus: () => Promise<void>
+  uploadToServer: () => Promise<void>
+  downloadFromServer: () => Promise<void>
+  isStoreInitialized: boolean
+  setIsStoreInitialized: (initialized: boolean) => void
 }
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
@@ -927,37 +941,318 @@ export const useAppStore = create<AppState>((set) => {
       sessionCacheHitTokens: 0,
       sessionCacheMissTokens: 0
     }),
+
+    // Storage & Sync implementation
+    storageMode: (localStorage.getItem('web_canvas_storage_mode') as 'client' | 'server') || 'server',
+    setStorageMode: (mode) => {
+      localStorage.setItem('web_canvas_storage_mode', mode)
+      set({ storageMode: mode })
+      // If switching to client-mode, set status. If server, trigger a status check.
+      if (mode === 'client') {
+        set({ syncStatus: 'client-mode' })
+      } else {
+        useAppStore.getState().checkSyncStatus()
+      }
+    },
+    syncConflict: null,
+    setSyncConflict: (conflict) => set({ syncConflict: conflict }),
+    resolveSyncConflict: async (choice) => {
+      const state = useAppStore.getState()
+      if (!state.syncConflict) return
+
+      if (choice === 'local') {
+        // Upload local to server
+        const local = state.syncConflict.localState
+        try {
+          await fetch('/api/storage', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(local)
+          })
+          set({ syncStatus: 'in-sync' })
+        } catch (e) {
+          console.error('Failed to resolve sync conflict to server', e)
+        }
+      } else {
+        // Keep server state, apply to local store and save to localStorage
+        const server = state.syncConflict.serverState
+        const updates: Partial<AppState> = {}
+        if (server.documents) {
+          updates.documents = server.documents
+          localStorage.setItem('web_canvas_documents', JSON.stringify(server.documents))
+        }
+        if (server.versions) {
+          updates.versions = server.versions
+          localStorage.setItem('web_canvas_versions', JSON.stringify(server.versions))
+        }
+        if (server.bookTitle) {
+          updates.bookTitle = server.bookTitle
+          localStorage.setItem('web_canvas_book_title', server.bookTitle)
+        }
+        if (server.activeDocumentId) {
+          updates.activeDocumentId = server.activeDocumentId
+          localStorage.setItem('web_canvas_active_document_id', server.activeDocumentId)
+        }
+        if (server.activeProvider) {
+          updates.activeProvider = server.activeProvider
+          localStorage.setItem('web_canvas_active_provider', server.activeProvider)
+        }
+        if (server.providerConfigs) {
+          updates.providerConfigs = server.providerConfigs
+          saveConfigsToCookie(server.providerConfigs)
+        }
+        if (server.customSystemPrompts) {
+          updates.customSystemPrompts = server.customSystemPrompts
+          saveSystemPromptsToCookie(server.customSystemPrompts, server.activeSystemPromptId || 'prompt-none')
+        }
+        if (server.activeSystemPromptId) {
+          updates.activeSystemPromptId = server.activeSystemPromptId
+        }
+        if (server.theme) {
+          updates.theme = server.theme
+          localStorage.setItem('web_canvas_theme', server.theme)
+        }
+        if (server.messages) updates.messages = server.messages
+        if (server.debugMode !== undefined) {
+          updates.debugMode = server.debugMode
+          localStorage.setItem('web_canvas_debug_mode', String(server.debugMode))
+        }
+        set(updates)
+        set({ syncStatus: 'in-sync' })
+      }
+
+      set({ syncConflict: null, isStoreInitialized: true })
+      isInitialized = true
+    },
+    syncStatus: (localStorage.getItem('web_canvas_storage_mode') === 'client') ? 'client-mode' : 'unknown',
+    setSyncStatus: (status) => set({ syncStatus: status }),
+    checkSyncStatus: async () => {
+      const state = useAppStore.getState()
+      if (state.storageMode === 'client') {
+        set({ syncStatus: 'client-mode' })
+        return
+      }
+
+      set({ syncStatus: 'checking' })
+      try {
+        const res = await fetch('/api/storage')
+        if (res.ok) {
+          const serverData = await res.json()
+          if (!serverData || typeof serverData !== 'object' || Object.keys(serverData).length === 0) {
+            set({ syncStatus: 'in-sync' }) // Server is empty, will be populated on first save
+            return
+          }
+
+          const localData = {
+            bookTitle: state.bookTitle,
+            documents: state.documents
+          }
+
+          if (isStateDifferent(localData, serverData)) {
+            set({ syncStatus: 'mismatch' })
+          } else {
+            set({ syncStatus: 'in-sync' })
+          }
+        } else {
+          set({ syncStatus: 'unknown' })
+        }
+      } catch (e) {
+        console.error('Failed to check sync status', e)
+        set({ syncStatus: 'unknown' })
+      }
+    },
+    uploadToServer: async () => {
+      const state = useAppStore.getState()
+      set({ syncStatus: 'checking' })
+      try {
+        const res = await fetch('/api/storage', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            documents: state.documents,
+            versions: state.versions,
+            bookTitle: state.bookTitle,
+            activeDocumentId: state.activeDocumentId,
+            activeProvider: state.activeProvider,
+            providerConfigs: state.providerConfigs,
+            customSystemPrompts: state.customSystemPrompts,
+            activeSystemPromptId: state.activeSystemPromptId,
+            theme: state.theme,
+            messages: state.messages,
+            debugMode: state.debugMode
+          })
+        })
+        if (res.ok) {
+          set({ syncStatus: 'in-sync' })
+        } else {
+          set({ syncStatus: 'unknown' })
+        }
+      } catch (e) {
+        console.error('Failed to upload storage state to server', e)
+        set({ syncStatus: 'unknown' })
+        throw e
+      }
+    },
+    downloadFromServer: async () => {
+      set({ syncStatus: 'checking' })
+      try {
+        const res = await fetch('/api/storage')
+        if (res.ok) {
+          const server = await res.json()
+          if (server && typeof server === 'object' && Object.keys(server).length > 0) {
+            const updates: Partial<AppState> = {}
+            if (server.documents) {
+              updates.documents = server.documents
+              localStorage.setItem('web_canvas_documents', JSON.stringify(server.documents))
+            }
+            if (server.versions) {
+              updates.versions = server.versions
+              localStorage.setItem('web_canvas_versions', JSON.stringify(server.versions))
+            }
+            if (server.bookTitle) {
+              updates.bookTitle = server.bookTitle
+              localStorage.setItem('web_canvas_book_title', server.bookTitle)
+            }
+            if (server.activeDocumentId) {
+              updates.activeDocumentId = server.activeDocumentId
+              localStorage.setItem('web_canvas_active_document_id', server.activeDocumentId)
+            }
+            if (server.activeProvider) {
+              updates.activeProvider = server.activeProvider
+              localStorage.setItem('web_canvas_active_provider', server.activeProvider)
+            }
+            if (server.providerConfigs) {
+              updates.providerConfigs = server.providerConfigs
+              saveConfigsToCookie(server.providerConfigs)
+            }
+            if (server.customSystemPrompts) {
+              updates.customSystemPrompts = server.customSystemPrompts
+              saveSystemPromptsToCookie(server.customSystemPrompts, server.activeSystemPromptId || 'prompt-none')
+            }
+            if (server.activeSystemPromptId) {
+              updates.activeSystemPromptId = server.activeSystemPromptId
+            }
+            if (server.theme) {
+              updates.theme = server.theme
+              localStorage.setItem('web_canvas_theme', server.theme)
+            }
+            if (server.messages) updates.messages = server.messages
+            if (server.debugMode !== undefined) {
+              updates.debugMode = server.debugMode
+              localStorage.setItem('web_canvas_debug_mode', String(server.debugMode))
+            }
+            set(updates)
+            set({ syncStatus: 'in-sync' })
+          } else {
+            set({ syncStatus: 'in-sync' })
+          }
+        } else {
+          set({ syncStatus: 'unknown' })
+        }
+      } catch (e) {
+        console.error('Failed to download storage state from server', e)
+        set({ syncStatus: 'unknown' })
+        throw e
+      }
+    },
+    isStoreInitialized: false,
+    setIsStoreInitialized: (initialized) => set({ isStoreInitialized: initialized }),
   }
 })
 
 let isInitialized = false
 
+const isStateDifferent = (local: any, server: any) => {
+  if (!local || !server) return true
+  
+  // Compare book titles
+  if ((local.bookTitle || 'Untitled Book') !== (server.bookTitle || 'Untitled Book')) {
+    return true
+  }
+  
+  // Compare documents lists
+  const localDocs = local.documents || []
+  const serverDocs = server.documents || []
+  if (localDocs.length !== serverDocs.length) {
+    return true
+  }
+  
+  for (let i = 0; i < localDocs.length; i++) {
+    const ld = localDocs[i]
+    // Find matching document on server by ID
+    const sd = serverDocs.find((d: any) => d.id === ld.id)
+    if (!sd) return true
+    if (sd.title !== ld.title || sd.content !== ld.content) return true
+  }
+  
+  return false
+}
+
 export const initializeStoreFromServer = async () => {
+  const mode = localStorage.getItem('web_canvas_storage_mode') || 'server'
+  if (mode === 'client') {
+    useAppStore.setState({ isStoreInitialized: true, syncStatus: 'client-mode' })
+    isInitialized = true
+    return
+  }
+
   try {
     const res = await fetch('/api/storage')
     if (res.ok) {
-      const data = await res.json()
-      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
-        const updates: Partial<AppState> = {}
+      const serverData = await res.json()
+      if (serverData && typeof serverData === 'object' && Object.keys(serverData).length > 0) {
+        // Construct the local storage state to compare
+        const localData = {
+          bookTitle: localStorage.getItem('web_canvas_book_title') || 'Untitled Book',
+          documents: loadSavedDocuments()
+        }
 
-        if (data.documents) updates.documents = data.documents
-        if (data.versions) updates.versions = data.versions
-        if (data.bookTitle) updates.bookTitle = data.bookTitle
-        if (data.activeDocumentId) updates.activeDocumentId = data.activeDocumentId
-        if (data.activeProvider) updates.activeProvider = data.activeProvider
-        if (data.providerConfigs) updates.providerConfigs = data.providerConfigs
-        if (data.customSystemPrompts) updates.customSystemPrompts = data.customSystemPrompts
-        if (data.activeSystemPromptId) updates.activeSystemPromptId = data.activeSystemPromptId
-        if (data.theme) updates.theme = data.theme
-        if (data.messages) updates.messages = data.messages
-        if (data.debugMode !== undefined) updates.debugMode = data.debugMode
+        if (isStateDifferent(localData, serverData)) {
+          // Inconsistency detected: pause initialization and populate conflict details
+          useAppStore.setState({
+            syncConflict: {
+              localState: {
+                bookTitle: localData.bookTitle,
+                documents: localData.documents,
+                versions: loadSavedVersions(),
+                activeDocumentId: localStorage.getItem('web_canvas_active_document_id') || '',
+                activeProvider: loadSavedProvider(),
+                providerConfigs: loadSavedConfigs(),
+                customSystemPrompts: loadSavedSystemPromptsData().prompts,
+                activeSystemPromptId: loadSavedSystemPromptsData().activePromptId,
+                theme: loadSavedTheme(),
+                debugMode: loadSavedDebugMode()
+              },
+              serverState: serverData
+            },
+            syncStatus: 'mismatch',
+            isStoreInitialized: false
+          })
+          return
+        } else {
+          // Identical: Load server-side updates and boot
+          const updates: Partial<AppState> = {}
+          if (serverData.documents) updates.documents = serverData.documents
+          if (serverData.versions) updates.versions = serverData.versions
+          if (serverData.bookTitle) updates.bookTitle = serverData.bookTitle
+          if (serverData.activeDocumentId) updates.activeDocumentId = serverData.activeDocumentId
+          if (serverData.activeProvider) updates.activeProvider = serverData.activeProvider
+          if (serverData.providerConfigs) updates.providerConfigs = serverData.providerConfigs
+          if (serverData.customSystemPrompts) updates.customSystemPrompts = serverData.customSystemPrompts
+          if (serverData.activeSystemPromptId) updates.activeSystemPromptId = serverData.activeSystemPromptId
+          if (serverData.theme) updates.theme = serverData.theme
+          if (serverData.messages) updates.messages = serverData.messages
+          if (serverData.debugMode !== undefined) updates.debugMode = serverData.debugMode
 
-        useAppStore.setState(updates)
+          useAppStore.setState(updates)
+          useAppStore.setState({ syncStatus: 'in-sync' })
+        }
       }
     }
   } catch (e) {
     console.log('Local storage API not available, using client-side fallback only.', e)
   } finally {
+    useAppStore.setState({ isStoreInitialized: true })
     isInitialized = true
   }
 }
@@ -965,6 +1260,7 @@ export const initializeStoreFromServer = async () => {
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
 useAppStore.subscribe((state) => {
   if (!isInitialized) return
+  if (state.storageMode === 'client') return
 
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {

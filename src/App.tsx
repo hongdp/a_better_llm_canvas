@@ -22,6 +22,7 @@ import {
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
+import { SyncConflictModal } from './components/SyncConflictModal'
 import { useAppStore } from './store/useAppStore'
 import type { CanvasDocument, LLMProvider } from './store/useAppStore'
 import { streamLLM } from './services/llm'
@@ -102,7 +103,12 @@ function App() {
     createVersionSnapshot,
     restoreVersion,
     deleteVersionSnapshot,
-    bookTitle
+    bookTitle,
+    isStoreInitialized,
+    syncConflict,
+    resolveSyncConflict,
+    storageMode,
+    syncStatus
   } = useAppStore()
 
   // Local UI state
@@ -1107,6 +1113,47 @@ ${activeDoc.content}
     return `${getProviderLabel(prov)} (${model})`
   }
 
+  if (syncConflict) {
+    return (
+      <SyncConflictModal
+        conflict={syncConflict}
+        resolveConflict={resolveSyncConflict}
+      />
+    )
+  }
+
+  if (!isStoreInitialized) {
+    return (
+      <div style={{
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        height: '100vh',
+        width: '100vw',
+        backgroundColor: 'var(--bg-primary)',
+        color: 'var(--text-primary)',
+        gap: '1.5rem',
+        fontFamily: 'system-ui, sans-serif'
+      }}>
+        <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div className="animate-spin" style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '50%',
+            border: '3px solid var(--border-color)',
+            borderTopColor: 'var(--accent)'
+          }} />
+          <Sparkles size={20} style={{ position: 'absolute', color: 'var(--accent)' }} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.25rem' }}>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0 }}>Materializing Canvas</h2>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>Checking workspace storage connection...</p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className={`app-container layout-${layoutMode}`}>
       {/* Top Application Bar */}
@@ -1464,7 +1511,11 @@ ${activeDoc.content}
                       }
                     }}
                     className={`btn-icon ${saveStatus === 'unsaved' ? 'is-dirty' : ''}`}
-                    title={saveStatus === 'unsaved' ? 'Unsaved changes (click to save now)' : 'All changes saved to local storage'}
+                    title={
+                      saveStatus === 'unsaved'
+                        ? `Unsaved changes (saving to ${storageMode === 'server' ? 'server & local' : 'local'} storage...)`
+                        : `All changes saved to ${storageMode === 'server' ? 'server & local' : 'local'} storage`
+                    }
                     type="button"
                     style={{
                       color: saveStatus === 'unsaved' ? 'var(--accent)' : '#10b981',
@@ -1650,6 +1701,20 @@ ${activeDoc.content}
                   </span>
                   <span style={{ opacity: 0.3 }}>|</span>
                   <span>Storage: {storageSize}</span>
+                  <span style={{ opacity: 0.3 }}>|</span>
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }} onClick={() => setIsSettingsOpen(true)} title="Click to open Storage settings">
+                    Mode: {storageMode === 'server' ? 'Server-Sync' : 'Local-Only'}
+                    {storageMode === 'server' && (
+                      <span style={{ 
+                        display: 'inline-block', 
+                        width: '7px', 
+                        height: '7px', 
+                        borderRadius: '50%', 
+                        backgroundColor: syncStatus === 'in-sync' ? '#10b981' : syncStatus === 'mismatch' ? '#f59e0b' : '#6b7280',
+                        boxShadow: syncStatus === 'in-sync' ? '0 0 4px #10b981' : syncStatus === 'mismatch' ? '0 0 4px #f59e0b' : 'none'
+                      }} title={`Sync status: ${syncStatus}`} />
+                    )}
+                  </span>
                 </div>
                 <div>Active Chapter: {activeDoc.title}</div>
               </footer>
