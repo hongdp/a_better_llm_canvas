@@ -1,73 +1,88 @@
-# React + TypeScript + Vite
+# Web Canvas (a_better_llm_canvas)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+An advanced, LLM-powered collaborative document editing workspace. Inspired by OpenAI Canvas, Web Canvas allows writers to draft, structure, and refine multi-chapter books or documentation side-by-side with an LLM chat assistant.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## 🌟 Key Features
 
-## React Compiler
+### 1. **Inline AI Document Editing & Diffs**
+*   **Selection-Aware Editing**: Highlight any section of your draft to request target modifications from the AI.
+*   **Inline Diff View**: Real-time visual additions (green) and deletions (red) rendered directly in the editor. Accept or reject modifications on a per-change basis.
+*   **Quick Action Selection Bar**: Instant options to polish, shorten, extend, or explain selected texts.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+### 2. **Multi-User Secure Authentication**
+*   **Registration & Login**: Full user registration with password-strength checking.
+*   **Secure Session Management**: Protected using secure, `HttpOnly`, `SameSite=Lax` cookies.
+*   **CSRF Protection**: Form actions validated via Double Submit Cookie CSRF tokens.
 
-## Expanding the ESLint configuration
+### 3. **User-Isolated Server Workspace Storage**
+*   **Workspace Sync**: Automatic or manual sync between local browser storage and server-side state.
+*   **Multi-User Isolation**: Automatic isolation of workspaces (saved securely on the server as `state_<username>.json`).
+*   **Automatic Conflict Resolution**: Interactive UI prompt to resolve content discrepancies between local browser cache and server storage.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### 4. **Mobile & Cross-Device Optimization (M7)**
+*   **Adaptive Layouts**: Responsive grids dynamically rearranging panels for Desktop, Tablet-Square, Landscape, and Portrait aspect ratios.
+*   **Compact Mobile Header**: Hides heavy selectors (Model, System Prompts) on portrait mobile screens, consolidating those selections cleanly inside the Settings Modal.
+*   **Viewport Containment**: Enforced viewport rules (`100%` bounds) preventing layout overflows and elastic bounces across mobile browsers.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+### 5. **Multi-Provider LLM Integration**
+*   Robust support for leading LLM providers:
+    *   **Google Gemini** (Gemini 2.5 Flash / Pro, Gemini 1.5)
+    *   **OpenAI** (GPT-4o, GPT-4o-mini, o1)
+    *   **Anthropic Claude** (Claude 3.5 Sonnet / Haiku, Opus)
+    *   **Grok** by xAI (Grok-3, Grok-2)
+    *   **Ollama** (llama3, mistral, gemma2, phi3)
+*   Dynamic local model detection and custom base API URLs.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+### 6. **Multi-Document & Version History**
+*   **Chapters Manager**: Organize chapters or sections in a collapsible sidebar.
+*   **Auto-Save & Snapshotting**: Create manual or automated snapshots and restore past versions.
+*   **Import / Export**: Import from `.md`, `.html`, or `.txt`. Export documents to Markdown, raw HTML, or plain text.
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+---
+
+## 🚀 Getting Started
+
+### 1. Prerequisites
+Ensure you have **Node.js** (v18+) and **npm** installed.
+
+### 2. Installation
+Clone the repository and install the dependencies:
+```bash
+git clone git@github.com:hongdp/a_better_llm_canvas.git
+cd a_better_llm_canvas
+npm install
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+### 3. Environment Setup
+Create a `.env` file in the root directory (you can copy `.env.example` as a starting template):
+```bash
+cp .env.example .env
 ```
+Provide API keys for your preferred LLM providers (e.g., `VITE_GEMINI_API_KEY`, `VITE_OPENAI_API_KEY`).
+
+### 4. Run the Development Server
+Run the application locally:
+```bash
+npm run dev
+```
+
+To run with a **custom server-side storage path** (for multi-user states and local persistence) and expose the port to your internal network, pass the storage directory parameters:
+```bash
+npm run dev -- --storage-dir /path/to/your/workspace --host
+```
+
+### 5. Build for Production
+Bundle the production client:
+```bash
+npm run build
+```
+
+---
+
+## 🛠 Tech Stack
+*   **Frontend**: React (TypeScript), Vite, TailwindCSS (for modular helper utilities), Lucide React (Icons).
+*   **Editor Engine**: TipTap / ProseMirror.
+*   **State Management**: Zustand.
+*   **Server Middleware**: Express-style middleware configured inside `vite.config.ts` for database state persistence and authentication endpoints.
