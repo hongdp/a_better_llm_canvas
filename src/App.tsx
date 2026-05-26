@@ -402,7 +402,7 @@ CRITICAL RULES:
 1. If your response updates the ACTIVE document, wrap the updated document text in a "<canvas>" XML block.
    Make sure to return the FULL updated document inside "<canvas>", not just the selection or parts of it. Do not truncate the document.
 2. Write conversational feedback/explanations OUTSIDE the "<canvas>" tags for the chat panel.
-3. Output the document as clean HTML inside the "<canvas>" block (using tags like h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). Do NOT output Heading 1 (<h1>) tags, as the chapter title is managed separately by the UI.
+3. Output the document as clean HTML inside the "<canvas>" block (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of the document to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
 4. If the user instruction is just conversational and does not require updating the document, DO NOT output any "<canvas>" block. Just write a conversational reply.
 
 ${selectionContext}
