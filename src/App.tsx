@@ -66,6 +66,22 @@ function stripIncompleteEndTag(text: string): string {
   return text
 }
 
+function countWords(html: string): number {
+  if (!html) return 0
+  // Clean HTML to plain text, stripping <del> tags (deleted text from edits/diffs)
+  const cleanText = htmlToPlainText(html)
+  // Match CJK characters (Chinese, Japanese, Korean)
+  const cjkRegex = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g
+  const cjkCount = (cleanText.match(cjkRegex) || []).length
+  // Remove CJK characters to count other words (Latin, Cyrillic, Arabic, etc.)
+  const nonCjkText = cleanText.replace(cjkRegex, ' ')
+  // Match words using unicode property escapes: letters and numbers, optionally with internal apostrophe/hyphen
+  const wordRegex = /[\p{L}\p{N}]+(?:['’-][\p{L}\p{N}]+)*/gu
+  const otherCount = (nonCjkText.match(wordRegex) || []).length
+  return cjkCount + otherCount
+}
+
+
 function App() {
   // Zustand store state
   const {
@@ -1717,7 +1733,7 @@ ${activeDoc.content}
 
               <footer className="canvas-footer">
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span>Words: {activeDoc.content.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length}</span>
+                  <span>Words: {countWords(activeDoc.content)}</span>
                   <span style={{ opacity: 0.3 }}>|</span>
                   <span>
                     Session Tokens: In: {sessionInputTokens.toLocaleString()} 

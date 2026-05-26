@@ -580,7 +580,9 @@ body {
 
 .canvas-editor-container {
   flex: 1;
-  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
   position: relative;
   background-color: var(--bg-primary);
 }
@@ -1584,6 +1586,18 @@ del.diff-deletion:hover {
   padding: 0.35rem 0.75rem;
   font-size: 0.8rem;
   border-radius: 6px;
+}
+
+/* Style horizontal scrollable editor toolbar */
+.editor-toolbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE 10+ */
+}
+.editor-toolbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+.editor-toolbar > * {
+  flex-shrink: 0 !important;
 }
 
 

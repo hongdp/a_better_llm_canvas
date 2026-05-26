@@ -10,8 +10,11 @@ import {
   Italic, 
   Heading1, 
   Heading2, 
+  Heading3,
   List, 
   ListOrdered, 
+  Indent,
+  Outdent,
   Code,
   Quote,
   Check,
@@ -22,6 +25,96 @@ import {
   Languages
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
+
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    indent: {
+      indent: () => ReturnType
+    }
+    outdent: {
+      outdent: () => ReturnType
+    }
+  }
+}
+
+export const IndentExtension = Extension.create({
+  name: 'indent',
+
+  addOptions() {
+    return {
+      types: ['paragraph', 'heading', 'blockquote', 'listItem'],
+      indentSize: 24, // in px
+      maxIndent: 8,
+    }
+  },
+
+  addGlobalAttributes() {
+    return [
+      {
+        types: this.options.types,
+        attributes: {
+          marginLeft: {
+            default: null,
+            parseHTML: element => element.style.marginLeft || null,
+            renderHTML: attributes => {
+              if (!attributes.marginLeft) {
+                return {}
+              }
+              return { style: `margin-left: ${attributes.marginLeft}` }
+            },
+          },
+        },
+      },
+    ]
+  },
+
+  addCommands() {
+    return {
+      indent: () => ({ tr, state, dispatch }) => {
+        let hasChanged = false
+        const { selection } = state
+        tr.doc.nodesBetween(selection.from, selection.to, (node, pos) => {
+          if (this.options.types.includes(node.type.name)) {
+            const currentIndent = node.attrs.marginLeft ? parseInt(String(node.attrs.marginLeft).replace('px', '')) || 0 : 0
+            const nextIndent = currentIndent + this.options.indentSize
+            if (nextIndent <= this.options.maxIndent * this.options.indentSize) {
+              tr.setNodeMarkup(pos, undefined, {
+                ...node.attrs,
+                marginLeft: `${nextIndent}px`,
+              })
+              hasChanged = true
+            }
+          }
+        })
+        if (hasChanged && dispatch) {
+          dispatch(tr)
+        }
+        return hasChanged
+      },
+      outdent: () => ({ tr, state, dispatch }) => {
+        let hasChanged = false
+        const { selection } = state
+        tr.doc.nodesBetween(selection.from, selection.to, (node, pos) => {
+          if (this.options.types.includes(node.type.name)) {
+            const currentIndent = node.attrs.marginLeft ? parseInt(String(node.attrs.marginLeft).replace('px', '')) || 0 : 0
+            if (currentIndent > 0) {
+              const nextIndent = Math.max(0, currentIndent - this.options.indentSize)
+              tr.setNodeMarkup(pos, undefined, {
+                ...node.attrs,
+                marginLeft: nextIndent > 0 ? `${nextIndent}px` : null,
+              })
+              hasChanged = true
+            }
+          }
+        })
+        if (hasChanged && dispatch) {
+          dispatch(tr)
+        }
+        return hasChanged
+      },
+    }
+  },
+})
 
 // Custom TipTap Mark Extension for Proposed Additions (<ins>)
 export const DiffAddition = Mark.create({
@@ -125,6 +218,7 @@ export const Editor: React.FC<EditorProps> = ({
       DiffAddition,
       DiffDeletion,
       BlurredSelection,
+      IndentExtension,
     ],
     content,
     onUpdate: ({ editor }) => {
@@ -220,7 +314,7 @@ export const Editor: React.FC<EditorProps> = ({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', position: 'relative' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
       {/* Fixed Formatting Toolbar */}
       {editor && (
         <div className="editor-toolbar" style={{
@@ -229,7 +323,8 @@ export const Editor: React.FC<EditorProps> = ({
           padding: '8px 16px',
           borderBottom: '1px solid var(--border-color)',
           alignItems: 'center',
-          flexWrap: 'wrap',
+          flexWrap: 'nowrap',
+          overflowX: 'auto',
           position: 'sticky',
           top: 0,
           zIndex: 10,
@@ -288,6 +383,18 @@ export const Editor: React.FC<EditorProps> = ({
           >
             <Heading2 size={16} />
           </button>
+          <button
+            onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
+            className={`btn-icon ${editor.isActive('heading', { level: 3 }) ? 'active' : ''}`}
+            title="Heading 3"
+            type="button"
+            style={{
+              backgroundColor: editor.isActive('heading', { level: 3 }) ? 'var(--bg-tertiary)' : 'transparent',
+              color: editor.isActive('heading', { level: 3 }) ? 'var(--accent)' : 'inherit',
+            }}
+          >
+            <Heading3 size={16} />
+          </button>
 
           <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
 
@@ -314,6 +421,54 @@ export const Editor: React.FC<EditorProps> = ({
             }}
           >
             <ListOrdered size={16} />
+          </button>
+
+          <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
+
+          <button
+            onClick={() => {
+              if (editor.isActive('listItem')) {
+                const hasMarginLeft = editor.state.selection.$from.node().attrs.marginLeft
+                if (hasMarginLeft) {
+                  editor.chain().focus().outdent().run()
+                } else if (editor.can().liftListItem('listItem')) {
+                  editor.chain().focus().liftListItem('listItem').run()
+                }
+              } else {
+                editor.chain().focus().outdent().run()
+              }
+            }}
+            className="btn-icon"
+            title="Decrease Indent"
+            type="button"
+            style={{
+              backgroundColor: 'transparent',
+              color: 'inherit',
+            }}
+          >
+            <Outdent size={16} />
+          </button>
+          <button
+            onClick={() => {
+              if (editor.isActive('listItem')) {
+                if (editor.can().sinkListItem('listItem')) {
+                  editor.chain().focus().sinkListItem('listItem').run()
+                } else {
+                  editor.chain().focus().indent().run()
+                }
+              } else {
+                editor.chain().focus().indent().run()
+              }
+            }}
+            className="btn-icon"
+            title="Increase Indent"
+            type="button"
+            style={{
+              backgroundColor: 'transparent',
+              color: 'inherit',
+            }}
+          >
+            <Indent size={16} />
           </button>
 
           <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
@@ -469,7 +624,9 @@ export const Editor: React.FC<EditorProps> = ({
       )}
 
       {/* Editor Content Area */}
-      <EditorContent editor={editor} style={{ outline: 'none' }} />
+      <div className="editor-content-scroll" style={{ flex: 1, overflowY: 'auto', outline: 'none' }}>
+        <EditorContent editor={editor} />
+      </div>
     </div>
   )
 }
