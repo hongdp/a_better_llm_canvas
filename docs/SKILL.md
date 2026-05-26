@@ -159,6 +159,48 @@ Before merging any feature:
 - Every separate design or feature specification document created must be registered in the **Decision Log** inside the main design document ([design.md](file:///home/hongdp/Workspace/web_canvas/docs/design.md#L375)) to maintain clear traceability.
 - Always ensure all related design documents, feature specifications, and Decision Log entries are fully updated **before** committing changes or concluding a phase of work.
 
+---
 
+## 5. Local Deployment Workflow
 
+This section outlines the guidelines and procedure to build and run the local development/deployment server for Web Canvas.
 
+### 5.1 Prerequisites
+- **Node.js**: Version 18 or higher.
+- **npm**: Standard Node package manager.
+- Install packages:
+  ```bash
+  npm install
+  ```
+
+### 5.2 Environment Configuration
+Configure environment variables in `.env` (copying from `.env.example`). Configure API keys and storage parameters.
+- `VITE_STORAGE_DIR`: Fallback storage path for books, users, and session databases (if not overridden via CLI).
+
+### 5.3 Build Verification
+Before deploying or checking in, compile TypeScript and bundle assets to verify build integrity:
+```bash
+npm run build
+```
+
+### 5.4 Launching the Server
+Start the local server programmatically with custom configurations:
+```bash
+npm run dev -- --storage-dir <absolute-or-relative-path> [--host] [--mode debug]
+```
+- `--storage-dir`: Specify absolute/relative path where book states and database files are persisted.
+- `--host`: Exposes the Vite dev server to external networks.
+- `--mode debug`: Starts Vite in debug mode (enables debug logs).
+
+Example command:
+```bash
+npm run dev -- --storage-dir /mnt/smb_data/media/noval/workspace --host
+```
+
+### 5.5 Listening Port Verification
+Ensure the server is running and listening on port `5173`:
+```bash
+ss -tulpn | grep 5173
+# Or
+lsof -i :5173
+```
