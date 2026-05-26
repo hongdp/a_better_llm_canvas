@@ -48,6 +48,17 @@ function getTimestampId(prefix: string) {
   return `${prefix}-${Date.now()}`
 }
 
+function stripIncompleteEndTag(text: string): string {
+  const target = '</selection_replace>'
+  for (let i = target.length; i > 0; i--) {
+    const prefix = target.substring(0, i)
+    if (text.endsWith(prefix)) {
+      return text.substring(0, text.length - prefix.length)
+    }
+  }
+  return text
+}
+
 function App() {
   // Zustand store state
   const {
@@ -502,12 +513,13 @@ ${activeDoc.content}
 
             // Dynamic document insertion
             if (isSelectionEdit) {
-              if (selectionReplaceText && activeEditor && selectionRangeRef.current) {
+              const cleanedText = stripIncompleteEndTag(selectionReplaceText)
+              if (cleanedText && activeEditor && selectionRangeRef.current) {
                 const { from } = selectionRangeRef.current
                 const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
                 const tempDiv = document.createElement('div')
-                tempDiv.innerHTML = selectionReplaceText
+                tempDiv.innerHTML = cleanedText
                 const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
 
                 const tr = activeEditor.state.tr
@@ -598,8 +610,9 @@ ${activeDoc.content}
 
             // Apply HTML-aware diff highlights on completion
             if (isSelectionEdit) {
-              if (finalSelectionReplaceText && activeEditor && selectionRangeRef.current) {
-                const diffed = diffHtml(originalSelectedTextRef.current, finalSelectionReplaceText)
+              const cleanedText = stripIncompleteEndTag(finalSelectionReplaceText)
+              if (cleanedText && activeEditor && selectionRangeRef.current) {
+                const diffed = diffHtml(originalSelectedTextRef.current, cleanedText)
                 const { from } = selectionRangeRef.current
                 const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
