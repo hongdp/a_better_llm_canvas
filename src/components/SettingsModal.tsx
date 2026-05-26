@@ -1,6 +1,6 @@
 import React from 'react'
 import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
+import { useAppStore, type LLMProvider } from '../store/useAppStore'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -11,6 +11,7 @@ interface SettingsModalProps {
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, errorMsg, setErrorMsg }) => {
   const { 
+    activeProvider,
     providerConfigs, 
     updateProviderConfig,
     customSystemPrompts,
@@ -21,12 +22,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
     setDebugMode
   } = useAppStore()
 
+  const [activeTab, setActiveTab] = React.useState<LLMProvider>('gemini')
+
+  // Set the default tab to the active provider when the modal opens
+  React.useEffect(() => {
+    if (isOpen) {
+      setActiveTab(activeProvider)
+    }
+  }, [isOpen, activeProvider])
+
   if (!isOpen) return null
 
+  const currentConfig = providerConfigs[activeTab] || providerConfigs.gemini
   const geminiConfig = providerConfigs.gemini
 
   const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens', value: string | number) => {
-    updateProviderConfig('gemini', { [field]: value })
+    updateProviderConfig(activeTab, { [field]: value })
+  }
+
+  const labels: Record<LLMProvider, string> = {
+    gemini: 'Gemini',
+    openai: 'OpenAI',
+    anthropic: 'Anthropic',
+    ollama: 'Ollama (Local)',
+    grok: 'Grok (xAI)'
   }
 
   return (
@@ -44,14 +63,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Shield size={18} style={{ color: 'var(--accent)' }} />
-            <h3>Gemini Provider Settings</h3>
+            <h3>{labels[activeTab]} Configuration</h3>
           </div>
           <button onClick={onClose} className="btn-icon" title="Close" type="button">
             <X size={18} />
           </button>
         </div>
 
-        <div className="modal-body" style={{ maxHeight: '55vh', overflowY: 'auto', paddingRight: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+        {/* Provider Selection Tabs */}
+        <div className="settings-tabs">
+          {(['gemini', 'openai', 'anthropic', 'ollama', 'grok'] as LLMProvider[]).map((prov) => (
+            <button
+              key={prov}
+              onClick={() => setActiveTab(prov)}
+              type="button"
+              className={`settings-tab-btn ${activeTab === prov ? 'active' : ''}`}
+            >
+              {labels[prov].replace(' (Local)', '').replace(' (xAI)', '')}
+            </button>
+          ))}
+        </div>
+
+        <div className="modal-body" style={{ maxHeight: '48vh', overflowY: 'auto', paddingRight: '0.5rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
           {/* Error Alert Display */}
           {errorMsg && (
             <div style={{
@@ -85,14 +118,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
           {/* API Key Input */}
           <div className="form-group">
             <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-              <Key size={14} /> Gemini API Key
+              <Key size={14} /> {activeTab === 'ollama' ? 'API Key (Optional)' : `${labels[activeTab]} API Key`}
             </label>
             <input
               id="api-key-input"
               type="password"
-              value={geminiConfig.apiKey}
+              value={currentConfig.apiKey}
               onChange={(e) => handleConfigChange('apiKey', e.target.value)}
-              placeholder="Enter Google AI Studio API Key..."
+              placeholder={
+                activeTab === 'gemini' ? 'Enter Google AI Studio API Key...' :
+                activeTab === 'openai' ? 'Enter OpenAI API Key (sk-...)...' :
+                activeTab === 'anthropic' ? 'Enter Anthropic API Key (sk-ant-...)...' :
+                activeTab === 'grok' ? 'Enter Grok API Key (xai-...)...' :
+                'Optional token for authenticated local proxies...'
+              }
               className="form-input"
             />
           </div>
@@ -103,9 +142,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
             <input
               id="base-url-input"
               type="text"
-              value={geminiConfig.baseUrl}
+              value={currentConfig.baseUrl}
               onChange={(e) => handleConfigChange('baseUrl', e.target.value)}
-              placeholder="e.g. https://generativelanguage.googleapis.com/v1beta"
+              placeholder={
+                activeTab === 'gemini' ? 'e.g. https://generativelanguage.googleapis.com/v1beta' :
+                activeTab === 'openai' ? 'e.g. https://api.openai.com/v1' :
+                activeTab === 'anthropic' ? 'e.g. https://api.anthropic.com/v1' :
+                activeTab === 'grok' ? 'e.g. https://api.x.ai/v1' :
+                'e.g. http://localhost:11434/v1'
+              }
               className="form-input"
             />
           </div>
@@ -116,7 +161,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
             <input
               id="max-tokens-input"
               type="number"
-              value={geminiConfig.maxOutputTokens || 16384}
+              value={currentConfig.maxOutputTokens || 16384}
               onChange={(e) => handleConfigChange('maxOutputTokens', parseInt(e.target.value) || 16384)}
               placeholder="e.g. 16384"
               min={1024}
@@ -167,22 +212,74 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
             }}
           >
             <HelpCircle size={16} style={{ flexShrink: 0, color: 'var(--text-secondary)', marginTop: '2px' }} />
-            <span>
-              To get a free Gemini API key, visit the{' '}
-              <a 
-                href="https://aistudio.google.com/" 
-                target="_blank" 
-                rel="noreferrer"
-                style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-              >
-                Google AI Studio
-              </a>
-              . The default base URL is <code>https://generativelanguage.googleapis.com/v1beta</code>.
+            <span style={{ fontSize: '0.85rem', lineHeight: '1.4' }}>
+              {activeTab === 'gemini' && (
+                <>
+                  To get a free Gemini API key, visit the{' '}
+                  <a 
+                    href="https://aistudio.google.com/" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                  >
+                    Google AI Studio
+                  </a>
+                  . The default base URL is <code>https://generativelanguage.googleapis.com/v1beta</code>.
+                </>
+              )}
+              {activeTab === 'openai' && (
+                <>
+                  To get an OpenAI API key, visit the{' '}
+                  <a 
+                    href="https://platform.openai.com/" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                  >
+                    OpenAI Platform
+                  </a>
+                  . The default base URL is <code>https://api.openai.com/v1</code>.
+                </>
+              )}
+              {activeTab === 'anthropic' && (
+                <>
+                  To get an Anthropic API key, visit the{' '}
+                  <a 
+                    href="https://console.anthropic.com/" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                  >
+                    Anthropic Console
+                  </a>
+                  . The default base URL is <code>https://api.anthropic.com/v1</code>.
+                </>
+              )}
+              {activeTab === 'ollama' && (
+                <>
+                  Ollama runs locally on your machine. Ensure Ollama is running (run <code>ollama serve</code>) and the base URL is reachable. The default is <code>http://localhost:11434/v1</code>.
+                </>
+              )}
+              {activeTab === 'grok' && (
+                <>
+                  To get a Grok API key, visit the{' '}
+                  <a 
+                    href="https://console.x.ai/" 
+                    target="_blank" 
+                    rel="noreferrer"
+                    style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                  >
+                    xAI Console
+                  </a>
+                  . The default base URL is <code>https://api.x.ai/v1</code>.
+                </>
+              )}
             </span>
           </div>
 
           {/* Gemini Safety Settings Section */}
-          <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+          {activeTab === 'gemini' && (
+            <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginBottom: '0.75rem' }}>
               <ShieldAlert size={16} style={{ color: 'var(--accent)' }} />
               <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Gemini Safety Thresholds</span>
@@ -243,6 +340,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
               })()}
             </div>
           </div>
+          )}
 
           {/* Presets Management Header */}
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>

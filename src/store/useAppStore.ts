@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 
-export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama'
+export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
 
 export interface GeminiSafetySetting {
   category: string
@@ -27,6 +27,8 @@ export interface ChatMessage {
   role: 'user' | 'assistant'
   content: string
   timestamp: string
+  provider?: string
+  model?: string
 }
 
 export interface CanvasDocument {
@@ -151,6 +153,12 @@ const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     apiKey: 'ollama-no-key',
     model: 'llama3',
     baseUrl: 'http://localhost:11434/v1',
+    maxOutputTokens: 16384,
+  },
+  grok: {
+    apiKey: '',
+    model: 'grok-3',
+    baseUrl: 'https://api.x.ai/v1',
     maxOutputTokens: 16384,
   },
 }
@@ -414,11 +422,11 @@ const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
 
 const loadSavedProvider = (): LLMProvider => {
   const saved = localStorage.getItem('web_canvas_active_provider')
-  if (saved && ['openai', 'gemini', 'anthropic', 'ollama'].includes(saved)) {
+  if (saved && ['openai', 'gemini', 'anthropic', 'ollama', 'grok'].includes(saved)) {
     return saved as LLMProvider
   }
   const cookieSaved = getCookie('__Secure-web_canvas_active_provider')
-  if (cookieSaved && ['openai', 'gemini', 'anthropic', 'ollama'].includes(cookieSaved)) {
+  if (cookieSaved && ['openai', 'gemini', 'anthropic', 'ollama', 'grok'].includes(cookieSaved)) {
     localStorage.setItem('web_canvas_active_provider', cookieSaved)
     return cookieSaved as LLMProvider
   }

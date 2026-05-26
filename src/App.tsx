@@ -32,6 +32,13 @@ const FALLBACK_GEMINI_MODELS = [
   'gemini-1.5-flash-8b'
 ]
 
+const PROVIDER_MODELS: Record<string, string[]> = {
+  openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
+  anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet'],
+  ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
+  grok: ['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
+}
+
 function App() {
   // Zustand store state
   const {
@@ -45,6 +52,8 @@ function App() {
     toggleReference,
     clearReferences,
     toggleSidebar,
+    activeProvider,
+    setProvider,
     providerConfigs,
     updateProviderConfig,
     availableGeminiModels,
@@ -76,6 +85,7 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
+  const [availableGrokModels, setAvailableGrokModels] = useState<string[]>(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
   const [storageSize, setStorageSize] = useState('0.00 KB')
 
   // Calculate total localStorage usage in bytes, then format to KB
@@ -106,9 +116,13 @@ function App() {
     content: '<p>Start writing...</p>'
   }
 
+  const activeConfig = providerConfigs[activeProvider]
   const geminiConfig = providerConfigs.gemini
-  const apiKey = geminiConfig.apiKey
-  const baseUrl = geminiConfig.baseUrl
+  const geminiApiKey = geminiConfig.apiKey
+  const geminiBaseUrl = geminiConfig.baseUrl
+  const grokConfig = providerConfigs.grok
+  const grokApiKey = grokConfig.apiKey
+  const grokBaseUrl = grokConfig.baseUrl
 
   // Handle theme changes
   useEffect(() => {
@@ -123,16 +137,16 @@ function App() {
   // Fetch official Gemini models dynamically when API Key or Base URL changes
   useEffect(() => {
     const fetchOfficialModels = async () => {
-      if (!apiKey || apiKey === 'ollama-no-key') {
+      if (!geminiApiKey || geminiApiKey === 'ollama-no-key') {
         setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
         return
       }
 
       setIsLoadingModels(true)
       try {
-        let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}`
-        if (baseUrl && baseUrl !== 'https://generativelanguage.googleapis.com/v1beta') {
-          url = `${baseUrl.replace(/\/$/, '')}/models?key=${apiKey}`
+        let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`
+        if (geminiBaseUrl && geminiBaseUrl !== 'https://generativelanguage.googleapis.com/v1beta') {
+          url = `${geminiBaseUrl.replace(/\/$/, '')}/models?key=${geminiApiKey}`
         }
 
         const res = await fetch(url)
@@ -178,7 +192,46 @@ function App() {
     }
 
     fetchOfficialModels()
-  }, [apiKey, baseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model])
+  }, [geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model])
+
+  // Fetch official Grok models dynamically when API Key or Base URL changes
+  useEffect(() => {
+    const fetchGrokModels = async () => {
+      if (!grokApiKey) {
+        setAvailableGrokModels(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
+        return
+      }
+      try {
+        const url = `${grokBaseUrl.replace(/\/$/, '')}/models`
+        const res = await fetch(url, {
+          headers: {
+            'Authorization': `Bearer ${grokApiKey}`
+          }
+        })
+        if (res.ok) {
+          const data = await res.json()
+          if (data.data && Array.isArray(data.data)) {
+            const list = data.data
+              .map((m: any) => m.id)
+              .sort((a: string, b: string) => {
+                if (a.startsWith('grok-3') && !b.startsWith('grok-3')) return -1
+                if (!a.startsWith('grok-3') && b.startsWith('grok-3')) return 1
+                return a.localeCompare(b)
+              })
+            if (list.length > 0) {
+              setAvailableGrokModels(list)
+              if (!list.includes(grokConfig.model)) {
+                updateProviderConfig('grok', { model: list[0] })
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch official Grok models', err)
+      }
+    }
+    fetchGrokModels()
+  }, [grokApiKey, grokBaseUrl, updateProviderConfig, grokConfig.model])
 
   // Horizontal resizing handlers
   const startResizing = (e: React.MouseEvent) => {
@@ -254,7 +307,9 @@ function App() {
       id: userMsgId,
       role: 'user' as const,
       content: promptText,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      provider: activeProvider,
+      model: activeConfig.model
     }
     addMessage(userMsg)
 
@@ -264,7 +319,9 @@ function App() {
       id: assistantMsgId,
       role: 'assistant' as const,
       content: 'Thinking...',
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      provider: activeProvider,
+      model: activeConfig.model
     }
     addMessage(assistantPlaceholder)
     setStreaming(true)
@@ -346,7 +403,7 @@ ${activeDoc.content}
     try {
       await streamLLM(
         apiMessages,
-        { ...geminiConfig, provider: 'gemini', debug: debugMode },
+        { ...activeConfig, provider: activeProvider, debug: debugMode },
         {
           onChunk: (chunk: string) => {
             accumulatedTextRef.current += chunk
@@ -633,7 +690,28 @@ ${activeDoc.content}
   }
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-    updateProviderConfig('gemini', { model: e.target.value })
+    updateProviderConfig(activeProvider, { model: e.target.value })
+  }
+
+  const getAvailableModels = () => {
+    if (activeProvider === 'gemini') {
+      return availableGeminiModels
+    }
+    if (activeProvider === 'grok') {
+      return availableGrokModels
+    }
+    return PROVIDER_MODELS[activeProvider] || []
+  }
+
+  const getProviderLabel = (prov: string) => {
+    return prov === 'grok' ? 'Grok' : prov.charAt(0).toUpperCase() + prov.slice(1)
+  }
+
+  const getResponderName = (msg: typeof messages[0]) => {
+    if (msg.role === 'user') return 'You'
+    const prov = msg.provider || activeProvider
+    const model = msg.model || activeConfig.model
+    return `${getProviderLabel(prov)} (${model})`
   }
 
   return (
@@ -661,23 +739,40 @@ ${activeDoc.content}
         </div>
 
         <div className="app-header-right">
-          {/* Dynamic Gemini Model Selector Dropdown */}
+          {/* Provider Selector Dropdown */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Provider:</span>
+            <select
+              className="select-styled"
+              value={activeProvider}
+              onChange={(e) => setProvider(e.target.value as any)}
+              title="Select LLM Provider"
+            >
+              <option value="gemini">Gemini</option>
+              <option value="openai">OpenAI</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="ollama">Ollama</option>
+              <option value="grok">Grok (xAI)</option>
+            </select>
+          </div>
+
+          {/* Dynamic Model Selector Dropdown */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Model:</span>
             <select 
               className="select-styled" 
-              value={geminiConfig.model} 
+              value={activeConfig.model} 
               onChange={handleModelChange}
-              title="Select Gemini Model"
-              disabled={isLoadingModels}
+              title={`Select ${activeProvider} Model`}
+              disabled={activeProvider === 'gemini' && isLoadingModels}
             >
-              {availableGeminiModels.map(model => (
+              {getAvailableModels().map(model => (
                 <option key={model} value={model}>
                   {model}
                 </option>
               ))}
             </select>
-            {isLoadingModels && (
+            {activeProvider === 'gemini' && isLoadingModels && (
               <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
             )}
           </div>
@@ -703,7 +798,7 @@ ${activeDoc.content}
           <button 
             onClick={() => setIsSettingsOpen(true)} 
             className="btn-icon" 
-            title="Open Gemini Settings"
+            title={`Open ${activeProvider} Settings`}
             type="button"
           >
             <Settings size={18} />
@@ -732,7 +827,7 @@ ${activeDoc.content}
           style={{ width: `${chatWidth}px` }}
         >
           <div className="chat-header">
-            <h2>Assistant Chat (Gemini)</h2>
+            <h2>Assistant Chat ({getProviderLabel(activeProvider)})</h2>
             <button 
               onClick={handleClearChat} 
               className="btn-icon" 
@@ -750,14 +845,14 @@ ${activeDoc.content}
                   {msg.content}
                 </div>
                 <span className="chat-message-info">
-                  {msg.role === 'user' ? 'You' : 'Gemini'} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 </span>
               </div>
             ))}
             {isStreaming && (
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
                 <RefreshCw size={12} className="animate-spin" />
-                <span>Gemini is streaming changes...</span>
+                <span>{getProviderLabel(activeProvider)} is streaming changes...</span>
               </div>
             )}
             <div ref={chatEndRef} />
@@ -830,7 +925,7 @@ ${activeDoc.content}
                     handleSendMessage()
                   }
                 }}
-                placeholder={`Instruct Gemini (${geminiConfig.model})...`}
+                placeholder={`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
                 className="chat-textarea"
                 rows={1}
                 disabled={isStreaming}

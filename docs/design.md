@@ -388,4 +388,7 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Configurable Max Output Tokens | Added `maxOutputTokens` field to ProviderConfigs, defaulting to 16,384 tokens to avoid premature text truncation, with UI controls in the Settings Modal allowing settings up to 65,536 tokens. |
 | 2026-05-25 | Prioritize LocalStorage Settings with Cookie Fallback | Migrated settings (theme, provider configs, custom prompts, active provider/prompt, debug mode) to prioritize LocalStorage storage. Retained cookies as synchronized fallbacks. Optimized prompts cookie space by saving only custom/modified presets. |
 | 2026-05-25 | Inline Editing & Diff Review System (Milestone 3) | Implemented selection-aware prompts, token-based HTML diffing, TipTap mark extensions (ins/del), floating bubble menu actions, and bulk accept/reject review banners. |
+| 2026-05-25 | Token Caching & Session Usage Stats Tracking | Implemented session token counters (input, output, cache hit, cache miss) with extraction handlers parsing usage metadata for Gemini, OpenAI, and Anthropic response streams. |
+| 2026-05-25 | Dynamic API Switching & Grok Integration | Added xAI Grok as a supported LLM provider. Built a horizontal tabs settings card inside the Settings Modal to configure individual providers, and added header dropdown controls to seamlessly toggle active providers and models in real-time. |
+
 

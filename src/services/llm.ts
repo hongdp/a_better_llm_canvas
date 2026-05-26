@@ -66,7 +66,7 @@ export async function streamLLM(
       throw new Error(`API key is missing for ${provider}. Please configure it in Settings.`)
     }
 
-    if (provider === 'openai' || provider === 'ollama') {
+    if (provider === 'openai' || provider === 'ollama' || provider === 'grok') {
       await streamOpenAI(messages, config, debugCallbacks)
     } else if (provider === 'gemini') {
       await streamGemini(messages, config, debugCallbacks)

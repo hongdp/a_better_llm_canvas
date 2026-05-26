@@ -1,5 +1,7 @@
 import React, { useEffect } from 'react'
-import { useEditor, EditorContent, Mark, mergeAttributes } from '@tiptap/react'
+import { useEditor, EditorContent, Mark, mergeAttributes, Extension } from '@tiptap/react'
+import { Plugin, PluginKey } from '@tiptap/pm/state'
+import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -67,6 +69,36 @@ export const DiffDeletion = Mark.create({
   }
 })
 
+// Custom TipTap Extension to keep visual selection highlight when editor is blurred (e.g. chat input focused)
+export const BlurredSelection = Extension.create({
+  name: 'blurredSelection',
+
+  addProseMirrorPlugins() {
+    const extensionThis = this
+    return [
+      new Plugin({
+        key: new PluginKey('blurredSelection'),
+        props: {
+          decorations(state) {
+            const editor = extensionThis.editor
+            if (editor && !editor.isFocused) {
+              const { from, to, empty } = state.selection
+              if (!empty) {
+                return DecorationSet.create(state.doc, [
+                  Decoration.inline(from, to, {
+                    class: 'blurred-selection-highlight'
+                  })
+                ])
+              }
+            }
+            return DecorationSet.empty
+          }
+        }
+      })
+    ]
+  }
+})
+
 interface EditorProps {
   content: string
   onChange: (html: string) => void
@@ -92,6 +124,7 @@ export const Editor: React.FC<EditorProps> = ({
       }),
       DiffAddition,
       DiffDeletion,
+      BlurredSelection,
     ],
     content,
     onUpdate: ({ editor }) => {
