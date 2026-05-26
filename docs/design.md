@@ -150,11 +150,13 @@ When integrating new LLM providers, developers **must** prioritize retrieving mo
 | Timeline UI | Scrollable list of versions with labels and timestamps |
 | Diff between versions | Show what changed between any two snapshots |
 
-#### 3.2.6 Storage & Synchronization Manager
+#### 3.2.6 Storage & Standalone Backend Manager
 | Responsibility | Details |
 |---------------|---------|
-| Server Data Sync | Pulls and applies server-side storage to browser local storage. Triggered either manually or when choosing server option post-login. |
-| Transactional Safety | Prevents concurrent server updates during sync by cancelling pending auto-saves (`saveTimeout`) and temporarily disabling state subscription listeners. |
+| Server-First Persistence | All book, document, and session data is persisted in the Python FastAPI backend. Server acts as the single source of truth. |
+| Write-Through Cache | Uses client browser `localStorage` as a write-through cache to avoid data loss on crashes. |
+| Debounced Auto-Save | Store mutations are batched and saved to the backend via a 3-second debounce. |
+| Transactional Safety | Prevents loopback requests during fetches by cancelling pending save timeouts and disabling store subscription listeners during load transactions. |
 
 ---
 
@@ -485,4 +487,5 @@ Record significant design decisions here as the project evolves.
 | 2026-05-26 | Cross-Device Optimization & Collapsible Chat Drawer (Milestone 7) | Implemented local storage server-side serialization with `--storage-dir` CLI flag support. Refactored layout architecture into a 4-state dynamic layout engine (`desktop` | `portrait` | `landscape` | `tablet-square`). Configured mobile landscape/tablet layouts as side-by-side splits with collapsible sidebars and overlay drawers. Designed and implemented mobile portrait layout as a vertical stack: Editor in main viewport and a collapsible/expandable Chat drawer toolbar at the bottom that automatically slides up on generation and keeps selection editing fully functional. |
 | 2026-05-26 | Transactional Storage Synchronization Safety | Ensured that pulling server data to sync to local only occurs on post-login selection or manual pull trigger. Added execution safety to prevent concurrent modifications by canceling pending `saveTimeout` debounced writes and pausing auto-save state listeners during pulls. |
 | 2026-05-26 | Dynamic Model Discovery Policy & Grok Dynamic Fetching | Added availableGrokModels state to the store and integrated dynamic model fetching for Grok (/v1/models) in both the header and Settings Modal. Established developer guidelines to prioritize model-discovery APIs and fallback to static lists for all future provider integrations. |
+| 2026-05-26 | Standalone Python Backend Server & Server-First Storage | Split Vite frontend and Python FastAPI backend (running on port 3000, proxied by Vite). Redesigned storage to be server-first, using localStorage strictly as a write-through cache. Removed obsolete sync toggle checks, conflict resolution modals, and offline storageMode options. |
 

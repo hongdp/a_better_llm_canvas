@@ -16,7 +16,6 @@ export const ChaptersSidebar: React.FC = () => {
     toggleSidebar,
     bookTitle,
     setBookTitle,
-    storageMode,
     user,
     activeBookId,
     availableBooks,
@@ -41,10 +40,10 @@ export const ChaptersSidebar: React.FC = () => {
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
 
   React.useEffect(() => {
-    if (showBookManager && storageMode === 'server' && user) {
+    if (showBookManager && user) {
       fetchAvailableBooks()
     }
-  }, [showBookManager, storageMode, user, fetchAvailableBooks])
+  }, [showBookManager, user, fetchAvailableBooks])
 
   const handleCreateBook = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -278,7 +277,7 @@ export const ChaptersSidebar: React.FC = () => {
             }}
           />
         </div>
-        {storageMode === 'server' && user && (
+        {user && (
           <button
             onClick={() => setShowBookManager(true)}
             className="btn-icon"

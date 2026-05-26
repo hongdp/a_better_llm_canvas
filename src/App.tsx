@@ -23,7 +23,6 @@ import {
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
-import { SyncConflictModal } from './components/SyncConflictModal'
 import { AuthForm } from './components/AuthForm'
 import { useAppStore, PROVIDER_MODELS } from './store/useAppStore'
 import type { CanvasDocument, LLMProvider } from './store/useAppStore'
@@ -112,10 +111,6 @@ function App() {
     deleteVersionSnapshot,
     bookTitle,
     isStoreInitialized,
-    syncConflict,
-    resolveSyncConflict,
-    storageMode,
-    syncStatus,
     user,
     logout
   } = useAppStore()
@@ -1123,15 +1118,6 @@ ${activeDoc.content}
     return `${getProviderLabel(prov)} (${model})`
   }
 
-  if (syncConflict) {
-    return (
-      <SyncConflictModal
-        conflict={syncConflict}
-        resolveConflict={resolveSyncConflict}
-      />
-    )
-  }
-
   if (!isStoreInitialized) {
     return (
       <div style={{
@@ -1554,8 +1540,8 @@ ${activeDoc.content}
                     className={`btn-icon ${saveStatus === 'unsaved' ? 'is-dirty' : ''}`}
                     title={
                       saveStatus === 'unsaved'
-                        ? `Unsaved changes (saving to ${storageMode === 'server' ? 'server & local' : 'local'} storage...)`
-                        : `All changes saved to ${storageMode === 'server' ? 'server & local' : 'local'} storage`
+                        ? 'Unsaved changes (saving to server & local cache...)'
+                        : 'All changes saved to server & local cache'
                     }
                     type="button"
                     style={{
@@ -1742,20 +1728,6 @@ ${activeDoc.content}
                   </span>
                   <span style={{ opacity: 0.3 }}>|</span>
                   <span>Storage: {storageSize}</span>
-                  <span style={{ opacity: 0.3 }}>|</span>
-                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', cursor: 'pointer' }} onClick={() => setIsSettingsOpen(true)} title="Click to open Storage settings">
-                    Mode: {storageMode === 'server' ? 'Server-Sync' : 'Local-Only'}
-                    {storageMode === 'server' && (
-                      <span style={{ 
-                        display: 'inline-block', 
-                        width: '7px', 
-                        height: '7px', 
-                        borderRadius: '50%', 
-                        backgroundColor: syncStatus === 'in-sync' ? '#10b981' : syncStatus === 'mismatch' ? '#f59e0b' : '#6b7280',
-                        boxShadow: syncStatus === 'in-sync' ? '0 0 4px #10b981' : syncStatus === 'mismatch' ? '0 0 4px #f59e0b' : 'none'
-                      }} title={`Sync status: ${syncStatus}`} />
-                    )}
-                  </span>
                 </div>
                 <div>Active Chapter: {activeDoc.title}</div>
               </footer>
