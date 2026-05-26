@@ -1414,10 +1414,12 @@ export const initializeStoreFromServer = async () => {
 }
 
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
+
 useAppStore.subscribe((state) => {
   if (!isInitialized) return
   if (state.storageMode === 'client') return
   if (!state.user) return // Don't auto-save if user is not logged in
+  if (!state.autoSyncEnabled) return // Only auto-save to server if auto-sync is enabled
 
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
