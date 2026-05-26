@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
 
@@ -165,28 +165,31 @@ export const ChaptersSidebar: React.FC = () => {
         </button>
       </div>
 
-      <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
-        <label style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Book Title</label>
-        <input
-          type="text"
-          value={localBookTitle}
-          onChange={(e) => setLocalBookTitle(e.target.value)}
-          onBlur={() => setBookTitle(localBookTitle)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') {
-              setBookTitle(localBookTitle)
-              e.currentTarget.blur()
-            }
-          }}
-          placeholder="Untitled Book"
-          className="form-input"
-          style={{
-            width: '100%',
-            fontSize: '0.85rem',
-            padding: '0.35rem 0.55rem',
-            height: 'auto'
-          }}
-        />
+      <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <div className="canvas-title-wrapper" style={{ flex: 1 }}>
+          <Book size={16} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />
+          <input
+            type="text"
+            value={localBookTitle}
+            onChange={(e) => setLocalBookTitle(e.target.value)}
+            onBlur={() => setBookTitle(localBookTitle)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                setBookTitle(localBookTitle)
+                e.currentTarget.blur()
+              }
+            }}
+            placeholder="Untitled Book"
+            className="canvas-title-input"
+            title="Book Title"
+            style={{
+              fontSize: '0.95rem',
+              fontWeight: 600,
+              padding: '0.2rem 0.4rem',
+              height: 'auto'
+            }}
+          />
+        </div>
       </div>
 
       <div className="chapters-list">
