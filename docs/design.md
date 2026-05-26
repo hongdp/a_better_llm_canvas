@@ -329,17 +329,17 @@ For documents exceeding the model's context window:
 - [x] Quick action toolbar on text selection
 
 ### M4 — Polish & History (Week 4)
-- [ ] Version history manager (snapshots, restore)
+- [x] Version history manager (snapshots, restore)
 - [x] Auto-save to localStorage
-- [ ] Export to Markdown / plain text / HTML
+- [x] Export to Markdown / plain text / HTML
 - [x] Settings panel (provider config, model selection, theme)
-- [ ] Responsive layout for tablet/mobile
+- [x] Responsive layout for tablet/mobile
 
 ### M5 — Multi-Provider & Beyond (Week 5+)
 - [x] Gemini provider
 - [x] Anthropic provider
 - [x] Ollama provider
-- [ ] Import from file
+- [x] Import from file (HTML, Markdown, Plain Text with auto-splitting)
 - [ ] Keyboard shortcuts
 - [ ] PDF export
 
@@ -390,5 +390,9 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Inline Editing & Diff Review System (Milestone 3) | Implemented selection-aware prompts, token-based HTML diffing, TipTap mark extensions (ins/del), floating bubble menu actions, and bulk accept/reject review banners. |
 | 2026-05-25 | Token Caching & Session Usage Stats Tracking | Implemented session token counters (input, output, cache hit, cache miss) with extraction handlers parsing usage metadata for Gemini, OpenAI, and Anthropic response streams. |
 | 2026-05-25 | Dynamic API Switching & Grok Integration | Added xAI Grok as a supported LLM provider. Built a horizontal tabs settings card inside the Settings Modal to configure individual providers, and added header dropdown controls to seamlessly toggle active providers and models in real-time. |
-
-
+| 2026-05-25 | Multi-Chapter Document Imports & Splitter | Added client-side text/markdown/HTML file importers, with structural splitting on headers/hr delimiters to let users import whole drafts and segment them automatically into chapters. |
+| 2026-05-25 | Duplicate H1 Prevention & Live Title Sync | Configured prompt instructions to allow exactly one leading H1 per chapter, syncing editor H1 edits directly to sidebar titles, and parsing imported H1 tags as metadata. |
+| 2026-05-25 | Book Title Persistence & Export Naming | Added a persisted book title setting. Export filenames are sanitized (replacing spaces/special characters with underscores), using `BookTitle_ChapterTitle` for single chapters and `BookTitle` for combined drafts. |
+| 2026-05-25 | Live Save Status Indicator | Added a toolbar button showing save status: a rotating `RefreshCw` icon for unsaved edits (debounced for 1.5 seconds) and an emerald green `Save` disk icon once saved. Clicking the button forces saving immediately. |
+| 2026-05-25 | Fixed Formatting Toolbar & Clean Bubble Menu | Added a sticky translucent formatting toolbar at the top of the editor for formatting tags, leaving the text-selection BubbleMenu dedicated purely to AI generation actions and diff resolutions. |
+| 2026-05-25 | Book Title UI Design Alignment | Redesigned the Book Title sidebar input to match the Document Title UI styling, utilizing a borderless transparent style, `Book` icon, and hover/focus transitions for visual cohesion. |
