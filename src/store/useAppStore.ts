@@ -81,6 +81,20 @@ interface AppState {
   clearChat: () => void
   setStreaming: (isStreaming: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+
+  // Selection & editor integration for inline diff review
+  selectedText: string
+  setSelectedText: (text: string) => void
+  activeEditor: any
+  setActiveEditor: (editor: any) => void
+
+  // Session stats & local storage tracking
+  sessionInputTokens: number
+  sessionOutputTokens: number
+  sessionCacheHitTokens: number
+  sessionCacheMissTokens: number
+  addSessionTokens: (input: number, output: number, cacheHit?: number) => void
+  resetSessionTokens: () => void
 }
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
@@ -697,5 +711,33 @@ export const useAppStore = create<AppState>((set) => {
       }),
     setStreaming: (isStreaming) => set({ isStreaming }),
     setMessages: (messages) => set({ messages }),
+
+    // Selection & editor state implementation
+    selectedText: '',
+    setSelectedText: (text) => set({ selectedText: text }),
+    activeEditor: null,
+    setActiveEditor: (editor) => set({ activeEditor: editor }),
+
+    // Session stats & local storage implementation
+    sessionInputTokens: 0,
+    sessionOutputTokens: 0,
+    sessionCacheHitTokens: 0,
+    sessionCacheMissTokens: 0,
+    addSessionTokens: (input, output, cacheHit = 0) => set((state) => {
+      const hit = cacheHit
+      const miss = input - hit
+      return {
+        sessionInputTokens: state.sessionInputTokens + input,
+        sessionOutputTokens: state.sessionOutputTokens + output,
+        sessionCacheHitTokens: state.sessionCacheHitTokens + hit,
+        sessionCacheMissTokens: state.sessionCacheMissTokens + miss,
+      }
+    }),
+    resetSessionTokens: () => set({ 
+      sessionInputTokens: 0, 
+      sessionOutputTokens: 0,
+      sessionCacheHitTokens: 0,
+      sessionCacheMissTokens: 0
+    }),
   }
 })

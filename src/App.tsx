@@ -21,6 +21,7 @@ import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { useAppStore } from './store/useAppStore'
 import { streamLLM } from './services/llm'
 import type { LLMMessage } from './services/llm'
+import { diffHtml } from './utils/diff'
 
 // Fallback standard Gemini models
 const FALLBACK_GEMINI_MODELS = [
@@ -57,7 +58,15 @@ function App() {
     customSystemPrompts,
     activeSystemPromptId,
     setActiveSystemPromptId,
-    debugMode
+    debugMode,
+    selectedText,
+    activeEditor,
+    sessionInputTokens,
+    sessionOutputTokens,
+    sessionCacheHitTokens,
+    sessionCacheMissTokens,
+    addSessionTokens,
+    resetSessionTokens
   } = useAppStore()
 
   // Local UI state
@@ -67,6 +76,24 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
+  const [storageSize, setStorageSize] = useState('0.00 KB')
+
+  // Calculate total localStorage usage in bytes, then format to KB
+  const updateStorageSize = () => {
+    let total = 0
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i)
+      if (key) {
+        total += (key.length + (localStorage.getItem(key) || '').length) * 2
+      }
+    }
+    setStorageSize((total / 1024).toFixed(2) + ' KB')
+  }
+
+  // Update storage usage when documents, theme or LLM configurations change
+  useEffect(() => {
+    updateStorageSize()
+  }, [documents, theme, providerConfigs])
 
   const chatEndRef = useRef<HTMLDivElement>(null)
   const isResizingRef = useRef(false)
@@ -190,13 +217,18 @@ function App() {
   }, [])
 
   // Send message handler (streaming and parsing)
-  const handleSendMessage = async (e?: React.FormEvent) => {
+  const handleSendMessage = async (e?: React.FormEvent, customPrompt?: string) => {
     e?.preventDefault()
-    if (!chatInput.trim() || isStreaming) return
+    
+    const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
+    if (!promptText || isStreaming) return
 
     setErrorMsg(null)
-    const promptText = chatInput.trim()
-    setChatInput('')
+    const originalDocContent = activeDoc.content
+    
+    if (!customPrompt) {
+      setChatInput('')
+    }
 
     // 1. Scan user prompt for other chapter title mentions to automatically attach them
     const autoDetectedIds: string[] = []
@@ -256,6 +288,11 @@ function App() {
     const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
     const customPromptText = activePromptItem?.content || ''
 
+    // Construct selection context block
+    const selectionContext = selectedText
+      ? `\nCURRENT SELECTED TEXT IN ACTIVE DOCUMENT (Focus your edits ONLY on this section if the user instructs so):\n"""\n${selectedText}\n"""\n`
+      : ''
+
     // Create system instruction prompt
     const systemPrompt: LLMMessage = {
       role: 'system',
@@ -268,16 +305,12 @@ ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modi
 
 CRITICAL RULES:
 1. If your response updates the ACTIVE document, wrap the updated document text in a "<canvas>" XML block.
-   Example:
-   <canvas>
-   <h1>Title</h1>
-   <p>This is the updated document content.</p>
-   </canvas>
+   Make sure to return the FULL updated document inside "<canvas>", not just the selection or parts of it. Do not truncate the document.
 2. Write conversational feedback/explanations OUTSIDE the "<canvas>" tags for the chat panel.
-3. Make sure to return the FULL updated document inside "<canvas>", not just parts of it. Do not truncate the document.
-4. Output the document as clean HTML inside the "<canvas>" block (using tags like h1, h2, p, ul, ol, li, strong, em, blockquote, pre, code).
-5. If the user instruction is just conversational and does not require updating the document, DO NOT output any "<canvas>" block. Just write a conversational reply.
+3. Output the document as clean HTML inside the "<canvas>" block (using tags like h1, h2, p, ul, ol, li, strong, em, blockquote, pre, code).
+4. If the user instruction is just conversational and does not require updating the document, DO NOT output any "<canvas>" block. Just write a conversational reply.
 
+${selectionContext}
 CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
 """
 ${activeDoc.content}
@@ -299,6 +332,7 @@ ${activeDoc.content}
     })
 
     const apiMessages = [systemPrompt, ...historyMessages]
+    const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
     // Construct visual attachment text indicators
     const attachmentsText = finalReferenceIds
@@ -359,27 +393,44 @@ ${activeDoc.content}
               })
             )
 
-            // Update document if canvas text was extracted
+            // Update document in real-time with raw text stream
             if (canvasText.trim()) {
               updateActiveDocument({ content: canvasText })
             }
           },
-          onDone: (fullText: string) => {
+          onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
             setStreaming(false)
             // Clear reference attachments selection on submit completion
             clearReferences()
+
+            // Calculate final response output tokens using API metadata or fallback estimations
+            let finalInputTokens = estimatedInputTokens
+            let finalOutputTokens = Math.ceil(fullText.length / 4)
+            let cacheHits = 0
+
+            if (usage) {
+              finalInputTokens = usage.promptTokens
+              finalOutputTokens = usage.completionTokens
+              cacheHits = usage.cachedPromptTokens || 0
+            }
+
+            addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
 
             const canvasStart = '<canvas>'
             const canvasEnd = '</canvas>'
             const startIdx = fullText.indexOf(canvasStart)
             let finalChatText = ''
+            let finalCanvasText = ''
 
             if (startIdx !== -1) {
               finalChatText = fullText.substring(0, startIdx).trim()
               const rest = fullText.substring(startIdx + canvasStart.length)
               const endIdx = rest.indexOf(canvasEnd)
               if (endIdx !== -1) {
+                finalCanvasText = rest.substring(0, endIdx)
                 finalChatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
+              } else {
+                finalCanvasText = rest
               }
             } else {
               finalChatText = fullText
@@ -401,6 +452,12 @@ ${activeDoc.content}
                 return m
               })
             )
+
+            // Apply HTML-aware diff highlights on completion
+            if (finalCanvasText.trim()) {
+              const diffed = diffHtml(originalDocContent, finalCanvasText)
+              updateActiveDocument({ content: diffed })
+            }
           },
           onError: (err: Error) => {
             setStreaming(false)
@@ -422,6 +479,9 @@ ${activeDoc.content}
                 return m
               })
             )
+
+            // Revert document to original state before the edit attempt if error occurs
+            updateActiveDocument({ content: originalDocContent })
           }
         }
       )
@@ -431,9 +491,112 @@ ${activeDoc.content}
     }
   }
 
+  const hasPendingDiffs = activeDoc.content.includes('data-diff-id')
+
+  // Accept all additions and finalize all deletions in active document
+  const handleAcceptAllDiffs = () => {
+    if (activeEditor) {
+      const { state, view } = activeEditor
+      const { doc } = state
+      const tr = state.tr
+      const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
+
+      doc.descendants((node, pos) => {
+        if (node.isText) {
+          node.marks.forEach(mark => {
+            if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
+              changes.push({
+                from: pos,
+                to: pos + node.nodeSize,
+                type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
+              })
+            }
+          })
+        }
+      })
+
+      changes.sort((a, b) => b.from - a.from)
+      changes.forEach(change => {
+        if (change.type === 'addition') {
+          tr.removeMark(change.from, change.to, state.schema.marks.diffAddition)
+        } else {
+          tr.delete(change.from, change.to)
+        }
+      })
+      view.dispatch(tr)
+      updateActiveDocument({ content: activeEditor.getHTML() })
+    } else {
+      const cleaned = activeDoc.content
+        .replace(/<ins[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/ins>/g, '$1')
+        .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '')
+      updateActiveDocument({ content: cleaned })
+    }
+  }
+
+  // Reject all additions and restore all deleted text in active document
+  const handleRejectAllDiffs = () => {
+    if (activeEditor) {
+      const { state, view } = activeEditor
+      const { doc } = state
+      const tr = state.tr
+      const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
+
+      doc.descendants((node, pos) => {
+        if (node.isText) {
+          node.marks.forEach(mark => {
+            if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
+              changes.push({
+                from: pos,
+                to: pos + node.nodeSize,
+                type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
+              })
+            }
+          })
+        }
+      })
+
+      changes.sort((a, b) => b.from - a.from)
+      changes.forEach(change => {
+        if (change.type === 'addition') {
+          tr.delete(change.from, change.to)
+        } else {
+          tr.removeMark(change.from, change.to, state.schema.marks.diffDeletion)
+        }
+      })
+      view.dispatch(tr)
+      updateActiveDocument({ content: activeEditor.getHTML() })
+    } else {
+      const cleaned = activeDoc.content
+        .replace(/<ins[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/ins>/g, '')
+        .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '$1')
+      updateActiveDocument({ content: cleaned })
+    }
+  }
+
+  // Route editor selection quick action toolbar commands to LLM
+  const handleQuickAction = async (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
+    let prompt = ''
+    switch (action) {
+      case 'rewrite':
+        prompt = 'Rewrite the selected text to make it flow better and sound more professional.'
+        break
+      case 'shorten':
+        prompt = 'Make the selected text more concise and to the point.'
+        break
+      case 'expand':
+        prompt = 'Elaborate on the selected text, adding more detail and depth.'
+        break
+      case 'grammar':
+        prompt = 'Fix any spelling, grammar, or punctuation errors in the selected text.'
+        break
+    }
+    await handleSendMessage(undefined, prompt)
+  }
+
   // Clear chat handler
   const handleClearChat = () => {
     clearChat()
+    resetSessionTokens()
   }
 
   // Toggle theme helper
@@ -724,15 +887,50 @@ ${activeDoc.content}
             </div>
           </div>
 
+          {hasPendingDiffs && (
+            <div className="diff-review-banner">
+              <span className="diff-banner-text">Review proposed edits to this chapter:</span>
+              <div className="diff-banner-actions">
+                <button 
+                  onClick={handleAcceptAllDiffs} 
+                  className="diff-banner-btn accept"
+                  type="button"
+                >
+                  Accept All
+                </button>
+                <button 
+                  onClick={handleRejectAllDiffs} 
+                  className="diff-banner-btn reject"
+                  type="button"
+                >
+                  Reject All
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="canvas-editor-container">
             <Editor 
               content={activeDoc.content} 
               onChange={(html) => updateActiveDocument({ content: html })} 
+              onQuickAction={handleQuickAction}
             />
           </div>
 
           <footer className="canvas-footer">
-            <div>Words: {activeDoc.content.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length}</div>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              <span>Words: {activeDoc.content.replace(/<[^>]*>/g, ' ').split(/\s+/).filter(Boolean).length}</span>
+              <span style={{ opacity: 0.3 }}>|</span>
+              <span>
+                Session Tokens: In: {sessionInputTokens.toLocaleString()} 
+                <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
+                  (Hit: {sessionCacheHitTokens.toLocaleString()} / Miss: {sessionCacheMissTokens.toLocaleString()})
+                </span> 
+                / Out: {sessionOutputTokens.toLocaleString()}
+              </span>
+              <span style={{ opacity: 0.3 }}>|</span>
+              <span>Storage: {storageSize}</span>
+            </div>
             <div>Active Chapter: {activeDoc.title}</div>
           </footer>
         </section>

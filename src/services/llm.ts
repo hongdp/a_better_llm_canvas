@@ -7,7 +7,7 @@ export interface LLMMessage {
 
 export interface StreamCallbacks {
   onChunk: (chunk: string) => void
-  onDone: (fullText: string) => void
+  onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => void
   onError: (error: Error) => void
 }
 
@@ -47,11 +47,11 @@ export async function streamLLM(
       }
       callbacks.onChunk(chunk)
     },
-    onDone: (fullText: string) => {
+    onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
       if (debug) {
-        console.log('[DEBUG] LLM Stream Completed. Full Response Text:', fullText)
+        console.log('[DEBUG] LLM Stream Completed. Full Response Text:', fullText, 'Usage:', usage)
       }
-      callbacks.onDone(fullText)
+      callbacks.onDone(fullText, usage)
     },
     onError: (err: Error) => {
       if (debug) {
@@ -105,6 +105,12 @@ async function streamOpenAI(
 
   if (config.maxOutputTokens) {
     body['max_tokens'] = config.maxOutputTokens
+  }
+
+  // Check if Ollama by checking baseUrl or apiKey
+  const isOllama = config.apiKey === 'ollama-no-key' || config.baseUrl.includes('localhost') || config.baseUrl.includes('127.0.0.1');
+  if (!isOllama) {
+    body['stream_options'] = { include_usage: true }
   }
 
   if (config.debug) {
@@ -200,6 +206,8 @@ async function streamGemini(
   let buffer = ''
   let fullText = ''
 
+  let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number } | undefined
+
   try {
     while (true) {
       const { value, done } = await reader.read()
@@ -236,12 +244,39 @@ async function streamGemini(
               const jsonStr = buffer.substring(startIdx, i + 1)
               try {
                 const chunkJson = JSON.parse(jsonStr)
-                const text = chunkJson.candidates?.[0]?.content?.parts?.[0]?.text
-                if (text) {
-                  callbacks.onChunk(text)
-                  fullText += text
+
+                // Detect prompt-level safety blocks (e.g. prohibited content)
+                if (chunkJson.promptFeedback?.blockReason) {
+                  throw new Error(`Content generation blocked by safety policy: ${chunkJson.promptFeedback.blockReason}`)
+                }
+
+                if (chunkJson.usageMetadata) {
+                  const meta = chunkJson.usageMetadata
+                  usage = {
+                    promptTokens: meta.promptTokenCount || 0,
+                    completionTokens: meta.candidatesTokenCount || 0,
+                    cachedPromptTokens: meta.cachedContentTokenCount || 0
+                  }
+                }
+
+                const candidate = chunkJson.candidates?.[0]
+                if (candidate) {
+                  // Detect response-level safety blocks or abnormal termination (e.g. SAFETY, RECITATION)
+                  if (candidate.finishReason && !['STOP', 'MAX_TOKENS'].includes(candidate.finishReason)) {
+                    throw new Error(`Content generation blocked or terminated abnormally: ${candidate.finishReason}`)
+                  }
+
+                  const text = candidate.content?.parts?.[0]?.text
+                  if (text) {
+                    callbacks.onChunk(text)
+                    fullText += text
+                  }
                 }
               } catch (e) {
+                // Propagate safety blocks and custom API errors to trigger onError
+                if (e instanceof Error && (e.message.includes('blocked') || e.message.includes('terminated'))) {
+                  throw e
+                }
                 // Ignore incomplete parse errors
               }
               // Advance buffer
@@ -254,7 +289,7 @@ async function streamGemini(
       }
     }
 
-    callbacks.onDone(fullText)
+    callbacks.onDone(fullText, usage)
   } catch (error) {
     callbacks.onError(error instanceof Error ? error : new Error(String(error)))
   }
@@ -332,6 +367,41 @@ async function readSSEStream(
   let fullText = ''
   let currentEvent = ''
 
+  let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number } | undefined = undefined
+  let anthropicInputTokens = 0
+  let anthropicOutputTokens = 0
+  let anthropicCachedPromptTokens = 0
+
+  const processDataLine = (dataContent: string) => {
+    try {
+      const parsed = JSON.parse(dataContent)
+      const text = parsed.choices?.[0]?.delta?.content || parsed.delta?.text || ''
+      fullText += text
+
+      // Parse OpenAI usage
+      if (parsed.usage) {
+        usage = {
+          promptTokens: parsed.usage.prompt_tokens || 0,
+          completionTokens: parsed.usage.completion_tokens || 0,
+          cachedPromptTokens: parsed.usage.prompt_tokens_details?.cached_tokens || 0
+        }
+      }
+      
+      // Parse Anthropic usage
+      if (parsed.type === 'message_start' && parsed.message?.usage) {
+        const u = parsed.message.usage
+        anthropicInputTokens = u.input_tokens || 0
+        anthropicOutputTokens += u.output_tokens || 0
+        anthropicCachedPromptTokens = u.cache_read_input_tokens || 0
+      } else if (parsed.type === 'message_delta' && parsed.usage) {
+        const u = parsed.usage
+        anthropicOutputTokens += u.output_tokens || 0
+      }
+    } catch (e) {
+      // Not all data payloads are standard delta jsons
+    }
+  }
+
   try {
     while (true) {
       const { value, done } = await reader.read()
@@ -352,15 +422,7 @@ async function readSSEStream(
         } else if (trimmed.startsWith('data:')) {
           const dataContent = trimmed.slice(5).trim()
           onData(dataContent, currentEvent)
-          
-          // Try to append delta content to fullText for callbacks.onDone
-          try {
-            const parsed = JSON.parse(dataContent)
-            const text = parsed.choices?.[0]?.delta?.content || parsed.delta?.text || ''
-            fullText += text
-          } catch (e) {
-            // Not all data payloads are standard delta jsons
-          }
+          processDataLine(dataContent)
         }
       }
     }
@@ -369,9 +431,18 @@ async function readSSEStream(
     if (buffer && buffer.startsWith('data:')) {
       const dataContent = buffer.slice(5).trim()
       onData(dataContent, currentEvent)
+      processDataLine(dataContent)
     }
 
-    callbacks.onDone(fullText)
+    if (anthropicInputTokens > 0 || anthropicOutputTokens > 0) {
+      usage = {
+        promptTokens: anthropicInputTokens,
+        completionTokens: anthropicOutputTokens,
+        cachedPromptTokens: anthropicCachedPromptTokens
+      }
+    }
+
+    callbacks.onDone(fullText, usage)
   } catch (error) {
     callbacks.onError(error instanceof Error ? error : new Error(String(error)))
   }

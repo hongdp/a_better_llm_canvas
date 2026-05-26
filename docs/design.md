@@ -323,22 +323,22 @@ For documents exceeding the model's context window:
 - [x] Document editing: LLM output replaces / appends to canvas content
 
 ### M3 — Inline Editing (Week 3)
-- [ ] Selection-aware prompting (send selected text as context)
-- [ ] Diff rendering in the editor (additions/deletions)
-- [ ] Accept / reject per-change
-- [ ] Quick action toolbar on text selection
+- [x] Selection-aware prompting (send selected text as context)
+- [x] Diff rendering in the editor (additions/deletions)
+- [x] Accept / reject per-change
+- [x] Quick action toolbar on text selection
 
 ### M4 — Polish & History (Week 4)
 - [ ] Version history manager (snapshots, restore)
-- [ ] Auto-save to localStorage
+- [x] Auto-save to localStorage
 - [ ] Export to Markdown / plain text / HTML
-- [ ] Settings panel (provider config, model selection, theme)
+- [x] Settings panel (provider config, model selection, theme)
 - [ ] Responsive layout for tablet/mobile
 
 ### M5 — Multi-Provider & Beyond (Week 5+)
-- [ ] Gemini provider
-- [ ] Anthropic provider
-- [ ] Ollama provider
+- [x] Gemini provider
+- [x] Anthropic provider
+- [x] Ollama provider
 - [ ] Import from file
 - [ ] Keyboard shortcuts
 - [ ] PDF export
@@ -387,3 +387,5 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Gemini Safety Settings Configuration | Added safety block threshold selectors in the Settings Modal for Harassment, Hate Speech, Sexually Explicit, and Dangerous Content categories, passing them dynamically to Gemini's stream request. |
 | 2026-05-25 | Configurable Max Output Tokens | Added `maxOutputTokens` field to ProviderConfigs, defaulting to 16,384 tokens to avoid premature text truncation, with UI controls in the Settings Modal allowing settings up to 65,536 tokens. |
 | 2026-05-25 | Prioritize LocalStorage Settings with Cookie Fallback | Migrated settings (theme, provider configs, custom prompts, active provider/prompt, debug mode) to prioritize LocalStorage storage. Retained cookies as synchronized fallbacks. Optimized prompts cookie space by saving only custom/modified presets. |
+| 2026-05-25 | Inline Editing & Diff Review System (Milestone 3) | Implemented selection-aware prompts, token-based HTML diffing, TipTap mark extensions (ins/del), floating bubble menu actions, and bulk accept/reject review banners. |
+
