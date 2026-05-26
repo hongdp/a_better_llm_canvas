@@ -699,20 +699,34 @@ ${activeDoc.content}
   }
 
   // Export document handler
-  const handleExport = (format: 'html' | 'markdown' | 'txt') => {
+  const handleExport = (format: 'html' | 'markdown' | 'txt', exportAll: boolean) => {
     const element = document.createElement("a")
     let content = ''
     let filename = ''
     let mimeType = ''
     
-    const baseFilename = activeDoc.title.toLowerCase().replace(/\s+/g, '-')
+    const baseFilename = exportAll 
+      ? 'all-chapters-combined' 
+      : activeDoc.title.toLowerCase().replace(/\s+/g, '-')
 
     if (format === 'html') {
+      let bodyContent = ''
+      if (exportAll) {
+        documents.forEach((doc, idx) => {
+          bodyContent += `<h1>${doc.title}</h1>\n${doc.content}\n`
+          if (idx < documents.length - 1) {
+            bodyContent += `<hr style="margin: 3rem 0; border: none; border-top: 1px solid #cbd5e1;" />\n`
+          }
+        })
+      } else {
+        bodyContent = activeDoc.content
+      }
+
       content = `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>${activeDoc.title}</title>
+  <title>${exportAll ? 'All Chapters Combined' : activeDoc.title}</title>
   <style>
     body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; color: #1e293b; max-width: 740px; margin: 2rem auto; padding: 0 1rem; }
     h1, h2, h3 { color: #0f172a; }
@@ -722,17 +736,35 @@ ${activeDoc.content}
   </style>
 </head>
 <body>
-  ${activeDoc.content}
+  ${bodyContent}
 </body>
 </html>`
       filename = `${baseFilename}.html`
       mimeType = 'text/html'
     } else if (format === 'markdown') {
-      content = htmlToMarkdown(activeDoc.content)
+      if (exportAll) {
+        documents.forEach((doc, idx) => {
+          content += `# ${doc.title}\n\n${htmlToMarkdown(doc.content)}\n`
+          if (idx < documents.length - 1) {
+            content += `\n---\n\n`
+          }
+        })
+      } else {
+        content = htmlToMarkdown(activeDoc.content)
+      }
       filename = `${baseFilename}.md`
       mimeType = 'text/markdown'
     } else {
-      content = htmlToPlainText(activeDoc.content)
+      if (exportAll) {
+        documents.forEach((doc, idx) => {
+          content += `${doc.title}\n${'='.repeat(doc.title.length)}\n\n${htmlToPlainText(doc.content)}\n`
+          if (idx < documents.length - 1) {
+            content += `\n\n\n`
+          }
+        })
+      } else {
+        content = htmlToPlainText(activeDoc.content)
+      }
       filename = `${baseFilename}.txt`
       mimeType = 'text/plain'
     }
@@ -1080,42 +1112,83 @@ ${activeDoc.content}
                           top: 'calc(100% + 6px)',
                           display: 'flex',
                           flexDirection: 'column',
-                          width: '160px',
+                          width: '200px',
                           borderRadius: '8px',
                           boxShadow: 'var(--shadow-lg)',
                           zIndex: 30,
-                          padding: '4px'
+                          padding: '6px'
                         }}
                       >
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', padding: '4px 8px', fontWeight: 600 }}>Active Chapter</div>
                         <button
                           onClick={() => {
-                            handleExport('html')
+                            handleExport('html', false)
                             setIsExportDropdownOpen(false)
                           }}
                           className="dropdown-item"
                           type="button"
+                          style={{ paddingLeft: '12px' }}
                         >
-                          Export as HTML
+                          HTML (.html)
                         </button>
                         <button
                           onClick={() => {
-                            handleExport('markdown')
+                            handleExport('markdown', false)
                             setIsExportDropdownOpen(false)
                           }}
                           className="dropdown-item"
                           type="button"
+                          style={{ paddingLeft: '12px' }}
                         >
-                          Export as Markdown
+                          Markdown (.md)
                         </button>
                         <button
                           onClick={() => {
-                            handleExport('txt')
+                            handleExport('txt', false)
                             setIsExportDropdownOpen(false)
                           }}
                           className="dropdown-item"
                           type="button"
+                          style={{ paddingLeft: '12px' }}
                         >
-                          Export as Text
+                          Plain Text (.txt)
+                        </button>
+
+                        <div style={{ height: '1px', backgroundColor: 'var(--border-color)', margin: '4px 0' }} />
+
+                        <div style={{ fontSize: '0.75rem', color: 'var(--text-secondary)', padding: '4px 8px', fontWeight: 600 }}>All Chapters (Combined)</div>
+                        <button
+                          onClick={() => {
+                            handleExport('html', true)
+                            setIsExportDropdownOpen(false)
+                          }}
+                          className="dropdown-item"
+                          type="button"
+                          style={{ paddingLeft: '12px' }}
+                        >
+                          HTML (.html)
+                        </button>
+                        <button
+                          onClick={() => {
+                            handleExport('markdown', true)
+                            setIsExportDropdownOpen(false)
+                          }}
+                          className="dropdown-item"
+                          type="button"
+                          style={{ paddingLeft: '12px' }}
+                        >
+                          Markdown (.md)
+                        </button>
+                        <button
+                          onClick={() => {
+                            handleExport('txt', true)
+                            setIsExportDropdownOpen(false)
+                          }}
+                          className="dropdown-item"
+                          type="button"
+                          style={{ paddingLeft: '12px' }}
+                        >
+                          Plain Text (.txt)
                         </button>
                       </div>
                     )}
