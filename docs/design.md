@@ -128,6 +128,12 @@ Click "Restore" → Document reverts to that version
 | Error handling | Graceful handling of rate limits, network errors, malformed responses |
 | Streaming | Server-Sent Events / fetch streaming for real-time token delivery |
 
+##### Model Discovery & Resolution Policy
+When integrating new LLM providers, developers **must** prioritize retrieving models dynamically from the provider's official model discovery endpoint (e.g. `/v1/models`) upon boot or credential updates.
+- A static list of fallback models (`FALLBACK_<PROVIDER>_MODELS`) must be maintained in the codebase.
+- The app will automatically attempt a dynamic fetch if credentials are present, falling back to the static list if the request fails or credentials are unset.
+- Retrieved models must be synchronized to the global store so that both app headers and configurations settings modals render them dynamically.
+
 #### 3.2.4 Document Store
 | Responsibility | Details |
 |---------------|---------|
@@ -478,4 +484,5 @@ Record significant design decisions here as the project evolves.
 | 2026-05-25 | Revert & Edit Past Chat & Selection Replacement (Milestone 6) | Implemented capability to edit and resubmit past user prompts, truncating history from that point. Upgraded the streaming engine to parse and splice selection-replace token optimization blocks directly into the active editor range, computing and applying HTML diffs on completion. |
 | 2026-05-26 | Cross-Device Optimization & Collapsible Chat Drawer (Milestone 7) | Implemented local storage server-side serialization with `--storage-dir` CLI flag support. Refactored layout architecture into a 4-state dynamic layout engine (`desktop` | `portrait` | `landscape` | `tablet-square`). Configured mobile landscape/tablet layouts as side-by-side splits with collapsible sidebars and overlay drawers. Designed and implemented mobile portrait layout as a vertical stack: Editor in main viewport and a collapsible/expandable Chat drawer toolbar at the bottom that automatically slides up on generation and keeps selection editing fully functional. |
 | 2026-05-26 | Transactional Storage Synchronization Safety | Ensured that pulling server data to sync to local only occurs on post-login selection or manual pull trigger. Added execution safety to prevent concurrent modifications by canceling pending `saveTimeout` debounced writes and pausing auto-save state listeners during pulls. |
+| 2026-05-26 | Dynamic Model Discovery Policy & Grok Dynamic Fetching | Added availableGrokModels state to the store and integrated dynamic model fetching for Grok (/v1/models) in both the header and Settings Modal. Established developer guidelines to prioritize model-discovery APIs and fallback to static lists for all future provider integrations. |
 

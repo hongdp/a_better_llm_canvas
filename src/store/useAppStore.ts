@@ -7,7 +7,7 @@ export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet'],
   ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
-  grok: ['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
+  grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
 }
 
 const safeLocalStorage = {
@@ -139,6 +139,8 @@ interface AppState {
   updateProviderConfig: (provider: LLMProvider, config: Partial<ProviderConfig>) => void
   availableGeminiModels: string[]
   setAvailableGeminiModels: (models: string[]) => void
+  availableGrokModels: string[]
+  setAvailableGrokModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
 
@@ -879,6 +881,7 @@ export const useAppStore = create<AppState>((set) => {
     activeProvider: loadSavedProvider(),
     providerConfigs: loadSavedConfigs(),
     availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
+    availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
     setProvider: (provider) => {
       localStorage.setItem('web_canvas_active_provider', provider)
       setCookie('__Secure-web_canvas_active_provider', provider)
@@ -886,6 +889,9 @@ export const useAppStore = create<AppState>((set) => {
     },
     setAvailableGeminiModels: (models) => {
       set({ availableGeminiModels: models })
+    },
+    setAvailableGrokModels: (models) => {
+      set({ availableGrokModels: models })
     },
     updateProviderConfig: (provider, newConfig) => {
       set((state) => {

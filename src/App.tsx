@@ -42,6 +42,16 @@ const FALLBACK_GEMINI_MODELS = [
   'gemini-1.5-flash-8b'
 ]
 
+// Fallback standard Grok models
+const FALLBACK_GROK_MODELS = [
+  'grok-4.3',
+  'grok-build-0.1',
+  'grok-3',
+  'grok-2',
+  'grok-2-vision',
+  'grok-beta'
+]
+
 function getTimestampId(prefix: string) {
   return `${prefix}-${Date.now()}`
 }
@@ -76,6 +86,8 @@ function App() {
     updateProviderConfig,
     availableGeminiModels,
     setAvailableGeminiModels,
+    availableGrokModels,
+    setAvailableGrokModels,
     messages,
     addMessage,
     clearChat,
@@ -129,7 +141,6 @@ function App() {
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [isLoadingModels, setIsLoadingModels] = useState(false)
-  const [availableGrokModels, setAvailableGrokModels] = useState<string[]>(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
   const [storageSize, setStorageSize] = useState('0.00 KB')
 
   // Revert & Edit Past Message state
@@ -321,7 +332,7 @@ function App() {
   useEffect(() => {
     const fetchGrokModels = async () => {
       if (!grokApiKey) {
-        setAvailableGrokModels(['grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'])
+        setAvailableGrokModels(FALLBACK_GROK_MODELS)
         return
       }
       try {
@@ -354,7 +365,7 @@ function App() {
       }
     }
     fetchGrokModels()
-  }, [grokApiKey, grokBaseUrl, updateProviderConfig, grokConfig.model])
+  }, [grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
 
   // Horizontal resizing handlers
   const startResizing = (e: React.MouseEvent) => {
