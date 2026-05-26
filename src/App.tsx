@@ -404,7 +404,7 @@ function App() {
     finalReferenceIds.forEach(refId => {
       const refDoc = documents.find(d => d.id === refId)
       if (refDoc) {
-        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\n${refDoc.content}\n"""\n`
+        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\nTitle: ${refDoc.title}\nContent:\n${refDoc.content}\n"""\n`
       }
     })
 
