@@ -15,7 +15,9 @@ import {
   Paperclip,
   X,
   Save,
-  SquarePen
+  SquarePen,
+  ChevronDown,
+  MessageSquare
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
@@ -119,7 +121,7 @@ function App() {
   const [layoutMode, setLayoutMode] = useState<'desktop' | 'portrait' | 'landscape' | 'tablet-square'>(
     getLayoutMode(window.innerWidth, window.innerHeight)
   )
-  const [activeMobileTab, setActiveMobileTab] = useState<'chat' | 'editor'>('editor')
+  const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
@@ -683,6 +685,10 @@ ${activeDoc.content}
     const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
     if (!promptText || isStreaming) return
 
+    if (layoutMode === 'portrait') {
+      setIsChatExpanded(true)
+    }
+
     setErrorMsg(null)
     const originalDocContent = activeDoc.content
     
@@ -774,6 +780,10 @@ ${activeDoc.content}
   const handleResubmitMessage = async (msgId: string, newContent: string) => {
     const trimmed = newContent.trim()
     if (!trimmed || isStreaming) return
+
+    if (layoutMode === 'portrait') {
+      setIsChatExpanded(true)
+    }
 
     setEditingMessageId(null)
     setErrorMsg(null)
@@ -1199,26 +1209,6 @@ ${activeDoc.content}
         </div>
       </header>
 
-      {/* Mobile Tab Switcher */}
-      {layoutMode === 'portrait' && (
-        <div className="mobile-tabs-bar">
-          <button 
-            onClick={() => setActiveMobileTab('chat')} 
-            className={`mobile-tab-btn ${activeMobileTab === 'chat' ? 'active' : ''}`}
-            type="button"
-          >
-            Assistant Chat
-          </button>
-          <button 
-            onClick={() => setActiveMobileTab('editor')} 
-            className={`mobile-tab-btn ${activeMobileTab === 'editor' ? 'active' : ''}`}
-            type="button"
-          >
-            Document Editor
-          </button>
-        </div>
-      )}
-
       {/* Main split work area */}
       <main className="app-main">
         {/* Chapters Left Sidebar */}
@@ -1239,9 +1229,8 @@ ${activeDoc.content}
         )}
 
         {/* Resizable Chat Panel */}
-        {(layoutMode !== 'portrait' || activeMobileTab === 'chat') && (
-          <section 
-            className="chat-panel" 
+        <section 
+          className={`chat-panel ${isChatExpanded ? 'expanded' : ''}`} 
             style={{ 
               width: layoutMode === 'portrait' 
                 ? '100%' 
@@ -1386,6 +1375,17 @@ ${activeDoc.content}
 
             <form onSubmit={handleSendMessage} className="chat-input-container">
               <div className="chat-input-wrapper">
+                {layoutMode === 'portrait' && (
+                  <button
+                    type="button"
+                    onClick={() => setIsChatExpanded(!isChatExpanded)}
+                    className={`btn-icon chat-expand-toggle-btn ${isChatExpanded ? 'expanded' : ''}`}
+                    title={isChatExpanded ? "Collapse Chat History" : "Expand Chat History"}
+                    style={{ marginRight: '0.25rem', padding: '0.25rem' }}
+                  >
+                    {isChatExpanded ? <ChevronDown size={18} /> : <MessageSquare size={18} />}
+                  </button>
+                )}
                 <textarea
                   value={chatInput}
                   onChange={e => setChatInput(e.target.value)}
@@ -1415,7 +1415,6 @@ ${activeDoc.content}
               </div>
             </form>
           </section>
-        )}
 
         {/* Resizing Divider Gutter */}
         {layoutMode === 'desktop' && (
@@ -1426,8 +1425,7 @@ ${activeDoc.content}
         )}
 
         {/* Right Side: Document Canvas Panel */}
-        {(layoutMode !== 'portrait' || activeMobileTab === 'editor') && (
-          <section className="canvas-panel" style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', overflow: 'hidden' }}>
+        <section className="canvas-panel" style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', overflow: 'hidden' }}>
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', overflow: 'hidden' }}>
               <div className="canvas-header">
                 <div className="canvas-title-wrapper">
@@ -1710,7 +1708,6 @@ ${activeDoc.content}
               </div>
             </aside>
           </section>
-        )}
       </main>
 
       {/* Settings Modal Overlay */}
