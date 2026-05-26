@@ -12,7 +12,9 @@ export const ChaptersSidebar: React.FC = () => {
     addDocument,
     importAllDocuments,
     deleteDocument,
-    toggleSidebar
+    toggleSidebar,
+    bookTitle,
+    setBookTitle
   } = useAppStore()
 
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
@@ -155,6 +157,23 @@ export const ChaptersSidebar: React.FC = () => {
         >
           <ChevronLeft size={16} />
         </button>
+      </div>
+
+      <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+        <label style={{ fontSize: '0.7rem', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Book Title</label>
+        <input
+          type="text"
+          value={bookTitle}
+          onChange={(e) => setBookTitle(e.target.value)}
+          placeholder="Untitled Book"
+          className="form-input"
+          style={{
+            width: '100%',
+            fontSize: '0.85rem',
+            padding: '0.35rem 0.55rem',
+            height: 'auto'
+          }}
+        />
       </div>
 
       <div className="chapters-list">

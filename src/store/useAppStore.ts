@@ -58,6 +58,8 @@ interface AppState {
   activeDocumentId: string
   isSidebarOpen: boolean
   selectedReferenceIds: string[]
+  bookTitle: string
+  setBookTitle: (title: string) => void
   
   setActiveDocumentId: (id: string) => void
   addDocument: (title?: string, content?: string) => string
@@ -544,6 +546,11 @@ export const useAppStore = create<AppState>((set) => {
     activeDocumentId: initialActiveId,
     isSidebarOpen: loadSavedSidebarOpen(),
     selectedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.selectedReferenceIds || [],
+    bookTitle: localStorage.getItem('web_canvas_book_title') || 'Untitled Book',
+    setBookTitle: (title) => {
+      localStorage.setItem('web_canvas_book_title', title)
+      set({ bookTitle: title })
+    },
 
     setActiveDocumentId: (id) => {
       localStorage.setItem('web_canvas_active_document_id', id)

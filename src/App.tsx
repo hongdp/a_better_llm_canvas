@@ -81,7 +81,8 @@ function App() {
     versions,
     createVersionSnapshot,
     restoreVersion,
-    deleteVersionSnapshot
+    deleteVersionSnapshot,
+    bookTitle
   } = useAppStore()
 
   // Local UI state
@@ -706,9 +707,10 @@ ${activeDoc.content}
     let filename = ''
     let mimeType = ''
     
+    const slugifiedBookTitle = bookTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'book'
     const baseFilename = exportAll 
-      ? 'all-chapters-combined' 
-      : activeDoc.title.toLowerCase().replace(/\s+/g, '-')
+      ? slugifiedBookTitle 
+      : `${slugifiedBookTitle}-${activeDoc.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')}`
 
     if (format === 'html') {
       let bodyContent = ''
