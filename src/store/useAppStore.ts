@@ -144,15 +144,15 @@ const setCookie = (name: string, value: string, days = 365) => {
 
 const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
   openai: {
-    apiKey: '',
-    model: 'gpt-4o',
-    baseUrl: 'https://api.openai.com/v1',
+    apiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
+    model: import.meta.env.VITE_OPENAI_MODEL || 'gpt-4o',
+    baseUrl: import.meta.env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1',
     maxOutputTokens: 16384,
   },
   gemini: {
-    apiKey: '',
-    model: 'gemini-1.5-pro',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
+    apiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
+    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-pro',
+    baseUrl: import.meta.env.VITE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
     geminiSafetySettings: [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
       { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
@@ -162,24 +162,25 @@ const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     maxOutputTokens: 16384,
   },
   anthropic: {
-    apiKey: '',
-    model: 'claude-3-5-sonnet',
-    baseUrl: 'https://api.anthropic.com/v1',
+    apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY || '',
+    model: import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-3-5-sonnet',
+    baseUrl: import.meta.env.VITE_ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
     maxOutputTokens: 16384,
   },
   ollama: {
-    apiKey: 'ollama-no-key',
-    model: 'llama3',
-    baseUrl: 'http://localhost:11434/v1',
+    apiKey: import.meta.env.VITE_OLLAMA_API_KEY || 'ollama-no-key',
+    model: import.meta.env.VITE_OLLAMA_MODEL || 'llama3',
+    baseUrl: import.meta.env.VITE_OLLAMA_BASE_URL || 'http://localhost:11434/v1',
     maxOutputTokens: 16384,
   },
   grok: {
-    apiKey: '',
-    model: 'grok-3',
-    baseUrl: 'https://api.x.ai/v1',
+    apiKey: import.meta.env.VITE_GROK_API_KEY || '',
+    model: import.meta.env.VITE_GROK_MODEL || 'grok-3',
+    baseUrl: import.meta.env.VITE_GROK_BASE_URL || 'https://api.x.ai/v1',
     maxOutputTokens: 16384,
   },
 }
+
 
 const MOCK_DOCUMENTS: CanvasDocument[] = [
   {

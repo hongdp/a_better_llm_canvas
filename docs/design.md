@@ -346,6 +346,13 @@ For documents exceeding the model's context window:
 - [x] Add capability to revert and edit the past chat user input. 
 - [x] Improve output token efficiency when using selected edit to allow LLM to decide only output modification to the selected text, not whole document. 
 
+### M7 — Cross Device optimization.
+- [ ] When the UI get started, allow a start up flag to set a local server directory to store the local storage data. This allows cross session materialization.
+- [x] Create two version of the configs, use the local one that contains the actual config related to the local enviorment, but commit only the version that shown as example to others that need to use this repo.
+- [ ] Come up with a design of Mobile UI, adapting to portrait, landscape and square aspect ratio.
+- [ ] Implement the mobile friendly UI while keeping all the functionality of the desktop web version.
+
+
 ---
 
 ## 9. Open Questions
