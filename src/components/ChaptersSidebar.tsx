@@ -29,7 +29,7 @@ export const ChaptersSidebar: React.FC = () => {
     setLocalBookTitle(bookTitle)
   }, [bookTitle])
 
-  if (!isSidebarOpen) return null
+  // Render sidebar container always to support smooth CSS slide transitions
 
   const handleAddDoc = () => {
     const chapterNum = documents.length + 1

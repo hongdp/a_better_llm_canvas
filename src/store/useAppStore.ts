@@ -929,3 +929,66 @@ export const useAppStore = create<AppState>((set) => {
     }),
   }
 })
+
+let isInitialized = false
+
+export const initializeStoreFromServer = async () => {
+  try {
+    const res = await fetch('/api/storage')
+    if (res.ok) {
+      const data = await res.json()
+      if (data && typeof data === 'object' && Object.keys(data).length > 0) {
+        const updates: Partial<AppState> = {}
+
+        if (data.documents) updates.documents = data.documents
+        if (data.versions) updates.versions = data.versions
+        if (data.bookTitle) updates.bookTitle = data.bookTitle
+        if (data.activeDocumentId) updates.activeDocumentId = data.activeDocumentId
+        if (data.activeProvider) updates.activeProvider = data.activeProvider
+        if (data.providerConfigs) updates.providerConfigs = data.providerConfigs
+        if (data.customSystemPrompts) updates.customSystemPrompts = data.customSystemPrompts
+        if (data.activeSystemPromptId) updates.activeSystemPromptId = data.activeSystemPromptId
+        if (data.theme) updates.theme = data.theme
+        if (data.messages) updates.messages = data.messages
+        if (data.debugMode !== undefined) updates.debugMode = data.debugMode
+
+        useAppStore.setState(updates)
+      }
+    }
+  } catch (e) {
+    console.log('Local storage API not available, using client-side fallback only.', e)
+  } finally {
+    isInitialized = true
+  }
+}
+
+let saveTimeout: ReturnType<typeof setTimeout> | null = null
+useAppStore.subscribe((state) => {
+  if (!isInitialized) return
+
+  if (saveTimeout) clearTimeout(saveTimeout)
+  saveTimeout = setTimeout(async () => {
+    try {
+      await fetch('/api/storage', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documents: state.documents,
+          versions: state.versions,
+          bookTitle: state.bookTitle,
+          activeDocumentId: state.activeDocumentId,
+          activeProvider: state.activeProvider,
+          providerConfigs: state.providerConfigs,
+          customSystemPrompts: state.customSystemPrompts,
+          activeSystemPromptId: state.activeSystemPromptId,
+          theme: state.theme,
+          messages: state.messages,
+          debugMode: state.debugMode
+        })
+      })
+    } catch {
+      // Server storage API not running
+    }
+  }, 1000)
+})
+

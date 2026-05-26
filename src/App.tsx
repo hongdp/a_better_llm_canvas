@@ -108,7 +108,17 @@ function App() {
   const [chatWidth, setChatWidth] = useState(380)
   const [isResizing, setIsResizing] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
-  const [isMobile, setIsMobile] = useState(window.innerWidth < 768)
+  const getLayoutMode = (width: number, height: number): 'desktop' | 'portrait' | 'landscape' | 'tablet-square' => {
+    if (width >= 1024) return 'desktop'
+    if (width > height && height < 500) return 'landscape'
+    const ratio = width / height
+    if (ratio >= 0.75 && ratio <= 1.35) return 'tablet-square'
+    return 'portrait'
+  }
+
+  const [layoutMode, setLayoutMode] = useState<'desktop' | 'portrait' | 'landscape' | 'tablet-square'>(
+    getLayoutMode(window.innerWidth, window.innerHeight)
+  )
   const [activeMobileTab, setActiveMobileTab] = useState<'chat' | 'editor'>('editor')
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
@@ -188,7 +198,7 @@ function App() {
   // Track window size for mobile responsive layouts
   useEffect(() => {
     const handleResize = () => {
-      setIsMobile(window.innerWidth < 768)
+      setLayoutMode(getLayoutMode(window.innerWidth, window.innerHeight))
     }
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
@@ -1088,7 +1098,7 @@ ${activeDoc.content}
   }
 
   return (
-    <div className="app-container">
+    <div className={`app-container layout-${layoutMode}`}>
       {/* Top Application Bar */}
       <header className="app-header">
         <div className="app-header-left">
@@ -1190,7 +1200,7 @@ ${activeDoc.content}
       </header>
 
       {/* Mobile Tab Switcher */}
-      {isMobile && (
+      {layoutMode === 'portrait' && (
         <div className="mobile-tabs-bar">
           <button 
             onClick={() => setActiveMobileTab('chat')} 
@@ -1214,11 +1224,33 @@ ${activeDoc.content}
         {/* Chapters Left Sidebar */}
         <ChaptersSidebar />
 
+        {/* Sidebar Backdrop overlays for mobile drawer dismissal */}
+        {isSidebarOpen && layoutMode !== 'desktop' && (
+          <div 
+            className="sidebar-backdrop" 
+            onClick={toggleSidebar} 
+          />
+        )}
+        {isHistoryOpen && layoutMode !== 'desktop' && (
+          <div 
+            className="sidebar-backdrop" 
+            onClick={() => setIsHistoryOpen(false)} 
+          />
+        )}
+
         {/* Resizable Chat Panel */}
-        {(!isMobile || activeMobileTab === 'chat') && (
+        {(layoutMode !== 'portrait' || activeMobileTab === 'chat') && (
           <section 
             className="chat-panel" 
-            style={{ width: isMobile ? '100%' : `${chatWidth}px` }}
+            style={{ 
+              width: layoutMode === 'portrait' 
+                ? '100%' 
+                : layoutMode === 'landscape' 
+                ? '40%' 
+                : layoutMode === 'tablet-square' 
+                ? '45%' 
+                : `${chatWidth}px` 
+            }}
           >
             <div className="chat-header">
               <h2>Assistant Chat ({getProviderLabel(activeProvider)})</h2>
@@ -1386,7 +1418,7 @@ ${activeDoc.content}
         )}
 
         {/* Resizing Divider Gutter */}
-        {!isMobile && (
+        {layoutMode === 'desktop' && (
           <div 
             className={`resize-handle ${isResizing ? 'active' : ''}`}
             onMouseDown={startResizing}
@@ -1394,7 +1426,7 @@ ${activeDoc.content}
         )}
 
         {/* Right Side: Document Canvas Panel */}
-        {(!isMobile || activeMobileTab === 'editor') && (
+        {(layoutMode !== 'portrait' || activeMobileTab === 'editor') && (
           <section className="canvas-panel" style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', overflow: 'hidden' }}>
             <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', overflow: 'hidden' }}>
               <div className="canvas-header">
@@ -1614,71 +1646,69 @@ ${activeDoc.content}
             </div>
 
             {/* Version History Sidebar Drawer */}
-            {isHistoryOpen && (
-              <aside className="history-sidebar">
-                <div className="history-header">
-                  <h3>Version History</h3>
-                  <div style={{ display: 'flex', gap: '4px' }}>
-                    <button
-                      onClick={() => createVersionSnapshot('Manual Snapshot')}
-                      className="btn-icon"
-                      title="Save manual snapshot"
-                      type="button"
-                    >
-                      <Sparkles size={16} style={{ color: 'var(--accent)' }} />
-                    </button>
-                    <button
-                      onClick={() => setIsHistoryOpen(false)}
-                      className="btn-icon"
-                      title="Close history"
-                      type="button"
-                    >
-                      <X size={16} />
-                    </button>
+            <aside className={`history-sidebar ${isHistoryOpen ? 'open' : 'collapsed'}`}>
+              <div className="history-header">
+                <h3>Version History</h3>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                  <button
+                    onClick={() => createVersionSnapshot('Manual Snapshot')}
+                    className="btn-icon"
+                    title="Save manual snapshot"
+                    type="button"
+                  >
+                    <Sparkles size={16} style={{ color: 'var(--accent)' }} />
+                  </button>
+                  <button
+                    onClick={() => setIsHistoryOpen(false)}
+                    className="btn-icon"
+                    title="Close history"
+                    type="button"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
+              </div>
+              <div className="history-list">
+                {versions.filter(v => v.documentId === activeDocumentId).length === 0 ? (
+                  <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
+                    No snapshots taken yet for this chapter.
                   </div>
-                </div>
-                <div className="history-list">
-                  {versions.filter(v => v.documentId === activeDocumentId).length === 0 ? (
-                    <div style={{ padding: '2rem 1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-                      No snapshots taken yet for this chapter.
-                    </div>
-                  ) : (
-                    versions
-                      .filter(v => v.documentId === activeDocumentId)
-                      .map((version) => (
-                        <div key={version.id} className="history-item">
-                          <span className="history-item-title">{version.title}</span>
-                          <span className="history-item-time">
-                            {new Date(version.timestamp).toLocaleString([], {
-                              month: '2-digit',
-                              day: '2-digit',
-                              hour: '2-digit',
-                              minute: '2-digit',
-                              second: '2-digit'
-                            })}
-                          </span>
-                          <div className="history-item-actions">
-                            <button
-                              onClick={() => restoreVersion(version.id)}
-                              className="history-item-btn restore"
-                              type="button"
-                            >
-                              Restore
-                            </button>
-                            <button
-                              onClick={() => deleteVersionSnapshot(version.id)}
-                              className="history-item-btn delete"
-                              type="button"
-                            >
-                              Delete
-                            </button>
-                          </div>
+                ) : (
+                  versions
+                    .filter(v => v.documentId === activeDocumentId)
+                    .map((version) => (
+                      <div key={version.id} className="history-item">
+                        <span className="history-item-title">{version.title}</span>
+                        <span className="history-item-time">
+                          {new Date(version.timestamp).toLocaleString([], {
+                            month: '2-digit',
+                            day: '2-digit',
+                            hour: '2-digit',
+                            minute: '2-digit',
+                            second: '2-digit'
+                          })}
+                        </span>
+                        <div className="history-item-actions">
+                          <button
+                            onClick={() => restoreVersion(version.id)}
+                            className="history-item-btn restore"
+                            type="button"
+                          >
+                            Restore
+                          </button>
+                          <button
+                            onClick={() => deleteVersionSnapshot(version.id)}
+                            className="history-item-btn delete"
+                            type="button"
+                          >
+                            Delete
+                          </button>
                         </div>
-                      ))
-                  )}
-                </div>
-              </aside>
-            )}
+                      </div>
+                    ))
+                )}
+              </div>
+            </aside>
           </section>
         )}
       </main>
