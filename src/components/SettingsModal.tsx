@@ -29,7 +29,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
     syncStatus,
     checkSyncStatus,
     uploadToServer,
-    downloadFromServer
+    downloadFromServer,
+    autoSyncEnabled,
+    setAutoSyncEnabled
   } = useAppStore()
 
   const [activeTab, setActiveTab] = React.useState<LLMProvider | 'storage'>('gemini')
@@ -199,6 +201,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
                   </label>
                 </div>
               </div>
+
+              {/* Local Auto-Sync Option */}
+              {storageMode === 'server' && (
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '-0.25rem', padding: '0.25rem 0.5rem' }}>
+                  <input 
+                    id="auto-sync-checkbox"
+                    type="checkbox"
+                    checked={autoSyncEnabled}
+                    onChange={(e) => setAutoSyncEnabled(e.target.checked)}
+                    style={{
+                      width: '16px',
+                      height: '16px',
+                      accentColor: 'var(--accent)',
+                      cursor: 'pointer'
+                    }}
+                  />
+                  <label 
+                    htmlFor="auto-sync-checkbox"
+                    style={{
+                      fontSize: '0.85rem',
+                      fontWeight: 600,
+                      color: 'var(--text-secondary)',
+                      cursor: 'pointer',
+                      userSelect: 'none'
+                    }}
+                  >
+                    Enable Background Auto-Sync (automatically download server changes)
+                  </label>
+                </div>
+              )}
 
               {/* Live Sync Status Panel */}
               {storageMode === 'server' && (
