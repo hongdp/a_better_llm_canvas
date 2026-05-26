@@ -1600,4 +1600,25 @@ del.diff-deletion:hover {
   flex-shrink: 0 !important;
 }
 
+/* Labeled Multimodal Upload Previews */
+.chat-upload-previews {
+  transition: all var(--transition-fast) ease-in-out;
+}
+.chat-upload-previews img {
+  transition: transform var(--transition-fast);
+}
+.chat-upload-previews img:hover {
+  transform: scale(1.05);
+}
+
+/* Chat bubble images styling */
+.chat-message-images img {
+  cursor: zoom-in;
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+.chat-message-images img:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}
+
 

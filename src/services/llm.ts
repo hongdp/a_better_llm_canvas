@@ -3,6 +3,7 @@ import type { ProviderConfig } from '../store/useAppStore'
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  images?: string[] // base64 Data URLs
 }
 
 export interface StreamCallbacks {
@@ -97,9 +98,40 @@ async function streamOpenAI(
   }
 
   const url = `${config.baseUrl}/chat/completions`
+  const openAIMessages = messages.map(m => {
+    if (m.images && m.images.length > 0) {
+      const contentParts: any[] = [
+        {
+          type: 'text',
+          text: m.content
+        }
+      ]
+      m.images.forEach((img, idx) => {
+        contentParts.push({
+          type: 'text',
+          text: `\n[Image ${idx + 1}]:`
+        })
+        contentParts.push({
+          type: 'image_url',
+          image_url: {
+            url: img
+          }
+        })
+      })
+      return {
+        role: m.role,
+        content: contentParts
+      }
+    }
+    return {
+      role: m.role,
+      content: m.content
+    }
+  })
+
   const body: Record<string, any> = {
     model: config.model,
-    messages: messages,
+    messages: openAIMessages,
     stream: true,
   }
 
@@ -153,10 +185,27 @@ async function streamGemini(
   const systemMessage = messages.find((m) => m.role === 'system')
   const contents = messages
     .filter((m) => m.role !== 'system')
-    .map((m) => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
-    }))
+    .map((m) => {
+      const parts: any[] = [{ text: m.content }]
+      if (m.images && m.images.length > 0) {
+        m.images.forEach((img, idx) => {
+          const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
+          if (match) {
+            parts.push({ text: `\n[Image ${idx + 1}]:` })
+            parts.push({
+              inlineData: {
+                mimeType: match[1],
+                data: match[2]
+              }
+            })
+          }
+        })
+      }
+      return {
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts,
+      }
+    })
 
   const body: Record<string, any> = {
     contents,
@@ -304,9 +353,47 @@ async function streamAnthropic(
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
+  const anthropicMessages = messages
+    .filter((m) => m.role !== 'system')
+    .map(m => {
+      if (m.images && m.images.length > 0) {
+        const content: any[] = [
+          {
+            type: 'text',
+            text: m.content
+          }
+        ]
+        m.images.forEach((img, idx) => {
+          const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
+          if (match) {
+            content.push({
+              type: 'text',
+              text: `\n[Image ${idx + 1}]:`
+            })
+            content.push({
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: match[1],
+                data: match[2]
+              }
+            })
+          }
+        })
+        return {
+          role: m.role,
+          content
+        }
+      }
+      return {
+        role: m.role,
+        content: m.content
+      }
+    })
+
   const body: Record<string, any> = {
     model: config.model,
-    messages: messages.filter((m) => m.role !== 'system'),
+    messages: anthropicMessages,
     max_tokens: Math.min(config.maxOutputTokens || 8192, 8192),
     stream: true,
   }

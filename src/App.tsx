@@ -18,7 +18,8 @@ import {
   SquarePen,
   ChevronDown,
   ChevronUp,
-  LogOut
+  LogOut,
+  Image
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
@@ -177,6 +178,57 @@ function App() {
   // Revert & Edit Past Message state
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
+
+  // Multimodal image upload states
+  const [uploadedImages, setUploadedImages] = useState<string[]>([])
+  const fileInputRef = useRef<HTMLInputElement>(null)
+
+  const processFiles = (files: File[]) => {
+    const validFiles = files.filter(file => file.type.startsWith('image/'))
+    if (validFiles.length === 0) return
+
+    if (uploadedImages.length + validFiles.length > 3) {
+      alert('You can attach a maximum of 3 images.')
+      return
+    }
+
+    validFiles.forEach(file => {
+      if (file.size > 2 * 1024 * 1024) {
+        alert(`Image "${file.name}" exceeds the 2MB size limit.`)
+        return
+      }
+      const reader = new FileReader()
+      reader.onload = (event) => {
+        if (event.target?.result) {
+          setUploadedImages(prev => [...prev, event.target!.result as string])
+        }
+      }
+      reader.readAsDataURL(file)
+    })
+  }
+
+  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!e.target.files) return
+    const files = Array.from(e.target.files)
+    processFiles(files)
+    e.target.value = ''
+  }
+
+  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = e.clipboardData.items
+    const files: File[] = []
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.startsWith('image/')) {
+        const file = items[i].getAsFile()
+        if (file) {
+          files.push(file)
+        }
+      }
+    }
+    if (files.length > 0) {
+      processFiles(files)
+    }
+  }
 
   // Text selection tracking refs for token optimization replacement
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
@@ -770,11 +822,13 @@ ${activeDoc.content}
       id: userMsgId,
       role: 'user' as const,
       content: promptText,
+      images: uploadedImages.length > 0 ? uploadedImages : undefined,
       timestamp: new Date().toISOString(),
       provider: activeProvider,
       model: activeConfig.model
     }
     addMessage(userMsg)
+    setUploadedImages([])
 
     // 3. Add assistant placeholder
     const assistantMsgId = getTimestampId('assistant')
@@ -799,13 +853,15 @@ ${activeDoc.content}
       .filter(m => m.id !== 'welcome') // skip initial welcome for cleaner context
       .map(m => ({
         role: m.role,
-        content: m.content
+        content: m.content,
+        images: m.images
       }))
 
     // Add current user prompt
     historyMessages.push({
       role: 'user',
-      content: promptText
+      content: promptText,
+      images: userMsg.images
     })
 
     const apiMessages = [systemPrompt, ...historyMessages]
@@ -896,7 +952,8 @@ ${activeDoc.content}
       .filter(m => m.id !== 'welcome')
       .map(m => ({
         role: m.role,
-        content: m.content
+        content: m.content,
+        images: m.images
       }))
 
     const apiMessages = [systemPrompt, ...historyMessages]
@@ -1405,7 +1462,25 @@ ${activeDoc.content}
                   ) : (
                     <>
                       <div className="chat-message-bubble">
-                        {msg.content}
+                        {msg.images && msg.images.length > 0 && (
+                          <div className="chat-message-images" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                            {msg.images.map((img, idx) => (
+                              <img 
+                                key={idx} 
+                                src={img} 
+                                alt={`Attachment ${idx + 1}`} 
+                                style={{ 
+                                  maxWidth: '120px', 
+                                  maxHeight: '120px', 
+                                  borderRadius: '6px', 
+                                  objectFit: 'cover',
+                                  border: '1px solid var(--border-color)' 
+                                }} 
+                              />
+                            ))}
+                          </div>
+                        )}
+                        <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
                       </div>
                       <span className="chat-message-info" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
                         <span>{getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
@@ -1496,7 +1571,57 @@ ${activeDoc.content}
             )}
 
             <form onSubmit={handleSendMessage} className="chat-input-container">
-              <div className="chat-input-wrapper">
+              {uploadedImages.length > 0 && (
+                <div className="chat-upload-previews" style={{ 
+                  display: 'flex', 
+                  gap: '8px', 
+                  padding: '8px 12px', 
+                  flexWrap: 'wrap',
+                  border: '1px solid var(--border-color)',
+                  borderBottom: 'none',
+                  backgroundColor: 'var(--bg-tertiary)',
+                  borderTopLeftRadius: '10px',
+                  borderTopRightRadius: '10px',
+                  marginBottom: '-1px'
+                }}>
+                  {uploadedImages.map((img, idx) => (
+                    <div key={idx} style={{ position: 'relative', display: 'inline-block' }}>
+                      <img 
+                        src={img} 
+                        alt="Upload preview" 
+                        style={{ width: '48px', height: '48px', borderRadius: '4px', objectFit: 'cover', border: '1px solid var(--border-color)' }} 
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setUploadedImages(prev => prev.filter((_, i) => i !== idx))}
+                        style={{
+                          position: 'absolute',
+                          top: '-4px',
+                          right: '-4px',
+                          backgroundColor: 'rgba(239, 68, 68, 0.9)',
+                          color: 'white',
+                          border: 'none',
+                          borderRadius: '50%',
+                          width: '16px',
+                          height: '16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '8px',
+                          cursor: 'pointer',
+                          padding: 0
+                        }}
+                      >
+                        <X size={8} />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="chat-input-wrapper" style={{
+                borderTopLeftRadius: uploadedImages.length > 0 ? '0px' : undefined,
+                borderTopRightRadius: uploadedImages.length > 0 ? '0px' : undefined
+              }}>
                 {layoutMode === 'portrait' && (
                   <button
                     type="button"
@@ -1517,19 +1642,38 @@ ${activeDoc.content}
                       handleSendMessage()
                     }
                   }}
+                  onPaste={handlePaste}
                   placeholder={`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
                   className="chat-textarea"
                   rows={1}
                   disabled={isStreaming}
                 />
+                <button
+                  type="button"
+                  className="btn-icon"
+                  title="Upload image"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={isStreaming}
+                  style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
+                >
+                  <Image size={18} />
+                </button>
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleImageUpload}
+                  accept="image/*"
+                  multiple
+                  style={{ display: 'none' }}
+                />
                 <button 
                   type="submit" 
                   className="btn-icon" 
                   title="Send instruction"
-                  disabled={!chatInput.trim() || isStreaming}
+                  disabled={(!chatInput.trim() && uploadedImages.length === 0) || isStreaming}
                   style={{ 
-                    color: chatInput.trim() && !isStreaming ? 'var(--accent)' : 'var(--text-muted)',
-                    cursor: chatInput.trim() && !isStreaming ? 'pointer' : 'default'
+                    color: (chatInput.trim() || uploadedImages.length > 0) && !isStreaming ? 'var(--accent)' : 'var(--text-muted)',
+                    cursor: (chatInput.trim() || uploadedImages.length > 0) && !isStreaming ? 'pointer' : 'default'
                   }}
                 >
                   <Send size={18} />
