@@ -120,6 +120,7 @@ interface AppState {
   setActiveDocumentId: (id: string) => void
   addDocument: (title?: string, content?: string) => string
   importAllDocuments: (docs: { title: string; content: string }[]) => void
+  reorderDocuments: (newDocs: CanvasDocument[]) => void
   deleteDocument: (id: string) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
   toggleReference: (id: string) => void
@@ -189,6 +190,15 @@ interface AppState {
   setIsStoreInitialized: (initialized: boolean) => void
   autoSyncEnabled: boolean
   setAutoSyncEnabled: (enabled: boolean) => void
+
+  // Multi-book state
+  activeBookId: string
+  availableBooks: { id: string; title: string; updatedAt: string }[]
+  isLoadingBooks: boolean
+  fetchAvailableBooks: () => Promise<void>
+  createNewBook: (title?: string) => Promise<void>
+  switchBook: (id: string) => Promise<void>
+  deleteBook: (id: string) => Promise<void>
 
   // Auth state
   user: { username: string } | null
@@ -696,6 +706,13 @@ export const useAppStore = create<AppState>((set) => {
       })
     },
 
+    reorderDocuments: (newDocs) => {
+      set(() => {
+        localStorage.setItem('web_canvas_documents', JSON.stringify(newDocs))
+        return { documents: newDocs }
+      })
+    },
+
     deleteDocument: (id) => {
       set((state) => {
         const filteredDocs = state.documents.filter((d) => d.id !== id)
@@ -1016,6 +1033,212 @@ export const useAppStore = create<AppState>((set) => {
       sessionCacheMissTokens: 0
     }),
 
+    // Multi-book implementation
+    activeBookId: localStorage.getItem('web_canvas_active_book_id') || 'default',
+    availableBooks: [],
+    isLoadingBooks: false,
+    fetchAvailableBooks: async () => {
+      const state = useAppStore.getState()
+      if (state.storageMode !== 'server' || !state.user) return
+
+      set({ isLoadingBooks: true })
+      try {
+        const res = await fetch('/api/books')
+        if (res.ok) {
+          const books = await res.json()
+          set({ availableBooks: books })
+        }
+      } catch (e) {
+        console.error('Failed to fetch available books from server', e)
+      } finally {
+        set({ isLoadingBooks: false })
+      }
+    },
+    createNewBook: async (title = 'New Book') => {
+      const state = useAppStore.getState()
+      const newBookId = `book-${Date.now()}`
+      
+      if (saveTimeout) {
+        clearTimeout(saveTimeout)
+        saveTimeout = null
+      }
+
+      const defaultDocs = [
+        {
+          id: 'doc-1',
+          title: 'Chapter 1: Welcome',
+          content: `<h1>Getting Started</h1><p>Start writing your new book here...</p>`,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]
+
+      const updates: Partial<AppState> = {
+        bookTitle: title,
+        documents: defaultDocs,
+        versions: [],
+        activeDocumentId: 'doc-1',
+        messages: [
+          {
+            id: 'welcome',
+            role: 'assistant',
+            content: `Welcome to your new book "${title}"! How can I help you write today?`,
+            timestamp: new Date().toISOString(),
+          }
+        ],
+        activeBookId: newBookId,
+        syncStatus: 'in-sync'
+      }
+
+      const wasInitialized = isInitialized
+      isInitialized = false
+
+      localStorage.setItem('web_canvas_active_book_id', newBookId)
+      localStorage.setItem('web_canvas_book_title', title)
+      localStorage.setItem('web_canvas_documents', JSON.stringify(defaultDocs))
+      localStorage.setItem('web_canvas_versions', JSON.stringify([]))
+      localStorage.setItem('web_canvas_active_document_id', 'doc-1')
+
+      set(updates)
+
+      isInitialized = wasInitialized
+
+      if (state.storageMode === 'server' && state.user) {
+        try {
+          await fetch(`/api/storage?bookId=${newBookId}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': state.csrfToken || ''
+            },
+            body: JSON.stringify({
+              documents: defaultDocs,
+              versions: [],
+              bookTitle: title,
+              activeDocumentId: 'doc-1',
+              activeProvider: state.activeProvider,
+              providerConfigs: state.providerConfigs,
+              customSystemPrompts: state.customSystemPrompts,
+              activeSystemPromptId: state.activeSystemPromptId,
+              theme: state.theme,
+              messages: updates.messages,
+              debugMode: state.debugMode
+            })
+          })
+          
+          await useAppStore.getState().fetchAvailableBooks()
+        } catch (e) {
+          console.error('Failed to save new book to server', e)
+        }
+      }
+    },
+    switchBook: async (id) => {
+      const state = useAppStore.getState()
+      if (state.storageMode !== 'server' || !state.user) return
+
+      if (saveTimeout) {
+        clearTimeout(saveTimeout)
+        saveTimeout = null
+      }
+
+      set({ syncStatus: 'checking' })
+      try {
+        const res = await fetch(`/api/storage?bookId=${id}`)
+        if (res.ok) {
+          const server = await res.json()
+          if (server && typeof server === 'object' && Object.keys(server).length > 0) {
+            const wasInitialized = isInitialized
+            isInitialized = false
+
+            const updates: Partial<AppState> = {
+              activeBookId: id
+            }
+            localStorage.setItem('web_canvas_active_book_id', id)
+
+            if (server.documents) {
+              updates.documents = server.documents
+              localStorage.setItem('web_canvas_documents', JSON.stringify(server.documents))
+            }
+            if (server.versions) {
+              updates.versions = server.versions
+              localStorage.setItem('web_canvas_versions', JSON.stringify(server.versions))
+            }
+            if (server.bookTitle) {
+              updates.bookTitle = server.bookTitle
+              localStorage.setItem('web_canvas_book_title', server.bookTitle)
+            }
+            if (server.activeDocumentId) {
+              updates.activeDocumentId = server.activeDocumentId
+              localStorage.setItem('web_canvas_active_document_id', server.activeDocumentId)
+            }
+            if (server.activeProvider) {
+              updates.activeProvider = server.activeProvider
+              localStorage.setItem('web_canvas_active_provider', server.activeProvider)
+            }
+            if (server.providerConfigs) {
+              updates.providerConfigs = server.providerConfigs
+              saveConfigsToCookie(server.providerConfigs)
+            }
+            if (server.customSystemPrompts) {
+              updates.customSystemPrompts = server.customSystemPrompts
+              saveSystemPromptsToCookie(server.customSystemPrompts, server.activeSystemPromptId || 'prompt-none')
+            }
+            if (server.activeSystemPromptId) {
+              updates.activeSystemPromptId = server.activeSystemPromptId
+            }
+            if (server.theme) {
+              updates.theme = server.theme
+              localStorage.setItem('web_canvas_theme', server.theme)
+            }
+            if (server.messages) updates.messages = server.messages
+            if (server.debugMode !== undefined) {
+              updates.debugMode = server.debugMode
+              localStorage.setItem('web_canvas_debug_mode', String(server.debugMode))
+            }
+
+            set(updates)
+            set({ syncStatus: 'in-sync' })
+            isInitialized = wasInitialized
+          }
+        } else {
+          if (res.status === 401) {
+            useAppStore.setState({ user: null })
+            alert('You have been logged out because another session has started on the server.')
+            window.location.reload()
+            return
+          }
+          set({ syncStatus: 'unknown' })
+        }
+      } catch (e) {
+        console.error('Failed to switch book', e)
+        set({ syncStatus: 'unknown' })
+      }
+    },
+    deleteBook: async (id) => {
+      const state = useAppStore.getState()
+      if (state.storageMode !== 'server' || !state.user) return
+      if (id === state.activeBookId) {
+        alert('Cannot delete the currently active book. Please switch to another book first.')
+        return
+      }
+
+      try {
+        const res = await fetch('/api/books/delete', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': state.csrfToken || ''
+          },
+          body: JSON.stringify({ bookId: id })
+        })
+        if (res.ok) {
+          await useAppStore.getState().fetchAvailableBooks()
+        }
+      } catch (e) {
+        console.error('Failed to delete book on server', e)
+      }
+    },
+
     // Storage & Sync implementation
     storageMode: (localStorage.getItem('web_canvas_storage_mode') as 'client' | 'server') || 'server',
     setStorageMode: (mode) => {
@@ -1043,7 +1266,7 @@ export const useAppStore = create<AppState>((set) => {
         // Upload local to server
         const local = state.syncConflict.localState
         try {
-          await fetch('/api/storage', {
+          await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(local)
@@ -1132,7 +1355,7 @@ export const useAppStore = create<AppState>((set) => {
 
       set({ syncStatus: 'checking' })
       try {
-        const res = await fetch('/api/storage')
+        const res = await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`)
         if (res.ok) {
           const serverData = await res.json()
           if (!serverData || typeof serverData !== 'object' || Object.keys(serverData).length === 0) {
@@ -1168,7 +1391,7 @@ export const useAppStore = create<AppState>((set) => {
       const state = useAppStore.getState()
       set({ syncStatus: 'checking' })
       try {
-        const res = await fetch('/api/storage', {
+        const res = await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`, {
           method: 'POST',
           headers: { 
             'Content-Type': 'application/json',
@@ -1206,9 +1429,10 @@ export const useAppStore = create<AppState>((set) => {
       }
     },
     downloadFromServer: async () => {
+      const state = useAppStore.getState()
       set({ syncStatus: 'checking' })
       try {
-        const res = await fetch('/api/storage')
+        const res = await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`)
         if (res.ok) {
           const server = await res.json()
           if (server && typeof server === 'object' && Object.keys(server).length > 0) {
@@ -1312,6 +1536,8 @@ export const useAppStore = create<AppState>((set) => {
       
       // Perform sync verification for this logged in user
       await initializeStoreFromServer()
+      // Fetch available books
+      await useAppStore.getState().fetchAvailableBooks()
     },
     register: async (username, password) => {
       const state = useAppStore.getState()
@@ -1346,6 +1572,8 @@ export const useAppStore = create<AppState>((set) => {
       localStorage.removeItem('web_canvas_versions')
       localStorage.removeItem('web_canvas_book_title')
       localStorage.removeItem('web_canvas_active_document_id')
+      localStorage.removeItem('web_canvas_active_book_id')
+      set({ activeBookId: 'default', availableBooks: [] })
     },
     checkSession: async () => {
       try {
@@ -1424,6 +1652,7 @@ export const initializeStoreFromServer = async () => {
 
   // 3. Continue initialization for logged-in user
   const mode = localStorage.getItem('web_canvas_storage_mode') || 'server'
+  const activeBookId = localStorage.getItem('web_canvas_active_book_id') || 'default'
   if (mode === 'client') {
     useAppStore.setState({ isStoreInitialized: true, syncStatus: 'client-mode' })
     isInitialized = true
@@ -1431,7 +1660,7 @@ export const initializeStoreFromServer = async () => {
   }
 
   try {
-    const res = await fetch('/api/storage')
+    const res = await fetch(`/api/storage?bookId=${activeBookId}`)
     if (res.ok) {
       const serverData = await res.json()
       if (serverData && typeof serverData === 'object' && Object.keys(serverData).length > 0) {
@@ -1488,6 +1717,8 @@ export const initializeStoreFromServer = async () => {
   } finally {
     useAppStore.setState({ isStoreInitialized: true })
     isInitialized = true
+    // Fetch available books list after store is initialized
+    await useAppStore.getState().fetchAvailableBooks()
   }
 }
 
@@ -1502,7 +1733,7 @@ useAppStore.subscribe((state) => {
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
     try {
-      const res = await fetch('/api/storage', {
+      const res = await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`, {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

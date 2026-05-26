@@ -259,7 +259,16 @@ function storagePlugin() {
           const username = session.username
           // Path traversal mitigation
           const safeUsername = path.basename(username).replace(/[^a-zA-Z0-9_-]/g, '')
-          const dbPath = path.join(storageDir, `state_${safeUsername}.json`)
+          
+          // Parse bookId
+          const parsedUrl = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`)
+          const bookId = parsedUrl.searchParams.get('bookId') || 'default'
+
+          let dbPath = path.join(storageDir, `state_${safeUsername}.json`)
+          if (bookId && bookId !== 'default') {
+            const safeBookId = path.basename(bookId).replace(/[^a-zA-Z0-9_-]/g, '')
+            dbPath = path.join(storageDir, `state_${safeUsername}_${safeBookId}.json`)
+          }
 
           // Directory boundary verify
           const resolvedPath = path.resolve(dbPath)
@@ -290,6 +299,139 @@ function storagePlugin() {
               res.setHeader('Content-Type', 'application/json')
               res.end(JSON.stringify({ error: err.message }))
             }
+          }
+          return
+        }
+
+        // 6. List books endpoint
+        if (url.startsWith('/api/books') && !url.startsWith('/api/books/delete') && req.method === 'GET') {
+          const sessionId = cookies['web_canvas_session']
+          const sessions = loadJSONFile(sessionsFile)
+          const session = sessionId ? sessions[sessionId] : null
+
+          if (!session || !session.username || new Date(session.expiresAt) <= new Date()) {
+            res.statusCode = 401
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Authentication required.' }))
+            return
+          }
+
+          const username = session.username
+          const safeUsername = path.basename(username).replace(/[^a-zA-Z0-9_-]/g, '')
+          
+          const books: { id: string; title: string; updatedAt: string }[] = []
+
+          try {
+            const files = fs.readdirSync(storageDir)
+            
+            // A. Check legacy/default book
+            const defaultPath = path.join(storageDir, `state_${safeUsername}.json`)
+            if (fs.existsSync(defaultPath)) {
+              try {
+                const content = JSON.parse(fs.readFileSync(defaultPath, 'utf-8'))
+                const stats = fs.statSync(defaultPath)
+                books.push({
+                  id: 'default',
+                  title: content.bookTitle || 'Untitled Book',
+                  updatedAt: content.updatedAt || stats.mtime.toISOString()
+                })
+              } catch {
+                const stats = fs.statSync(defaultPath)
+                books.push({
+                  id: 'default',
+                  title: 'Untitled Book',
+                  updatedAt: stats.mtime.toISOString()
+                })
+              }
+            }
+
+            // B. Check other books
+            const prefix = `state_${safeUsername}_`
+            files.forEach((file) => {
+              if (file.startsWith(prefix) && file.endsWith('.json')) {
+                const bookId = file.substring(prefix.length, file.length - 5)
+                const filePath = path.join(storageDir, file)
+                try {
+                  const content = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
+                  const stats = fs.statSync(filePath)
+                  books.push({
+                    id: bookId,
+                    title: content.bookTitle || 'Untitled Book',
+                    updatedAt: content.updatedAt || stats.mtime.toISOString()
+                  })
+                } catch {
+                  const stats = fs.statSync(filePath)
+                  books.push({
+                    id: bookId,
+                    title: 'Untitled Book',
+                    updatedAt: stats.mtime.toISOString()
+                  })
+                }
+              }
+            })
+
+            // Sort by updatedAt desc
+            books.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+          } catch (err: any) {
+            console.error('Failed to read books from storage directory', err)
+          }
+
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify(books))
+          return
+        }
+
+        // 7. Delete book endpoint
+        if (url.startsWith('/api/books/delete') && req.method === 'POST') {
+          const sessionId = cookies['web_canvas_session']
+          const sessions = loadJSONFile(sessionsFile)
+          const session = sessionId ? sessions[sessionId] : null
+
+          if (!session || !session.username || new Date(session.expiresAt) <= new Date()) {
+            res.statusCode = 401
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Authentication required.' }))
+            return
+          }
+
+          const bodyText = await readBody()
+          try {
+            const { bookId } = JSON.parse(bodyText)
+            if (!bookId) {
+              res.statusCode = 400
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Missing bookId.' }))
+              return
+            }
+
+            const username = session.username
+            const safeUsername = path.basename(username).replace(/[^a-zA-Z0-9_-]/g, '')
+            
+            let filePath = path.join(storageDir, `state_${safeUsername}.json`)
+            if (bookId !== 'default') {
+              const safeBookId = path.basename(bookId).replace(/[^a-zA-Z0-9_-]/g, '')
+              filePath = path.join(storageDir, `state_${safeUsername}_${safeBookId}.json`)
+            }
+
+            // Verify directory boundary
+            const resolvedPath = path.resolve(filePath)
+            const resolvedStorageDir = path.resolve(storageDir)
+            if (!resolvedPath.startsWith(resolvedStorageDir + path.sep)) {
+              res.statusCode = 403
+              res.setHeader('Content-Type', 'application/json')
+              res.end(JSON.stringify({ error: 'Access denied: Directory traversal detected.' }))
+              return
+            }
+
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath)
+            }
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ success: true }))
+          } catch (e: any) {
+            res.statusCode = 400
+            res.setHeader('Content-Type', 'application/json')
+            res.end(JSON.stringify({ error: 'Invalid payload.' }))
           }
           return
         }
