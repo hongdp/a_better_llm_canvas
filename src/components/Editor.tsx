@@ -205,7 +205,7 @@ export const Editor: React.FC<EditorProps> = ({
   placeholder = 'Start writing your document here or let the assistant draft it...',
   onQuickAction
 }) => {
-  const { setSelectedText, setActiveEditor } = useAppStore()
+  const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
 
   const editor = useEditor({
     extensions: [
@@ -241,6 +241,13 @@ export const Editor: React.FC<EditorProps> = ({
       editor.commands.setContent(content, { emitUpdate: false })
     }
   }, [content, editor])
+
+  // Disable user editing (make it read-only) while LLM is streaming to avoid sync issues
+  useEffect(() => {
+    if (editor) {
+      editor.setEditable(!isStreaming)
+    }
+  }, [editor, isStreaming])
 
   // Sync editor reference globally for bulk actions
   useEffect(() => {

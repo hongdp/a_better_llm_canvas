@@ -1,7 +1,8 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
+import { ImportUrlModal } from './ImportUrlModal'
 
 export const ChaptersSidebar: React.FC = () => {
   const {
@@ -23,7 +24,8 @@ export const ChaptersSidebar: React.FC = () => {
     fetchAvailableBooks,
     createNewBook,
     switchBook,
-    deleteBook
+    deleteBook,
+    isStreaming
   } = useAppStore()
 
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
@@ -38,6 +40,7 @@ export const ChaptersSidebar: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
+  const [showImportUrl, setShowImportUrl] = useState(false)
 
   React.useEffect(() => {
     if (showBookManager && user) {
@@ -253,7 +256,7 @@ export const ChaptersSidebar: React.FC = () => {
       </div>
 
       <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-        <div className="canvas-title-wrapper" style={{ flex: 1 }}>
+        <div className="canvas-title-wrapper" style={{ flex: 1, opacity: isStreaming ? 0.6 : 1 }}>
           <Book size={16} style={{ color: 'var(--text-secondary)', flexShrink: 0 }} />
           <input
             type="text"
@@ -269,21 +272,32 @@ export const ChaptersSidebar: React.FC = () => {
             placeholder="Untitled Book"
             className="canvas-title-input"
             title="Book Title"
+            disabled={isStreaming}
             style={{
               fontSize: '0.95rem',
               fontWeight: 600,
               padding: '0.2rem 0.4rem',
-              height: 'auto'
+              height: 'auto',
+              cursor: isStreaming ? 'not-allowed' : 'text'
             }}
           />
         </div>
         {user && (
           <button
-            onClick={() => setShowBookManager(true)}
+            onClick={() => {
+              if (isStreaming) return
+              setShowBookManager(true)
+            }}
+            disabled={isStreaming}
             className="btn-icon"
-            title="Manage Server Books"
+            title={isStreaming ? "Cannot manage books while streaming" : "Manage Server Books"}
             type="button"
-            style={{ padding: '0.25rem', flexShrink: 0 }}
+            style={{ 
+              padding: '0.25rem', 
+              flexShrink: 0,
+              opacity: isStreaming ? 0.5 : 1,
+              cursor: isStreaming ? 'not-allowed' : 'pointer'
+            }}
           >
             <Library size={16} />
           </button>
@@ -300,10 +314,20 @@ export const ChaptersSidebar: React.FC = () => {
           return (
             <div
               key={doc.id}
-              onClick={() => setActiveDocumentId(doc.id)}
+              onClick={() => {
+                if (isStreaming) {
+                  alert('Please wait for the assistant to finish writing before switching chapters.')
+                  return
+                }
+                setActiveDocumentId(doc.id)
+              }}
               className={`chapter-item ${isActive ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${dragOverClass}`}
+              style={{
+                opacity: isStreaming && !isActive ? 0.5 : 1,
+                cursor: isStreaming && !isActive ? 'not-allowed' : 'pointer'
+              }}
               title={doc.title}
-              draggable
+              draggable={!isStreaming}
               onDragStart={(e) => handleDragStart(e, idx)}
               onDragOver={(e) => handleDragOver(e, idx)}
               onDragEnd={handleDragEnd}
@@ -311,7 +335,7 @@ export const ChaptersSidebar: React.FC = () => {
             >
               <div 
                 className="chapter-grip"
-                title="Drag to reorder"
+                title={isStreaming ? "Reordering locked while streaming" : "Drag to reorder"}
                 draggable={false}
               >
                 <GripVertical size={13} />
@@ -326,7 +350,7 @@ export const ChaptersSidebar: React.FC = () => {
               >
                 <button
                   onClick={() => handleMoveUp(idx)}
-                  disabled={idx === 0}
+                  disabled={idx === 0 || isStreaming}
                   className="btn-icon chapter-action-btn move-up"
                   title="Move Up"
                   type="button"
@@ -336,7 +360,7 @@ export const ChaptersSidebar: React.FC = () => {
                 </button>
                 <button
                   onClick={() => handleMoveDown(idx)}
-                  disabled={idx === documents.length - 1}
+                  disabled={idx === documents.length - 1 || isStreaming}
                   className="btn-icon chapter-action-btn move-down"
                   title="Move Down"
                   type="button"
@@ -350,6 +374,7 @@ export const ChaptersSidebar: React.FC = () => {
                       deleteDocument(doc.id)
                     }
                   }}
+                  disabled={isStreaming}
                   className="btn-icon chapter-action-btn delete"
                   title="Delete chapter"
                   type="button"
@@ -366,6 +391,7 @@ export const ChaptersSidebar: React.FC = () => {
       <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         <button
           onClick={handleAddDoc}
+          disabled={isStreaming}
           className="btn-primary"
           style={{
             width: '100%',
@@ -374,14 +400,20 @@ export const ChaptersSidebar: React.FC = () => {
             justifyContent: 'center',
             gap: '0.5rem',
             fontSize: '0.85rem',
-            padding: '0.6rem'
+            padding: '0.6rem',
+            opacity: isStreaming ? 0.5 : 1,
+            cursor: isStreaming ? 'not-allowed' : 'pointer'
           }}
           type="button"
         >
           <Plus size={16} /> New Chapter
         </button>
         <button
-          onClick={handleImportClick}
+          onClick={() => {
+            if (isStreaming) return
+            setShowImportUrl(true)
+          }}
+          disabled={isStreaming}
           className="btn-secondary"
           style={{
             width: '100%',
@@ -390,7 +422,28 @@ export const ChaptersSidebar: React.FC = () => {
             justifyContent: 'center',
             gap: '0.5rem',
             fontSize: '0.85rem',
-            padding: '0.6rem'
+            padding: '0.6rem',
+            opacity: isStreaming ? 0.5 : 1,
+            cursor: isStreaming ? 'not-allowed' : 'pointer'
+          }}
+          type="button"
+        >
+          <Globe size={16} /> 从URL导入
+        </button>
+        <button
+          onClick={handleImportClick}
+          disabled={isStreaming}
+          className="btn-secondary"
+          style={{
+            width: '100%',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '0.5rem',
+            fontSize: '0.85rem',
+            padding: '0.6rem',
+            opacity: isStreaming ? 0.5 : 1,
+            cursor: isStreaming ? 'not-allowed' : 'pointer'
           }}
           type="button"
         >
@@ -398,6 +451,7 @@ export const ChaptersSidebar: React.FC = () => {
         </button>
         <button
           onClick={handleReplaceClick}
+          disabled={isStreaming}
           className="btn-secondary"
           style={{
             width: '100%',
@@ -406,7 +460,9 @@ export const ChaptersSidebar: React.FC = () => {
             justifyContent: 'center',
             gap: '0.5rem',
             fontSize: '0.85rem',
-            padding: '0.6rem'
+            padding: '0.6rem',
+            opacity: isStreaming ? 0.5 : 1,
+            cursor: isStreaming ? 'not-allowed' : 'pointer'
           }}
           type="button"
         >
@@ -672,6 +728,12 @@ export const ChaptersSidebar: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* URL Import Modal */}
+      <ImportUrlModal
+        isOpen={showImportUrl}
+        onClose={() => setShowImportUrl(false)}
+      />
     </aside>
   )
 }

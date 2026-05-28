@@ -4,10 +4,21 @@ import json
 import secrets
 import hashlib
 import argparse
+import base64
+import ipaddress
+import socket
+from urllib.parse import urlparse, urljoin
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+
+try:
+    import requests as http_requests
+    from bs4 import BeautifulSoup
+    HAS_SCRAPING_DEPS = True
+except ImportError:
+    HAS_SCRAPING_DEPS = False
 
 # Initialize FastAPI app
 app = FastAPI(title="Web Canvas Backend API", version="1.0.0")
@@ -364,8 +375,228 @@ async def delete_book(request: Request):
             
     return {"success": True}
 
+# ============================================================
+# 8. URL Import / Scraping endpoint
+# ============================================================
+
+# TODO(security): Consider adding rate limiting to prevent abuse of the scraping endpoint.
+
+# SSRF prevention: block private/reserved IPs
+def _is_private_ip(hostname: str) -> bool:
+    """Check if a hostname resolves to a private or reserved IP address."""
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+        for family, kind, proto, canonname, sockaddr in resolved:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_reserved or ip.is_loopback or ip.is_link_local:
+                return True
+        return False
+    except (socket.gaierror, ValueError):
+        return True  # fail-closed: if we can't resolve, block it
+
+MAX_IMAGES_DOWNLOAD = 200
+MAX_IMAGE_SIZE_BYTES = 50 * 1024 * 1024  # 5MB per image
+SCRAPE_TIMEOUT = 30  # seconds
+SCRAPE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
+@app.post("/api/import-url")
+async def import_url(request: Request):
+    """Scrape a URL and extract text paragraphs and images for novel generation."""
+    username = get_authenticated_username(request)
+    
+    if not HAS_SCRAPING_DEPS:
+        raise HTTPException(
+            status_code=503,
+            detail="Scraping dependencies (requests, beautifulsoup4) are not installed. "
+                   "Run: pip install requests beautifulsoup4"
+        )
+    
+    try:
+        body = await request.json()
+        url = body.get("url", "").strip()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    
+    if not url:
+        raise HTTPException(status_code=400, detail="URL is required.")
+    
+    # Validate URL protocol (allow only http and https)
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only HTTP and HTTPS URLs are allowed.")
+    
+    if not parsed.hostname:
+        raise HTTPException(status_code=400, detail="Invalid URL: no hostname found.")
+    
+    # SSRF prevention: block private/reserved IP ranges
+    if _is_private_ip(parsed.hostname):
+        raise HTTPException(status_code=403, detail="Access to private/internal network addresses is not allowed.")
+    
+    # Fetch the page
+    try:
+        headers = {"User-Agent": SCRAPE_USER_AGENT}
+        resp = http_requests.get(url, headers=headers, timeout=SCRAPE_TIMEOUT, allow_redirects=True)
+        resp.raise_for_status()
+    except http_requests.exceptions.Timeout:
+        raise HTTPException(status_code=504, detail="Request timed out while fetching the URL.")
+    except http_requests.exceptions.ConnectionError:
+        raise HTTPException(status_code=502, detail="Could not connect to the target URL.")
+    except http_requests.exceptions.HTTPError as e:
+        raise HTTPException(status_code=502, detail=f"HTTP error from target: {e.response.status_code if e.response else 'unknown'}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch URL: {str(e)}")
+    
+    # Detect encoding
+    resp.encoding = resp.apparent_encoding or 'utf-8'
+    html_content = resp.text
+    
+    # Parse with BeautifulSoup
+    soup = BeautifulSoup(html_content, "html.parser")
+    
+    # Extract page title
+    title_tag = soup.find("title")
+    page_title = title_tag.get_text(strip=True) if title_tag else "Untitled"
+    
+    # Remove script, style, nav, footer, header elements
+    for tag in soup.find_all(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
+        tag.decompose()
+    
+    # Extract text paragraphs and images in document order
+    paragraphs = []
+    images = []
+    img_counter = 0
+    
+    # Walk through the body to extract content in order
+    body_tag = soup.find("body") or soup
+    
+    for element in body_tag.descendants:
+        if element.name in ("p", "div", "td", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "span", "article", "section"):
+            # Only extract direct text (avoid duplicates from nested elements)
+            text = element.get_text(strip=True)
+            if text and len(text) > 5:
+                # Avoid duplicate paragraphs
+                if not paragraphs or paragraphs[-1]["text"] != text:
+                    paragraphs.append({
+                        "index": len(paragraphs),
+                        "text": text,
+                        "tag": element.name
+                    })
+        elif element.name == "img":
+            # Extract image source, supporting lazy-loading and Discuz forum attachment attributes
+            src = (
+                element.get("file") or 
+                element.get("data-src") or 
+                element.get("data-original") or 
+                element.get("data-lazy-src") or 
+                element.get("data-original-src") or 
+                element.get("src") or 
+                ""
+            ).strip()
+            alt = element.get("alt", "")
+            if src and img_counter < MAX_IMAGES_DOWNLOAD:
+                # Resolve relative URLs
+                abs_src = urljoin(url, src)
+                abs_parsed = urlparse(abs_src)
+                if abs_parsed.scheme in ("http", "https"):
+                    images.append({
+                        "index": img_counter,
+                        "url": abs_src,
+                        "alt": alt or "",
+                        "position": len(paragraphs),  # after which paragraph this image appears
+                        "base64": None  # to be filled below
+                    })
+                    img_counter += 1
+                elif abs_src.startswith("data:image/"):
+                    images.append({
+                        "index": img_counter,
+                        "alt": alt or "",
+                        "position": len(paragraphs),
+                        "base64": abs_src
+                    })
+                    img_counter += 1
+     
+    # Download images and convert to base64 in parallel using a ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor
+
+    def download_image(img):
+        if img.get("base64") is not None:
+            return
+        try:
+            img_resp = http_requests.get(
+                img["url"],
+                headers={"User-Agent": SCRAPE_USER_AGENT},
+                timeout=15,
+                stream=True
+            )
+            img_resp.raise_for_status()
+            
+            # Check content type
+            content_type = img_resp.headers.get("Content-Type", "image/jpeg")
+            if not content_type.startswith("image/"):
+                # Fallback: check if the URL contains a known image extension
+                parsed_url = urlparse(img.get("url", ""))
+                path = parsed_url.path.lower()
+                if not any(path.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+                    return
+                # Force content-type based on extension
+                if path.endswith(".png"):
+                    content_type = "image/png"
+                elif path.endswith(".webp"):
+                    content_type = "image/webp"
+                else:
+                    content_type = "image/jpeg"
+            
+            # Read with size limit
+            content = b""
+            is_first = True
+            is_html = False
+            for chunk in img_resp.iter_content(chunk_size=8192):
+                if is_first:
+                    is_first = False
+                    # Check if the content is actually HTML (e.g. login/error page redirect)
+                    trimmed = chunk.lstrip()
+                    if trimmed.startswith(b"<!doctype") or trimmed.startswith(b"<html") or trimmed.startswith(b"<!DOCTYPE") or trimmed.startswith(b"<HTML"):
+                        is_html = True
+                        break
+                content += chunk
+                if len(content) > MAX_IMAGE_SIZE_BYTES:
+                    content = None
+                    break
+            
+            if is_html:
+                print(f"[Import URL] Image {img.get('url')} returned HTML instead of binary image data. Skipping.")
+                return
+            
+            if content:
+                b64 = base64.b64encode(content).decode("ascii")
+                # Sanitize content_type to prevent header injection
+                safe_type = content_type.split(";")[0].strip()
+                img["base64"] = f"data:{safe_type};base64,{b64}"
+        except Exception as e:
+            print(f"[Import URL] Failed to download image {img.get('url')}: {e}")
+
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        executor.map(download_image, images)
+    
+    # Filter out images that failed to download
+    images = [img for img in images if img["base64"]]
+    
+    # Remove the raw URL from response for security (only return base64)
+    for img in images:
+        if "url" in img:
+            del img["url"]
+    
+    return {
+        "title": page_title,
+        "paragraphs": paragraphs,
+        "images": images,
+        "totalParagraphs": len(paragraphs),
+        "totalImages": len(images)
+    }
+
 if __name__ == "__main__":
     import uvicorn
     print(f"[Storage Server] Listening on http://{args.host}:{args.port}")
     print(f"[Storage Server] Storage directory: {STORAGE_DIR}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+

@@ -19,7 +19,12 @@ import {
   ChevronDown,
   ChevronUp,
   LogOut,
-  Image
+  Image,
+  Cloud,
+  CloudOff,
+  CloudUpload,
+  Square,
+  Clipboard
 } from 'lucide-react'
 import { Editor } from './components/Editor'
 import { SettingsModal } from './components/SettingsModal'
@@ -101,7 +106,21 @@ function countWords(html: string): number {
   return cjkCount + otherCount
 }
 
-
+const convertBlobUrlToDataUrl = async (blobUrl: string): Promise<string> => {
+  try {
+    const res = await fetch(blobUrl)
+    const blob = await res.blob()
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  } catch (err) {
+    console.error('Failed to convert blob URL to data URL:', err)
+    return blobUrl
+  }
+}
 
 function App() {
   // Zustand store state
@@ -114,7 +133,6 @@ function App() {
     selectedReferenceIds,
     updateActiveDocument,
     toggleReference,
-    clearReferences,
     toggleSidebar,
     activeProvider,
     setProvider,
@@ -148,8 +166,13 @@ function App() {
     deleteVersionSnapshot,
     bookTitle,
     isStoreInitialized,
+    serverSaveStatus,
+    syncToServer,
     user,
-    logout
+    logout,
+    activeBookId,
+    switchBook,
+    lastSyncedAt
   } = useAppStore()
 
   // Local UI state
@@ -182,6 +205,7 @@ function App() {
   // Multimodal image upload states
   const [uploadedImages, setUploadedImages] = useState<string[]>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const chatInputRef = useRef<HTMLDivElement>(null)
 
   const processFiles = (files: File[]) => {
     const validFiles = files.filter(file => file.type.startsWith('image/'))
@@ -214,19 +238,192 @@ function App() {
     e.target.value = ''
   }
 
-  const handlePaste = (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
-    const items = e.clipboardData.items
+  const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
     const files: File[] = []
-    for (let i = 0; i < items.length; i++) {
-      if (items[i].type.startsWith('image/')) {
-        const file = items[i].getAsFile()
-        if (file) {
+    
+    // Check e.clipboardData.files first (preferred by some mobile browsers)
+    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
+      for (let i = 0; i < e.clipboardData.files.length; i++) {
+        const file = e.clipboardData.files[i]
+        if (file && file.type.startsWith('image/')) {
           files.push(file)
         }
       }
     }
+    
+    // Fallback to e.clipboardData.items
+    if (files.length === 0 && e.clipboardData.items) {
+      const items = e.clipboardData.items
+      for (let i = 0; i < items.length; i++) {
+        if (items[i].type.startsWith('image/')) {
+          const file = items[i].getAsFile()
+          if (file) {
+            files.push(file)
+          }
+        }
+      }
+    }
+
     if (files.length > 0) {
+      e.preventDefault() // Prevent pasting image binary raw text
       processFiles(files)
+      return
+    }
+
+    // Fallback for browsers that trigger paste event but do not expose inline clipboardData files
+    try {
+      if (navigator.clipboard && navigator.clipboard.read) {
+        const clipboardItems = await navigator.clipboard.read()
+        const clipFiles: File[] = []
+        for (const item of clipboardItems) {
+          // Direct image types
+          for (const type of item.types) {
+            if (type.startsWith('image/')) {
+              try {
+                const blob = await item.getType(type)
+                const file = new File([blob], `pasted-image.${type.split('/')[1] || 'png'}`, { type })
+                clipFiles.push(file)
+              } catch (getTypeErr) {
+                console.warn(`Failed to read type ${type} from inline paste fallback:`, getTypeErr)
+              }
+            }
+          }
+          // Fallback html image tags
+          if (clipFiles.length === 0 && item.types.includes('text/html')) {
+            try {
+              const blob = await item.getType('text/html')
+              const htmlText = await blob.text()
+              const parser = new DOMParser()
+              const doc = parser.parseFromString(htmlText, 'text/html')
+              const imgs = Array.from(doc.getElementsByTagName('img'))
+              for (const img of imgs) {
+                const src = img.src
+                if (src) {
+                  if (src.startsWith('data:')) {
+                    const res = await fetch(src)
+                    const resBlob = await res.blob()
+                    const file = new File([resBlob], 'pasted-image.png', { type: resBlob.type })
+                    clipFiles.push(file)
+                  } else if (src.startsWith('blob:')) {
+                    const dataUrl = await convertBlobUrlToDataUrl(src)
+                    const res = await fetch(dataUrl)
+                    const resBlob = await res.blob()
+                    const file = new File([resBlob], 'pasted-image.png', { type: resBlob.type })
+                    clipFiles.push(file)
+                  } else if (src.startsWith('http')) {
+                    try {
+                      const res = await fetch(src, { mode: 'cors' })
+                      const resBlob = await res.blob()
+                      const file = new File([resBlob], 'pasted-image.png', { type: resBlob.type })
+                      clipFiles.push(file)
+                    } catch (fetchErr) {
+                      console.warn('Failed to fetch external inline image:', fetchErr)
+                    }
+                  }
+                }
+              }
+            } catch (htmlErr) {
+              console.warn('Failed to parse HTML from inline paste fallback:', htmlErr)
+            }
+          }
+        }
+        if (clipFiles.length > 0) {
+          e.preventDefault()
+          processFiles(clipFiles)
+        }
+      }
+    } catch (err) {
+      console.warn('Fallback Clipboard API read failed:', err)
+    }
+  }
+
+  const handlePasteFromClipboard = async () => {
+    // Check permission if query is supported
+    if (navigator.permissions && navigator.permissions.query) {
+      try {
+        const permission = await navigator.permissions.query({
+          name: 'clipboard-read' as any
+        })
+        if (permission.state === 'denied') {
+          alert('Clipboard read permission is denied. Please enable clipboard access for this site in your browser settings.')
+          return
+        }
+      } catch (e) {
+        // clipboard-read permission query might not be supported, ignore
+      }
+    }
+
+    try {
+      if (!navigator.clipboard || !navigator.clipboard.read) {
+        alert('Your browser does not support the clipboard reading API.')
+        return
+      }
+      
+      const clipboardItems = await navigator.clipboard.read()
+      const files: File[] = []
+      
+      for (const item of clipboardItems) {
+        // Direct image types
+        for (const type of item.types) {
+          if (type.startsWith('image/')) {
+            try {
+              const blob = await item.getType(type)
+              const file = new File([blob], `clipboard-image.${type.split('/')[1] || 'png'}`, { type })
+              files.push(file)
+            } catch (getTypeErr) {
+              console.warn(`Failed to read type ${type} from clipboard:`, getTypeErr)
+            }
+          }
+        }
+
+        // Fallback: HTML content image tags
+        if (files.length === 0 && item.types.includes('text/html')) {
+          try {
+            const blob = await item.getType('text/html')
+            const htmlText = await blob.text()
+            const parser = new DOMParser()
+            const doc = parser.parseFromString(htmlText, 'text/html')
+            const imgs = Array.from(doc.getElementsByTagName('img'))
+            for (const img of imgs) {
+              const src = img.src
+              if (src) {
+                if (src.startsWith('data:')) {
+                  const res = await fetch(src)
+                  const resBlob = await res.blob()
+                  const file = new File([resBlob], 'clipboard-image.png', { type: resBlob.type })
+                  files.push(file)
+                } else if (src.startsWith('blob:')) {
+                  const dataUrl = await convertBlobUrlToDataUrl(src)
+                  const res = await fetch(dataUrl)
+                  const resBlob = await res.blob()
+                  const file = new File([resBlob], 'clipboard-image.png', { type: resBlob.type })
+                  files.push(file)
+                } else if (src.startsWith('http')) {
+                  try {
+                    const res = await fetch(src, { mode: 'cors' })
+                    const resBlob = await res.blob()
+                    const file = new File([resBlob], 'clipboard-image.png', { type: resBlob.type })
+                    files.push(file)
+                  } catch (fetchErr) {
+                    console.warn('Failed to fetch external clipboard image:', fetchErr)
+                  }
+                }
+              }
+            }
+          } catch (htmlErr) {
+            console.warn('Failed to parse HTML from clipboard:', htmlErr)
+          }
+        }
+      }
+      
+      if (files.length > 0) {
+        processFiles(files)
+      } else {
+        alert('No image found in clipboard. Please make sure you have copied an image first.')
+      }
+    } catch (err) {
+      console.error('Failed to read clipboard:', err)
+      alert('Could not read clipboard. Please ensure you copy an image and grant clipboard permissions.')
     }
   }
 
@@ -234,6 +431,7 @@ function App() {
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
   const selectionEndRef = useRef<number | null>(null)
   const originalSelectedTextRef = useRef<string>('')
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   // Save status state
   const [saveStatus, setSaveStatus] = useState<'saved' | 'unsaved'>('saved')
@@ -302,6 +500,84 @@ function App() {
     window.addEventListener('resize', handleResize)
     return () => window.removeEventListener('resize', handleResize)
   }, [])
+
+  // 1. Cross-Tab Sync: Listen to storage event to sync custom system prompts & LLM configs across tabs
+  useEffect(() => {
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'web_canvas_system_prompts_backup') {
+        try {
+          const parsed = e.newValue ? JSON.parse(e.newValue) : null
+          if (parsed && parsed.version === 1) {
+            useAppStore.setState({
+              customSystemPrompts: parsed.prompts,
+              activeSystemPromptId: parsed.activePromptId
+            })
+          }
+        } catch (err) {
+          console.error('Failed to sync system prompts from storage event', err)
+        }
+      } else if (e.key === 'web_canvas_providers_backup') {
+        try {
+          const parsed = e.newValue ? JSON.parse(e.newValue) : null
+          if (parsed && parsed.version === 2) {
+            useAppStore.setState({
+              providerConfigs: parsed.data
+            })
+          }
+        } catch (err) {
+          console.error('Failed to sync LLM configs from storage event', err)
+        }
+      }
+    }
+
+    window.addEventListener('storage', handleStorageChange)
+    return () => window.removeEventListener('storage', handleStorageChange)
+  }, [])
+
+  // 2. Cross-Device Sync: Fetch server books and check for modifications on tab focus/visibility change
+  useEffect(() => {
+    const checkServerUpdates = async () => {
+      const state = useAppStore.getState()
+      // Only check if user is logged in, there are no unsaved local changes, and we're not currently streaming or saving
+      if (!state.user || state.serverSaveStatus !== 'saved' || state.isStreaming) return
+
+      try {
+        const res = await fetch('/api/books')
+        if (res.ok) {
+          const books = await res.json()
+          useAppStore.setState({ availableBooks: books })
+          
+          const currentBook = books.find((b: any) => b.id === state.activeBookId)
+          if (currentBook) {
+            const serverUpdatedAt = currentBook.updatedAt
+            const localLastSyncedAt = state.lastSyncedAt
+
+            // If server's updatedAt is newer than local lastSyncedAt, trigger a book switch to pull latest data
+            if (serverUpdatedAt && (!localLastSyncedAt || new Date(serverUpdatedAt) > new Date(localLastSyncedAt))) {
+              console.log('Server changes detected. Syncing active book from server:', state.activeBookId)
+              await state.switchBook(state.activeBookId)
+            }
+          }
+        }
+      } catch (err) {
+        console.error('Failed to check server updates on focus', err)
+      }
+    }
+
+    const handleFocusOrVisible = () => {
+      if (document.visibilityState === 'visible') {
+        checkServerUpdates()
+      }
+    }
+
+    window.addEventListener('focus', handleFocusOrVisible)
+    document.addEventListener('visibilitychange', handleFocusOrVisible)
+
+    return () => {
+      window.removeEventListener('focus', handleFocusOrVisible)
+      document.removeEventListener('visibilitychange', handleFocusOrVisible)
+    }
+  }, [activeBookId, switchBook, lastSyncedAt])
 
   // Dismiss export dropdown on outside click
   useEffect(() => {
@@ -486,8 +762,30 @@ function App() {
     }
   }, [])
 
-  // System prompt construction helper
-  const buildSystemPrompt = (finalReferenceIds: string[]) => {
+  // Static system prompt: contains only stable instructions that rarely change.
+  // This maximizes LLM API prefix cache hits across consecutive requests.
+  const buildStaticSystemPrompt = () => {
+    const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
+    const customPromptText = activePromptItem?.content || ''
+
+    return {
+      role: 'system' as const,
+      content: `You are an expert document writing and editing assistant.
+You help the user write, edit, and polish the ACTIVE document shown on their screen.
+
+${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${customPromptText}\n\n` : ''}CRITICAL RULES:
+1. If your response updates the ACTIVE document, you have two options depending on scope:
+   a. [PREFERRED FOR SELECTED EDITS]: If the user has selected text (provided in "CURRENT SELECTED TEXT IN ACTIVE DOCUMENT") and you are only updating/modifying that selection, output ONLY the updated selection content wrapped inside "<selection_replace>" XML tags. Do not output the rest of the document. This is highly preferred to save output tokens and speed up the reply.
+   b. [FOR FULL DOCUMENT EDITS]: If you are rewriting the entire document or editing multiple non-contiguous parts of it, wrap the FULL updated document text inside "<canvas>" XML tags.
+2. Write conversational feedback/explanations OUTSIDE the XML tags (either outside "<canvas>" or outside "<selection_replace>") for the chat panel.
+3. Output the document content (inside "<canvas>" or "<selection_replace>") as clean HTML (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of a full document inside "<canvas>" to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
+4. If the user instruction is just conversational and does not require updating the document, DO NOT output any XML block. Just write a conversational reply.`
+    }
+  }
+
+  // Dynamic context: contains document content, references, selection etc.
+  // Separated from system prompt so the stable prefix can be cached by LLM APIs.
+  const buildDynamicContext = (finalReferenceIds: string[]) => {
     let referenceDocsContext = ''
     finalReferenceIds.forEach(refId => {
       const refDoc = documents.find(d => d.id === refId)
@@ -501,31 +799,18 @@ function App() {
       .map(d => `- ${d.title}${d.id === activeDocumentId ? ' (Active / Editing Target)' : ''}`)
       .join('\n')
 
-    const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
-    const customPromptText = activePromptItem?.content || ''
-
     // Construct selection context block
     const selectionContext = selectedText
       ? `\nCURRENT SELECTED TEXT IN ACTIVE DOCUMENT (Focus your edits ONLY on this section if the user instructs so):\n"""\n${selectedText}\n"""\n`
       : ''
 
     return {
-      role: 'system' as const,
-      content: `You are an expert document writing and editing assistant.
-You help the user write, edit, and polish the ACTIVE document shown on their screen.
+      role: 'user' as const,
+      content: `[DOCUMENT CONTEXT - Do not respond to this message directly, wait for the user's instruction in the next message.]
 
-${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${customPromptText}\n\n` : ''}CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
+CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
 ${outlineList}
 ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
-
-CRITICAL RULES:
-1. If your response updates the ACTIVE document, you have two options depending on scope:
-   a. [PREFERRED FOR SELECTED EDITS]: If the user has selected text (provided in "CURRENT SELECTED TEXT IN ACTIVE DOCUMENT") and you are only updating/modifying that selection, output ONLY the updated selection content wrapped inside "<selection_replace>" XML tags. Do not output the rest of the document. This is highly preferred to save output tokens and speed up the reply.
-   b. [FOR FULL DOCUMENT EDITS]: If you are rewriting the entire document or editing multiple non-contiguous parts of it, wrap the FULL updated document text inside "<canvas>" XML tags.
-2. Write conversational feedback/explanations OUTSIDE the XML tags (either outside "<canvas>" or outside "<selection_replace>") for the chat panel.
-3. Output the document content (inside "<canvas>" or "<selection_replace>") as clean HTML (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of a full document inside "<canvas>" to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
-4. If the user instruction is just conversational and does not require updating the document, DO NOT output any XML block. Just write a conversational reply.
-
 ${selectionContext}
 CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
 """
@@ -542,6 +827,13 @@ ${activeDoc.content}
     attachmentsText: string,
     estimatedInputTokens: number
   ) => {
+    // Abort any existing stream just in case
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    abortControllerRef.current = new AbortController()
+    const signal = abortControllerRef.current.signal
+
     // Capture and store current selection indices before streaming starts
     if (activeEditor && selectedText) {
       selectionRangeRef.current = {
@@ -559,7 +851,7 @@ ${activeDoc.content}
     try {
       await streamLLM(
         apiMessages,
-        { ...activeConfig, provider: activeProvider, debug: debugMode },
+        { ...activeConfig, provider: activeProvider, debug: debugMode, signal },
         {
           onChunk: (chunk: string) => {
             accumulatedTextRef.current += chunk
@@ -648,8 +940,6 @@ ${activeDoc.content}
           },
           onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
             setStreaming(false)
-            // Clear reference attachments selection on submit completion
-            clearReferences()
 
             // Calculate final response output tokens using API metadata or fallback estimations
             let finalInputTokens = estimatedInputTokens
@@ -745,6 +1035,14 @@ ${activeDoc.content}
           },
           onError: (err: Error) => {
             setStreaming(false)
+            
+            const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
+            if (isAbort) {
+              // Keep the partial generated text! Just force save it.
+              forceSave()
+              return
+            }
+
             setErrorMsg(err.message)
             
             const displayChatText = attachmentsText
@@ -796,6 +1094,9 @@ ${activeDoc.content}
     
     if (!customPrompt) {
       setChatInput('')
+      if (chatInputRef.current) {
+        chatInputRef.current.innerHTML = ''
+      }
     }
 
     // 1. Scan user prompt for other chapter title mentions to automatically attach them
@@ -845,8 +1146,11 @@ ${activeDoc.content}
 
     accumulatedTextRef.current = ''
 
-    // 4. Build system prompt
-    const systemPrompt = buildSystemPrompt(finalReferenceIds)
+    // 4. Build messages: stable system prefix + dynamic context + history
+    const staticSystem = buildStaticSystemPrompt()
+    const dynamicContext = buildDynamicContext(finalReferenceIds)
+    // Assistant acknowledgment bridges the context (user role) and chat history
+    const contextAck: LLMMessage = { role: 'assistant', content: 'Understood. I have the document context. What would you like me to do?' }
 
     // Map chat history to LLM provider structure
     const historyMessages: LLMMessage[] = messages
@@ -864,7 +1168,7 @@ ${activeDoc.content}
       images: userMsg.images
     })
 
-    const apiMessages = [systemPrompt, ...historyMessages]
+    const apiMessages = [staticSystem, dynamicContext, contextAck, ...historyMessages]
     const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
     // Construct visual attachment text indicators
@@ -944,8 +1248,10 @@ ${activeDoc.content}
 
     const finalReferenceIds = Array.from(new Set([...selectedReferenceIds, ...autoDetectedIds]))
 
-    // Build system prompt
-    const systemPrompt = buildSystemPrompt(finalReferenceIds)
+    // Build messages: stable system prefix + dynamic context + history
+    const staticSystem = buildStaticSystemPrompt()
+    const dynamicContext = buildDynamicContext(finalReferenceIds)
+    const contextAck: LLMMessage = { role: 'assistant', content: 'Understood. I have the document context. What would you like me to do?' }
 
     // Map history to provider messages
     const historyMessages: LLMMessage[] = truncatedMessages
@@ -956,7 +1262,7 @@ ${activeDoc.content}
         images: m.images
       }))
 
-    const apiMessages = [systemPrompt, ...historyMessages]
+    const apiMessages = [staticSystem, dynamicContext, contextAck, ...historyMessages]
     const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
     const attachmentsText = finalReferenceIds
@@ -1633,21 +1939,79 @@ ${activeDoc.content}
                     {isChatExpanded ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
                   </button>
                 )}
-                <textarea
-                  value={chatInput}
-                  onChange={e => setChatInput(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      handleSendMessage()
-                    }
-                  }}
-                  onPaste={handlePaste}
-                  placeholder={`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
-                  className="chat-textarea"
-                  rows={1}
-                  disabled={isStreaming}
-                />
+                <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
+                  <div
+                    ref={chatInputRef}
+                    contentEditable={!isStreaming}
+                    onInput={async e => {
+                      const container = e.currentTarget
+                      const imgs = Array.from(container.getElementsByTagName('img'))
+                      if (imgs.length > 0) {
+                        const newImages: string[] = []
+                        for (const img of imgs) {
+                          const src = img.src
+                          if (src) {
+                            if (src.startsWith('blob:')) {
+                              try {
+                                const dataUrl = await convertBlobUrlToDataUrl(src)
+                                newImages.push(dataUrl)
+                              } catch (err) {
+                                console.error('Failed to convert blob URL:', err)
+                              }
+                            } else {
+                              newImages.push(src)
+                            }
+                          }
+                          img.remove()
+                        }
+                        if (newImages.length > 0) {
+                          setUploadedImages(prev => {
+                            if (prev.length + newImages.length > 3) {
+                              alert('You can attach a maximum of 3 images.')
+                              return prev
+                            }
+                            return [...prev, ...newImages]
+                          })
+                        }
+                      }
+                      setChatInput(container.innerText || '')
+                    }}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleSendMessage()
+                      }
+                    }}
+                    onPaste={handlePaste}
+                    className="chat-textarea"
+                    style={{
+                      overflowY: 'auto',
+                      minHeight: '24px',
+                      maxHeight: '120px',
+                      userSelect: 'text',
+                      WebkitUserSelect: 'text',
+                      outline: 'none',
+                      whiteSpace: 'pre-wrap',
+                      wordBreak: 'break-word',
+                      width: '100%'
+                    }}
+                  />
+                  {!chatInput && (
+                    <span 
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        top: 0,
+                        color: 'var(--text-muted)',
+                        pointerEvents: 'none',
+                        userSelect: 'none',
+                        fontStyle: 'normal'
+                      }}
+                    >
+                      {`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
+                    </span>
+                  )}
+                </div>
                 <button
                   type="button"
                   className="btn-icon"
@@ -1658,6 +2022,16 @@ ${activeDoc.content}
                 >
                   <Image size={18} />
                 </button>
+                <button
+                  type="button"
+                  className="btn-icon"
+                  title="Paste image from clipboard"
+                  onClick={handlePasteFromClipboard}
+                  disabled={isStreaming}
+                  style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
+                >
+                  <Clipboard size={18} />
+                </button>
                 <input
                   type="file"
                   ref={fileInputRef}
@@ -1666,18 +2040,35 @@ ${activeDoc.content}
                   multiple
                   style={{ display: 'none' }}
                 />
-                <button 
-                  type="submit" 
-                  className="btn-icon" 
-                  title="Send instruction"
-                  disabled={(!chatInput.trim() && uploadedImages.length === 0) || isStreaming}
-                  style={{ 
-                    color: (chatInput.trim() || uploadedImages.length > 0) && !isStreaming ? 'var(--accent)' : 'var(--text-muted)',
-                    cursor: (chatInput.trim() || uploadedImages.length > 0) && !isStreaming ? 'pointer' : 'default'
-                  }}
-                >
-                  <Send size={18} />
-                </button>
+                {isStreaming ? (
+                  <button 
+                    type="button" 
+                    className="btn-icon animate-pulse" 
+                    title="Stop generation"
+                    onClick={() => {
+                      abortControllerRef.current?.abort()
+                    }}
+                    style={{ 
+                      color: '#ef4444',
+                      cursor: 'pointer'
+                    }}
+                  >
+                    <Square size={16} fill="#ef4444" />
+                  </button>
+                ) : (
+                  <button 
+                    type="submit" 
+                    className="btn-icon" 
+                    title="Send instruction"
+                    disabled={!chatInput.trim() && uploadedImages.length === 0}
+                    style={{ 
+                      color: (chatInput.trim() || uploadedImages.length > 0) ? 'var(--accent)' : 'var(--text-muted)',
+                      cursor: (chatInput.trim() || uploadedImages.length > 0) ? 'pointer' : 'default'
+                    }}
+                  >
+                    <Send size={18} />
+                  </button>
+                )}
               </div>
             </form>
           </section>
@@ -1706,11 +2097,16 @@ ${activeDoc.content}
                     className="canvas-title-input"
                     placeholder="Untitled Document"
                     title="Document Title"
+                    disabled={isStreaming}
+                    style={{
+                      cursor: isStreaming ? 'not-allowed' : 'text',
+                      opacity: isStreaming ? 0.6 : 1
+                    }}
                   />
                 </div>
                 
                 <div className="canvas-actions">
-                  {/* Save Status Button */}
+                  {/* Local Save Status Button */}
                   <button
                     onClick={() => {
                       if (saveStatus === 'unsaved') {
@@ -1720,8 +2116,8 @@ ${activeDoc.content}
                     className={`btn-icon ${saveStatus === 'unsaved' ? 'is-dirty' : ''}`}
                     title={
                       saveStatus === 'unsaved'
-                        ? 'Unsaved changes (saving to server & local cache...)'
-                        : 'All changes saved to server & local cache'
+                        ? 'Unsaved changes in browser (autosaving locally...)'
+                        : 'All edits saved to local browser storage'
                     }
                     type="button"
                     style={{
@@ -1733,6 +2129,48 @@ ${activeDoc.content}
                       <RefreshCw size={18} className="animate-spin" />
                     ) : (
                       <Save size={18} />
+                    )}
+                  </button>
+
+                  {/* Server Sync Status Indicator */}
+                  <button
+                    onClick={() => {
+                      if (serverSaveStatus === 'failed') {
+                        syncToServer()
+                      }
+                    }}
+                    className={`btn-icon ${serverSaveStatus === 'saving' ? 'is-dirty' : ''} ${serverSaveStatus === 'failed' ? 'has-error' : ''}`}
+                    title={
+                      serverSaveStatus === 'saved'
+                        ? 'All changes synced to cloud server'
+                        : serverSaveStatus === 'saving'
+                        ? 'Syncing changes to cloud server...'
+                        : serverSaveStatus === 'failed'
+                        ? 'Sync failed (server offline). Click to retry.'
+                        : 'Local-only mode (log in to sync with cloud)'
+                    }
+                    type="button"
+                    style={{
+                      color:
+                        serverSaveStatus === 'saved'
+                          ? '#10b981'
+                          : serverSaveStatus === 'saving'
+                          ? 'var(--accent)'
+                          : serverSaveStatus === 'failed'
+                          ? '#ef4444'
+                          : 'var(--text-muted)',
+                      cursor: serverSaveStatus === 'failed' ? 'pointer' : 'default',
+                      opacity: serverSaveStatus === 'local-only' ? 0.4 : 1,
+                    }}
+                  >
+                    {serverSaveStatus === 'saving' ? (
+                      <CloudUpload size={18} className="animate-pulse" />
+                    ) : serverSaveStatus === 'failed' ? (
+                      <CloudOff size={18} />
+                    ) : serverSaveStatus === 'local-only' ? (
+                      <CloudOff size={18} />
+                    ) : (
+                      <Cloud size={18} />
                     )}
                   </button>
 

@@ -31,3 +31,6 @@ dist-ssr
 # Local storage directories
 storage/
 test_storage_dir/
+
+# Local private configuration
+public/sensitive_words.json

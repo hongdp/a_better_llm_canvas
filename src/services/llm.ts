@@ -36,7 +36,7 @@ function maskRequestDetails(url: string, headers: Record<string, string>, body: 
  */
 export async function streamLLM(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string; debug?: boolean },
+  config: ProviderConfig & { provider: string; debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const { provider, apiKey, debug } = config
@@ -86,7 +86,7 @@ export async function streamLLM(
  */
 async function streamOpenAI(
   messages: LLMMessage[],
-  config: ProviderConfig & { debug?: boolean },
+  config: ProviderConfig & { provider?: string; debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const headers: Record<string, string> = {
@@ -141,7 +141,8 @@ async function streamOpenAI(
 
   // Check if Ollama by checking baseUrl or apiKey
   const isOllama = config.apiKey === 'ollama-no-key' || config.baseUrl.includes('localhost') || config.baseUrl.includes('127.0.0.1');
-  if (!isOllama) {
+  const isGrok = config.provider === 'grok' || config.baseUrl.includes('x.ai');
+  if (!isOllama && !isGrok) {
     body['stream_options'] = { include_usage: true }
   }
 
@@ -153,6 +154,7 @@ async function streamOpenAI(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: config.signal,
   })
 
   if (!response.ok) {
@@ -171,7 +173,7 @@ async function streamOpenAI(
     } catch (e) {
       console.warn('Failed to parse OpenAI SSE chunk', e, dataString)
     }
-  }, callbacks)
+  }, callbacks, config.signal)
 }
 
 /**
@@ -179,7 +181,7 @@ async function streamOpenAI(
  */
 async function streamGemini(
   messages: LLMMessage[],
-  config: ProviderConfig & { debug?: boolean },
+  config: ProviderConfig & { debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
@@ -241,6 +243,7 @@ async function streamGemini(
       'Content-Type': 'application/json',
     },
     body: JSON.stringify(body),
+    signal: config.signal,
   })
 
   if (!response.ok) {
@@ -259,6 +262,9 @@ async function streamGemini(
 
   try {
     while (true) {
+      if (config.signal?.aborted) {
+        throw new Error('Stream aborted by user')
+      }
       const { value, done } = await reader.read()
       if (done) break
 
@@ -349,7 +355,7 @@ async function streamGemini(
  */
 async function streamAnthropic(
   messages: LLMMessage[],
-  config: ProviderConfig & { debug?: boolean },
+  config: ProviderConfig & { debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
@@ -398,15 +404,38 @@ async function streamAnthropic(
     stream: true,
   }
 
+  // Use structured system prompt with cache_control for Anthropic prompt caching
   if (systemMessage) {
-    body['system'] = systemMessage.content
+    body['system'] = [
+      {
+        type: 'text',
+        text: systemMessage.content,
+        cache_control: { type: 'ephemeral' }
+      }
+    ]
+  }
+
+  // Mark the first user message (dynamic document context) for caching too,
+  // as it often stays the same across a few consecutive requests
+  if (anthropicMessages.length > 0 && typeof anthropicMessages[0].content === 'string') {
+    anthropicMessages[0] = {
+      ...anthropicMessages[0],
+      content: [
+        {
+          type: 'text',
+          text: anthropicMessages[0].content,
+          cache_control: { type: 'ephemeral' }
+        }
+      ]
+    }
   }
 
   const url = `${config.baseUrl}/messages`
-  const headers = {
+  const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-api-key': config.apiKey,
     'anthropic-version': '2023-06-01',
+    'anthropic-beta': 'prompt-caching-2024-07-31',
   }
 
   if (config.debug) {
@@ -417,6 +446,7 @@ async function streamAnthropic(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: config.signal,
   })
 
   if (!response.ok) {
@@ -435,7 +465,7 @@ async function streamAnthropic(
     } catch (e) {
       // Ignore parse errors on structural messages
     }
-  }, callbacks)
+  }, callbacks, config.signal)
 }
 
 /**
@@ -444,7 +474,8 @@ async function streamAnthropic(
 async function readSSEStream(
   response: Response,
   onData: (data: string, event?: string) => void,
-  callbacks: StreamCallbacks
+  callbacks: StreamCallbacks,
+  signal?: AbortSignal
 ): Promise<void> {
   const reader = response.body?.getReader()
   if (!reader) throw new Error('Response body is not readable')
@@ -491,6 +522,9 @@ async function readSSEStream(
 
   try {
     while (true) {
+      if (signal?.aborted) {
+        throw new Error('Stream aborted by user')
+      }
       const { value, done } = await reader.read()
       if (done) break
 

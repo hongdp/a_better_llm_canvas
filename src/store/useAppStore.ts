@@ -10,12 +10,25 @@ export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
 }
 
-const localStorage = typeof window !== 'undefined' ? window.localStorage : {
-  setItem: () => {},
-  getItem: () => null,
-  removeItem: () => {},
-  key: () => null,
-  get length() { return 0 }
+const rawLocalStorage = typeof window !== 'undefined' ? window.localStorage : null
+const localStorage = {
+  setItem: (key: string, value: string) => {
+    if (!rawLocalStorage) return
+    try {
+      rawLocalStorage.setItem(key, value)
+    } catch (e) {
+      if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
+        console.warn(`[Storage] localStorage quota exceeded for key "${key}" (${(value.length / 1024 / 1024).toFixed(1)}MB).`)
+      } else {
+        console.error(`[Storage] Failed to write to localStorage for key "${key}":`, e)
+      }
+    }
+  },
+  getItem: (key: string) => rawLocalStorage ? rawLocalStorage.getItem(key) : null,
+  removeItem: (key: string) => rawLocalStorage ? rawLocalStorage.removeItem(key) : undefined,
+  clear: () => rawLocalStorage ? rawLocalStorage.clear() : undefined,
+  key: (index: number) => rawLocalStorage ? rawLocalStorage.key(index) : null,
+  get length() { return rawLocalStorage ? rawLocalStorage.length : 0 }
 }
 
 export interface GeminiSafetySetting {
@@ -139,6 +152,9 @@ interface AppState {
   // Storage & Sync state
   isStoreInitialized: boolean
   setIsStoreInitialized: (initialized: boolean) => void
+  serverSaveStatus: 'saved' | 'saving' | 'failed' | 'local-only'
+  setServerSaveStatus: (status: 'saved' | 'saving' | 'failed' | 'local-only') => void
+  syncToServer: () => Promise<void>
 
   // Multi-book state
   activeBookId: string
@@ -158,6 +174,7 @@ interface AppState {
   register: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   checkSession: () => Promise<void>
+  lastSyncedAt: string | null
 }
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
@@ -279,14 +296,7 @@ export const DEFAULT_SYSTEM_PROMPTS: SystemPromptTemplate[] = [
 
 const CURRENT_PROMPTS_VERSION = 1
 
-interface VersionedPromptsData {
-  version: number
-  prompts: SystemPromptTemplate[]
-  activePromptId: string
-}
-
 const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePromptId: string) => {
-  // 1. Save to localStorage as a fallback backup to bypass 4KB cookie limits or secure context issues
   try {
     localStorage.setItem('web_canvas_system_prompts_backup', JSON.stringify({
       version: CURRENT_PROMPTS_VERSION,
@@ -297,19 +307,10 @@ const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePrompt
     console.error('Failed to save prompts backup to localStorage', e)
   }
 
-  // 2. Only save custom prompts or modified default prompts to the cookie to save space (cookie limit is 4KB)
-  const promptsToSave = prompts.filter(p => {
-    const defaultPrompt = DEFAULT_SYSTEM_PROMPTS.find(d => d.id === p.id)
-    if (!defaultPrompt) return true // User-created prompt
-    return p.name !== defaultPrompt.name || p.content !== defaultPrompt.content // Modified default prompt
-  })
-
-  const envelope: VersionedPromptsData = {
-    version: CURRENT_PROMPTS_VERSION,
-    prompts: promptsToSave,
-    activePromptId,
+  // Clear the old cookie if it exists to clean up bloated request headers
+  if (getCookie('__Secure-web_canvas_system_prompts')) {
+    setCookie('__Secure-web_canvas_system_prompts', '', -1)
   }
-  setCookie('__Secure-web_canvas_system_prompts', JSON.stringify(envelope))
 }
 
 const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
@@ -336,6 +337,8 @@ const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; active
   if (saved) {
     try {
       parsed = JSON.parse(saved)
+      // Clean up the cookie since we've migrated
+      setCookie('__Secure-web_canvas_system_prompts', '', -1)
       if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
         const savedPrompts = parsed.prompts || []
         const mergedPrompts = [...DEFAULT_SYSTEM_PROMPTS]
@@ -347,9 +350,20 @@ const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; active
             mergedPrompts.push(sp)
           }
         })
+        const activePromptId = parsed.activePromptId || 'prompt-none'
+        // Save to localStorage immediately so it's backed up
+        try {
+          localStorage.setItem('web_canvas_system_prompts_backup', JSON.stringify({
+            version: CURRENT_PROMPTS_VERSION,
+            prompts: mergedPrompts,
+            activePromptId
+          }))
+        } catch (e) {
+          console.error('Failed to save prompts backup to localStorage', e)
+        }
         return {
           prompts: mergedPrompts,
-          activePromptId: parsed.activePromptId || 'prompt-none'
+          activePromptId
         }
       }
     } catch (e) {
@@ -370,15 +384,17 @@ const saveConfigsToCookie = (configs: Record<LLMProvider, ProviderConfig>) => {
   }
   const jsonStr = JSON.stringify(envelope)
   
-  // 1. Save to localStorage as a fallback backup
+  // 1. Save to localStorage
   try {
     localStorage.setItem('web_canvas_providers_backup', jsonStr)
   } catch (e) {
     console.error('Failed to save configs backup to localStorage', e)
   }
 
-  // 2. Save to cookie
-  setCookie('__Secure-web_canvas_providers', jsonStr)
+  // 2. Clear old cookie
+  if (getCookie('__Secure-web_canvas_providers')) {
+    setCookie('__Secure-web_canvas_providers', '', -1)
+  }
 }
 
 const migrateProvidersConfig = (savedString: string): Record<LLMProvider, ProviderConfig> => {
@@ -415,7 +431,7 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
         saveSystemPromptsToCookie([...DEFAULT_SYSTEM_PROMPTS, importedPrompt], importedId)
       }
       
-      // Save versioned cookie immediately
+      // Save versioned localStorage immediately
       saveConfigsToCookie(migratedData)
       return migratedData
     }
@@ -477,7 +493,18 @@ const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
   }
   const saved = getCookie('__Secure-web_canvas_providers')
   if (saved) {
-    return migrateProvidersConfig(saved)
+    const configs = migrateProvidersConfig(saved)
+    setCookie('__Secure-web_canvas_providers', '', -1)
+    // Save to localStorage immediately so it's backed up
+    try {
+      localStorage.setItem('web_canvas_providers_backup', JSON.stringify({
+        version: CURRENT_SETTINGS_VERSION,
+        data: configs
+      }))
+    } catch (e) {
+      console.error('Failed to save migrated configs backup to localStorage', e)
+    }
+    return configs
   }
   return DEFAULT_CONFIGS
 }
@@ -528,6 +555,24 @@ const loadSavedDebugMode = (): boolean => {
   return false
 }
 
+/**
+ * Safe wrapper around localStorage.setItem that silently handles QuotaExceededError.
+ * When documents contain large base64 images (e.g. from URL import), they may exceed
+ * localStorage's ~5-10MB limit. Since data is also persisted to the backend server,
+ * localStorage is a non-critical cache and can safely fail.
+ */
+const safeLocalStorageSet = (key: string, value: string): void => {
+  try {
+    localStorage.setItem(key, value)
+  } catch (e) {
+    if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
+      console.warn(`[Storage] localStorage quota exceeded for key "${key}" (${(value.length / 1024 / 1024).toFixed(1)}MB). Data will be saved to server only.`)
+    } else {
+      console.error(`[Storage] Failed to write to localStorage:`, e)
+    }
+  }
+}
+
 const loadSavedDocuments = (): CanvasDocument[] => {
   const saved = localStorage.getItem('web_canvas_documents')
   if (saved) {
@@ -570,7 +615,7 @@ export const useAppStore = create<AppState>((set) => {
   const initialDocs = loadSavedDocuments()
   const initialActiveId = loadSavedActiveDocId(initialDocs)
   const initialPromptsData = loadSavedSystemPromptsData()
-  if (!localStorage.getItem('web_canvas_system_prompts') && !getCookie('__Secure-web_canvas_system_prompts')) {
+  if (!localStorage.getItem('web_canvas_system_prompts_backup') && !getCookie('__Secure-web_canvas_system_prompts')) {
     saveSystemPromptsToCookie(initialPromptsData.prompts, initialPromptsData.activePromptId)
   }
   const isEnvDebug = import.meta.env.VITE_DEBUG === 'true' || import.meta.env.MODE === 'debug'
@@ -620,7 +665,7 @@ export const useAppStore = create<AppState>((set) => {
 
       set((state) => {
         const updatedDocs = [...state.documents, newDoc]
-        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
         localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         docId = newDoc.id
         return { 
@@ -645,7 +690,7 @@ export const useAppStore = create<AppState>((set) => {
       }))
 
       set(() => {
-        localStorage.setItem('web_canvas_documents', JSON.stringify(formattedDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(formattedDocs))
         localStorage.setItem('web_canvas_active_document_id', formattedDocs[0].id)
         return {
           documents: formattedDocs,
@@ -657,7 +702,7 @@ export const useAppStore = create<AppState>((set) => {
 
     reorderDocuments: (newDocs) => {
       set(() => {
-        localStorage.setItem('web_canvas_documents', JSON.stringify(newDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(newDocs))
         return { documents: newDocs }
       })
     },
@@ -685,7 +730,7 @@ export const useAppStore = create<AppState>((set) => {
           newActiveId = fallbackDoc.id
         }
 
-        localStorage.setItem('web_canvas_documents', JSON.stringify(filteredDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(filteredDocs))
         localStorage.setItem('web_canvas_active_document_id', newActiveId)
 
         return {
@@ -709,7 +754,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
         return { documents: updatedDocs }
       })
     },
@@ -730,7 +775,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
         return { 
           selectedReferenceIds: refs,
           documents: updatedDocs
@@ -750,7 +795,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
         return {
           selectedReferenceIds: [],
           documents: updatedDocs
@@ -817,7 +862,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        localStorage.setItem('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
 
         return {
           documents: updatedDocs,
@@ -1043,7 +1088,7 @@ export const useAppStore = create<AppState>((set) => {
 
       localStorage.setItem('web_canvas_active_book_id', newBookId)
       localStorage.setItem('web_canvas_book_title', title)
-      localStorage.setItem('web_canvas_documents', JSON.stringify(defaultDocs))
+      safeLocalStorageSet('web_canvas_documents', JSON.stringify(defaultDocs))
       localStorage.setItem('web_canvas_versions', JSON.stringify([]))
       localStorage.setItem('web_canvas_active_document_id', 'doc-1')
 
@@ -1052,8 +1097,9 @@ export const useAppStore = create<AppState>((set) => {
       isInitialized = wasInitialized
 
       if (state.user) {
+        set({ serverSaveStatus: 'saving' })
         try {
-          await fetch(`/api/storage?bookId=${newBookId}`, {
+          const res = await fetch(`/api/storage?bookId=${newBookId}`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1074,9 +1120,15 @@ export const useAppStore = create<AppState>((set) => {
             })
           })
           
+          if (res.ok) {
+            set({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+          } else {
+            set({ serverSaveStatus: 'failed' })
+          }
           await useAppStore.getState().fetchAvailableBooks()
         } catch (e) {
           console.error('Failed to save new book to server', e)
+          set({ serverSaveStatus: 'failed' })
         }
       }
     },
@@ -1089,6 +1141,7 @@ export const useAppStore = create<AppState>((set) => {
         saveTimeout = null
       }
 
+      set({ serverSaveStatus: 'saving' })
       try {
         const res = await fetch(`/api/storage?bookId=${id}`)
         if (res.ok) {
@@ -1104,7 +1157,7 @@ export const useAppStore = create<AppState>((set) => {
 
             if (server.documents) {
               updates.documents = server.documents
-              localStorage.setItem('web_canvas_documents', JSON.stringify(server.documents))
+              safeLocalStorageSet('web_canvas_documents', JSON.stringify(server.documents))
             }
             if (server.versions) {
               updates.versions = server.versions
@@ -1146,9 +1199,11 @@ export const useAppStore = create<AppState>((set) => {
             set(updates)
             isInitialized = wasInitialized
           }
+          set({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
         } else {
+          set({ serverSaveStatus: 'failed' })
           if (res.status === 401) {
-            useAppStore.setState({ user: null })
+            useAppStore.setState({ user: null, serverSaveStatus: 'local-only' })
             alert('You have been logged out because another session has started on the server.')
             window.location.reload()
             return
@@ -1156,6 +1211,7 @@ export const useAppStore = create<AppState>((set) => {
         }
       } catch (e) {
         console.error('Failed to switch book', e)
+        set({ serverSaveStatus: 'failed' })
       }
     },
     deleteBook: async (id) => {
@@ -1186,6 +1242,48 @@ export const useAppStore = create<AppState>((set) => {
     // Storage & Sync implementation
     isStoreInitialized: false,
     setIsStoreInitialized: (initialized) => set({ isStoreInitialized: initialized }),
+    serverSaveStatus: 'local-only',
+    setServerSaveStatus: (status) => set({ serverSaveStatus: status }),
+    lastSyncedAt: null,
+    syncToServer: async () => {
+      const state = useAppStore.getState()
+      if (!state.user) return
+
+      set({ serverSaveStatus: 'saving' })
+      try {
+        const res = await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': state.csrfToken || ''
+          },
+          body: JSON.stringify({
+            documents: state.documents,
+            versions: state.versions,
+            bookTitle: state.bookTitle,
+            activeDocumentId: state.activeDocumentId,
+            activeProvider: state.activeProvider,
+            providerConfigs: state.providerConfigs,
+            customSystemPrompts: state.customSystemPrompts,
+            activeSystemPromptId: state.activeSystemPromptId,
+            theme: state.theme,
+            messages: state.messages,
+            debugMode: state.debugMode
+          })
+        })
+        if (res.status === 401) {
+          set({ user: null, serverSaveStatus: 'local-only' })
+          alert('You have been logged out because another session has started on the server.')
+          window.location.reload()
+        } else if (res.ok) {
+          set({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+        } else {
+          set({ serverSaveStatus: 'failed' })
+        }
+      } catch {
+        set({ serverSaveStatus: 'failed' })
+      }
+    },
 
     // Auth implementation
     user: null,
@@ -1241,14 +1339,51 @@ export const useAppStore = create<AppState>((set) => {
       } catch (e) {
         console.error('Logout request failed', e)
       }
-      set({ user: null })
       // Clear localStorage cache to be completely secure and avoid PII leaks
       localStorage.removeItem('web_canvas_documents')
       localStorage.removeItem('web_canvas_versions')
       localStorage.removeItem('web_canvas_book_title')
       localStorage.removeItem('web_canvas_active_document_id')
       localStorage.removeItem('web_canvas_active_book_id')
-      set({ activeBookId: 'default', availableBooks: [] })
+      localStorage.removeItem('web_canvas_system_prompts_backup')
+      localStorage.removeItem('web_canvas_providers_backup')
+      localStorage.removeItem('web_canvas_theme')
+      localStorage.removeItem('web_canvas_sidebar_open')
+      localStorage.removeItem('web_canvas_debug_mode')
+      localStorage.removeItem('web_canvas_active_provider')
+
+      // Clear cookies that might have been set
+      setCookie('__Secure-web_canvas_theme', '', -1)
+      setCookie('__Secure-web_canvas_sidebar_open', '', -1)
+      setCookie('__Secure-web_canvas_debug_mode', '', -1)
+      setCookie('__Secure-web_canvas_active_provider', '', -1)
+      setCookie('__Secure-web_canvas_system_prompts', '', -1)
+      setCookie('__Secure-web_canvas_providers', '', -1)
+
+      set({
+        user: null,
+        activeBookId: 'default',
+        availableBooks: [],
+        lastSyncedAt: null,
+        customSystemPrompts: DEFAULT_SYSTEM_PROMPTS,
+        activeSystemPromptId: 'prompt-none',
+        providerConfigs: DEFAULT_CONFIGS,
+        activeProvider: 'gemini',
+        theme: 'dark',
+        isSidebarOpen: true,
+        debugMode: false,
+        documents: MOCK_DOCUMENTS,
+        activeDocumentId: 'doc-1',
+        versions: [],
+        messages: [
+          {
+            id: 'welcome',
+            role: 'assistant',
+            content: "Hello! I'm your Web Canvas assistant. You can write your document directly in the right panel, or tell me what you want to write and I can draft it for you. How can I help you today?",
+            timestamp: new Date().toISOString(),
+          },
+        ]
+      })
     },
     checkSession: async () => {
       try {
@@ -1302,6 +1437,7 @@ export const initializeStoreFromServer = async () => {
   // 3. Continue initialization for logged-in user: fetch book state from server
   const activeBookId = localStorage.getItem('web_canvas_active_book_id') || 'default'
 
+  useAppStore.setState({ serverSaveStatus: 'saving' })
   try {
     const res = await fetch(`/api/storage?bookId=${activeBookId}`)
     if (res.ok) {
@@ -1311,7 +1447,7 @@ export const initializeStoreFromServer = async () => {
         const updates: Partial<AppState> = {}
         if (serverData.documents) {
           updates.documents = serverData.documents
-          localStorage.setItem('web_canvas_documents', JSON.stringify(serverData.documents))
+          safeLocalStorageSet('web_canvas_documents', JSON.stringify(serverData.documents))
         }
         if (serverData.versions) {
           updates.versions = serverData.versions
@@ -1350,11 +1486,11 @@ export const initializeStoreFromServer = async () => {
           localStorage.setItem('web_canvas_debug_mode', String(serverData.debugMode))
         }
 
-        useAppStore.setState(updates)
+        useAppStore.setState({ ...updates, serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
       } else {
         // Server is empty, initialize server with initial client/default state
         const state = useAppStore.getState()
-        await fetch(`/api/storage?bookId=${activeBookId}`, {
+        const postRes = await fetch(`/api/storage?bookId=${activeBookId}`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -1374,10 +1510,18 @@ export const initializeStoreFromServer = async () => {
             debugMode: state.debugMode
           })
         })
+        if (postRes.ok) {
+          useAppStore.setState({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+        } else {
+          useAppStore.setState({ serverSaveStatus: 'failed' })
+        }
       }
+    } else {
+      useAppStore.setState({ serverSaveStatus: 'failed' })
     }
   } catch (e) {
     console.error('Failed to load server data during initialization', e)
+    useAppStore.setState({ serverSaveStatus: 'failed' })
   } finally {
     useAppStore.setState({ isStoreInitialized: true })
     isInitialized = true
@@ -1388,41 +1532,49 @@ export const initializeStoreFromServer = async () => {
 
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
 
+const getSyncableDataString = (state: AppState) => {
+  return JSON.stringify({
+    documents: state.documents,
+    versions: state.versions,
+    bookTitle: state.bookTitle,
+    activeDocumentId: state.activeDocumentId,
+    activeProvider: state.activeProvider,
+    providerConfigs: state.providerConfigs,
+    customSystemPrompts: state.customSystemPrompts,
+    activeSystemPromptId: state.activeSystemPromptId,
+    theme: state.theme,
+    messages: state.messages,
+    debugMode: state.debugMode
+  })
+}
+
+let lastDataString = getSyncableDataString(useAppStore.getState())
+
 useAppStore.subscribe((state) => {
-  if (!isInitialized) return
-  if (!state.user) return // Don't auto-save if user is not logged in
+  if (!isInitialized) {
+    lastDataString = getSyncableDataString(state)
+    return
+  }
+  if (!state.user) {
+    if (useAppStore.getState().serverSaveStatus !== 'local-only') {
+      useAppStore.setState({ serverSaveStatus: 'local-only' })
+    }
+    return // Don't auto-save if user is not logged in
+  }
+
+  const currentDataString = getSyncableDataString(state)
+  if (currentDataString === lastDataString) {
+    return // No syncable data changed (e.g. only serverSaveStatus, activeEditor, or selectedText changed)
+  }
+  lastDataString = currentDataString
+
+  if (useAppStore.getState().serverSaveStatus !== 'saving') {
+    useAppStore.setState({ serverSaveStatus: 'saving' })
+  }
 
   if (saveTimeout) clearTimeout(saveTimeout)
   saveTimeout = setTimeout(async () => {
-    try {
-      const res = await fetch(`/api/storage?bookId=${state.activeBookId || 'default'}`, {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': state.csrfToken || ''
-        },
-        body: JSON.stringify({
-          documents: state.documents,
-          versions: state.versions,
-          bookTitle: state.bookTitle,
-          activeDocumentId: state.activeDocumentId,
-          activeProvider: state.activeProvider,
-          providerConfigs: state.providerConfigs,
-          customSystemPrompts: state.customSystemPrompts,
-          activeSystemPromptId: state.activeSystemPromptId,
-          theme: state.theme,
-          messages: state.messages,
-          debugMode: state.debugMode
-        })
-      })
-      if (res.status === 401) {
-        useAppStore.setState({ user: null })
-        alert('You have been logged out because another session has started on the server.')
-        window.location.reload()
-      }
-    } catch {
-      // Server storage API not running
-    }
+    await useAppStore.getState().syncToServer()
   }, 3000) // 3-second debounce to accumulate edits and reduce server communication
 })
 

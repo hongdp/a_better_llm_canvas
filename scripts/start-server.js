@@ -37,8 +37,11 @@ if (hostIdx !== -1) {
 }
 
 // 1. Spawn Python API Backend Server
-console.log('[Storage Server] Starting Python API server on port 3000...')
-const apiServerProcess = spawn('python3', [
+// Prefer conda Python (has scraping dependencies installed), fallback to system python3
+const condaPython = path.join(process.env.HOME || '', 'miniconda3', 'bin', 'python3')
+const pythonBin = fs.existsSync(condaPython) ? condaPython : 'python3'
+console.log(`[Storage Server] Starting Python API server on port 3000 using ${pythonBin}...`)
+const apiServerProcess = spawn(pythonBin, [
   path.join(process.cwd(), 'scripts', 'api_server.py'),
   '--storage-dir', absoluteStorageDir,
   '--host', '127.0.0.1',
