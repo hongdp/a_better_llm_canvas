@@ -31,6 +31,79 @@ const localStorage = {
   get length() { return rawLocalStorage ? rawLocalStorage.length : 0 }
 }
 
+const DB_NAME = 'web_canvas_indexeddb'
+const STORE_NAME = 'keyval'
+
+const getDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    if (typeof window === 'undefined') {
+      reject(new Error('IndexedDB is only available in the browser.'))
+      return
+    }
+    const request = window.indexedDB.open(DB_NAME, 1)
+    request.onupgradeneeded = () => {
+      const dbInstance = request.result
+      if (!dbInstance.objectStoreNames.contains(STORE_NAME)) {
+        dbInstance.createObjectStore(STORE_NAME)
+      }
+    }
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
+  })
+}
+
+const db = {
+  get: async <T>(key: string): Promise<T | null> => {
+    try {
+      const database = await getDB()
+      return new Promise<T | null>((resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, 'readonly')
+        const store = transaction.objectStore(STORE_NAME)
+        const request = store.get(key)
+        request.onsuccess = () => resolve((request.result as T) ?? null)
+        request.onerror = () => reject(request.error)
+      })
+    } catch (e) {
+      console.warn(`[IndexedDB] Get error for key "${key}":`, e)
+      return null
+    }
+  },
+  set: async <T>(key: string, value: T): Promise<void> => {
+    try {
+      const database = await getDB()
+      return new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, 'readwrite')
+        const store = transaction.objectStore(STORE_NAME)
+        const request = store.put(value, key)
+        request.onsuccess = () => resolve()
+        request.onerror = () => reject(request.error)
+      })
+    } catch (e) {
+      console.error(`[IndexedDB] Set error for key "${key}":`, e)
+    }
+  },
+  remove: async (key: string): Promise<void> => {
+    try {
+      const database = await getDB()
+      return new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(STORE_NAME, 'readwrite')
+        const store = transaction.objectStore(STORE_NAME)
+        const request = store.delete(key)
+        request.onsuccess = () => resolve()
+        request.onerror = () => reject(request.error)
+      })
+    } catch (e) {
+      console.error(`[IndexedDB] Remove error for key "${key}":`, e)
+    }
+  }
+}
+
+const safeIndexedDBSet = (key: string, value: any): void => {
+  db.set(key, value).catch(err => {
+    console.error(`[IndexedDB] safeIndexedDBSet failed for key "${key}":`, err)
+  })
+}
+
 export interface GeminiSafetySetting {
   category: string
   threshold: string
@@ -555,38 +628,7 @@ const loadSavedDebugMode = (): boolean => {
   return false
 }
 
-/**
- * Safe wrapper around localStorage.setItem that silently handles QuotaExceededError.
- * When documents contain large base64 images (e.g. from URL import), they may exceed
- * localStorage's ~5-10MB limit. Since data is also persisted to the backend server,
- * localStorage is a non-critical cache and can safely fail.
- */
-const safeLocalStorageSet = (key: string, value: string): void => {
-  try {
-    localStorage.setItem(key, value)
-  } catch (e) {
-    if (e instanceof DOMException && (e.name === 'QuotaExceededError' || e.code === 22)) {
-      console.warn(`[Storage] localStorage quota exceeded for key "${key}" (${(value.length / 1024 / 1024).toFixed(1)}MB). Data will be saved to server only.`)
-    } else {
-      console.error(`[Storage] Failed to write to localStorage:`, e)
-    }
-  }
-}
 
-const loadSavedDocuments = (): CanvasDocument[] => {
-  const saved = localStorage.getItem('web_canvas_documents')
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved)
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed
-      }
-    } catch (e) {
-      console.error('Failed to parse saved documents', e)
-    }
-  }
-  return MOCK_DOCUMENTS
-}
 
 const loadSavedActiveDocId = (docs: CanvasDocument[]): string => {
   const saved = localStorage.getItem('web_canvas_active_document_id')
@@ -596,23 +638,10 @@ const loadSavedActiveDocId = (docs: CanvasDocument[]): string => {
   return docs[0]?.id || ''
 }
 
-const loadSavedVersions = (): DocumentVersion[] => {
-  const saved = localStorage.getItem('web_canvas_versions')
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved)
-      if (Array.isArray(parsed)) {
-        return parsed
-      }
-    } catch (e) {
-      console.error('Failed to parse saved versions', e)
-    }
-  }
-  return []
-}
+
 
 export const useAppStore = create<AppState>((set) => {
-  const initialDocs = loadSavedDocuments()
+  const initialDocs = MOCK_DOCUMENTS
   const initialActiveId = loadSavedActiveDocId(initialDocs)
   const initialPromptsData = loadSavedSystemPromptsData()
   if (!localStorage.getItem('web_canvas_system_prompts_backup') && !getCookie('__Secure-web_canvas_system_prompts')) {
@@ -665,7 +694,7 @@ export const useAppStore = create<AppState>((set) => {
 
       set((state) => {
         const updatedDocs = [...state.documents, newDoc]
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeIndexedDBSet('web_canvas_documents', updatedDocs)
         localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         docId = newDoc.id
         return { 
@@ -690,7 +719,7 @@ export const useAppStore = create<AppState>((set) => {
       }))
 
       set(() => {
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(formattedDocs))
+        safeIndexedDBSet('web_canvas_documents', formattedDocs)
         localStorage.setItem('web_canvas_active_document_id', formattedDocs[0].id)
         return {
           documents: formattedDocs,
@@ -702,7 +731,7 @@ export const useAppStore = create<AppState>((set) => {
 
     reorderDocuments: (newDocs) => {
       set(() => {
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(newDocs))
+        safeIndexedDBSet('web_canvas_documents', newDocs)
         return { documents: newDocs }
       })
     },
@@ -730,7 +759,7 @@ export const useAppStore = create<AppState>((set) => {
           newActiveId = fallbackDoc.id
         }
 
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(filteredDocs))
+        safeIndexedDBSet('web_canvas_documents', filteredDocs)
         localStorage.setItem('web_canvas_active_document_id', newActiveId)
 
         return {
@@ -754,7 +783,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeIndexedDBSet('web_canvas_documents', updatedDocs)
         return { documents: updatedDocs }
       })
     },
@@ -775,7 +804,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeIndexedDBSet('web_canvas_documents', updatedDocs)
         return { 
           selectedReferenceIds: refs,
           documents: updatedDocs
@@ -795,7 +824,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeIndexedDBSet('web_canvas_documents', updatedDocs)
         return {
           selectedReferenceIds: [],
           documents: updatedDocs
@@ -804,7 +833,7 @@ export const useAppStore = create<AppState>((set) => {
     },
 
     // Version history state
-    versions: loadSavedVersions(),
+    versions: [],
 
     createVersionSnapshot: (title = 'Manual Snapshot') => {
       set((state) => {
@@ -824,7 +853,7 @@ export const useAppStore = create<AppState>((set) => {
           updatedVersions = updatedVersions.slice(0, 50)
         }
 
-        localStorage.setItem('web_canvas_versions', JSON.stringify(updatedVersions))
+        safeIndexedDBSet('web_canvas_versions', updatedVersions)
         return { versions: updatedVersions }
       })
     },
@@ -849,7 +878,7 @@ export const useAppStore = create<AppState>((set) => {
           if (updatedVersions.length > 50) {
             updatedVersions = updatedVersions.slice(0, 50)
           }
-          localStorage.setItem('web_canvas_versions', JSON.stringify(updatedVersions))
+          safeIndexedDBSet('web_canvas_versions', updatedVersions)
         }
 
         const updatedDocs = state.documents.map((d) => {
@@ -862,7 +891,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeLocalStorageSet('web_canvas_documents', JSON.stringify(updatedDocs))
+        safeIndexedDBSet('web_canvas_documents', updatedDocs)
 
         return {
           documents: updatedDocs,
@@ -874,7 +903,7 @@ export const useAppStore = create<AppState>((set) => {
     deleteVersionSnapshot: (versionId) => {
       set((state) => {
         const filteredVersions = state.versions.filter(v => v.id !== versionId)
-        localStorage.setItem('web_canvas_versions', JSON.stringify(filteredVersions))
+        safeIndexedDBSet('web_canvas_versions', filteredVersions)
         return { versions: filteredVersions }
       })
     },
@@ -1088,8 +1117,8 @@ export const useAppStore = create<AppState>((set) => {
 
       localStorage.setItem('web_canvas_active_book_id', newBookId)
       localStorage.setItem('web_canvas_book_title', title)
-      safeLocalStorageSet('web_canvas_documents', JSON.stringify(defaultDocs))
-      localStorage.setItem('web_canvas_versions', JSON.stringify([]))
+      safeIndexedDBSet('web_canvas_documents', defaultDocs)
+      safeIndexedDBSet('web_canvas_versions', [])
       localStorage.setItem('web_canvas_active_document_id', 'doc-1')
 
       set(updates)
@@ -1157,11 +1186,11 @@ export const useAppStore = create<AppState>((set) => {
 
             if (server.documents) {
               updates.documents = server.documents
-              safeLocalStorageSet('web_canvas_documents', JSON.stringify(server.documents))
+              safeIndexedDBSet('web_canvas_documents', server.documents)
             }
             if (server.versions) {
               updates.versions = server.versions
-              localStorage.setItem('web_canvas_versions', JSON.stringify(server.versions))
+              safeIndexedDBSet('web_canvas_versions', server.versions)
             }
             if (server.bookTitle) {
               updates.bookTitle = server.bookTitle
@@ -1407,7 +1436,49 @@ export const useAppStore = create<AppState>((set) => {
 let isInitialized = false
 
 export const initializeStoreFromServer = async () => {
-  // 1. Fetch current session status first
+  if (isInitialized) return
+
+  // 1. Perform LocalStorage to IndexedDB migration if not done yet
+  const isMigrated = localStorage.getItem('web_canvas_indexeddb_migrated') === 'true'
+  if (!isMigrated) {
+    try {
+      const oldDocs = localStorage.getItem('web_canvas_documents')
+      if (oldDocs) {
+        await db.set('web_canvas_documents', JSON.parse(oldDocs))
+        localStorage.removeItem('web_canvas_documents')
+      }
+      const oldVersions = localStorage.getItem('web_canvas_versions')
+      if (oldVersions) {
+        await db.set('web_canvas_versions', JSON.parse(oldVersions))
+        localStorage.removeItem('web_canvas_versions')
+      }
+      localStorage.setItem('web_canvas_indexeddb_migrated', 'true')
+      console.log('[Storage Migration] Successfully migrated heavy keys to IndexedDB.')
+    } catch (migrationErr) {
+      console.error('[Storage Migration] Migration failed:', migrationErr)
+    }
+  }
+
+  // 2. Load documents and versions from IndexedDB
+  let loadedDocs: CanvasDocument[] | null = null
+  let loadedVersions: DocumentVersion[] | null = null
+  try {
+    loadedDocs = await db.get<CanvasDocument[]>('web_canvas_documents')
+    loadedVersions = await db.get<DocumentVersion[]>('web_canvas_versions')
+  } catch (dbErr) {
+    console.error('[IndexedDB] Failed to load data:', dbErr)
+  }
+
+  const documentsToSet = (loadedDocs && loadedDocs.length > 0) ? loadedDocs : MOCK_DOCUMENTS
+  const versionsToSet = loadedVersions || []
+
+  useAppStore.setState({
+    documents: documentsToSet,
+    versions: versionsToSet,
+    selectedReferenceIds: documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)?.selectedReferenceIds || []
+  })
+
+  // 3. Fetch current session status
   let loggedInUser: string | null = null
   let csrfToken: string | null = null
   try {
@@ -1427,14 +1498,14 @@ export const initializeStoreFromServer = async () => {
     console.error('Session verification failed', e)
   }
 
-  // 2. If not logged in, stop and wait for auth (AuthForm will be shown)
+  // 4. If not logged in, stop here
   if (!loggedInUser) {
     useAppStore.setState({ isStoreInitialized: true })
     isInitialized = true
     return
   }
 
-  // 3. Continue initialization for logged-in user: fetch book state from server
+  // 5. Continue initialization for logged-in user: fetch book state from server
   const activeBookId = localStorage.getItem('web_canvas_active_book_id') || 'default'
 
   useAppStore.setState({ serverSaveStatus: 'saving' })
@@ -1447,11 +1518,11 @@ export const initializeStoreFromServer = async () => {
         const updates: Partial<AppState> = {}
         if (serverData.documents) {
           updates.documents = serverData.documents
-          safeLocalStorageSet('web_canvas_documents', JSON.stringify(serverData.documents))
+          safeIndexedDBSet('web_canvas_documents', serverData.documents)
         }
         if (serverData.versions) {
           updates.versions = serverData.versions
-          localStorage.setItem('web_canvas_versions', JSON.stringify(serverData.versions))
+          safeIndexedDBSet('web_canvas_versions', serverData.versions)
         }
         if (serverData.bookTitle) {
           updates.bookTitle = serverData.bookTitle
