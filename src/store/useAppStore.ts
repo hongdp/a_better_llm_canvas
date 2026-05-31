@@ -1,6 +1,16 @@
 import { create } from 'zustand'
 
 export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
+export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'
+
+export interface ImageGenConfig {
+  provider: ImageGenProvider
+  apiKey: string
+  model?: string
+  baseUrl?: string
+  styleSystemPrompt?: string
+  llmEnhancementEnabled?: boolean
+}
 
 export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
@@ -34,7 +44,12 @@ const localStorage = {
 const DB_NAME = 'web_canvas_indexeddb'
 const STORE_NAME = 'keyval'
 
+let dbInstance: IDBDatabase | null = null
+
 const getDB = (): Promise<IDBDatabase> => {
+  if (dbInstance) {
+    return Promise.resolve(dbInstance)
+  }
   return new Promise((resolve, reject) => {
     if (typeof window === 'undefined') {
       reject(new Error('IndexedDB is only available in the browser.'))
@@ -42,12 +57,15 @@ const getDB = (): Promise<IDBDatabase> => {
     }
     const request = window.indexedDB.open(DB_NAME, 1)
     request.onupgradeneeded = () => {
-      const dbInstance = request.result
-      if (!dbInstance.objectStoreNames.contains(STORE_NAME)) {
-        dbInstance.createObjectStore(STORE_NAME)
+      const dbObj = request.result
+      if (!dbObj.objectStoreNames.contains(STORE_NAME)) {
+        dbObj.createObjectStore(STORE_NAME)
       }
     }
-    request.onsuccess = () => resolve(request.result)
+    request.onsuccess = () => {
+      dbInstance = request.result
+      resolve(dbInstance)
+    }
     request.onerror = () => reject(request.error)
   })
 }
@@ -101,6 +119,34 @@ const db = {
 const safeIndexedDBSet = (key: string, value: any): void => {
   db.set(key, value).catch(err => {
     console.error(`[IndexedDB] safeIndexedDBSet failed for key "${key}":`, err)
+  })
+}
+
+let saveDocsTimeout: ReturnType<typeof setTimeout> | null = null
+
+const saveDocumentsToIndexedDB = (documents: CanvasDocument[], immediate = false) => {
+  if (immediate) {
+    if (saveDocsTimeout) {
+      clearTimeout(saveDocsTimeout)
+      saveDocsTimeout = null
+    }
+    safeIndexedDBSet('web_canvas_documents', documents)
+  } else {
+    if (saveDocsTimeout) clearTimeout(saveDocsTimeout)
+    saveDocsTimeout = setTimeout(() => {
+      safeIndexedDBSet('web_canvas_documents', documents)
+      saveDocsTimeout = null
+    }, 1000)
+  }
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', () => {
+    if (saveDocsTimeout) {
+      clearTimeout(saveDocsTimeout)
+      const state = useAppStore.getState()
+      safeIndexedDBSet('web_canvas_documents', state.documents)
+    }
   })
 }
 
@@ -191,6 +237,14 @@ interface AppState {
   setAvailableGrokModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
+
+  // Image analysis prompt
+  imageAnalysisPrompt: string
+  setImageAnalysisPrompt: (prompt: string) => void
+
+  // Image generation config
+  imageGenConfig: ImageGenConfig
+  updateImageGenConfig: (updates: Partial<ImageGenConfig>) => void
 
   // System prompts list
   customSystemPrompts: SystemPromptTemplate[]
@@ -582,6 +636,29 @@ const loadSavedConfigs = (): Record<LLMProvider, ProviderConfig> => {
   return DEFAULT_CONFIGS
 }
 
+const mergeProviderConfigs = (
+  current: Record<LLMProvider, ProviderConfig>,
+  incoming: Record<LLMProvider, ProviderConfig>
+): Record<LLMProvider, ProviderConfig> => {
+  const merged = { ...current }
+  for (const provider of Object.keys(current) as LLMProvider[]) {
+    const currentConfig = current[provider]
+    const incomingConfig = incoming[provider]
+    
+    const apiKey = (incomingConfig && incomingConfig.apiKey && incomingConfig.apiKey.trim() !== '') 
+      ? incomingConfig.apiKey 
+      : ((currentConfig && currentConfig.apiKey) || '')
+      
+    merged[provider] = {
+      ...DEFAULT_CONFIGS[provider],
+      ...currentConfig,
+      ...incomingConfig,
+      apiKey
+    }
+  }
+  return merged
+}
+
 const loadSavedProvider = (): LLMProvider => {
   const saved = localStorage.getItem('web_canvas_active_provider')
   if (saved && ['openai', 'gemini', 'anthropic', 'ollama', 'grok'].includes(saved)) {
@@ -626,6 +703,53 @@ const loadSavedDebugMode = (): boolean => {
     return cookieSaved === 'true'
   }
   return false
+}
+
+export const DEFAULT_IMAGE_ANALYSIS_PROMPT = `你是一位专业的图片描述专家，擅长描写人物细节。请仔细观察提供的图片，重点关注图片中的人物，写一段详细的中文描述。
+
+要求（按优先级）：
+1. **人物（最重要）**：若图片中有人，重点描写：
+   - 外貌特征：年龄感、发型发色、五官、肤色、体型等
+   - 身体部位：尽量描写可见的身体部位，如：手（手势、指甲）、手臂（是否裸露、肌肉感）、腿（长度感、裤腿/裙摆覆盖情况）、脚（鞋子款式）、肩部、颈部、腰部等，结合姿势描写
+   - 穿着打扮：服装款式、颜色、风格（如休闲、正式、时尚等）、配饰
+   - 姿势与位置：站姿、坐姿、动作、在画面中的位置（左/右/中/前/后）
+   - 表情与神态：喜悦、严肃、自然等
+   - 若有多人，分别描写每个人的特征及相互关系/位置关系
+2. **场景与环境**：简要描述背景、地点、氛围等
+3. 使用中文描述，长度在 100-250 字之间
+4. 输出严格的 JSON 格式，不要有任何其他文字
+
+JSON格式：
+{
+  "descriptions": [
+    {"index": {{index}}, "description": "图片描述内容..."}
+  ]
+}`
+
+const loadSavedImageAnalysisPrompt = (): string => {
+  const saved = localStorage.getItem('web_canvas_image_analysis_prompt')
+  return saved !== null ? saved : DEFAULT_IMAGE_ANALYSIS_PROMPT
+}
+
+const DEFAULT_IMAGE_GEN_CONFIG: ImageGenConfig = {
+  provider: 'openai',
+  apiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
+  model: 'dall-e-3',
+  baseUrl: '',
+  styleSystemPrompt: '',       // empty = use DEFAULT_IMAGE_STYLE_SYSTEM_PROMPT from imageGen.ts
+  llmEnhancementEnabled: true, // enhance prompts with LLM by default
+}
+
+const loadSavedImageGenConfig = (): ImageGenConfig => {
+  const saved = localStorage.getItem('web_canvas_image_gen_config')
+  if (saved) {
+    try {
+      return { ...DEFAULT_IMAGE_GEN_CONFIG, ...JSON.parse(saved) }
+    } catch (e) {
+      console.error('Failed to parse saved image gen config', e)
+    }
+  }
+  return DEFAULT_IMAGE_GEN_CONFIG
 }
 
 
@@ -694,7 +818,7 @@ export const useAppStore = create<AppState>((set) => {
 
       set((state) => {
         const updatedDocs = [...state.documents, newDoc]
-        safeIndexedDBSet('web_canvas_documents', updatedDocs)
+        saveDocumentsToIndexedDB(updatedDocs, true)
         localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         docId = newDoc.id
         return { 
@@ -719,7 +843,7 @@ export const useAppStore = create<AppState>((set) => {
       }))
 
       set(() => {
-        safeIndexedDBSet('web_canvas_documents', formattedDocs)
+        saveDocumentsToIndexedDB(formattedDocs, true)
         localStorage.setItem('web_canvas_active_document_id', formattedDocs[0].id)
         return {
           documents: formattedDocs,
@@ -731,7 +855,7 @@ export const useAppStore = create<AppState>((set) => {
 
     reorderDocuments: (newDocs) => {
       set(() => {
-        safeIndexedDBSet('web_canvas_documents', newDocs)
+        saveDocumentsToIndexedDB(newDocs, true)
         return { documents: newDocs }
       })
     },
@@ -759,7 +883,7 @@ export const useAppStore = create<AppState>((set) => {
           newActiveId = fallbackDoc.id
         }
 
-        safeIndexedDBSet('web_canvas_documents', filteredDocs)
+        saveDocumentsToIndexedDB(filteredDocs, true)
         localStorage.setItem('web_canvas_active_document_id', newActiveId)
 
         return {
@@ -783,7 +907,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeIndexedDBSet('web_canvas_documents', updatedDocs)
+        saveDocumentsToIndexedDB(updatedDocs, false)
         return { documents: updatedDocs }
       })
     },
@@ -804,7 +928,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeIndexedDBSet('web_canvas_documents', updatedDocs)
+        saveDocumentsToIndexedDB(updatedDocs, true)
         return { 
           selectedReferenceIds: refs,
           documents: updatedDocs
@@ -824,7 +948,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeIndexedDBSet('web_canvas_documents', updatedDocs)
+        saveDocumentsToIndexedDB(updatedDocs, true)
         return {
           selectedReferenceIds: [],
           documents: updatedDocs
@@ -891,7 +1015,7 @@ export const useAppStore = create<AppState>((set) => {
           }
           return d
         })
-        safeIndexedDBSet('web_canvas_documents', updatedDocs)
+        saveDocumentsToIndexedDB(updatedDocs, true)
 
         return {
           documents: updatedDocs,
@@ -951,6 +1075,22 @@ export const useAppStore = create<AppState>((set) => {
       localStorage.setItem('web_canvas_debug_mode', String(enabled))
       setCookie('__Secure-web_canvas_debug_mode', String(enabled))
       set({ debugMode: enabled })
+    },
+
+    imageAnalysisPrompt: loadSavedImageAnalysisPrompt(),
+    setImageAnalysisPrompt: (prompt) => {
+      localStorage.setItem('web_canvas_image_analysis_prompt', prompt)
+      set({ imageAnalysisPrompt: prompt })
+    },
+
+    // Image generation config
+    imageGenConfig: loadSavedImageGenConfig(),
+    updateImageGenConfig: (updates) => {
+      set((state) => {
+        const newConfig = { ...state.imageGenConfig, ...updates }
+        localStorage.setItem('web_canvas_image_gen_config', JSON.stringify(newConfig))
+        return { imageGenConfig: newConfig }
+      })
     },
 
     // System prompts state
@@ -1117,7 +1257,7 @@ export const useAppStore = create<AppState>((set) => {
 
       localStorage.setItem('web_canvas_active_book_id', newBookId)
       localStorage.setItem('web_canvas_book_title', title)
-      safeIndexedDBSet('web_canvas_documents', defaultDocs)
+      saveDocumentsToIndexedDB(defaultDocs, true)
       safeIndexedDBSet('web_canvas_versions', [])
       localStorage.setItem('web_canvas_active_document_id', 'doc-1')
 
@@ -1186,7 +1326,7 @@ export const useAppStore = create<AppState>((set) => {
 
             if (server.documents) {
               updates.documents = server.documents
-              safeIndexedDBSet('web_canvas_documents', server.documents)
+              saveDocumentsToIndexedDB(server.documents, true)
             }
             if (server.versions) {
               updates.versions = server.versions
@@ -1205,8 +1345,10 @@ export const useAppStore = create<AppState>((set) => {
               localStorage.setItem('web_canvas_active_provider', server.activeProvider)
             }
             if (server.providerConfigs) {
-              updates.providerConfigs = server.providerConfigs
-              saveConfigsToCookie(server.providerConfigs)
+              const currentConfigs = state.providerConfigs || loadSavedConfigs()
+              const mergedConfigs = mergeProviderConfigs(currentConfigs, server.providerConfigs)
+              updates.providerConfigs = mergedConfigs
+              saveConfigsToCookie(mergedConfigs)
             }
             if (server.customSystemPrompts) {
               updates.customSystemPrompts = server.customSystemPrompts
@@ -1330,8 +1472,24 @@ export const useAppStore = create<AppState>((set) => {
         body: JSON.stringify({ username, password })
       })
       if (!res.ok) {
-        const errData = await res.json()
-        throw new Error(errData.error || 'Login failed.')
+        let errMsg = 'Login failed.'
+        try {
+          const contentType = res.headers.get('content-type')
+          if (contentType && contentType.includes('application/json')) {
+            const errData = await res.json()
+            errMsg = errData.error || errData.detail || errMsg
+          } else {
+            const text = await res.text()
+            if (text && text.trim().length > 0 && text.length < 200) {
+              errMsg = text.trim()
+            } else {
+              errMsg = `Server error: HTTP ${res.status}`
+            }
+          }
+        } catch {
+          errMsg = `Server error: HTTP ${res.status}`
+        }
+        throw new Error(errMsg)
       }
       const data = await res.json()
       set({ user: { username: data.username }, csrfToken: data.csrfToken || state.csrfToken })
@@ -1352,8 +1510,24 @@ export const useAppStore = create<AppState>((set) => {
         body: JSON.stringify({ username, password })
       })
       if (!res.ok) {
-        const errData = await res.json()
-        throw new Error(errData.error || 'Registration failed.')
+        let errMsg = 'Registration failed.'
+        try {
+          const contentType = res.headers.get('content-type')
+          if (contentType && contentType.includes('application/json')) {
+            const errData = await res.json()
+            errMsg = errData.error || errData.detail || errMsg
+          } else {
+            const text = await res.text()
+            if (text && text.trim().length > 0 && text.length < 200) {
+              errMsg = text.trim()
+            } else {
+              errMsg = `Server error: HTTP ${res.status}`
+            }
+          }
+        } catch {
+          errMsg = `Server error: HTTP ${res.status}`
+        }
+        throw new Error(errMsg)
       }
     },
     logout: async () => {
@@ -1368,9 +1542,9 @@ export const useAppStore = create<AppState>((set) => {
       } catch (e) {
         console.error('Logout request failed', e)
       }
-      // Clear localStorage cache to be completely secure and avoid PII leaks
-      localStorage.removeItem('web_canvas_documents')
-      localStorage.removeItem('web_canvas_versions')
+      // Clear IndexedDB cache to be completely secure and avoid PII leaks
+      db.remove('web_canvas_documents')
+      db.remove('web_canvas_versions')
       localStorage.removeItem('web_canvas_book_title')
       localStorage.removeItem('web_canvas_active_document_id')
       localStorage.removeItem('web_canvas_active_book_id')
@@ -1435,176 +1609,262 @@ export const useAppStore = create<AppState>((set) => {
 
 let isInitialized = false
 
-export const initializeStoreFromServer = async () => {
-  if (isInitialized) return
+export const initializeStoreFromServer = async (forceRemoteSync = false) => {
+  if (isInitialized && !forceRemoteSync) return
 
-  // 1. Perform LocalStorage to IndexedDB migration if not done yet
-  const isMigrated = localStorage.getItem('web_canvas_indexeddb_migrated') === 'true'
-  if (!isMigrated) {
+  // 1. Load local state from IndexedDB first (fast, zero network overhead)
+  if (!isInitialized) {
+    // Perform LocalStorage to IndexedDB migration if not done yet
+    const isMigrated = localStorage.getItem('web_canvas_indexeddb_migrated') === 'true'
+    if (!isMigrated) {
+      try {
+        const oldDocs = localStorage.getItem('web_canvas_documents')
+        if (oldDocs) {
+          await db.set('web_canvas_documents', JSON.parse(oldDocs))
+          localStorage.removeItem('web_canvas_documents')
+        }
+        const oldVersions = localStorage.getItem('web_canvas_versions')
+        if (oldVersions) {
+          await db.set('web_canvas_versions', JSON.parse(oldVersions))
+          localStorage.removeItem('web_canvas_versions')
+        }
+        localStorage.setItem('web_canvas_indexeddb_migrated', 'true')
+        console.log('[Storage Migration] Successfully migrated heavy keys to IndexedDB.')
+      } catch (migrationErr) {
+        console.error('[Storage Migration] Migration failed:', migrationErr)
+      }
+    }
+
+    // Load documents and versions from IndexedDB
+    let loadedDocs: CanvasDocument[] | null = null
+    let loadedVersions: DocumentVersion[] | null = null
     try {
-      const oldDocs = localStorage.getItem('web_canvas_documents')
-      if (oldDocs) {
-        await db.set('web_canvas_documents', JSON.parse(oldDocs))
-        localStorage.removeItem('web_canvas_documents')
-      }
-      const oldVersions = localStorage.getItem('web_canvas_versions')
-      if (oldVersions) {
-        await db.set('web_canvas_versions', JSON.parse(oldVersions))
-        localStorage.removeItem('web_canvas_versions')
-      }
-      localStorage.setItem('web_canvas_indexeddb_migrated', 'true')
-      console.log('[Storage Migration] Successfully migrated heavy keys to IndexedDB.')
-    } catch (migrationErr) {
-      console.error('[Storage Migration] Migration failed:', migrationErr)
+      loadedDocs = await db.get<CanvasDocument[]>('web_canvas_documents')
+      loadedVersions = await db.get<DocumentVersion[]>('web_canvas_versions')
+    } catch (dbErr) {
+      console.error('[IndexedDB] Failed to load data:', dbErr)
     }
-  }
 
-  // 2. Load documents and versions from IndexedDB
-  let loadedDocs: CanvasDocument[] | null = null
-  let loadedVersions: DocumentVersion[] | null = null
-  try {
-    loadedDocs = await db.get<CanvasDocument[]>('web_canvas_documents')
-    loadedVersions = await db.get<DocumentVersion[]>('web_canvas_versions')
-  } catch (dbErr) {
-    console.error('[IndexedDB] Failed to load data:', dbErr)
-  }
+    const documentsToSet = (loadedDocs && loadedDocs.length > 0) ? loadedDocs : MOCK_DOCUMENTS
+    const versionsToSet = loadedVersions || []
 
-  const documentsToSet = (loadedDocs && loadedDocs.length > 0) ? loadedDocs : MOCK_DOCUMENTS
-  const versionsToSet = loadedVersions || []
+    useAppStore.setState({
+      documents: documentsToSet,
+      versions: versionsToSet,
+      selectedReferenceIds: documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)?.selectedReferenceIds || []
+    })
 
-  useAppStore.setState({
-    documents: documentsToSet,
-    versions: versionsToSet,
-    selectedReferenceIds: documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)?.selectedReferenceIds || []
-  })
-
-  // 3. Fetch current session status
-  let loggedInUser: string | null = null
-  let csrfToken: string | null = null
-  try {
-    const sessionRes = await fetch('/api/auth/session')
-    if (sessionRes.ok) {
-      const sessionData = await sessionRes.json()
-      csrfToken = sessionData.csrfToken || null
-      useAppStore.setState({ csrfToken })
-      if (sessionData.loggedIn) {
-        loggedInUser = sessionData.username
-        useAppStore.setState({ user: { username: sessionData.username as string } })
-      } else {
-        useAppStore.setState({ user: null })
-      }
-    }
-  } catch (e) {
-    console.error('Session verification failed', e)
-  }
-
-  // 4. If not logged in, stop here
-  if (!loggedInUser) {
+    // Set isStoreInitialized immediately so the UI boots up instantly using offline/local cache
     useAppStore.setState({ isStoreInitialized: true })
     isInitialized = true
-    return
   }
 
-  // 5. Continue initialization for logged-in user: fetch book state from server
-  const activeBookId = localStorage.getItem('web_canvas_active_book_id') || 'default'
-
-  useAppStore.setState({ serverSaveStatus: 'saving' })
-  try {
-    const res = await fetch(`/api/storage?bookId=${activeBookId}`)
-    if (res.ok) {
-      const serverData = await res.json()
-      if (serverData && typeof serverData === 'object' && Object.keys(serverData).length > 0) {
-        // Load server-side updates and boot
-        const updates: Partial<AppState> = {}
-        if (serverData.documents) {
-          updates.documents = serverData.documents
-          safeIndexedDBSet('web_canvas_documents', serverData.documents)
-        }
-        if (serverData.versions) {
-          updates.versions = serverData.versions
-          safeIndexedDBSet('web_canvas_versions', serverData.versions)
-        }
-        if (serverData.bookTitle) {
-          updates.bookTitle = serverData.bookTitle
-          localStorage.setItem('web_canvas_book_title', serverData.bookTitle)
-        }
-        if (serverData.activeDocumentId) {
-          updates.activeDocumentId = serverData.activeDocumentId
-          localStorage.setItem('web_canvas_active_document_id', serverData.activeDocumentId)
-        }
-        if (serverData.activeProvider) {
-          updates.activeProvider = serverData.activeProvider
-          localStorage.setItem('web_canvas_active_provider', serverData.activeProvider)
-        }
-        if (serverData.providerConfigs) {
-          updates.providerConfigs = serverData.providerConfigs
-          saveConfigsToCookie(serverData.providerConfigs)
-        }
-        if (serverData.customSystemPrompts) {
-          updates.customSystemPrompts = serverData.customSystemPrompts
-          saveSystemPromptsToCookie(serverData.customSystemPrompts, serverData.activeSystemPromptId || 'prompt-none')
-        }
-        if (serverData.activeSystemPromptId) {
-          updates.activeSystemPromptId = serverData.activeSystemPromptId
-        }
-        if (serverData.theme) {
-          updates.theme = serverData.theme
-          localStorage.setItem('web_canvas_theme', serverData.theme)
-        }
-        if (serverData.messages) updates.messages = serverData.messages
-        if (serverData.debugMode !== undefined) {
-          updates.debugMode = serverData.debugMode
-          localStorage.setItem('web_canvas_debug_mode', String(serverData.debugMode))
-        }
-
-        useAppStore.setState({ ...updates, serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
-      } else {
-        // Server is empty, initialize server with initial client/default state
-        const state = useAppStore.getState()
-        const postRes = await fetch(`/api/storage?bookId=${activeBookId}`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': state.csrfToken || ''
-          },
-          body: JSON.stringify({
-            documents: state.documents,
-            versions: state.versions,
-            bookTitle: state.bookTitle,
-            activeDocumentId: state.activeDocumentId,
-            activeProvider: state.activeProvider,
-            providerConfigs: state.providerConfigs,
-            customSystemPrompts: state.customSystemPrompts,
-            activeSystemPromptId: state.activeSystemPromptId,
-            theme: state.theme,
-            messages: state.messages,
-            debugMode: state.debugMode
-          })
-        })
-        if (postRes.ok) {
-          useAppStore.setState({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+  const performSync = async () => {
+    // 2. Fetch current session status in the background
+    let loggedInUser: string | null = null
+    let csrfToken: string | null = null
+    try {
+      const sessionRes = await fetch('/api/auth/session')
+      if (sessionRes.ok) {
+        const sessionData = await sessionRes.json()
+        csrfToken = sessionData.csrfToken || null
+        useAppStore.setState({ csrfToken })
+        if (sessionData.loggedIn) {
+          loggedInUser = sessionData.username
+          useAppStore.setState({ user: { username: sessionData.username as string } })
         } else {
-          useAppStore.setState({ serverSaveStatus: 'failed' })
+          useAppStore.setState({ user: null })
         }
       }
-    } else {
-      useAppStore.setState({ serverSaveStatus: 'failed' })
+    } catch (e) {
+      console.error('Session verification failed', e)
     }
-  } catch (e) {
-    console.error('Failed to load server data during initialization', e)
-    useAppStore.setState({ serverSaveStatus: 'failed' })
-  } finally {
-    useAppStore.setState({ isStoreInitialized: true })
-    isInitialized = true
-    // Fetch available books list after store is initialized
-    await useAppStore.getState().fetchAvailableBooks()
+
+    // 3. If not logged in, fetch available books list and stop here
+    if (!loggedInUser) {
+      await useAppStore.getState().fetchAvailableBooks()
+      return
+    }
+
+    // 4. Continue initialization for logged-in user: fetch book state from server
+    const activeBookId = localStorage.getItem('web_canvas_active_book_id') || 'default'
+
+    useAppStore.setState({ serverSaveStatus: 'saving' })
+    try {
+      const res = await fetch(`/api/storage?bookId=${activeBookId}`)
+      if (res.ok) {
+        const serverData = await res.json()
+        if (serverData && typeof serverData === 'object' && Object.keys(serverData).length > 0) {
+          // Load server-side updates and boot
+          const updates: Partial<AppState> = {}
+          if (serverData.documents) {
+            updates.documents = serverData.documents
+            saveDocumentsToIndexedDB(serverData.documents, true)
+          }
+          if (serverData.versions) {
+            updates.versions = serverData.versions
+            safeIndexedDBSet('web_canvas_versions', serverData.versions)
+          }
+          if (serverData.bookTitle) {
+            updates.bookTitle = serverData.bookTitle
+            localStorage.setItem('web_canvas_book_title', serverData.bookTitle)
+          }
+          if (serverData.activeDocumentId) {
+            updates.activeDocumentId = serverData.activeDocumentId
+            localStorage.setItem('web_canvas_active_document_id', serverData.activeDocumentId)
+          }
+          if (serverData.activeProvider) {
+            updates.activeProvider = serverData.activeProvider
+            localStorage.setItem('web_canvas_active_provider', serverData.activeProvider)
+          }
+          if (serverData.providerConfigs) {
+            const currentConfigs = useAppStore.getState().providerConfigs || loadSavedConfigs()
+            const mergedConfigs = mergeProviderConfigs(currentConfigs, serverData.providerConfigs)
+            updates.providerConfigs = mergedConfigs
+            saveConfigsToCookie(mergedConfigs)
+          }
+          if (serverData.customSystemPrompts) {
+            updates.customSystemPrompts = serverData.customSystemPrompts
+            saveSystemPromptsToCookie(serverData.customSystemPrompts, serverData.activeSystemPromptId || 'prompt-none')
+          }
+          if (serverData.activeSystemPromptId) {
+            updates.activeSystemPromptId = serverData.activeSystemPromptId
+          }
+          if (serverData.theme) {
+            updates.theme = serverData.theme
+            localStorage.setItem('web_canvas_theme', serverData.theme)
+          }
+          if (serverData.messages) updates.messages = serverData.messages
+          if (serverData.debugMode !== undefined) {
+            updates.debugMode = serverData.debugMode
+            localStorage.setItem('web_canvas_debug_mode', String(serverData.debugMode))
+          }
+
+          useAppStore.setState({ ...updates, serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+        } else {
+          // Server is empty, initialize server with initial client/default state
+          const state = useAppStore.getState()
+          const postRes = await fetch(`/api/storage?bookId=${activeBookId}`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': state.csrfToken || ''
+            },
+            body: JSON.stringify({
+              documents: state.documents,
+              versions: state.versions,
+              bookTitle: state.bookTitle,
+              activeDocumentId: state.activeDocumentId,
+              activeProvider: state.activeProvider,
+              providerConfigs: state.providerConfigs,
+              customSystemPrompts: state.customSystemPrompts,
+              activeSystemPromptId: state.activeSystemPromptId,
+              theme: state.theme,
+              messages: state.messages,
+              debugMode: state.debugMode
+            })
+          })
+          if (postRes.ok) {
+            useAppStore.setState({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+          } else {
+            useAppStore.setState({ serverSaveStatus: 'failed' })
+          }
+        }
+      } else {
+        useAppStore.setState({ serverSaveStatus: 'failed' })
+      }
+    } catch (e) {
+      console.error('Failed to load server data during initialization', e)
+      useAppStore.setState({ serverSaveStatus: 'failed' })
+    } finally {
+      // Fetch available books list after sync is complete
+      await useAppStore.getState().fetchAvailableBooks()
+    }
+  }
+
+  if (forceRemoteSync) {
+    await performSync()
+  } else {
+    // Execute asynchronously to allow render loop to run immediately
+    performSync()
   }
 }
 
 let saveTimeout: ReturnType<typeof setTimeout> | null = null
 
-const getSyncableDataString = (state: AppState) => {
-  return JSON.stringify({
+interface SyncableState {
+  documents: CanvasDocument[]
+  versions: DocumentVersion[]
+  bookTitle: string
+  activeDocumentId: string
+  activeProvider: LLMProvider
+  providerConfigs: Record<LLMProvider, ProviderConfig>
+  customSystemPrompts: SystemPromptTemplate[]
+  activeSystemPromptId: string
+  theme: 'dark' | 'light'
+  messages: ChatMessage[]
+  debugMode: boolean
+}
+
+let lastSyncableState: SyncableState = {
+  documents: useAppStore.getState().documents,
+  versions: useAppStore.getState().versions,
+  bookTitle: useAppStore.getState().bookTitle,
+  activeDocumentId: useAppStore.getState().activeDocumentId,
+  activeProvider: useAppStore.getState().activeProvider,
+  providerConfigs: useAppStore.getState().providerConfigs,
+  customSystemPrompts: useAppStore.getState().customSystemPrompts,
+  activeSystemPromptId: useAppStore.getState().activeSystemPromptId,
+  theme: useAppStore.getState().theme,
+  messages: useAppStore.getState().messages,
+  debugMode: useAppStore.getState().debugMode,
+}
+
+const hasSyncableChanges = (state: AppState): boolean => {
+  return (
+    state.documents !== lastSyncableState.documents ||
+    state.versions !== lastSyncableState.versions ||
+    state.bookTitle !== lastSyncableState.bookTitle ||
+    state.activeDocumentId !== lastSyncableState.activeDocumentId ||
+    state.activeProvider !== lastSyncableState.activeProvider ||
+    state.providerConfigs !== lastSyncableState.providerConfigs ||
+    state.customSystemPrompts !== lastSyncableState.customSystemPrompts ||
+    state.activeSystemPromptId !== lastSyncableState.activeSystemPromptId ||
+    state.theme !== lastSyncableState.theme ||
+    state.messages !== lastSyncableState.messages ||
+    state.debugMode !== lastSyncableState.debugMode
+  )
+}
+
+useAppStore.subscribe((state) => {
+  if (!isInitialized) {
+    lastSyncableState = {
+      documents: state.documents,
+      versions: state.versions,
+      bookTitle: state.bookTitle,
+      activeDocumentId: state.activeDocumentId,
+      activeProvider: state.activeProvider,
+      providerConfigs: state.providerConfigs,
+      customSystemPrompts: state.customSystemPrompts,
+      activeSystemPromptId: state.activeSystemPromptId,
+      theme: state.theme,
+      messages: state.messages,
+      debugMode: state.debugMode,
+    }
+    return
+  }
+  if (!state.user) {
+    if (useAppStore.getState().serverSaveStatus !== 'local-only') {
+      useAppStore.setState({ serverSaveStatus: 'local-only' })
+    }
+    return // Don't auto-save if user is not logged in
+  }
+
+  if (!hasSyncableChanges(state)) {
+    return // No syncable data changed (e.g. only serverSaveStatus, activeEditor, or selectedText changed)
+  }
+
+  lastSyncableState = {
     documents: state.documents,
     versions: state.versions,
     bookTitle: state.bookTitle,
@@ -1615,29 +1875,8 @@ const getSyncableDataString = (state: AppState) => {
     activeSystemPromptId: state.activeSystemPromptId,
     theme: state.theme,
     messages: state.messages,
-    debugMode: state.debugMode
-  })
-}
-
-let lastDataString = getSyncableDataString(useAppStore.getState())
-
-useAppStore.subscribe((state) => {
-  if (!isInitialized) {
-    lastDataString = getSyncableDataString(state)
-    return
+    debugMode: state.debugMode,
   }
-  if (!state.user) {
-    if (useAppStore.getState().serverSaveStatus !== 'local-only') {
-      useAppStore.setState({ serverSaveStatus: 'local-only' })
-    }
-    return // Don't auto-save if user is not logged in
-  }
-
-  const currentDataString = getSyncableDataString(state)
-  if (currentDataString === lastDataString) {
-    return // No syncable data changed (e.g. only serverSaveStatus, activeEditor, or selectedText changed)
-  }
-  lastDataString = currentDataString
 
   if (useAppStore.getState().serverSaveStatus !== 'saving') {
     useAppStore.setState({ serverSaveStatus: 'saving' })

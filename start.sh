@@ -119,9 +119,9 @@ echo "=================================================="
 if [ "$DAEMON" = true ]; then
   echo "Starting servers in the background (persistent)..."
   if [ -n "$HOST" ]; then
-    nohup npm run dev -- --storage-dir "$STORAGE_DIR" --host > "$LOG_FILE" 2>&1 &
+    nohup npm run dev -- --storage-dir "$STORAGE_DIR" --host < /dev/null > "$LOG_FILE" 2>&1 &
   else
-    nohup npm run dev -- --storage-dir "$STORAGE_DIR" > "$LOG_FILE" 2>&1 &
+    nohup npm run dev -- --storage-dir "$STORAGE_DIR" < /dev/null > "$LOG_FILE" 2>&1 &
   fi
   DAEMON_PID=$!
   disown $DAEMON_PID

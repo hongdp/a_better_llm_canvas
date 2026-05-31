@@ -31,6 +31,11 @@ dist-ssr
 # Local storage directories
 storage/
 test_storage_dir/
+tmp/
 
 # Local private configuration
 public/sensitive_words.json
+
+# Python artifacts
+__pycache__/
+*.pyc

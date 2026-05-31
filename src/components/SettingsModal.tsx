@@ -1,6 +1,6 @@
 import React from 'react'
-import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert } from 'lucide-react'
-import { useAppStore, type LLMProvider, PROVIDER_MODELS } from '../store/useAppStore'
+import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert, Image, RotateCcw } from 'lucide-react'
+import { useAppStore, type LLMProvider, PROVIDER_MODELS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from '../store/useAppStore'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -24,7 +24,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
     activeSystemPromptId,
     setActiveSystemPromptId,
     debugMode,
-    setDebugMode
+    setDebugMode,
+    imageAnalysisPrompt,
+    setImageAnalysisPrompt
   } = useAppStore()
 
   const [activeTab, setActiveTab] = React.useState<LLMProvider>('gemini')
@@ -490,6 +492,42 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
                     />
                   </div>
                 ))}
+              </div>
+
+              {/* Image Analysis Prompt Section */}
+              <div style={{ marginTop: '0.5rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+                    <Image size={16} style={{ color: 'var(--accent)' }} />
+                    <span style={{ fontSize: '0.95rem', fontWeight: 600, color: 'var(--text-secondary)' }}>Image Analysis Prompt</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setImageAnalysisPrompt(DEFAULT_IMAGE_ANALYSIS_PROMPT)}
+                    className="btn-icon"
+                    title="Reset to default prompt"
+                    style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', padding: '4px 8px', borderRadius: '4px', backgroundColor: 'var(--bg-tertiary)', color: 'var(--text-secondary)', fontSize: '0.75rem' }}
+                  >
+                    <RotateCcw size={12} />
+                    Reset
+                  </button>
+                </div>
+                <p style={{ fontSize: '0.78rem', color: 'var(--text-muted)', marginBottom: '0.5rem', lineHeight: 1.4 }}>
+                  System prompt sent to the LLM when analyzing images during URL import. Use <code style={{ backgroundColor: 'var(--bg-tertiary)', padding: '0 3px', borderRadius: '3px' }}>{'{{index}}'}</code> as a placeholder for the image number.
+                </p>
+                <textarea
+                  id="image-analysis-prompt-input"
+                  value={imageAnalysisPrompt}
+                  onChange={(e) => setImageAnalysisPrompt(e.target.value)}
+                  className="form-input"
+                  rows={10}
+                  style={{ resize: 'vertical', width: '100%', fontSize: '0.82rem', padding: '0.5rem 0.6rem', fontFamily: 'monospace', lineHeight: 1.5 }}
+                />
+                <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '0.25rem' }}>
+                  <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                    {imageAnalysisPrompt.length} chars
+                  </span>
+                </div>
               </div>
             </>
         </div>

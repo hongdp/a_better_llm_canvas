@@ -74,6 +74,7 @@ experience of the document over the chat experience.
   the selection or the full document if small enough), not the entire history.
 - **Canvas Markup Protocol**: Restructure streaming data separating conversational response text from document updates using XML-like blocks. The LLM wraps document updates inside `<canvas>...</canvas>` blocks, which the frontend extracts to stream directly to the editor canvas while routing outer text to the chat.
 - **Dynamic Model Discovery**: Fetch available models dynamically via Google's ListModels API or provider configuration endpoints when the API key is set, falling back to static offline model lists if configuration is missing.
+- **Safety Self-Healing & Prompt Editor UI**: When an LLM request fails due to a safety threshold or guideline violation (e.g. 403 Safety/CSAM blocks), the app automatically triggers a self-healing retry by applying local sensitive word censorship to the user prompts. If this auto-retry fails, the system transitions to an interactive Prompt Editor UI (`status === 'prompt_edit'`), allowing users to inspect/edit the raw system/user prompts, retry manually, or save progress and exit.
 
 ### 2.4 Code Quality
 - TypeScript everywhere. No `any` types except at API boundaries with explicit
@@ -109,6 +110,7 @@ experience of the document over the chat experience.
   contains embedded API keys. Provide a "clear keys" action.
 - **CSP headers**: If served from a static host, configure Content Security
   Policy to restrict outbound requests to known LLM API domains only.
+- **Sensitive Word Isolation**: Local sensitive keyword lists must be stored in a git-ignored JSON file (`public/sensitive_words.json`), using a template (`public/sensitive_words.json.example`) for developers. The web application dynamically fetches this file at runtime, ensuring sensitive keywords are kept out of source control.
 
 ### 3.2 Performance
 - **Time-to-interactive < 2s** on a modern connection. Lazy-load non-critical
@@ -119,9 +121,12 @@ experience of the document over the chat experience.
   without jank. Virtualize the rendering if needed.
 
 ### 3.3 Persistence & Recovery
-- **Auto-save to localStorage** on every meaningful change (debounced).
+- **Auto-save to localStorage / Backend**: Auto-save updates asynchronously in the background. In local setups, changes are persisted via write-through caching.
+- **Hybrid Storage Model (IndexedDB + LocalStorage)**: Heavy workspace datasets like `documents` and `versions` (containing large embedded Base64 image payloads) are stored asynchronously using browser-native **IndexedDB** to avoid browser `QuotaExceededError` (5MB limit). Lightweight keys (e.g., `theme`, layout states, credentials) are stored in synchronous `localStorage` to prevent visual flashes.
+- **Client-Side GIF Image Processing (First-Frame JPEGs)**: To support uploading and pasting GIF images up to 15MB, the app dynamically converts GIFs to static JPEGs using HTML5 Canvas. The conversion extracts the first frame of the GIF and compresses it, ensuring the resulting data URL fits within the 2MB size limit and works seamlessly with LLM Vision APIs.
+- **Automated LocalStorage Migration**: On initialization, if the store detects legacy document or version keys in `localStorage`, it automatically imports them into the IndexedDB database and purges them from `localStorage` to free up space immediately.
 - **Export**: Support exporting to Markdown, plain text, HTML, and PDF.
-- **Import**: Support importing from Markdown and plain text files.
+- **Import**: Support importing from Markdown and plain text files. Added local webpage HTML parsing and generation capability, allowing users to upload raw `.htm/.html` source pages (e.g. saved forum threads) to parse title, text paragraphs, and order-mapped images locally, resolving relative assets via the `<base>` tag and stripping advertisements and locked wrappers before feeding them to the chapter generation pipeline.
 - **Crash recovery**: On reload, detect unsaved state and offer to restore.
 
 ### 3.4 Deployment
@@ -204,3 +209,87 @@ ss -tulpn | grep 5173
 # Or
 lsof -i :5173
 ```
+
+### 5.6 Server Restart Gotchas
+
+#### Stale Port 3000 Causes Silent Failures
+The Python API server binds to `127.0.0.1:3000`. If a previous Python process is still alive (e.g. from a diagnostic run or a failed start), the new API server will fail with `[Errno 98] address already in use`, exit with code 1, and `start-server.js` will immediately kill Node/Vite too — the whole stack silently dies within seconds of appearing to start.
+
+**Diagnosis flow:**
+```bash
+# 1. Check if both ports are up
+ss -tlnp | grep -E "3000|5173"
+
+# 2. Check which PID owns port 3000
+lsof -i :3000
+
+# 3. Run Python directly to confirm it starts clean
+/home/hongdp/miniconda3/bin/python3 scripts/api_server.py \
+  --storage-dir /mnt/smb_data/media/noval/workspace \
+  --host 127.0.0.1 --port 3000
+# Should print: [Storage Server] Listening on http://127.0.0.1:3000
+```
+
+**Fix — always hard-kill before restarting:**
+```bash
+pkill -9 -f "api_server.py" || true
+pkill -9 -f "start-server.js" || true
+sleep 2   # wait for OS to release ports
+```
+
+#### `start.sh -d` (daemon mode) is Unreliable in This Environment
+The `nohup` + `disown` approach in `start.sh -d` does not reliably keep processes alive in this shell environment. The processes start but die within seconds because the parent shell exits before the children are fully detached.
+
+**Preferred approach — use a persistent background task:**
+```bash
+npm run dev -- --storage-dir /mnt/smb_data/media/noval/workspace --host
+```
+Launch this as a persistent background task (via the agent's `run_command` with `RunPersistent: true`). The agent's task runner will keep the process alive independently of the shell session.
+
+#### Checking True Server Health
+`start.sh --status` only checks by process name. Prefer port-level verification for ground truth:
+```bash
+ss -tlnp | grep -E "3000|5173"
+# Both lines present = both servers running
+# Only 3000 present = Python up, Vite dead (likely port conflict on prior start)
+# Neither = everything stopped
+```
+
+Also verify Vite responds:
+```bash
+curl -k https://localhost:5173 -o /dev/null -w "%{http_code}"
+# Should return 200
+```
+
+---
+
+## 6. LLM Image Analysis
+
+### 6.1 Where the Image Prompt Lives
+The LLM vision prompt for image analysis during URL import is in:
+```
+src/components/ImportUrlModal.tsx
+```
+Function: `analyzeImages` → inner `processImage` → `systemPrompt` constant (~line 1041).
+
+### 6.2 Prompt Structure & Intent
+The system prompt instructs the LLM to describe images in Chinese JSON format:
+```json
+{ "descriptions": [{ "index": <N>, "description": "..." }] }
+```
+
+**Current focus priority (in order):**
+1. **People** — appearance (age, hair, skin, build), body parts (hands, arms, legs, feet, shoulders, neck, waist), clothing/style/accessories, posture & position in frame, facial expressions
+2. **Multiple people** — describe each individually + their spatial relationships
+3. **Scene/background** — brief setting and atmosphere
+
+**Description length:** 100–250 Chinese characters.
+
+### 6.3 Image Filtering Before LLM Call
+Images are filtered before being sent to the LLM:
+- Must be `image/jpeg`, `image/png`, `image/webp`, or `image/jpg` MIME type
+- Must be `≥ 1000` bytes of base64 data
+- Must be `≥ 512 total pixels` and neither dimension `< 20px`
+- Tiny images (e.g. 15×13 emoji/icon placeholders common on Chinese forums) are silently skipped with the label `（配图尺寸过小，已忽略分析）`
+
+**Concurrency:** Up to 10 images analyzed in parallel (`concurrencyLimit = 10`).

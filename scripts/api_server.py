@@ -136,7 +136,8 @@ async def get_session(request: Request, response: Response):
             path="/",
             samesite="lax",
             max_age=365 * 24 * 60 * 60,
-            httponly=False  # Must be readable by client JS
+            httponly=False,  # Must be readable by client JS
+            secure=True
         )
         
     session_id = request.cookies.get("web_canvas_session")
@@ -246,7 +247,8 @@ async def login_user(request: Request, response: Response):
         httponly=True,
         path="/",
         samesite="lax",
-        max_age=7 * 24 * 60 * 60  # 7 days
+        max_age=7 * 24 * 60 * 60,  # 7 days
+        secure=True
     )
     
     # Refresh CSRF cookie
@@ -257,7 +259,8 @@ async def login_user(request: Request, response: Response):
         path="/",
         samesite="lax",
         max_age=365 * 24 * 60 * 60,
-        httponly=False
+        httponly=False,
+        secure=True
     )
     
     return {"success": True, "username": username, "csrfToken": csrf_token}
@@ -394,8 +397,8 @@ def _is_private_ip(hostname: str) -> bool:
     except (socket.gaierror, ValueError):
         return True  # fail-closed: if we can't resolve, block it
 
-MAX_IMAGES_DOWNLOAD = 200
-MAX_IMAGE_SIZE_BYTES = 50 * 1024 * 1024  # 5MB per image
+MAX_IMAGES_DOWNLOAD = 100
+MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024  # 5MB per image
 SCRAPE_TIMEOUT = 30  # seconds
 SCRAPE_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
@@ -450,31 +453,30 @@ async def import_url(request: Request):
     resp.encoding = resp.apparent_encoding or 'utf-8'
     html_content = resp.text
     
-    # Parse with BeautifulSoup
+    try:
+        data = _parse_html_to_scraped_data(html_content, url)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse scraped content: {str(e)}")
+
+def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
     soup = BeautifulSoup(html_content, "html.parser")
     
-    # Extract page title
     title_tag = soup.find("title")
     page_title = title_tag.get_text(strip=True) if title_tag else "Untitled"
     
-    # Remove script, style, nav, footer, header elements
     for tag in soup.find_all(["script", "style", "nav", "footer", "header", "aside", "noscript"]):
         tag.decompose()
     
-    # Extract text paragraphs and images in document order
     paragraphs = []
     images = []
-    img_counter = 0
     
-    # Walk through the body to extract content in order
     body_tag = soup.find("body") or soup
     
     for element in body_tag.descendants:
         if element.name in ("p", "div", "td", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6", "span", "article", "section"):
-            # Only extract direct text (avoid duplicates from nested elements)
             text = element.get_text(strip=True)
             if text and len(text) > 5:
-                # Avoid duplicate paragraphs
                 if not paragraphs or paragraphs[-1]["text"] != text:
                     paragraphs.append({
                         "index": len(paragraphs),
@@ -482,40 +484,57 @@ async def import_url(request: Request):
                         "tag": element.name
                     })
         elif element.name == "img":
-            # Extract image source, supporting lazy-loading and Discuz forum attachment attributes
-            src = (
-                element.get("file") or 
-                element.get("data-src") or 
-                element.get("data-original") or 
-                element.get("data-lazy-src") or 
-                element.get("data-original-src") or 
-                element.get("src") or 
-                ""
-            ).strip()
+            attrs_to_check = [
+                element.get("file"),
+                element.get("data-src"),
+                element.get("data-original"),
+                element.get("data-lazy-src"),
+                element.get("data-original-src"),
+                element.get("src")
+            ]
+            attrs = [a.strip() for a in attrs_to_check if a and a.strip()]
+
+            src = ""
+            for attr in attrs:
+                if attr.startswith("data:"):
+                    lower = attr.lower()
+                    if "image/svg+xml" in lower:
+                        continue
+                    if "image/gif" in lower and len(attr) < 200:
+                        continue
+                    src = attr
+                    break
+
+            if not src:
+                src = (
+                    element.get("file") or 
+                    element.get("data-src") or 
+                    element.get("data-original") or 
+                    element.get("data-lazy-src") or 
+                    element.get("data-original-src") or 
+                    element.get("src") or 
+                    ""
+                ).strip()
+
             alt = element.get("alt", "")
-            if src and img_counter < MAX_IMAGES_DOWNLOAD:
-                # Resolve relative URLs
-                abs_src = urljoin(url, src)
+            if src and len(images) < 500:
+                abs_src = urljoin(url, src) if url else src
                 abs_parsed = urlparse(abs_src)
                 if abs_parsed.scheme in ("http", "https"):
                     images.append({
-                        "index": img_counter,
                         "url": abs_src,
                         "alt": alt or "",
-                        "position": len(paragraphs),  # after which paragraph this image appears
-                        "base64": None  # to be filled below
-                    })
-                    img_counter += 1
-                elif abs_src.startswith("data:image/"):
-                    images.append({
-                        "index": img_counter,
-                        "alt": alt or "",
                         "position": len(paragraphs),
-                        "base64": abs_src
+                        "base64": None
                     })
-                    img_counter += 1
+                elif abs_src.startswith("data:image/"):
+                    if len(abs_src) <= MAX_IMAGE_SIZE_BYTES * 1.37:
+                        images.append({
+                            "alt": alt or "",
+                            "position": len(paragraphs),
+                            "base64": abs_src
+                        })
      
-    # Download images and convert to base64 in parallel using a ThreadPoolExecutor
     from concurrent.futures import ThreadPoolExecutor
 
     def download_image(img):
@@ -530,30 +549,27 @@ async def import_url(request: Request):
             )
             img_resp.raise_for_status()
             
-            # Check content type
             content_type = img_resp.headers.get("Content-Type", "image/jpeg")
             if not content_type.startswith("image/"):
-                # Fallback: check if the URL contains a known image extension
                 parsed_url = urlparse(img.get("url", ""))
                 path = parsed_url.path.lower()
-                if not any(path.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp")):
+                if not any(path.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".webp", ".gif")):
                     return
-                # Force content-type based on extension
                 if path.endswith(".png"):
                     content_type = "image/png"
                 elif path.endswith(".webp"):
                     content_type = "image/webp"
+                elif path.endswith(".gif"):
+                    content_type = "image/gif"
                 else:
                     content_type = "image/jpeg"
             
-            # Read with size limit
             content = b""
             is_first = True
             is_html = False
             for chunk in img_resp.iter_content(chunk_size=8192):
                 if is_first:
                     is_first = False
-                    # Check if the content is actually HTML (e.g. login/error page redirect)
                     trimmed = chunk.lstrip()
                     if trimmed.startswith(b"<!doctype") or trimmed.startswith(b"<html") or trimmed.startswith(b"<!DOCTYPE") or trimmed.startswith(b"<HTML"):
                         is_html = True
@@ -569,30 +585,70 @@ async def import_url(request: Request):
             
             if content:
                 b64 = base64.b64encode(content).decode("ascii")
-                # Sanitize content_type to prevent header injection
                 safe_type = content_type.split(";")[0].strip()
                 img["base64"] = f"data:{safe_type};base64,{b64}"
         except Exception as e:
             print(f"[Import URL] Failed to download image {img.get('url')}: {e}")
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        executor.map(download_image, images)
+    downloadable_images = [img for img in images if img.get("base64") is None and img.get("url")]
+    successful_images = [img for img in images if img.get("base64") is not None]
     
-    # Filter out images that failed to download
-    images = [img for img in images if img["base64"]]
-    
-    # Remove the raw URL from response for security (only return base64)
-    for img in images:
+    batch_size = 50
+    i = 0
+    while len(successful_images) < MAX_IMAGES_DOWNLOAD and i < len(downloadable_images):
+        batch = downloadable_images[i:i+batch_size]
+        i += batch_size
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            executor.map(download_image, batch)
+            
+        for img in batch:
+            if img.get("base64"):
+                successful_images.append(img)
+                if len(successful_images) >= MAX_IMAGES_DOWNLOAD:
+                    break
+
+    successful_images.sort(key=lambda x: x["position"])
+    successful_images = successful_images[:MAX_IMAGES_DOWNLOAD]
+
+    for index, img in enumerate(successful_images):
+        img["index"] = index
         if "url" in img:
             del img["url"]
     
     return {
         "title": page_title,
         "paragraphs": paragraphs,
-        "images": images,
+        "images": successful_images,
         "totalParagraphs": len(paragraphs),
-        "totalImages": len(images)
+        "totalImages": len(successful_images)
     }
+
+@app.post("/api/import-file")
+async def import_file(request: Request):
+    """Parse an uploaded HTML file content to extract text paragraphs and images."""
+    username = get_authenticated_username(request)
+    
+    if not HAS_SCRAPING_DEPS:
+        raise HTTPException(
+            status_code=503,
+            detail="Scraping dependencies (requests, beautifulsoup4) are not installed."
+        )
+        
+    try:
+        html_bytes = await request.body()
+        html_text = html_bytes.decode("utf-8", errors="ignore")
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file payload: {str(e)}")
+        
+    if not html_text:
+        raise HTTPException(status_code=400, detail="HTML content is empty.")
+        
+    try:
+        data = _parse_html_to_scraped_data(html_text)
+        return data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to parse HTML file: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

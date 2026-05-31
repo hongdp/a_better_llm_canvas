@@ -3,6 +3,26 @@ import path from 'path'
 import fs from 'fs'
 import { spawn } from 'child_process'
 
+// Load env files manually (mirrors Vite's precedence: .env.local > .env)
+// This ensures VITE_STORAGE_DIR and other vars are available to the Node process.
+const root = process.cwd()
+for (const envFile of ['.env', '.env.local']) {
+  const envPath = path.join(root, envFile)
+  if (fs.existsSync(envPath)) {
+    const lines = fs.readFileSync(envPath, 'utf-8').split('\n')
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed || trimmed.startsWith('#')) continue
+      const eqIdx = trimmed.indexOf('=')
+      if (eqIdx === -1) continue
+      const key = trimmed.slice(0, eqIdx).trim()
+      const val = trimmed.slice(eqIdx + 1).trim()
+      // Only set if not already defined in the shell environment
+      if (!(key in process.env)) process.env[key] = val
+    }
+  }
+}
+
 const args = process.argv
 const dirIdx = args.indexOf('--storage-dir')
 let storageDir = ''
@@ -36,26 +56,48 @@ if (hostIdx !== -1) {
   }
 }
 
-// 1. Spawn Python API Backend Server
+// 1. Spawn Python API Backend Server with auto-restart
 // Prefer conda Python (has scraping dependencies installed), fallback to system python3
 const condaPython = path.join(process.env.HOME || '', 'miniconda3', 'bin', 'python3')
 const pythonBin = fs.existsSync(condaPython) ? condaPython : 'python3'
-console.log(`[Storage Server] Starting Python API server on port 3000 using ${pythonBin}...`)
-const apiServerProcess = spawn(pythonBin, [
-  path.join(process.cwd(), 'scripts', 'api_server.py'),
-  '--storage-dir', absoluteStorageDir,
-  '--host', '127.0.0.1',
-  '--port', '3000'
-])
 
-// Forward API server output
-apiServerProcess.stdout.on('data', (data) => {
-  process.stdout.write(`[API Server] ${data}`)
-})
+let apiServerProcess = null
+let restartCount = 0
+const MAX_RESTARTS = 10
+const RESTART_DELAY_MS = 2000
 
-apiServerProcess.stderr.on('data', (data) => {
-  process.stderr.write(`[API Server ERR] ${data}`)
-})
+function spawnApiServer() {
+  console.log(`[Storage Server] Starting Python API server on port 3000 using ${pythonBin}...`)
+  const proc = spawn(pythonBin, [
+    path.join(process.cwd(), 'scripts', 'api_server.py'),
+    '--storage-dir', absoluteStorageDir,
+    '--host', '127.0.0.1',
+    '--port', '3000'
+  ])
+
+  proc.on('error', (err) => {
+    console.error('[Storage Server ERROR] Failed to spawn Python API server:', err)
+  })
+
+  proc.on('close', (code, signal) => {
+    if (signal === 'SIGTERM' || signal === 'SIGKILL') return // intentional shutdown
+    console.error(`[Storage Server] Python API exited (code=${code}, signal=${signal})`)
+    if (restartCount < MAX_RESTARTS) {
+      restartCount++
+      console.log(`[Storage Server] Restarting API server in ${RESTART_DELAY_MS}ms (attempt ${restartCount}/${MAX_RESTARTS})...`)
+      setTimeout(() => { apiServerProcess = spawnApiServer() }, RESTART_DELAY_MS)
+    } else {
+      console.error('[Storage Server] Max restart attempts reached. API server will not be restarted.')
+    }
+  })
+
+  proc.stdout.on('data', (data) => process.stdout.write(`[API] ${data}`))
+  proc.stderr.on('data', (data) => process.stderr.write(`[API ERR] ${data}`))
+
+  return proc
+}
+
+apiServerProcess = spawnApiServer()
 
 // Cleanup handlers
 const cleanup = () => {
@@ -73,6 +115,7 @@ process.on('uncaughtException', (err) => {
   cleanup()
   process.exit(1)
 })
+
 
 // 2. Start Vite dev server programmatically
 try {

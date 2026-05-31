@@ -158,6 +158,29 @@ When integrating new LLM providers, developers **must** prioritize retrieving mo
 | Debounced Auto-Save | Store mutations are batched and saved to the backend via a 3-second debounce. |
 | Transactional Safety | Prevents loopback requests during fetches by cancelling pending save timeouts and disabling store subscription listeners during load transactions. |
 
+#### 3.2.7 AI Image Generation Service
+| Responsibility | Details |
+|---------------|---------|
+| Multi-Provider Support | Interfaces with OpenAI DALL-E, Google Gemini Imagen, Stability AI, and Grok Image (xAI). |
+| Prompt Enhancement | Enhances short prompts into highly descriptive, detailed prompts via the active Chat LLM. |
+| Model Discovery | Performs dynamic discovery of available image-generation models via `/v1/models` endpoints. |
+| Editor Integration | Automatically inserts the generated base64 image asset inline into the active document context. |
+
+#### 3.2.8 Local Webpage HTML Analysis & Generation
+| Responsibility | Details |
+|---------------|---------|
+| Web Scraping | Scrapes title, paragraphs, and images in document order locally or via the FastAPI `/api/import-url` endpoint. |
+| Outline Planning (Phase 1) | Automatically splits imported book contents into structured chapter outline schemas. |
+| Narrative Generation (Phase 2) | Feeds sequential chapter ranges and references to LLM to write cohesive stories, maintaining narrative continuity. |
+| Safety Mitigation | Automatically censors explicit keywords using a local `sensitive_words.json` and strips images to bypass safety filters, falling back to a self-healing retry pipeline with an interactive manual prompt editor on block. |
+
+#### 3.2.9 Progressive Web Application (PWA) Support
+| Responsibility | Details |
+|---------------|---------|
+| Standalone App Shell | Service worker (`sw.js`) utilizes stale-while-revalidate and cache-first strategies to speed up page loading and prevent page state reloads when backgrounded. |
+| Manifest Config | Provides PWA properties for "Add to Home Screen" support on desktop/mobile and configures notch-friendly status bar orientations. |
+| Secure Local Access | Integrates local HTTPS basic SSL keys to support service worker API registration across the local area network (LAN). |
+
 ---
 
 ## 4. Data Model
@@ -193,15 +216,12 @@ Version {
 ```
 ChatMessage {
   id:         string (UUID)
-  role:       "user" | "assistant" | "system"
+  role:       "user" | "assistant"
   content:    string
-  metadata: {
-    model?:      string           // e.g., "gpt-4o"
-    provider?:   string           // e.g., "openai"
-    selection?:  { from: number, to: number }  // text selection context
-    action?:     string           // e.g., "rewrite", "expand"
-  }
-  createdAt:  ISO8601
+  images?:    string[]            // base64 Data URLs (multimodal uploads/pastes/inline elements)
+  timestamp:  ISO8601
+  provider?:  string              // e.g., "gemini"
+  model?:     string              // e.g., "gemini-1.5-flash"
 }
 ```
 
@@ -209,14 +229,25 @@ ChatMessage {
 
 ```
 ProviderConfig {
-  provider:   "openai" | "gemini" | "anthropic" | "ollama"
+  provider:   "openai" | "gemini" | "anthropic" | "ollama" | "grok"
   apiKey:     string              // stored in localStorage
   model:      string              // e.g., "gpt-4o", "gemini-2.5-pro"
-  baseUrl?:   string              // for Ollama or custom endpoints
-  parameters: {
-    temperature?: number
-    maxTokens?:   number
-  }
+  baseUrl?:   string              // for custom endpoints
+  maxOutputTokens?: number        // configurable response output limit
+  geminiSafetySettings?: GeminiSafetySetting[] // category thresholds
+}
+```
+
+### 4.5 Image Generation Config
+
+```
+ImageGenConfig {
+  provider:               "openai" | "gemini" | "stabilityai" | "grok"
+  apiKey:                 string
+  model?:                 string
+  baseUrl?:               string
+  styleSystemPrompt?:     string
+  llmEnhancementEnabled?: boolean
 }
 ```
 
@@ -362,11 +393,44 @@ In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios
 | Restore version | Click version in history panel | Document reverts |
 | Export | Click Export → choose format | File downloaded |
 
+### 6.5 AI Image Generation Dialog Flow
+
+1. **Trigger**: User opens the "AI Image Generation" modal (or selects text and selects "Generate Image").
+2. **LLM Prompt Enhancement (Step 2)**:
+   - Takes raw prompt + document selection context.
+   - User clicks "Enhance Prompt" -> streams vivid expansion from the active chat LLM (using image enhancement system prompt rules) into the editable textarea.
+   - User can review/tweak the enhanced prompt or click "Use raw" to discard it.
+3. **Image Options (Step 3)**:
+   - Choose Aspect Ratio (1:1, 16:9, 9:16, 4:3, 3:4).
+   - Select Image Provider (OpenAI DALL-E, Google Imagen, Stability AI, Grok Image).
+   - Advanced settings: manual API key input, custom Base URL override, OpenAI style category (vivid/natural), and negative prompts.
+4. **Generation & Review**:
+   - User clicks "Generate Image" -> spinner shows "Generating image...".
+   - The generated image is returned as a base64 string, rendered in the right panel with interactive Zoom (scale) sliders and aspect preservation.
+   - User clicks "Insert into Editor" to insert the image tag inline inside the active editor document at the cursor position.
+
+### 6.6 Webpage Scraping, Outline Planning, & Chapter Generation Flow
+
+1. **Scraping Phase**:
+   - User inputs a URL or uploads a local HTML file inside `ImportUrlModal`.
+   - The utility parses the DOM, filters out scripting/forum garbage, and returns a structured list of textual paragraphs and image elements in original document order.
+   - Images are fetched/downloaded on the server (FastAPI `/api/import-url`) or locally, and converted to base64 strings under a 5MB size limit.
+2. **Phase 1: Outline Planning**:
+   - The scraped content is interleaved and sent to the LLM.
+   - The LLM creates a structured JSON containing a consolidated Book Title, summary, and a list of chapters (including title, description, original paragraph range, and image indices).
+3. **Phase 2: Narrative Generation**:
+   - The system iterates over the planned chapters sequentially.
+   - For each chapter, the system constructs a prompt containing the writing rules, active chapter plan, current original paragraphs/images, and the *previous chapter's ending text* to ensure narratively continuous transitions.
+   - Content generates inline and places image tags (`{{IMG-N}}`) at matching positions.
+4. **Self-Healing Safety Fallback**:
+   - If the generation fails due to a safety/CSAM block (HTTP 403 / guidelines violation), the application automatically retries.
+   - It performs local censorship of explicit keywords using a git-ignored/dynamic list `sensitive_words.json`, strips/simplifies image alt texts, and opens a **Safety Retry Prompt Editor** UI so the user can manually correct the prompt or save the generated chapters to the workspace and exit.
+
 ---
 
 ## 7. Technology Choices
 
-> These are recommendations. Final choices will be confirmed during implementation.
+> These are recommendations and current choices.
 
 | Concern | Recommendation | Alternatives |
 |---------|---------------|-------------|
@@ -376,9 +440,10 @@ In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios
 | Styling | **Vanilla CSS** (CSS variables + modules) | Tailwind (if requested) |
 | State management | **Zustand** | Jotai, Redux Toolkit |
 | LLM streaming | **Fetch API + ReadableStream** | Vercel AI SDK |
-| Persistence | **localStorage** (v1) | IndexedDB (large docs) |
+| Persistence | **IndexedDB** (heavy documents/versions) + **localStorage** (configs/preferences) | Server storage API (FastAPI backend) |
 | Testing | **Vitest + Playwright** | Jest, Cypress |
-| Deployment | **Vercel / Netlify** (static) | GitHub Pages |
+| Local HTTPS | **@vitejs/plugin-basic-ssl** | custom keys |
+| Deployment | **Vercel / Netlify** (static) | Python self-hosted server |
 
 ---
 
@@ -428,6 +493,16 @@ In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios
 - [x] Implement user registration and login with secure HttpOnly session cookies, CSRF protection, and user-isolated server-side document storage paths.
 - [x] Optimize portrait layout headers by moving provider model and system prompt selections to the Settings Modal, keeping the mobile header compact.
 - [x] Ensure the user interface is strictly constrained to the screen size (horizontal and vertical viewport boundaries) on all devices and orientations.
+
+### M8 — PWA, HTML Scraping, & AI Image Generation
+- [x] Build and register Progressive Web Application (PWA) manifest and caching service worker (`sw.js`).
+- [x] Enable basic SSL plugin in Vite configurations to allow secure local HTTPS connections for PWA testing.
+- [x] Create cross-provider Image Generation service supporting OpenAI DALL-E, Google Imagen, Stability AI, and Grok Image.
+- [x] Design and implement an interactive Image Generation Modal with LLM-powered prompt enhancement, aspect ratio, negative prompts, and dynamic model discovery.
+- [x] Implement client-side and backend-assisted webpage HTML scrapers to parse paragraphs and images in document order.
+- [x] Develop a two-phase novel import pipeline: Chapter Planning (JSON outlines) and Narrative Generation (with previous-chapter continuity linking).
+- [x] Build a local keyword-censoring safety fallback pipeline and interactive Safety Retry Prompt Editor UI to handle 403/guideline blocking issues.
+- [x] Migrate heavy workspace models (documents and versions) containing Base64 image payloads from `localStorage` to `IndexedDB` to bypass 5MB quotas.
 
 
 ---
@@ -488,4 +563,17 @@ Record significant design decisions here as the project evolves.
 | 2026-05-26 | Transactional Storage Synchronization Safety | Ensured that pulling server data to sync to local only occurs on post-login selection or manual pull trigger. Added execution safety to prevent concurrent modifications by canceling pending `saveTimeout` debounced writes and pausing auto-save state listeners during pulls. |
 | 2026-05-26 | Dynamic Model Discovery Policy & Grok Dynamic Fetching | Added availableGrokModels state to the store and integrated dynamic model fetching for Grok (/v1/models) in both the header and Settings Modal. Established developer guidelines to prioritize model-discovery APIs and fallback to static lists for all future provider integrations. |
 | 2026-05-26 | Standalone Python Backend Server & Server-First Storage | Split Vite frontend and Python FastAPI backend (running on port 3000, proxied by Vite). Redesigned storage to be server-first, using localStorage strictly as a write-through cache. Removed obsolete sync toggle checks, conflict resolution modals, and offline storageMode options. |
+| 2026-05-28 | Sensitive Words Separation & Safety Retry Prompt Editor | Extracted sensitive words to a git-ignored JSON config file, loaded dynamically at runtime. Implemented automated safety self-healing retry pipeline on 403 Safety/CSAM blocks, alongside an interactive Prompt Editor UI allowing manual prompt correction or saving progress on failure. |
+| 2026-05-28 | Hybrid Persistent Storage Model (IndexedDB Migration) | Migrated heavy workspace collections (documents and versions) containing Base64 image payloads from localStorage to browser-native IndexedDB to bypass the 5MB browser quota limitation. Lightweight configurations remain synchronous in localStorage. Created automatic migration logic on start-up. |
+| 2026-05-28 | Editor Custom Image Node Extension Setup | Created and registered a CustomImage Node extension in Editor.tsx to support rendering and preserving inline <img> tags (including Base64 encoded image assets) without external dependencies. |
+| 2026-05-28 | Base64 Image Placeholder Extraction & Restoration | Implemented an extraction and restoration pipeline in App.tsx that substitutes large inline base64 image tags with lightweight placeholders (`{{IMAGE_PLACEHOLDER_N}}`) before prompt construction to avoid LLM context bloat and token corruption, restoring the original tags dynamically during token stream updates and diff calculations. |
+| 2026-05-28 | Image Size Pre-filtering Validation | Updated processFiles in App.tsx to pre-filter and reject image uploads exceeding the 2MB size limit before checking the maximum allowed attachment count (3 images), preventing invalid files from blocking valid uploads. |
+| 2026-05-28 | Client-Side GIF Image Processing (First-Frame JPEGs) | Implemented convertGifToJpegIfNeeded inside App.tsx using HTML5 Canvas to dynamically flatten animated GIFs to their first frame. Elevated file size checks for image/gif uploads up to 15MB, while converting them to static JPEGs and enforcing a 2MB post-conversion size limit to ensure compatibility and lightweight storage. Added paste/drop handler support in chat inputs to convert inline GIFs automatically. |
+| 2026-05-28 | Local Webpage HTML Analysis & Generation | Added client-side HTML DOM parser utilities and drop-zone file selection component inside ImportUrlModal.tsx to scrape webpage text paragraphs and order-mapped images locally, resolving relative URLs against the base tag and cleaning forum noise. Feeds directly into the outline planning and chapter generation pipeline. |
+
+
+
+
+
+
 

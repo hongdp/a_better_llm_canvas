@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react'
-import { useEditor, EditorContent, Mark, mergeAttributes, Extension } from '@tiptap/react'
+import { useEditor, EditorContent, Mark, mergeAttributes, Extension, Node } from '@tiptap/react'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 import { BubbleMenu } from '@tiptap/react/menus'
@@ -22,7 +22,10 @@ import {
   Sparkles,
   ArrowDownToLine,
   ArrowUpFromLine,
-  Languages
+  Languages,
+  Wand2,
+  Undo2,
+  Redo2,
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 
@@ -162,6 +165,31 @@ export const DiffDeletion = Mark.create({
   }
 })
 
+// Custom TipTap Node Extension for Images
+export const CustomImage = Node.create({
+  name: 'image',
+  group: 'inline',
+  inline: true,
+  selectable: true,
+  draggable: true,
+  addAttributes() {
+    return {
+      src: { default: null },
+      alt: { default: null },
+      title: { default: null },
+      width: { default: null },
+      height: { default: null },
+      style: { default: null },
+    }
+  },
+  parseHTML() {
+    return [{ tag: 'img[src]' }]
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['img', mergeAttributes(HTMLAttributes)]
+  },
+})
+
 // Custom TipTap Extension to keep visual selection highlight when editor is blurred (e.g. chat input focused)
 export const BlurredSelection = Extension.create({
   name: 'blurredSelection',
@@ -197,13 +225,15 @@ interface EditorProps {
   onChange: (html: string) => void
   placeholder?: string
   onQuickAction?: (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => void
+  onGenerateImage?: (selectedText: string) => void
 }
 
 export const Editor: React.FC<EditorProps> = ({ 
   content, 
   onChange, 
   placeholder = 'Start writing your document here or let the assistant draft it...',
-  onQuickAction
+  onQuickAction,
+  onGenerateImage
 }) => {
   const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
 
@@ -219,6 +249,7 @@ export const Editor: React.FC<EditorProps> = ({
       DiffDeletion,
       BlurredSelection,
       IndentExtension,
+      CustomImage,
     ],
     content,
     onUpdate: ({ editor }) => {
@@ -339,6 +370,40 @@ export const Editor: React.FC<EditorProps> = ({
           backdropFilter: 'blur(12px)',
           WebkitBackdropFilter: 'blur(12px)',
         }}>
+          {/* Undo / Redo */}
+          <button
+            onClick={() => editor.chain().focus().undo().run()}
+            disabled={!editor.can().undo()}
+            className="btn-icon"
+            title="Undo (Ctrl+Z)"
+            type="button"
+            style={{
+              backgroundColor: 'transparent',
+              color: 'inherit',
+              opacity: editor.can().undo() ? 1 : 0.35,
+              cursor: editor.can().undo() ? 'pointer' : 'default',
+            }}
+          >
+            <Undo2 size={16} />
+          </button>
+          <button
+            onClick={() => editor.chain().focus().redo().run()}
+            disabled={!editor.can().redo()}
+            className="btn-icon"
+            title="Redo (Ctrl+Shift+Z)"
+            type="button"
+            style={{
+              backgroundColor: 'transparent',
+              color: 'inherit',
+              opacity: editor.can().redo() ? 1 : 0.35,
+              cursor: editor.can().redo() ? 'pointer' : 'default',
+            }}
+          >
+            <Redo2 size={16} />
+          </button>
+
+          <div style={{ width: '1px', height: '18px', backgroundColor: 'var(--border-color)', margin: '0 4px' }} />
+
           <button
             onClick={() => editor.chain().focus().toggleBold().run()}
             className={`btn-icon ${editor.isActive('bold') ? 'active' : ''}`}
@@ -588,42 +653,76 @@ export const Editor: React.FC<EditorProps> = ({
             }
 
             // Normal text selection formatting & quick actions toolbar
-            if (!onQuickAction) return null
+            if (!onQuickAction && !onGenerateImage) return null
 
             return (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                <button
-                  onClick={() => onQuickAction('rewrite')}
-                  className="btn-icon"
-                  title="Rewrite selection"
-                  type="button"
-                >
-                  <Sparkles size={16} style={{ color: 'var(--accent)' }} />
-                </button>
-                <button
-                  onClick={() => onQuickAction('shorten')}
-                  className="btn-icon"
-                  title="Shorten text"
-                  type="button"
-                >
-                  <ArrowDownToLine size={16} />
-                </button>
-                <button
-                  onClick={() => onQuickAction('expand')}
-                  className="btn-icon"
-                  title="Expand text"
-                  type="button"
-                >
-                  <ArrowUpFromLine size={16} />
-                </button>
-                <button
-                  onClick={() => onQuickAction('grammar')}
-                  className="btn-icon"
-                  title="Fix grammar & spelling"
-                  type="button"
-                >
-                  <Languages size={16} />
-                </button>
+                {onGenerateImage && (
+                  <>
+                    <button
+                      onClick={() => {
+                        const { from, to, empty } = editor.state.selection
+                        const text = empty ? '' : editor.state.doc.textBetween(from, to, ' ')
+                        onGenerateImage(text)
+                      }}
+                      className="btn-icon"
+                      title="Generate image from selection"
+                      type="button"
+                      style={{
+                        background: 'linear-gradient(135deg, var(--accent), #a78bfa)',
+                        color: 'white',
+                        borderRadius: '6px',
+                        padding: '4px 8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '4px',
+                        fontSize: '0.78rem',
+                        fontWeight: 600,
+                        border: 'none',
+                      }}
+                    >
+                      <Wand2 size={13} />
+                      Gen Image
+                    </button>
+                    {onQuickAction && <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)' }} />}
+                  </>
+                )}
+                {onQuickAction && (
+                  <>
+                    <button
+                      onClick={() => onQuickAction('rewrite')}
+                      className="btn-icon"
+                      title="Rewrite selection"
+                      type="button"
+                    >
+                      <Sparkles size={16} style={{ color: 'var(--accent)' }} />
+                    </button>
+                    <button
+                      onClick={() => onQuickAction('shorten')}
+                      className="btn-icon"
+                      title="Shorten text"
+                      type="button"
+                    >
+                      <ArrowDownToLine size={16} />
+                    </button>
+                    <button
+                      onClick={() => onQuickAction('expand')}
+                      className="btn-icon"
+                      title="Expand text"
+                      type="button"
+                    >
+                      <ArrowUpFromLine size={16} />
+                    </button>
+                    <button
+                      onClick={() => onQuickAction('grammar')}
+                      className="btn-icon"
+                      title="Fix grammar & spelling"
+                      type="button"
+                    >
+                      <Languages size={16} />
+                    </button>
+                  </>
+                )}
               </div>
             )
           })()}

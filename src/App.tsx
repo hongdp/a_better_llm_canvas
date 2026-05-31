@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, lazy, Suspense, useCallback, useMemo } from 'react'
 import { 
   Send, 
   Trash2, 
@@ -24,12 +24,10 @@ import {
   CloudOff,
   CloudUpload,
   Square,
-  Clipboard
+  Clipboard,
+  Wand2
 } from 'lucide-react'
-import { Editor } from './components/Editor'
-import { SettingsModal } from './components/SettingsModal'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
-import { AuthForm } from './components/AuthForm'
 import { useAppStore, PROVIDER_MODELS } from './store/useAppStore'
 import type { CanvasDocument, LLMProvider } from './store/useAppStore'
 import { streamLLM } from './services/llm'
@@ -37,6 +35,15 @@ import type { LLMMessage } from './services/llm'
 import { diffHtml } from './utils/diff'
 import { htmlToMarkdown, htmlToPlainText } from './utils/convert'
 import { DOMParser as ProseMirrorDOMParser, Node as ProseMirrorNode, Mark as ProseMirrorMark } from '@tiptap/pm/model'
+
+import { Editor } from './components/Editor'
+
+// Lazy loaded heavy components to speed up initial mobile page shell load
+const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => ({ default: m.SettingsModal })))
+const AuthForm = lazy(() => import('./components/AuthForm').then(m => ({ default: m.AuthForm })))
+const ImageGenerationModal = lazy(() => import('./components/ImageGenerationModal').then(m => ({ default: m.ImageGenerationModal })))
+
+
 
 // Fallback standard Gemini models
 const FALLBACK_GEMINI_MODELS = [
@@ -122,6 +129,38 @@ const convertBlobUrlToDataUrl = async (blobUrl: string): Promise<string> => {
   }
 }
 
+const convertGifToJpegIfNeeded = (dataUrl: string): Promise<string> => {
+  if (!dataUrl.startsWith('data:image/gif')) {
+    return Promise.resolve(dataUrl)
+  }
+  return new Promise<string>((resolve) => {
+    const img = new window.Image()
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.naturalWidth || img.width
+        canvas.height = img.naturalHeight || img.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) {
+          resolve(dataUrl)
+          return
+        }
+        ctx.drawImage(img, 0, 0)
+        const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.9)
+        resolve(jpegDataUrl)
+      } catch (err) {
+        console.error('Error drawing GIF to canvas:', err)
+        resolve(dataUrl)
+      }
+    }
+    img.onerror = () => {
+      console.error('Error loading GIF image')
+      resolve(dataUrl)
+    }
+    img.src = dataUrl
+  })
+}
+
 function App() {
   // Zustand store state
   const {
@@ -198,6 +237,10 @@ function App() {
   const [isLoadingModels, setIsLoadingModels] = useState(false)
   const [storageSize, setStorageSize] = useState('0.00 KB')
 
+  // Image generation modal state
+  const [isImageGenOpen, setIsImageGenOpen] = useState(false)
+  const [imageGenInitialPrompt, setImageGenInitialPrompt] = useState('')
+
   // Revert & Edit Past Message state
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
@@ -208,23 +251,53 @@ function App() {
   const chatInputRef = useRef<HTMLDivElement>(null)
 
   const processFiles = (files: File[]) => {
-    const validFiles = files.filter(file => file.type.startsWith('image/'))
-    if (validFiles.length === 0) return
+    const imageFiles = files.filter(file => file.type.startsWith('image/'))
+    if (imageFiles.length === 0) return
 
-    if (uploadedImages.length + validFiles.length > 3) {
+    // Filter out files exceeding the size limit (invalid images) first.
+    // GIFs can be up to 15MB, other formats up to 2MB.
+    const validSizeFiles = imageFiles.filter(file => {
+      const isGif = file.type === 'image/gif'
+      const limit = isGif ? 15 * 1024 * 1024 : 2 * 1024 * 1024
+      if (file.size > limit) {
+        alert(`Image "${file.name}" exceeds the ${isGif ? '15MB' : '2MB'} size limit.`)
+        return false
+      }
+      return true
+    })
+    if (validSizeFiles.length === 0) return
+
+    // Check maximum attachment limit using only valid images
+    if (uploadedImages.length + validSizeFiles.length > 3) {
       alert('You can attach a maximum of 3 images.')
       return
     }
 
-    validFiles.forEach(file => {
-      if (file.size > 2 * 1024 * 1024) {
-        alert(`Image "${file.name}" exceeds the 2MB size limit.`)
-        return
-      }
+    validSizeFiles.forEach(file => {
       const reader = new FileReader()
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
         if (event.target?.result) {
-          setUploadedImages(prev => [...prev, event.target!.result as string])
+          const rawDataUrl = event.target.result as string
+          try {
+            const processedDataUrl = await convertGifToJpegIfNeeded(rawDataUrl)
+            
+            // Post-check size to ensure it fits in 2MB limit after conversion
+            const approxSize = processedDataUrl.length * 0.75
+            if (approxSize > 2 * 1024 * 1024) {
+              alert(`Image "${file.name}" is too large (exceeds 2MB) after conversion.`)
+              return
+            }
+
+            setUploadedImages(prev => {
+              if (prev.length >= 3) {
+                alert('You can attach a maximum of 3 images.')
+                return prev
+              }
+              return [...prev, processedDataUrl]
+            })
+          } catch (err) {
+            console.error('Failed to process image file:', err)
+          }
         }
       }
       reader.readAsDataURL(file)
@@ -437,7 +510,7 @@ function App() {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'unsaved'>('saved')
   const saveTimeoutRef = useRef<number | null>(null)
 
-  const triggerUnsaved = () => {
+  const triggerUnsaved = useCallback(() => {
     setSaveStatus('unsaved')
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current)
@@ -445,7 +518,7 @@ function App() {
     saveTimeoutRef.current = window.setTimeout(() => {
       setSaveStatus('saved')
     }, 1500)
-  }
+  }, [])
 
   const forceSave = () => {
     if (saveTimeoutRef.current) {
@@ -463,6 +536,23 @@ function App() {
       }
     }
   }, [])
+
+  // Background prefetch heavy chunks as soon as the main shell is interactive
+  useEffect(() => {
+    const prefetch = () => {
+      import('./components/SettingsModal').catch(err => console.warn('Failed to prefetch SettingsModal', err))
+      import('./components/AuthForm').catch(err => console.warn('Failed to prefetch AuthForm', err))
+      import('./components/ImageGenerationModal').catch(err => console.warn('Failed to prefetch ImageGenerationModal', err))
+    }
+    
+    if (document.readyState === 'complete') {
+      prefetch()
+    } else {
+      window.addEventListener('load', prefetch)
+      return () => window.removeEventListener('load', prefetch)
+    }
+  }, [])
+
 
   // Clear timeout and reset to saved when active document changes
   useEffect(() => {
@@ -600,6 +690,30 @@ function App() {
   const chatEndRef = useRef<HTMLDivElement>(null)
   const isResizingRef = useRef(false)
   const accumulatedTextRef = useRef('')
+  const imagePlaceholdersRef = useRef<{ placeholder: string; tag: string }[]>([])
+
+  const extractImagesToPlaceholders = (html: string): string => {
+    if (!html) return html
+    const regex = /<img\s+[^>]*src=["']data:image\/[^"']+["'][^>]*>/gi
+    return html.replace(regex, (match) => {
+      let existing = imagePlaceholdersRef.current.find(item => item.tag === match)
+      if (!existing) {
+        const placeholder = `{{IMAGE_PLACEHOLDER_${imagePlaceholdersRef.current.length}}}`
+        existing = { placeholder, tag: match }
+        imagePlaceholdersRef.current.push(existing)
+      }
+      return existing.placeholder
+    })
+  }
+
+  const restoreImagesFromPlaceholders = (html: string): string => {
+    if (!html) return html
+    let result = html
+    imagePlaceholdersRef.current.forEach(item => {
+      result = result.replaceAll(item.placeholder, item.tag)
+    })
+    return result
+  }
 
   // Retrieve active document
   const activeDoc = documents.find(d => d.id === activeDocumentId) || documents[0] || {
@@ -607,6 +721,13 @@ function App() {
     title: 'Untitled Chapter',
     content: '<p>Start writing...</p>'
   }
+
+  // Memoized plain-text snippet of the active document for image gen context.
+  // htmlToPlainText is expensive — only recompute when content actually changes.
+  const documentPlainTextContext = useMemo(
+    () => htmlToPlainText(activeDoc.content).slice(0, 1500),
+    [activeDoc.content]
+  )
 
   const activeConfig = providerConfigs[activeProvider]
   const geminiConfig = providerConfigs.gemini
@@ -626,8 +747,10 @@ function App() {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  // Fetch official Gemini models dynamically when API Key or Base URL changes
+  // Fetch official Gemini models dynamically when API Key or Base URL changes (only when Settings are open)
   useEffect(() => {
+    if (!isSettingsOpen) return
+
     const fetchOfficialModels = async () => {
       if (!geminiApiKey || geminiApiKey === 'ollama-no-key') {
         setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
@@ -685,10 +808,12 @@ function App() {
     }
 
     fetchOfficialModels()
-  }, [geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model])
+  }, [isSettingsOpen, geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model])
 
-  // Fetch official Grok models dynamically when API Key or Base URL changes
+  // Fetch official Grok models dynamically when API Key or Base URL changes (only when Settings are open)
   useEffect(() => {
+    if (!isSettingsOpen) return
+
     const fetchGrokModels = async () => {
       if (!grokApiKey) {
         setAvailableGrokModels(FALLBACK_GROK_MODELS)
@@ -724,7 +849,8 @@ function App() {
       }
     }
     fetchGrokModels()
-  }, [grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
+  }, [isSettingsOpen, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
+
 
   // Horizontal resizing handlers
   const startResizing = (e: React.MouseEvent) => {
@@ -779,7 +905,8 @@ ${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${c
    b. [FOR FULL DOCUMENT EDITS]: If you are rewriting the entire document or editing multiple non-contiguous parts of it, wrap the FULL updated document text inside "<canvas>" XML tags.
 2. Write conversational feedback/explanations OUTSIDE the XML tags (either outside "<canvas>" or outside "<selection_replace>") for the chat panel.
 3. Output the document content (inside "<canvas>" or "<selection_replace>") as clean HTML (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of a full document inside "<canvas>" to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
-4. If the user instruction is just conversational and does not require updating the document, DO NOT output any XML block. Just write a conversational reply.`
+4. If the user instruction is just conversational and does not require updating the document, DO NOT output any XML block. Just write a conversational reply.
+5. If the document content contains image placeholders like "{{IMAGE_PLACEHOLDER_N}}", you MUST preserve them exactly as they are at their correct positions in the document. Do not alter, delete, or translate these placeholders.`
     }
   }
 
@@ -790,7 +917,8 @@ ${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${c
     finalReferenceIds.forEach(refId => {
       const refDoc = documents.find(d => d.id === refId)
       if (refDoc) {
-        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\nTitle: ${refDoc.title}\nContent:\n${refDoc.content}\n"""\n`
+        const cleanRefContent = extractImagesToPlaceholders(refDoc.content)
+        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\nTitle: ${refDoc.title}\nContent:\n${cleanRefContent}\n"""\n`
       }
     })
 
@@ -804,6 +932,8 @@ ${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${c
       ? `\nCURRENT SELECTED TEXT IN ACTIVE DOCUMENT (Focus your edits ONLY on this section if the user instructs so):\n"""\n${selectedText}\n"""\n`
       : ''
 
+    const cleanActiveContent = extractImagesToPlaceholders(activeDoc.content)
+
     return {
       role: 'user' as const,
       content: `[DOCUMENT CONTEXT - Do not respond to this message directly, wait for the user's instruction in the next message.]
@@ -814,7 +944,7 @@ ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modi
 ${selectionContext}
 CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
 """
-${activeDoc.content}
+${cleanActiveContent}
 """`
     }
   }
@@ -915,14 +1045,19 @@ ${activeDoc.content}
             )
 
             // Dynamic document insertion
+            // NOTE: During streaming we avoid restoreImagesFromPlaceholders() and
+            // updateActiveDocument() on every chunk — both are expensive when images
+            // (large base64 strings) are present. The authoritative save happens in onDone.
             if (isSelectionEdit) {
               const cleanedText = stripIncompleteEndTag(selectionReplaceText)
               if (cleanedText && activeEditor && selectionRangeRef.current) {
                 const { from } = selectionRangeRef.current
                 const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
+                // Restore images for live editor preview (selection text is small, usually no images)
+                const restoredText = restoreImagesFromPlaceholders(cleanedText)
                 const tempDiv = document.createElement('div')
-                tempDiv.innerHTML = cleanedText
+                tempDiv.innerHTML = restoredText
                 const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
 
                 const tr = activeEditor.state.tr
@@ -930,11 +1065,14 @@ ${activeDoc.content}
                 activeEditor.view.dispatch(tr)
 
                 selectionEndRef.current = from + slice.size
-                updateActiveDocument({ content: activeEditor.getHTML() })
+                // Skip updateActiveDocument here to avoid serializing full HTML with
+                // images and writing to IndexedDB on every chunk. onDone handles the final save.
                 setSaveStatus('unsaved')
               }
             } else if (canvasText.trim()) {
-              updateActiveDocument({ content: canvasText })
+              // For full-document canvas edits, skip restoring images and updating store
+              // on every chunk — image base64 strings can be MBs and this ran per-chunk.
+              // onDone will do the final restore + diff + save.
               setSaveStatus('unsaved')
             }
           },
@@ -1013,7 +1151,8 @@ ${activeDoc.content}
             if (isSelectionEdit) {
               const cleanedText = stripIncompleteEndTag(finalSelectionReplaceText)
               if (cleanedText && activeEditor && selectionRangeRef.current) {
-                const diffed = diffHtml(originalSelectedTextRef.current, cleanedText)
+                const restoredText = restoreImagesFromPlaceholders(cleanedText)
+                const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
                 const { from } = selectionRangeRef.current
                 const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
@@ -1028,7 +1167,8 @@ ${activeDoc.content}
                 updateActiveDocument({ content: activeEditor.getHTML() })
               }
             } else if (finalCanvasText.trim()) {
-              const diffed = diffHtml(originalDocContent, finalCanvasText)
+              const restoredText = restoreImagesFromPlaceholders(finalCanvasText)
+              const diffed = diffHtml(originalDocContent, restoredText)
               updateActiveDocument({ content: diffed })
             }
             forceSave()
@@ -1081,6 +1221,8 @@ ${activeDoc.content}
     
     const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
     if (!promptText || isStreaming) return
+
+    imagePlaceholdersRef.current = []
 
     if (layoutMode === 'portrait') {
       setIsChatExpanded(true)
@@ -1187,6 +1329,8 @@ ${activeDoc.content}
   const handleResubmitMessage = async (msgId: string, newContent: string) => {
     const trimmed = newContent.trim()
     if (!trimmed || isStreaming) return
+
+    imagePlaceholdersRef.current = []
 
     if (layoutMode === 'portrait') {
       setIsChatExpanded(true)
@@ -1380,6 +1524,49 @@ ${activeDoc.content}
     await handleSendMessage(undefined, prompt)
   }
 
+  // Open image generation modal with optional selected text as initial prompt
+  const handleOpenImageGen = useCallback((selectedText: string) => {
+    setImageGenInitialPrompt(selectedText)
+    setIsImageGenOpen(true)
+  }, [])
+
+  // Memoized editor onChange — avoids re-creating this on every render which
+  // would cause the Editor to re-render on each App state change (e.g. chat input typing).
+  const handleEditorChange = useCallback((html: string) => {
+    triggerUnsaved()
+    const updates: Partial<CanvasDocument> = { content: html }
+    // Sync title if the document starts with an <h1> tag
+    const tempDiv = document.createElement('div')
+    tempDiv.innerHTML = html
+    const firstChild = tempDiv.firstElementChild
+    if (firstChild && firstChild.tagName.toUpperCase() === 'H1') {
+      const extractedTitle = firstChild.textContent?.trim()
+      const currentTitle = useAppStore.getState().documents.find(
+        d => d.id === useAppStore.getState().activeDocumentId
+      )?.title
+      if (extractedTitle && extractedTitle !== currentTitle) {
+        updates.title = extractedTitle
+      }
+    }
+    useAppStore.getState().updateActiveDocument(updates)
+  }, [triggerUnsaved])
+
+  // Insert a generated image (base64 data URL) into the active editor at cursor position
+  const handleInsertGeneratedImage = useCallback((dataUrl: string, altText: string) => {
+    if (!activeEditor) return
+    const imgHtml = `<img src="${dataUrl}" alt="${altText.replace(/"/g, '&quot;')}" style="max-width: 100%; height: auto; border-radius: 6px;" />`
+    const tempDiv = document.createElement('div')
+    tempDiv.innerHTML = imgHtml
+    const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+    const tr = activeEditor.state.tr
+    const { to } = activeEditor.state.selection
+    tr.insert(to, slice.content)
+    activeEditor.view.dispatch(tr)
+    // Use getState() to avoid listing updateActiveDocument as a dependency (it's a new ref each render)
+    useAppStore.getState().updateActiveDocument({ content: activeEditor.getHTML() })
+    triggerUnsaved()
+  }, [activeEditor, triggerUnsaved])
+
   // Clear chat handler
   const handleClearChat = () => {
     clearChat()
@@ -1550,8 +1737,38 @@ ${activeDoc.content}
   }
 
   if (!user) {
-    return <AuthForm />
+    return (
+      <Suspense fallback={
+        <div style={{
+          display: 'flex',
+          flexDirection: 'column',
+          alignItems: 'center',
+          justifyContent: 'center',
+          height: '100%',
+          width: '100%',
+          backgroundColor: 'var(--bg-primary)',
+          color: 'var(--text-primary)',
+          gap: '1.5rem',
+          fontFamily: 'system-ui, sans-serif'
+        }}>
+          <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <div className="animate-spin" style={{
+              width: '48px',
+              height: '48px',
+              borderRadius: '50%',
+              border: '3px solid var(--border-color)',
+              borderTopColor: 'var(--accent)'
+            }} />
+            <Sparkles size={20} style={{ position: 'absolute', color: 'var(--accent)' }} />
+          </div>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>Loading authentication workspace...</p>
+        </div>
+      }>
+        <AuthForm />
+      </Suspense>
+    )
   }
+
 
   return (
     <div className={`app-container layout-${layoutMode}`}>
@@ -1951,15 +2168,20 @@ ${activeDoc.content}
                         for (const img of imgs) {
                           const src = img.src
                           if (src) {
+                            let dataUrl = src
                             if (src.startsWith('blob:')) {
                               try {
-                                const dataUrl = await convertBlobUrlToDataUrl(src)
-                                newImages.push(dataUrl)
+                                dataUrl = await convertBlobUrlToDataUrl(src)
                               } catch (err) {
                                 console.error('Failed to convert blob URL:', err)
                               }
-                            } else {
-                              newImages.push(src)
+                            }
+                            try {
+                              const processedDataUrl = await convertGifToJpegIfNeeded(dataUrl)
+                              newImages.push(processedDataUrl)
+                            } catch (err) {
+                              console.error('Failed to process pasted/dropped GIF image:', err)
+                              newImages.push(dataUrl)
                             }
                           }
                           img.remove()
@@ -2184,6 +2406,30 @@ ${activeDoc.content}
                     <History size={18} />
                   </button>
                   
+                  {/* Generate Image Button */}
+                  <button
+                    onClick={() => handleOpenImageGen(selectedText || '')}
+                    className="btn-icon"
+                    title="Generate image with AI (uses selected text as prompt)"
+                    type="button"
+                    style={{
+                      background: 'linear-gradient(135deg, var(--accent), #a78bfa)',
+                      color: 'white',
+                      borderRadius: '7px',
+                      padding: '5px 10px',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '5px',
+                      fontSize: '0.78rem',
+                      fontWeight: 600,
+                      border: 'none',
+                      boxShadow: '0 2px 8px rgba(124, 58, 237, 0.3)',
+                    }}
+                  >
+                    <Wand2 size={14} />
+                    {layoutMode !== 'portrait' && 'Gen Image'}
+                  </button>
+
                   {/* Export Dropdown relative wrapper */}
                   <div style={{ position: 'relative', display: 'inline-block' }}>
                     <button 
@@ -2313,25 +2559,12 @@ ${activeDoc.content}
               <div className="canvas-editor-container">
                 <Editor 
                   content={activeDoc.content} 
-                  onChange={(html) => {
-                    triggerUnsaved()
-                    const updates: Partial<CanvasDocument> = { content: html }
-                    
-                    // Sync title if the document starts with an <h1> tag
-                    const tempDiv = document.createElement('div')
-                    tempDiv.innerHTML = html
-                    const firstChild = tempDiv.firstElementChild
-                    if (firstChild && firstChild.tagName.toUpperCase() === 'H1') {
-                      const extractedTitle = firstChild.textContent?.trim()
-                      if (extractedTitle && extractedTitle !== activeDoc.title) {
-                        updates.title = extractedTitle
-                      }
-                    }
-                    updateActiveDocument(updates)
-                  }} 
+                  onChange={handleEditorChange}
                   onQuickAction={handleQuickAction}
+                  onGenerateImage={handleOpenImageGen}
                 />
               </div>
+
 
               <footer className="canvas-footer">
                 <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
@@ -2419,12 +2652,25 @@ ${activeDoc.content}
       </main>
 
       {/* Settings Modal Overlay */}
-      <SettingsModal 
-        isOpen={isSettingsOpen} 
-        onClose={() => setIsSettingsOpen(false)} 
-        errorMsg={errorMsg}
-        setErrorMsg={setErrorMsg}
-      />
+      <Suspense fallback={null}>
+        <SettingsModal 
+          isOpen={isSettingsOpen} 
+          onClose={() => setIsSettingsOpen(false)} 
+          errorMsg={errorMsg}
+          setErrorMsg={setErrorMsg}
+        />
+      </Suspense>
+
+      {/* Image Generation Modal */}
+      <Suspense fallback={null}>
+        <ImageGenerationModal
+          isOpen={isImageGenOpen}
+          onClose={() => setIsImageGenOpen(false)}
+          initialPrompt={imageGenInitialPrompt}
+          documentContext={documentPlainTextContext}
+          onInsertImage={handleInsertGeneratedImage}
+        />
+      </Suspense>
     </div>
   )
 }

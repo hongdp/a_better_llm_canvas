@@ -4,6 +4,287 @@ import { useAppStore } from '../store/useAppStore'
 import { streamLLM } from '../services/llm'
 import type { LLMMessage } from '../services/llm'
 
+const fetchImageAsBase64 = async (urlStr: string): Promise<string> => {
+  if (urlStr.startsWith('data:')) return urlStr
+  try {
+    const res = await fetch(urlStr, { mode: 'cors' })
+    if (!res.ok) return ''
+    const blob = await res.blob()
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onloadend = () => resolve(reader.result as string)
+      reader.onerror = reject
+      reader.readAsDataURL(blob)
+    })
+  } catch (e) {
+    console.warn('CORS or network error fetching image for local analysis:', urlStr, e)
+    return ''
+  }
+}
+
+const convertGifToStatic = (gifBase64: string): Promise<string> => {
+  return new Promise<string>((resolve) => {
+    if (!gifBase64.startsWith('data:image/gif')) {
+      resolve(gifBase64)
+      return
+    }
+
+    const img = new Image()
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        if (ctx) {
+          ctx.drawImage(img, 0, 0)
+          const staticBase64 = canvas.toDataURL('image/jpeg', 0.85)
+          resolve(staticBase64)
+        } else {
+          resolve(gifBase64)
+        }
+      } catch (e) {
+        console.warn('Failed to convert GIF to static image:', e)
+        resolve(gifBase64)
+      }
+    }
+    img.onerror = () => {
+      resolve(gifBase64)
+    }
+    img.src = gifBase64
+  })
+}
+
+const preprocessScrapedData = async (data: ScrapedData): Promise<ScrapedData> => {
+  if (!data.images || data.images.length === 0) return data
+
+  const processedImages = await Promise.all(
+    data.images.map(async (img) => {
+      if (img.base64 && img.base64.startsWith('data:image/gif')) {
+        const staticBase64 = await convertGifToStatic(img.base64)
+        return {
+          ...img,
+          base64: staticBase64
+        }
+      }
+      return img
+    })
+  )
+
+  return {
+    ...data,
+    images: processedImages
+  }
+}
+
+const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promise<ScrapedData> => {
+  const base64Images: string[] = []
+  const placeholderPrefix = 'data:image/placeholder;base64,'
+
+  // Pre-process HTML to strip huge inline base64 data URLs to prevent DOMParser OOM crashes
+  const cleanedHtml = htmlText.replace(/(["'])(data:[^"']{100,})\1/g, (_, quote, dataUrl) => {
+    if (dataUrl.toLowerCase().startsWith('data:image/')) {
+      const index = base64Images.length
+      base64Images.push(dataUrl)
+      return `${quote}${placeholderPrefix}${index}${quote}`
+    }
+    return `${quote}data:null${quote}`
+  })
+
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(cleanedHtml, 'text/html')
+  
+  // 1. Extract Base URL
+  let baseHref = ''
+  const baseEl = doc.querySelector('base')
+  if (baseEl && baseEl.getAttribute('href')) {
+    baseHref = baseEl.getAttribute('href') || ''
+  }
+
+  // 2. Extract Title
+  let title = ''
+  const threadSubjectEl = doc.querySelector('#thread_subject')
+  if (threadSubjectEl && threadSubjectEl.textContent) {
+    title = threadSubjectEl.textContent.trim()
+  } else {
+    const titleEl = doc.querySelector('title')
+    if (titleEl && titleEl.textContent) {
+      title = titleEl.textContent.replace(/(_首发原创|_手机版|_论坛|_春满四合院|_春满四合院论坛).*$/, '').trim()
+    }
+  }
+  if (!title) {
+    title = filename.substring(0, filename.lastIndexOf('.')) || filename
+  }
+
+  // 3. Remove script, style, etc.
+  const tagsToRemove = ['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript']
+  tagsToRemove.forEach(tag => {
+    doc.querySelectorAll(tag).forEach(el => el.remove())
+  })
+
+  const paragraphs: { index: number; text: string; tag: string }[] = []
+  const tempImages: { alt: string; url: string; base64: string; position: number }[] = []
+
+  let currentText = ''
+  let currentTag = 'p'
+
+  const commitParagraph = () => {
+    const text = currentText.trim().replace(/\s+/g, ' ')
+    if (text.length > 5) {
+      if (paragraphs.length === 0 || paragraphs[paragraphs.length - 1].text !== text) {
+        paragraphs.push({
+          index: paragraphs.length,
+          text,
+          tag: currentTag
+        })
+      }
+    }
+    currentText = ''
+  }
+
+  const walk = (node: Node) => {
+    if (node.nodeType === 3) {
+      currentText += node.textContent || ''
+    } else if (node.nodeType === 1) {
+      const el = node as Element
+      const tagName = el.tagName.toLowerCase()
+
+      if (['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'iframe'].includes(tagName)) {
+        return
+      }
+
+      if (tagName === 'img') {
+        const attrs = [
+          el.getAttribute('file'),
+          el.getAttribute('data-src'),
+          el.getAttribute('data-original'),
+          el.getAttribute('data-lazy-src'),
+          el.getAttribute('data-original-src'),
+          el.getAttribute('src')
+        ].map(v => (v || '').trim()).filter(Boolean)
+
+        let src = attrs.find(attr => {
+          if (!attr.startsWith('data:') && !attr.startsWith(placeholderPrefix)) return false
+          const lower = attr.toLowerCase()
+          if (lower.includes('image/svg+xml')) return false
+          if (lower.includes('image/gif') && attr.length < 200) return false
+          return true
+        }) || ''
+
+        if (!src) {
+          src = (
+            el.getAttribute('file') ||
+            el.getAttribute('data-src') ||
+            el.getAttribute('data-original') ||
+            el.getAttribute('data-lazy-src') ||
+            el.getAttribute('data-original-src') ||
+            el.getAttribute('src') ||
+            ''
+          ).trim()
+        }
+
+        const alt = el.getAttribute('alt') || ''
+        if (src) {
+          let resolvedSrc = src
+          if (src.startsWith(placeholderPrefix)) {
+            const indexStr = src.substring(placeholderPrefix.length)
+            const index = parseInt(indexStr, 10)
+            if (!isNaN(index) && base64Images[index]) {
+              resolvedSrc = base64Images[index]
+            }
+          } else if (!src.startsWith('data:') && !src.startsWith('http://') && !src.startsWith('https://') && baseHref) {
+            try {
+              resolvedSrc = new URL(src, baseHref).toString()
+            } catch (e) {}
+          }
+          tempImages.push({
+            alt,
+            url: resolvedSrc,
+            base64: resolvedSrc.startsWith('data:') ? resolvedSrc : '',
+            position: paragraphs.length
+          })
+        }
+        return
+      }
+
+      const isBlock = ['p', 'div', 'td', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'article', 'section', 'tr', 'table', 'ul', 'ol', 'pre'].includes(tagName)
+
+      if (isBlock) {
+        commitParagraph()
+        currentTag = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName) ? tagName : 'p'
+      }
+
+      if (tagName === 'br') {
+        commitParagraph()
+      } else {
+        for (let i = 0; i < el.childNodes.length; i++) {
+          walk(el.childNodes[i])
+        }
+      }
+
+      if (isBlock) {
+        commitParagraph()
+      }
+    }
+  }
+
+  const bodyEl = doc.body || doc.documentElement
+  walk(bodyEl)
+  commitParagraph()
+
+  // 5. Fetch images in batches until we have 100 successful ones
+  const successfulImages: { index: number; alt: string; base64: string; position: number; failedAnalysis?: boolean }[] = []
+  const maxImagesDownload = 100
+  const batchSize = 20
+  let i = 0
+  
+  while (successfulImages.length < maxImagesDownload && i < tempImages.length) {
+    const batch = tempImages.slice(i, i + batchSize)
+    i += batchSize
+    
+    const results = await Promise.all(
+      batch.map(async (img) => {
+        let b64 = img.base64
+        if (!b64 && img.url) {
+          b64 = await fetchImageAsBase64(img.url)
+        }
+        if (b64) {
+          return {
+            alt: img.alt,
+            base64: b64,
+            position: img.position
+          }
+        }
+        return null
+      })
+    )
+    
+    for (const res of results) {
+      if (res) {
+        successfulImages.push({
+          index: successfulImages.length,
+          alt: res.alt,
+          base64: res.base64,
+          position: res.position,
+          failedAnalysis: false
+        })
+        if (successfulImages.length >= maxImagesDownload) {
+          break
+        }
+      }
+    }
+  }
+
+  return {
+    title,
+    paragraphs,
+    images: successfulImages,
+    totalParagraphs: paragraphs.length,
+    totalImages: successfulImages.length
+  }
+}
+
+
 interface ScrapedData {
   title: string
   paragraphs: { index: number; text: string; tag: string }[]
@@ -90,7 +371,8 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
     activeProvider,
     customSystemPrompts,
     activeSystemPromptId,
-    debugMode
+    debugMode,
+    imageAnalysisPrompt
   } = useAppStore()
 
   const [url, setUrl] = useState('')
@@ -106,6 +388,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
   const [editableSystemPrompt, setEditableSystemPrompt] = useState('')
   const [editableUserPrompt, setEditableUserPrompt] = useState('')
   const abortControllerRef = useRef<AbortController | null>(null)
+  const localFileInputRef = useRef<HTMLInputElement>(null)
 
   const resetState = () => {
     setUrl('')
@@ -213,22 +496,113 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       })
 
       if (!resp.ok) {
-        const errData = await resp.json().catch(() => ({ detail: resp.statusText }))
-        throw new Error(errData.detail || `HTTP ${resp.status}`)
+        let errData: any = null
+        try {
+          errData = await resp.json()
+        } catch {
+          if (resp.status === 502) {
+            errData = { detail: '后端 API 服务未启动或无法连接。请确保 Python 后端已正常运行在 3000 端口。' }
+          } else {
+            errData = { detail: resp.statusText || `HTTP ${resp.status}` }
+          }
+        }
+        throw new Error(errData.detail || errData.error || `HTTP ${resp.status}`)
       }
 
-      const data: ScrapedData = await resp.json()
+      let data: ScrapedData
+      try {
+        data = await resp.json()
+      } catch (e: any) {
+        throw new Error(`解析服务器返回的数据失败：${e.message || e}`)
+      }
 
       if (data.totalParagraphs === 0) {
         throw new Error('未能从该页面提取到任何文字内容。')
       }
 
-      setScrapedData(data)
+      const processedData = await preprocessScrapedData(data)
+      setScrapedData(processedData)
       setStatus('preview')
       setProgress('')
     } catch (err: any) {
       setStatus('error')
       setErrorMsg(err.message || '抓取失败')
+    }
+  }
+
+  const handleLocalFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files
+    if (!files || files.length === 0) return
+
+    const file = files[0]
+    setStatus('fetching')
+    setErrorMsg('')
+
+    try {
+      let data: ScrapedData
+
+      // If file is large (>= 5MB), upload to backend parser to prevent browser tab crash/OOM
+      if (file.size >= 5 * 1024 * 1024) {
+        setProgress(`文件较大 (${(file.size / (1024 * 1024)).toFixed(1)}MB)，正在上传至服务器解析...`)
+        
+        const csrfToken = getCsrfToken()
+        const resp = await fetch('/api/import-file', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'text/html',
+            'x-csrf-token': csrfToken
+          },
+          body: file // Upload the raw file directly as the request body
+        })
+
+        if (!resp.ok) {
+          let errData: any = null
+          try {
+            errData = await resp.json()
+          } catch {
+            if (resp.status === 502) {
+              errData = { detail: '后端 API 服务未启动或无法连接。请确保 Python 后端已正常运行在 3000 端口。' }
+            } else {
+              errData = { detail: resp.statusText || `HTTP ${resp.status}` }
+            }
+          }
+          throw new Error(errData.detail || errData.error || `HTTP ${resp.status}`)
+        }
+
+        try {
+          data = await resp.json()
+        } catch (err: any) {
+          throw new Error(`解析服务器返回的数据失败：${err.message || err}`)
+        }
+      } else {
+        // For small files (< 5MB), parse client-side to save bandwidth
+        setProgress('正在读取本地网页文件...')
+        const text = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader()
+          reader.onload = (evt) => resolve(evt.target?.result as string)
+          reader.onerror = (err) => reject(err)
+          reader.readAsText(file)
+        })
+
+        setProgress('正在解析网页结构...')
+        data = await parseHtmlToScrapedData(text, file.name)
+      }
+      
+      if (data.totalParagraphs === 0) {
+        throw new Error('未能从该本地 HTML 文件中提取到任何文字内容。')
+      }
+
+      const processedData = await preprocessScrapedData(data)
+      setScrapedData(processedData)
+      setStatus('preview')
+      setProgress('')
+    } catch (err: any) {
+      setStatus('error')
+      setErrorMsg(err.message || '读取或解析本地网页失败')
+    } finally {
+      if (localFileInputRef.current) {
+        localFileInputRef.current.value = ''
+      }
     }
   }
 
@@ -828,20 +1202,7 @@ ${currentInterleavedContent}
     const processImage = async (img: typeof validImages[0]) => {
       const systemPrompt: LLMMessage = {
         role: 'system',
-        content: `你是一位专业的图片描述专家。请仔细观察提供的图片，写一段详细的中文描述。
-
-要求：
-- 描述图片中的场景、人物、表情、动作、环境、氛围等
-- 使用中文描述
-- 长度在 50-150 字之间
-- 输出严格的 JSON 格式，不要有任何其他文字
-
-JSON格式：
-{
-  "descriptions": [
-    {"index": ${img.index}, "description": "图片描述内容..."}
-  ]
-}`
+        content: imageAnalysisPrompt.replace('{{index}}', String(img.index))
       }
 
       const userPrompt: LLMMessage = {
@@ -1356,7 +1717,7 @@ JSON格式：
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Globe size={20} style={{ color: 'var(--accent)' }} />
-            <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>从URL导入 → 生成小说章节</h3>
+            <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>从网页URL / 本地HTML创作</h3>
           </div>
           <button onClick={handleClose} className="btn-icon" title="关闭" type="button" style={{ padding: '0.25rem' }}>
             <X size={16} />
@@ -1366,45 +1727,79 @@ JSON格式：
         {/* Content */}
         <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
 
-          {/* URL Input - Always visible except when done/editing prompt */}
+          {/* URL Input / File Upload - Always visible except when done/editing prompt */}
           {status !== 'done' && status !== 'prompt_edit' && (
-            <div style={{ display: 'flex', gap: '0.5rem' }}>
-              <input
-                type="url"
-                placeholder="粘贴网页URL..."
-                value={url}
-                onChange={e => setUrl(e.target.value)}
-                onKeyDown={e => {
-                  if (e.key === 'Enter' && status === 'idle') handleFetch()
-                }}
-                disabled={status !== 'idle' && status !== 'error'}
-                className="form-input"
-                style={{
-                  flex: 1,
-                  padding: '0.6rem 0.8rem',
-                  fontSize: '0.9rem',
-                  backgroundColor: 'var(--bg-primary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: '8px',
-                  color: 'var(--text-primary)',
-                  outline: 'none'
-                }}
-              />
-              {(status === 'idle' || status === 'error') && (
-                <button
-                  onClick={handleFetch}
-                  disabled={!url.trim()}
-                  className="btn-primary"
-                  type="button"
-                  style={{
-                    padding: '0.6rem 1rem',
-                    fontSize: '0.85rem',
-                    whiteSpace: 'nowrap',
-                    opacity: url.trim() ? 1 : 0.5
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              <div style={{ display: 'flex', gap: '0.5rem' }}>
+                <input
+                  type="url"
+                  placeholder="粘贴网页URL..."
+                  value={url}
+                  onChange={e => setUrl(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && (status === 'idle' || status === 'error')) handleFetch()
                   }}
+                  disabled={status !== 'idle' && status !== 'error'}
+                  className="form-input"
+                  style={{
+                    flex: 1,
+                    padding: '0.6rem 0.8rem',
+                    fontSize: '0.9rem',
+                    backgroundColor: 'var(--bg-primary)',
+                    border: '1px solid var(--border-color)',
+                    borderRadius: '8px',
+                    color: 'var(--text-primary)',
+                    outline: 'none'
+                  }}
+                />
+                {(status === 'idle' || status === 'error') && (
+                  <button
+                    onClick={handleFetch}
+                    disabled={!url.trim()}
+                    className="btn-primary"
+                    type="button"
+                    style={{
+                      padding: '0.6rem 1rem',
+                      fontSize: '0.85rem',
+                      whiteSpace: 'nowrap',
+                      opacity: url.trim() ? 1 : 0.5
+                    }}
+                  >
+                    抓取网页
+                  </button>
+                )}
+              </div>
+              
+              {(status === 'idle' || status === 'error') && (
+                <div 
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    justifyContent: 'center', 
+                    gap: '0.5rem', 
+                    padding: '1rem', 
+                    border: '1px dashed var(--border-color)', 
+                    borderRadius: '8px',
+                    backgroundColor: 'rgba(255, 255, 255, 0.02)',
+                    cursor: 'pointer',
+                    transition: 'border-color 0.2s',
+                  }}
+                  onClick={() => localFileInputRef.current?.click()}
+                  onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
+                  onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-color)'}
                 >
-                  抓取内容
-                </button>
+                  <FileText size={18} style={{ color: 'var(--accent)' }} />
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
+                    或者：上传本地网页文件 (.html, .htm) 进行解析与创作
+                  </span>
+                  <input
+                    type="file"
+                    ref={localFileInputRef}
+                    onChange={handleLocalFileChange}
+                    accept=".html,.htm"
+                    style={{ display: 'none' }}
+                  />
+                </div>
               )}
             </div>
           )}
