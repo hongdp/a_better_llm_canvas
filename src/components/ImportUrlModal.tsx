@@ -37,6 +37,9 @@ const convertGifToStatic = (gifBase64: string): Promise<string> => {
         canvas.height = img.height
         const ctx = canvas.getContext('2d')
         if (ctx) {
+          // Fill background with white to handle transparent GIFs cleanly in JPEG format
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(0, 0, canvas.width, canvas.height)
           ctx.drawImage(img, 0, 0)
           const staticBase64 = canvas.toDataURL('image/jpeg', 0.85)
           resolve(staticBase64)

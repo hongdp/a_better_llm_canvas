@@ -528,7 +528,9 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                         "base64": None
                     })
                 elif abs_src.startswith("data:image/"):
-                    if len(abs_src) <= MAX_IMAGE_SIZE_BYTES * 1.37:
+                    is_gif = abs_src.startswith("data:image/gif")
+                    limit_bytes = 50 * 1024 * 1024 if is_gif else MAX_IMAGE_SIZE_BYTES
+                    if len(abs_src) <= limit_bytes * 1.37:
                         images.append({
                             "alt": alt or "",
                             "position": len(paragraphs),
@@ -564,6 +566,9 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                 else:
                     content_type = "image/jpeg"
             
+            is_gif = (content_type == "image/gif")
+            limit_bytes = 50 * 1024 * 1024 if is_gif else MAX_IMAGE_SIZE_BYTES
+            
             content = b""
             is_first = True
             is_html = False
@@ -575,7 +580,7 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                         is_html = True
                         break
                 content += chunk
-                if len(content) > MAX_IMAGE_SIZE_BYTES:
+                if len(content) > limit_bytes:
                     content = None
                     break
             
