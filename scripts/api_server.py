@@ -459,6 +459,32 @@ async def import_url(request: Request):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to parse scraped content: {str(e)}")
 
+def _resize_and_convert_to_jpeg(image_bytes: bytes) -> bytes:
+    """Resize image to a maximum width of 800px and convert to a static single-frame JPEG using ffmpeg."""
+    import subprocess
+    cmd = [
+        '/usr/bin/ffmpeg',
+        '-loglevel', 'error',
+        '-i', 'pipe:0',
+        '-vf', "scale='min(800,iw)':-1",
+        '-vframes', '1',
+        '-f', 'image2',
+        '-y', 'pipe:1'
+    ]
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        out, err = process.communicate(input=image_bytes, timeout=10)
+        if len(out) > 0:
+            return out
+    except Exception as e:
+        print(f"[API Server] ffmpeg image conversion failed: {e}")
+    return image_bytes
+
 def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
     soup = BeautifulSoup(html_content, "html.parser")
     
@@ -531,6 +557,16 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                     is_gif = abs_src.startswith("data:image/gif")
                     limit_bytes = 50 * 1024 * 1024 if is_gif else MAX_IMAGE_SIZE_BYTES
                     if len(abs_src) <= limit_bytes * 1.37:
+                        try:
+                            parts = abs_src.split(";base64,", 1)
+                            if len(parts) == 2:
+                                header, b64_data = parts
+                                raw_bytes = base64.b64decode(b64_data)
+                                converted_bytes = _resize_and_convert_to_jpeg(raw_bytes)
+                                converted_b64 = base64.b64encode(converted_bytes).decode("ascii")
+                                abs_src = f"data:image/jpeg;base64,{converted_b64}"
+                        except Exception as e:
+                            print(f"[API Server] Failed to convert inline base64 image: {e}")
                         images.append({
                             "alt": alt or "",
                             "position": len(paragraphs),
@@ -589,9 +625,9 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                 return
             
             if content:
-                b64 = base64.b64encode(content).decode("ascii")
-                safe_type = content_type.split(";")[0].strip()
-                img["base64"] = f"data:{safe_type};base64,{b64}"
+                converted_content = _resize_and_convert_to_jpeg(content)
+                b64 = base64.b64encode(converted_content).decode("ascii")
+                img["base64"] = f"data:image/jpeg;base64,{b64}"
         except Exception as e:
             print(f"[Import URL] Failed to download image {img.get('url')}: {e}")
 
