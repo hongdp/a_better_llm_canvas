@@ -7,7 +7,7 @@
  */
 
 import { streamLLM } from './llm'
-import type { ProviderConfig } from '../store/useAppStore'
+import type { ProviderConfig } from '../types/llm'
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'
 

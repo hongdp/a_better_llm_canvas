@@ -1,24 +1,16 @@
 import { create } from 'zustand'
 
-export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
-export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'
+// Re-export shared types for backward compatibility
+export type { LLMProvider, ImageGenProvider, ImageGenConfig, GeminiSafetySetting, ProviderConfig, SystemPromptTemplate } from '../types/llm'
+export { PROVIDER_MODELS } from '../types/llm'
+export type { ChatMessage } from '../types/chat'
+export type { DocumentVersion, CanvasDocument } from '../types/document'
 
-export interface ImageGenConfig {
-  provider: ImageGenProvider
-  apiKey: string
-  model?: string
-  baseUrl?: string
-  styleSystemPrompt?: string
-  llmEnhancementEnabled?: boolean
-}
+import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../types/llm'
+import type { ChatMessage } from '../types/chat'
+import type { DocumentVersion, CanvasDocument } from '../types/document'
 
-export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-  anthropic: ['claude-3-5-sonnet', 'claude-3-5-haiku', 'claude-3-opus', 'claude-3-sonnet'],
-  ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
-  grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
-}
+
 
 const rawLocalStorage = typeof window !== 'undefined' ? window.localStorage : null
 const localStorage = {
@@ -150,52 +142,6 @@ if (typeof window !== 'undefined') {
   })
 }
 
-export interface GeminiSafetySetting {
-  category: string
-  threshold: string
-}
-
-export interface ProviderConfig {
-  apiKey: string
-  model: string
-  baseUrl: string
-  systemPrompt?: string
-  geminiSafetySettings?: GeminiSafetySetting[]
-  maxOutputTokens?: number
-}
-
-export interface SystemPromptTemplate {
-  id: string
-  name: string
-  content: string
-}
-
-export interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  images?: string[] // base64 Data URLs ("data:image/...;base64,...")
-  timestamp: string
-  provider?: string
-  model?: string
-}
-
-export interface DocumentVersion {
-  id: string
-  documentId: string
-  timestamp: string
-  title: string
-  content: string
-}
-
-export interface CanvasDocument {
-  id: string
-  title: string
-  content: string
-  selectedReferenceIds?: string[]
-  createdAt: string
-  updatedAt: string
-}
 
 interface AppState {
   // Theme state

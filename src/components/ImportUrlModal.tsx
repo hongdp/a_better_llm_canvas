@@ -2,7 +2,8 @@ import React, { useState, useRef, useEffect } from 'react'
 import { Globe, X, RefreshCw, Sparkles, CheckCircle, AlertCircle, FileText } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM } from '../services/llm'
-import type { LLMMessage } from '../services/llm'
+import type { LLMMessage } from '../types/llm'
+import type { ScrapedData, ChapterPlan, GeneratedChapter, FailedPromptContext } from '../types/import'
 
 const fetchImageAsBase64 = async (urlStr: string): Promise<string> => {
   if (urlStr.startsWith('data:')) return urlStr
@@ -96,7 +97,7 @@ const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promi
 
   const parser = new DOMParser()
   const doc = parser.parseFromString(cleanedHtml, 'text/html')
-  
+
   // 1. Extract Base URL
   let baseHref = ''
   const baseEl = doc.querySelector('base')
@@ -198,7 +199,7 @@ const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promi
           } else if (!src.startsWith('data:') && !src.startsWith('http://') && !src.startsWith('https://') && baseHref) {
             try {
               resolvedSrc = new URL(src, baseHref).toString()
-            } catch (e) {}
+            } catch (e) { }
           }
           tempImages.push({
             alt,
@@ -240,11 +241,11 @@ const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promi
   const maxImagesDownload = 100
   const batchSize = 20
   let i = 0
-  
+
   while (successfulImages.length < maxImagesDownload && i < tempImages.length) {
     const batch = tempImages.slice(i, i + batchSize)
     i += batchSize
-    
+
     const results = await Promise.all(
       batch.map(async (img) => {
         let b64 = img.base64
@@ -261,7 +262,7 @@ const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promi
         return null
       })
     )
-    
+
     for (const res of results) {
       if (res) {
         successfulImages.push({
@@ -288,51 +289,16 @@ const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promi
 }
 
 
-interface ScrapedData {
-  title: string
-  paragraphs: { index: number; text: string; tag: string }[]
-  images: { index: number; alt: string; base64: string; position: number; failedAnalysis?: boolean }[]
-  totalParagraphs: number
-  totalImages: number
-}
-
-interface ChapterPlan {
-  bookTitle: string
-  summary: string
-  chapters: {
-    chapterNumber: number
-    title: string
-    description: string
-    paragraphRange: [number, number]
-    imageIndices: number[]
-    mood: string
-  }[]
-}
-
-interface GeneratedChapter {
-  chapterNumber: number
-  title: string
-  content: string
-}
-
-interface FailedPromptContext {
-  phase: 1 | 2
-  enrichedData: ScrapedData
-  plan?: ChapterPlan
-  chapterIndex?: number
-  generatedChapters?: GeneratedChapter[]
-}
-
 type ImportStatus = 'idle' | 'fetching' | 'preview' | 'analyzing' | 'generating' | 'done' | 'error' | 'prompt_edit'
 
 // Helper to determine if an error was caused by LLM safety guidelines / filters
 const isSafetyError = (err: any): boolean => {
   const msg = String(err.message || err).toLowerCase()
   return (
-    msg.includes('403') || 
-    msg.includes('csam') || 
-    msg.includes('safety') || 
-    msg.includes('guidelines') || 
+    msg.includes('403') ||
+    msg.includes('csam') ||
+    msg.includes('safety') ||
+    msg.includes('guidelines') ||
     msg.includes('block') ||
     msg.includes('permission') ||
     msg.includes('violates')
@@ -547,7 +513,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       // If file is large (>= 5MB), upload to backend parser to prevent browser tab crash/OOM
       if (file.size >= 5 * 1024 * 1024) {
         setProgress(`文件较大 (${(file.size / (1024 * 1024)).toFixed(1)}MB)，正在上传至服务器解析...`)
-        
+
         const csrfToken = getCsrfToken()
         const resp = await fetch('/api/import-file', {
           method: 'POST',
@@ -590,7 +556,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
         setProgress('正在解析网页结构...')
         data = await parseHtmlToScrapedData(text, file.name)
       }
-      
+
       if (data.totalParagraphs === 0) {
         throw new Error('未能从该本地 HTML 文件中提取到任何文字内容。')
       }
@@ -640,7 +606,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
   const buildInterleavedContent = (data: ScrapedData): string => {
     const lines: string[] = []
     const imagesByPosition = new Map<number, typeof data.images>()
-    
+
     // Group images by their position (after which paragraph they appear)
     for (const img of data.images) {
       const pos = img.position
@@ -649,7 +615,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       }
       imagesByPosition.get(pos)!.push(img)
     }
-    
+
     // Images that appear before any paragraph (position 0)
     const leadingImages = imagesByPosition.get(0)
     if (leadingImages) {
@@ -657,7 +623,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
         lines.push(`[📷 图片描述 IMG-${img.index}]: ${img.alt || '（图片，无文字描述）'}`)
       }
     }
-    
+
     // Interleave paragraphs and images
     for (const p of data.paragraphs) {
       lines.push(`[P${p.index + 1}] ${p.text}`)
@@ -759,7 +725,7 @@ ${interleavedContent}
             onDone: (fullText: string) => {
               try {
                 let jsonStr = extractJson(fullText)
-                
+
                 // 1. Fix unquoted prefixes in arrays (e.g. [P11, P35] -> [11, 35], [IMG-0, IMG-1] -> [0, 1])
                 // to prevent JSON.parse syntax errors.
                 jsonStr = jsonStr.replace(/\[\s*([\s\S]*?)\s*\]/g, (arrayMatch) => {
@@ -767,7 +733,7 @@ ${interleavedContent}
                 })
 
                 const plan = JSON.parse(jsonStr) as ChapterPlan
-                
+
                 // 2. Post-parse normalization to convert any stringified or prefixed indices to pure numbers
                 if (plan.chapters && Array.isArray(plan.chapters)) {
                   plan.chapters.forEach(ch => {
@@ -829,7 +795,7 @@ ${interleavedContent}
   const buildChapterInterleavedContent = (data: ScrapedData, paragraphRange: [number, number], _imageIndices: number[]): string => {
     const lines: string[] = []
     const imagesByPosition = new Map<number, typeof data.images>()
-    
+
     // Group images by their position
     for (const img of data.images) {
       const pos = img.position
@@ -838,9 +804,9 @@ ${interleavedContent}
       }
       imagesByPosition.get(pos)!.push(img)
     }
-    
+
     const [startP, endP] = paragraphRange
-    
+
     // If startP is 1 (or less), check if there are leading images (position 0)
     if (startP <= 1) {
       const leadingImages = imagesByPosition.get(0)
@@ -850,7 +816,7 @@ ${interleavedContent}
         }
       }
     }
-    
+
     // Interleave paragraphs and images in range
     for (const p of data.paragraphs) {
       const pNum = p.index + 1
@@ -864,7 +830,7 @@ ${interleavedContent}
         }
       }
     }
-    
+
     return lines.join('\n')
   }
 
@@ -903,13 +869,13 @@ ${interleavedContent}
     for (let i = startIndex; i < plan.chapters.length; i++) {
       const chPlan = plan.chapters[i]
       const nextChPlan = plan.chapters[i + 1]
-      const nextChapterOutline = nextChPlan 
+      const nextChapterOutline = nextChPlan
         ? `下章标题: ${nextChPlan.title}\n下章内容概述: ${nextChPlan.description}\n下章段落范围: P${nextChPlan.paragraphRange[0]} 至 P${nextChPlan.paragraphRange[1]}`
         : '（已是最后一章，无后续章节）'
       setProgress(`Phase 2: 正在生成第 ${i + 1}/${plan.chapters.length} 章节 (${chPlan.title})...`)
 
       const prevEnding = getPreviousChapterEnding(generated[i - 1])
-      
+
       // Get images for this chapter
       const chImages = chPlan.imageIndices
         .map(idx => data.images.find(img => img.index === idx))
@@ -926,7 +892,7 @@ ${interleavedContent}
           let currentImages = chImages.filter(img => !img.failedAnalysis)
           let currentImageDescriptions = chImages.map(img => `- IMG-${img.index}: ${img.alt || '无描述'}`).join('\n')
           let currentInterleavedContent = buildChapterInterleavedContent(data, chPlan.paragraphRange, chPlan.imageIndices)
-          
+
           if (attempt >= 2) {
             // Attempt 2: Strip all base64 images and simplify alt texts
             currentImages = []
@@ -1000,7 +966,7 @@ ${prevEnding}
 ---
 
 【下章大纲规划】
-以下是下一章的规划内容（请保证本章结尾能够自然向其过渡）：
+以下是下一章的规划内容（请保证本章结尾能够自然向其过渡,但不要超越章节边界写出下一章的内容）：
 ---
 ${nextChapterOutline}
 ---
@@ -1129,7 +1095,7 @@ ${currentInterleavedContent}
   const analyzeImages = async (data: ScrapedData): Promise<ScrapedData> => {
     // Filter images suitable for vision API
     const VISION_SAFE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg']
-    
+
     const updatedImages = [...data.images]
 
     // 1. Initial quick MIME and length filter, and flag unsuitable ones immediately
@@ -1143,8 +1109,8 @@ ${currentInterleavedContent}
       if (!isSafeType || !isLargeEnough) {
         updatedImages[i] = {
           ...img,
-          alt: !isSafeType 
-            ? '（配图格式不支持，已忽略分析）' 
+          alt: !isSafeType
+            ? '（配图格式不支持，已忽略分析）'
             : '（配图数据过小，已忽略分析）',
           failedAnalysis: true
         }
@@ -1176,7 +1142,7 @@ ${currentInterleavedContent}
         if (globalIdx !== -1) {
           updatedImages[globalIdx] = {
             ...updatedImages[globalIdx],
-            alt: !res.success 
+            alt: !res.success
               ? '（配图加载失败: 格式无效或非可用图片）'
               : '（配图尺寸过小，已忽略分析）',
             failedAnalysis: true
@@ -1316,7 +1282,7 @@ ${currentInterleavedContent}
           throw err
         }
         console.warn(`[Image Analysis] Image processing failed for IMG-${img.index}:`, err)
-        
+
         // Mark image analysis as failed, and set a fallback description to degrade gracefully.
         // Unsafe or problematic images will not break the entire scraping workflow.
         const globalIdx = updatedImages.findIndex(imgItem => imgItem.index === img.index)
@@ -1339,7 +1305,7 @@ ${currentInterleavedContent}
     // Run tasks with concurrency limit
     const executing: Promise<any>[] = []
     const results: Promise<any>[] = []
-    
+
     for (const img of validImages) {
       const p = processImage(img)
       results.push(p)
@@ -1392,7 +1358,7 @@ ${currentInterleavedContent}
         `<p>${ch.description}</p>`,
         `<p><strong>情感基调：</strong>${ch.mood} | <strong>段落范围：</strong>P${ch.paragraphRange[0]}–P${ch.paragraphRange[1]}</p>`
       ]
-      
+
       if (ch.imageIndices && ch.imageIndices.length > 0) {
         const imgDescs: string[] = []
         for (const idx of ch.imageIndices) {
@@ -1412,7 +1378,7 @@ ${currentInterleavedContent}
     if (finishedImages.length > 0) {
       outlineHtmlParts.push(`<hr />`)
       outlineHtmlParts.push(`<h2>📷 全文配图描述汇总</h2>`)
-      
+
       const galleryItems = finishedImages.map(img => {
         return `
           <div style="display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; padding: 8px; background-color: var(--bg-tertiary, #f8f9fa); border-radius: 6px;">
@@ -1531,7 +1497,7 @@ ${currentInterleavedContent}
   const handleManualRetry = async () => {
     if (!failedPromptContext) return
     setErrorMsg('')
-    
+
     const { phase, enrichedData, plan, chapterIndex, generatedChapters = [] } = failedPromptContext
     setStatus(phase === 1 ? 'analyzing' : 'generating')
     setProgress(phase === 1 ? '正在根据您修改后的 Prompt 重新规划章节...' : `正在根据您修改后的 Prompt 生成第 ${(chapterIndex ?? 0) + 1} 章...`)
@@ -1541,14 +1507,14 @@ ${currentInterleavedContent}
     const config = getActiveConfig()
 
     const sysMsg: LLMMessage = { role: 'system', content: editableSystemPrompt }
-    const userMsg: LLMMessage = { 
-      role: 'user', 
+    const userMsg: LLMMessage = {
+      role: 'user',
       content: editableUserPrompt,
       images: phase === 2 && plan && chapterIndex !== undefined
         ? plan.chapters[chapterIndex].imageIndices
-            .map(idx => enrichedData.images.find(img => img.index === idx))
-            .filter((img): img is NonNullable<typeof img> => !!img && !img.failedAnalysis)
-            .map(img => img.base64)
+          .map(idx => enrichedData.images.find(img => img.index === idx))
+          .filter((img): img is NonNullable<typeof img> => !!img && !img.failedAnalysis)
+          .map(img => img.base64)
         : undefined
     }
 
@@ -1651,7 +1617,7 @@ ${currentInterleavedContent}
         const updatedGenerated = [...generatedChapters, chapterResult]
         setGeneratedChapters(updatedGenerated)
         setFailedPromptContext(null)
-        
+
         const nextChapterIndex = (chapterIndex ?? 0) + 1
         if (nextChapterIndex < plan!.chapters.length) {
           await executePhase2AndImport(enrichedData, plan!, nextChapterIndex, updatedGenerated)
@@ -1785,16 +1751,16 @@ ${currentInterleavedContent}
                   </button>
                 )}
               </div>
-              
+
               {(status === 'idle' || status === 'error') && (
-                <div 
-                  style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    justifyContent: 'center', 
-                    gap: '0.5rem', 
-                    padding: '1rem', 
-                    border: '1px dashed var(--border-color)', 
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '0.5rem',
+                    padding: '1rem',
+                    border: '1px dashed var(--border-color)',
                     borderRadius: '8px',
                     backgroundColor: 'rgba(255, 255, 255, 0.02)',
                     cursor: 'pointer',

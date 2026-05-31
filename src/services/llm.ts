@@ -1,16 +1,8 @@
-import type { ProviderConfig } from '../store/useAppStore'
+import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
 
-export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant'
-  content: string
-  images?: string[] // base64 Data URLs
-}
+// Re-export for backward compatibility
+export type { LLMMessage, StreamCallbacks }
 
-export interface StreamCallbacks {
-  onChunk: (chunk: string) => void
-  onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => void
-  onError: (error: Error) => void
-}
 
 /**
  * Mask sensitive credentials inside requests for safe debug logging.
