@@ -902,6 +902,10 @@ ${interleavedContent}
 
     for (let i = startIndex; i < plan.chapters.length; i++) {
       const chPlan = plan.chapters[i]
+      const nextChPlan = plan.chapters[i + 1]
+      const nextChapterOutline = nextChPlan 
+        ? `下章标题: ${nextChPlan.title}\n下章内容概述: ${nextChPlan.description}\n下章段落范围: P${nextChPlan.paragraphRange[0]} 至 P${nextChPlan.paragraphRange[1]}`
+        : '（已是最后一章，无后续章节）'
       setProgress(`Phase 2: 正在生成第 ${i + 1}/${plan.chapters.length} 章节 (${chPlan.title})...`)
 
       const prevEnding = getPreviousChapterEnding(generated[i - 1])
@@ -952,18 +956,21 @@ ${interleavedContent}
 
           systemPrompt = {
             role: 'system',
-            content: `你是一位才华横溢的小说家。你的任务是根据提供的小说大纲、前文结尾、当前章节规划和原始素材，创作当前章节的精彩小说内容。
+            content: `你是一位才华横溢的小说家。你的任务是根据提供的小说大纲、前文结尾、下一章大纲规划、当前章节规划和原始素材，创作当前章节的精彩小说内容。
 
 ${userCustomPrompt ? `用户自定义写作指导：\n${userCustomPrompt}\n\n` : ''}注意：原文中的 [📷 图片描述 IMG-N] 标记表示该位置有一张配图。请在改写时：
 - 将图片描述的内容自然融入叙事（描写图片中展现的场景、环境氛围等）。
 - 在图片应该出现的位置使用 {{IMG-N}} 占位标记，前端会自动替换为实际图片。
 
 写作要求：
-1. 保持原文的核心情节和信息不变。
-2. 用优美的文学语言改写，增加丰富的细节描写、心理活动 and 生动的对话。
-3. 注意叙事连贯性：请仔细阅读提供的“前文结尾”，保证本章的开头能与其无缝、流畅地承接。
-4. 章节的篇幅应该比原文更充实，但不要为了字数而注水。
-5. 使用与原文相同的语言。
+1. **严格限制写作范围**：当前章节**只允许**对本章对应的段落范围进行创作，绝对不能超出范围，严禁提前编写属于后续章节的情节，确保每个章节边界清晰。
+2. 保持原文的核心情节和信息不变。
+3. 用优美的文学语言改写，增加丰富的细节描写、心理活动 and 生动的对话。
+4. **前后衔接有序**：
+   - **开头衔接**：请仔细阅读提供的“前文结尾”，保证本章的开头能与其无缝、流畅地衔接。
+   - **结尾衔接**：请仔细阅读提供的“下章大纲规划”，保证本章的结尾能够自然地向下一章过渡，建立有序的承接关系。
+5. 章节的篇幅应该比原文更充实，但不要为了字数而注水。
+6. 使用与原文相同的语言。
 
 输出格式要求：
 - 只输出一个合法的 JSON 对象，不要有任何其他文字。
@@ -992,10 +999,16 @@ JSON格式：
 ${prevEnding}
 ---
 
+【下章大纲规划】
+以下是下一章的规划内容（请保证本章结尾能够自然向其过渡）：
+---
+${nextChapterOutline}
+---
+
 【本章写作规划】
 本章标题: ${chPlan.title}
 本章情感基调: ${chPlan.mood}
-本章段落范围: P${chPlan.paragraphRange[0]} 至 P${chPlan.paragraphRange[1]}
+本章段落范围: P${chPlan.paragraphRange[0]} 至 P${chPlan.paragraphRange[1]} （特别提示：本章只能且必须只改写该段落范围内的原始素材，绝对不可写到超出该范围的后续情节！）
 本章包含的配图编号: ${chPlan.imageIndices.length > 0 ? chPlan.imageIndices.map(index => `IMG-${index}`).join(', ') : '无'}
 
 【本章相关配图描述】
