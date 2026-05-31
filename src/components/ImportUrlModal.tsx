@@ -4,328 +4,21 @@ import { useAppStore } from '../store/useAppStore'
 import { streamLLM } from '../services/llm'
 import type { LLMMessage } from '../types/llm'
 import type { ScrapedData, ChapterPlan, GeneratedChapter, FailedPromptContext } from '../types/import'
-
-const fetchImageAsBase64 = async (urlStr: string): Promise<string> => {
-  if (urlStr.startsWith('data:')) return urlStr
-  try {
-    const res = await fetch(urlStr, { mode: 'cors' })
-    if (!res.ok) return ''
-    const blob = await res.blob()
-    return new Promise<string>((resolve, reject) => {
-      const reader = new FileReader()
-      reader.onloadend = () => resolve(reader.result as string)
-      reader.onerror = reject
-      reader.readAsDataURL(blob)
-    })
-  } catch (e) {
-    console.warn('CORS or network error fetching image for local analysis:', urlStr, e)
-    return ''
-  }
-}
-
-const convertGifToStatic = (gifBase64: string): Promise<string> => {
-  return new Promise<string>((resolve) => {
-    if (!gifBase64.startsWith('data:image/gif')) {
-      resolve(gifBase64)
-      return
-    }
-
-    const img = new Image()
-    img.onload = () => {
-      try {
-        const canvas = document.createElement('canvas')
-        canvas.width = img.width
-        canvas.height = img.height
-        const ctx = canvas.getContext('2d')
-        if (ctx) {
-          // Fill background with white to handle transparent GIFs cleanly in JPEG format
-          ctx.fillStyle = '#ffffff'
-          ctx.fillRect(0, 0, canvas.width, canvas.height)
-          ctx.drawImage(img, 0, 0)
-          const staticBase64 = canvas.toDataURL('image/jpeg', 0.85)
-          resolve(staticBase64)
-        } else {
-          resolve(gifBase64)
-        }
-      } catch (e) {
-        console.warn('Failed to convert GIF to static image:', e)
-        resolve(gifBase64)
-      }
-    }
-    img.onerror = () => {
-      resolve(gifBase64)
-    }
-    img.src = gifBase64
-  })
-}
-
-const preprocessScrapedData = async (data: ScrapedData): Promise<ScrapedData> => {
-  if (!data.images || data.images.length === 0) return data
-
-  const processedImages = await Promise.all(
-    data.images.map(async (img) => {
-      if (img.base64 && img.base64.startsWith('data:image/gif')) {
-        const staticBase64 = await convertGifToStatic(img.base64)
-        return {
-          ...img,
-          base64: staticBase64
-        }
-      }
-      return img
-    })
-  )
-
-  return {
-    ...data,
-    images: processedImages
-  }
-}
-
-const parseHtmlToScrapedData = async (htmlText: string, filename: string): Promise<ScrapedData> => {
-  const base64Images: string[] = []
-  const placeholderPrefix = 'data:image/placeholder;base64,'
-
-  // Pre-process HTML to strip huge inline base64 data URLs to prevent DOMParser OOM crashes
-  const cleanedHtml = htmlText.replace(/(["'])(data:[^"']{100,})\1/g, (_, quote, dataUrl) => {
-    if (dataUrl.toLowerCase().startsWith('data:image/')) {
-      const index = base64Images.length
-      base64Images.push(dataUrl)
-      return `${quote}${placeholderPrefix}${index}${quote}`
-    }
-    return `${quote}data:null${quote}`
-  })
-
-  const parser = new DOMParser()
-  const doc = parser.parseFromString(cleanedHtml, 'text/html')
-
-  // 1. Extract Base URL
-  let baseHref = ''
-  const baseEl = doc.querySelector('base')
-  if (baseEl && baseEl.getAttribute('href')) {
-    baseHref = baseEl.getAttribute('href') || ''
-  }
-
-  // 2. Extract Title
-  let title = ''
-  const threadSubjectEl = doc.querySelector('#thread_subject')
-  if (threadSubjectEl && threadSubjectEl.textContent) {
-    title = threadSubjectEl.textContent.trim()
-  } else {
-    const titleEl = doc.querySelector('title')
-    if (titleEl && titleEl.textContent) {
-      title = titleEl.textContent.replace(/(_首发原创|_手机版|_论坛|_春满四合院|_春满四合院论坛).*$/, '').trim()
-    }
-  }
-  if (!title) {
-    title = filename.substring(0, filename.lastIndexOf('.')) || filename
-  }
-
-  // 3. Remove script, style, etc.
-  const tagsToRemove = ['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript']
-  tagsToRemove.forEach(tag => {
-    doc.querySelectorAll(tag).forEach(el => el.remove())
-  })
-
-  const paragraphs: { index: number; text: string; tag: string }[] = []
-  const tempImages: { alt: string; url: string; base64: string; position: number }[] = []
-
-  let currentText = ''
-  let currentTag = 'p'
-
-  const commitParagraph = () => {
-    const text = currentText.trim().replace(/\s+/g, ' ')
-    if (text.length > 5) {
-      if (paragraphs.length === 0 || paragraphs[paragraphs.length - 1].text !== text) {
-        paragraphs.push({
-          index: paragraphs.length,
-          text,
-          tag: currentTag
-        })
-      }
-    }
-    currentText = ''
-  }
-
-  const walk = (node: Node) => {
-    if (node.nodeType === 3) {
-      currentText += node.textContent || ''
-    } else if (node.nodeType === 1) {
-      const el = node as Element
-      const tagName = el.tagName.toLowerCase()
-
-      if (['script', 'style', 'nav', 'footer', 'header', 'aside', 'noscript', 'iframe'].includes(tagName)) {
-        return
-      }
-
-      if (tagName === 'img') {
-        const attrs = [
-          el.getAttribute('file'),
-          el.getAttribute('data-src'),
-          el.getAttribute('data-original'),
-          el.getAttribute('data-lazy-src'),
-          el.getAttribute('data-original-src'),
-          el.getAttribute('src')
-        ].map(v => (v || '').trim()).filter(Boolean)
-
-        let src = attrs.find(attr => {
-          if (!attr.startsWith('data:') && !attr.startsWith(placeholderPrefix)) return false
-          const lower = attr.toLowerCase()
-          if (lower.includes('image/svg+xml')) return false
-          if (lower.includes('image/gif') && attr.length < 200) return false
-          return true
-        }) || ''
-
-        if (!src) {
-          src = (
-            el.getAttribute('file') ||
-            el.getAttribute('data-src') ||
-            el.getAttribute('data-original') ||
-            el.getAttribute('data-lazy-src') ||
-            el.getAttribute('data-original-src') ||
-            el.getAttribute('src') ||
-            ''
-          ).trim()
-        }
-
-        const alt = el.getAttribute('alt') || ''
-        if (src) {
-          let resolvedSrc = src
-          if (src.startsWith(placeholderPrefix)) {
-            const indexStr = src.substring(placeholderPrefix.length)
-            const index = parseInt(indexStr, 10)
-            if (!isNaN(index) && base64Images[index]) {
-              resolvedSrc = base64Images[index]
-            }
-          } else if (!src.startsWith('data:') && !src.startsWith('http://') && !src.startsWith('https://') && baseHref) {
-            try {
-              resolvedSrc = new URL(src, baseHref).toString()
-            } catch (e) { }
-          }
-          tempImages.push({
-            alt,
-            url: resolvedSrc,
-            base64: resolvedSrc.startsWith('data:') ? resolvedSrc : '',
-            position: paragraphs.length
-          })
-        }
-        return
-      }
-
-      const isBlock = ['p', 'div', 'td', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'article', 'section', 'tr', 'table', 'ul', 'ol', 'pre'].includes(tagName)
-
-      if (isBlock) {
-        commitParagraph()
-        currentTag = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName) ? tagName : 'p'
-      }
-
-      if (tagName === 'br') {
-        commitParagraph()
-      } else {
-        for (let i = 0; i < el.childNodes.length; i++) {
-          walk(el.childNodes[i])
-        }
-      }
-
-      if (isBlock) {
-        commitParagraph()
-      }
-    }
-  }
-
-  const bodyEl = doc.body || doc.documentElement
-  walk(bodyEl)
-  commitParagraph()
-
-  // 5. Fetch images in batches until we have 100 successful ones
-  const successfulImages: { index: number; alt: string; base64: string; position: number; failedAnalysis?: boolean }[] = []
-  const maxImagesDownload = 100
-  const batchSize = 20
-  let i = 0
-
-  while (successfulImages.length < maxImagesDownload && i < tempImages.length) {
-    const batch = tempImages.slice(i, i + batchSize)
-    i += batchSize
-
-    const results = await Promise.all(
-      batch.map(async (img) => {
-        let b64 = img.base64
-        if (!b64 && img.url) {
-          b64 = await fetchImageAsBase64(img.url)
-        }
-        if (b64) {
-          return {
-            alt: img.alt,
-            base64: b64,
-            position: img.position
-          }
-        }
-        return null
-      })
-    )
-
-    for (const res of results) {
-      if (res) {
-        successfulImages.push({
-          index: successfulImages.length,
-          alt: res.alt,
-          base64: res.base64,
-          position: res.position,
-          failedAnalysis: false
-        })
-        if (successfulImages.length >= maxImagesDownload) {
-          break
-        }
-      }
-    }
-  }
-
-  return {
-    title,
-    paragraphs,
-    images: successfulImages,
-    totalParagraphs: paragraphs.length,
-    totalImages: successfulImages.length
-  }
-}
-
+import { preprocessScrapedData, getImageDimensions } from '../services/import/imageProcessor'
+import { parseHtmlToScrapedData } from '../services/import/parser'
+import {
+  isSafetyError,
+  censorSensitiveText,
+  extractJson,
+  buildInterleavedContent,
+  buildChapterInterleavedContent,
+  getPreviousChapterEnding,
+  buildOutlineAndChapterDocs
+} from '../services/import/contentBuilder'
 
 type ImportStatus = 'idle' | 'fetching' | 'preview' | 'analyzing' | 'generating' | 'done' | 'error' | 'prompt_edit'
 
-// Helper to determine if an error was caused by LLM safety guidelines / filters
-const isSafetyError = (err: any): boolean => {
-  const msg = String(err.message || err).toLowerCase()
-  return (
-    msg.includes('403') ||
-    msg.includes('csam') ||
-    msg.includes('safety') ||
-    msg.includes('guidelines') ||
-    msg.includes('block') ||
-    msg.includes('permission') ||
-    msg.includes('violates')
-  )
-}
 
-// Escape special characters in word for safe RegExp usage
-const escapeRegExp = (str: string): string => {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-// Censor highly explicit sexual/sensitive Chinese keywords to bypass deterministic safety filters
-const censorSensitiveText = (text: string, words: string[]): string => {
-  if (!words || words.length === 0) return text
-  let censored = text
-  for (const word of words) {
-    if (!word) continue
-    try {
-      const escaped = escapeRegExp(word)
-      const regex = new RegExp(escaped, 'g')
-      censored = censored.replace(regex, '***')
-    } catch (e) {
-      console.error('Invalid regex pattern for word:', word, e)
-    }
-  }
-  return censored
-}
 
 interface ImportUrlModalProps {
   isOpen: boolean
@@ -575,20 +268,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
     }
   }
 
-  // Helper: Extract JSON from LLM output (handles markdown code blocks)
-  const extractJson = (text: string): string => {
-    // Try to find JSON in markdown code blocks first
-    const codeBlockMatch = text.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/)
-    if (codeBlockMatch) {
-      return codeBlockMatch[1].trim()
-    }
-    // Try to find raw JSON object
-    const jsonMatch = text.match(/\{[\s\S]*\}/)
-    if (jsonMatch) {
-      return jsonMatch[0]
-    }
-    return text.trim()
-  }
+
 
   // Get the active LLM config
   const getActiveConfig = () => {
@@ -602,41 +282,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
     return activePrompt?.content || ''
   }
 
-  // Build content with image descriptions embedded inline at their original positions
-  const buildInterleavedContent = (data: ScrapedData): string => {
-    const lines: string[] = []
-    const imagesByPosition = new Map<number, typeof data.images>()
 
-    // Group images by their position (after which paragraph they appear)
-    for (const img of data.images) {
-      const pos = img.position
-      if (!imagesByPosition.has(pos)) {
-        imagesByPosition.set(pos, [])
-      }
-      imagesByPosition.get(pos)!.push(img)
-    }
-
-    // Images that appear before any paragraph (position 0)
-    const leadingImages = imagesByPosition.get(0)
-    if (leadingImages) {
-      for (const img of leadingImages) {
-        lines.push(`[📷 图片描述 IMG-${img.index}]: ${img.alt || '（图片，无文字描述）'}`)
-      }
-    }
-
-    // Interleave paragraphs and images
-    for (const p of data.paragraphs) {
-      lines.push(`[P${p.index + 1}] ${p.text}`)
-      // Check if any images appear after this paragraph
-      const imagesAfter = imagesByPosition.get(p.index + 1)
-      if (imagesAfter) {
-        for (const img of imagesAfter) {
-          lines.push(`[📷 图片描述 IMG-${img.index}]: ${img.alt || '（图片，无文字描述）'}`)
-        }
-      }
-    }
-    return lines.join('\n')
-  }
 
   // Step 2: Run Phase 1 - Content Analysis & Chapter Planning
   const runPhase1 = async (data: ScrapedData): Promise<ChapterPlan> => {
@@ -791,65 +437,9 @@ ${interleavedContent}
     }
   }
 
-  // Helper to slice and build interleaved content for a single chapter
-  const buildChapterInterleavedContent = (data: ScrapedData, paragraphRange: [number, number], _imageIndices: number[]): string => {
-    const lines: string[] = []
-    const imagesByPosition = new Map<number, typeof data.images>()
 
-    // Group images by their position
-    for (const img of data.images) {
-      const pos = img.position
-      if (!imagesByPosition.has(pos)) {
-        imagesByPosition.set(pos, [])
-      }
-      imagesByPosition.get(pos)!.push(img)
-    }
 
-    const [startP, endP] = paragraphRange
 
-    // If startP is 1 (or less), check if there are leading images (position 0)
-    if (startP <= 1) {
-      const leadingImages = imagesByPosition.get(0)
-      if (leadingImages) {
-        for (const img of leadingImages) {
-          lines.push(`[📷 图片描述 IMG-${img.index}]: ${img.alt || '（图片，无文字描述）'}`)
-        }
-      }
-    }
-
-    // Interleave paragraphs and images in range
-    for (const p of data.paragraphs) {
-      const pNum = p.index + 1
-      if (pNum >= startP && pNum <= endP) {
-        lines.push(`[P${pNum}] ${p.text}`)
-        const imagesAfter = imagesByPosition.get(pNum)
-        if (imagesAfter) {
-          for (const img of imagesAfter) {
-            lines.push(`[📷 图片描述 IMG-${img.index}]: ${img.alt || '（图片，无文字描述）'}`)
-          }
-        }
-      }
-    }
-
-    return lines.join('\n')
-  }
-
-  // Helper to get the ending of the previous chapter
-  const getPreviousChapterEnding = (prevCh: GeneratedChapter | undefined): string => {
-    if (!prevCh) return '（无，当前是第一章，请直接开始故事的开头）'
-    try {
-      const tempDiv = document.createElement('div')
-      tempDiv.innerHTML = prevCh.content
-      const plainText = tempDiv.textContent || tempDiv.innerText || ''
-      const endingLength = 600
-      if (plainText.length <= endingLength) return plainText
-      return '...' + plainText.substring(plainText.length - endingLength)
-    } catch {
-      const endingLength = 600
-      if (prevCh.content.length <= endingLength) return prevCh.content
-      return '...' + prevCh.content.substring(prevCh.content.length - endingLength)
-    }
-  }
 
   // Step 3: Run Phase 2 - Novel Chapter Generation
   const runPhase2 = async (
@@ -1063,33 +653,7 @@ ${currentInterleavedContent}
     return generated
   }
 
-  // Replace {{IMG-N}} placeholders with actual <img> tags
-  const replaceImagePlaceholders = (content: string, images: ScrapedData['images']): string => {
-    return content.replace(/\{\{IMG-(\d+)\}\}/g, (_placeholder, indexStr) => {
-      const idx = parseInt(indexStr, 10)
-      const img = images.find(i => i.index === idx)
-      if (img && img.base64) {
-        // Use textContent-safe alt text by escaping HTML entities
-        const safeAlt = (img.alt || '配图').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-        return `<img src="${img.base64}" alt="${safeAlt}" style="max-width:100%;border-radius:8px;margin:1rem 0;display:block;" />`
-      }
-      return '' // Remove placeholder if image not found
-    })
-  }
 
-  // Helper to load image and get dimensions
-  const getImageDimensions = (base64: string): Promise<{ width: number; height: number; success: boolean }> => {
-    return new Promise((resolve) => {
-      const img = new window.Image()
-      img.onload = () => {
-        resolve({ width: img.naturalWidth, height: img.naturalHeight, success: true })
-      }
-      img.onerror = () => {
-        resolve({ width: 0, height: 0, success: false })
-      }
-      img.src = base64
-    })
-  }
 
   // Phase 0: Use LLM vision to analyze and describe images
   const analyzeImages = async (data: ScrapedData): Promise<ScrapedData> => {
@@ -1336,69 +900,7 @@ ${currentInterleavedContent}
     chapters: GeneratedChapter[],
     partial = false
   ) => {
-    const finishedImages = enrichedData.images || []
-    const novelDocs = chapters.map(ch => {
-      const processedContent = replaceImagePlaceholders(ch.content, finishedImages)
-      return {
-        title: ch.title,
-        content: processedContent
-      }
-    })
-
-    const outlineHtmlParts = [
-      `<h1>${plan.bookTitle} — 全文大纲${partial ? ' (部分生成)' : ''}</h1>`,
-      `<p><em>${plan.summary}</em></p>`,
-      `<hr />`
-    ]
-
-    plan.chapters.forEach(ch => {
-      const isGenerated = chapters.some(g => g.chapterNumber === ch.chapterNumber)
-      const chLines = [
-        `<h2>${ch.title}${partial ? (isGenerated ? '（已生成）' : '（未生成）') : ''}</h2>`,
-        `<p>${ch.description}</p>`,
-        `<p><strong>情感基调：</strong>${ch.mood} | <strong>段落范围：</strong>P${ch.paragraphRange[0]}–P${ch.paragraphRange[1]}</p>`
-      ]
-
-      if (ch.imageIndices && ch.imageIndices.length > 0) {
-        const imgDescs: string[] = []
-        for (const idx of ch.imageIndices) {
-          const img = finishedImages.find(i => i.index === idx)
-          if (img) {
-            imgDescs.push(`<li><strong>IMG-${idx}</strong>: ${img.alt || '无描述'}</li>`)
-          }
-        }
-        if (imgDescs.length > 0) {
-          chLines.push(`<p><strong>本章配图及描述：</strong></p>`)
-          chLines.push(`<ul>${imgDescs.join('')}</ul>`)
-        }
-      }
-      outlineHtmlParts.push(chLines.join('\n'))
-    })
-
-    if (finishedImages.length > 0) {
-      outlineHtmlParts.push(`<hr />`)
-      outlineHtmlParts.push(`<h2>📷 全文配图描述汇总</h2>`)
-
-      const galleryItems = finishedImages.map(img => {
-        return `
-          <div style="display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; padding: 8px; background-color: var(--bg-tertiary, #f8f9fa); border-radius: 6px;">
-            <img src="${img.base64}" style="width: 60px; height: 60px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border-color, #e2e8f0); flex-shrink: 0;" />
-            <div style="font-size: 0.9rem; line-height: 1.4;">
-              <span style="color: var(--accent, #3b82f6); font-weight: 600;">IMG-${img.index}</span>: 
-              <span>${img.alt || '（无文字描述）'}</span>
-            </div>
-          </div>
-        `
-      })
-      outlineHtmlParts.push(galleryItems.join('\n'))
-    }
-
-    const outlineDoc = {
-      title: partial ? '大纲 (部分生成)' : '大纲',
-      content: outlineHtmlParts.join('\n')
-    }
-
-    const allDocs = [outlineDoc, ...novelDocs]
+    const allDocs = buildOutlineAndChapterDocs(enrichedData, plan, chapters, partial)
     importAllDocuments(allDocs)
     setBookTitle((plan.bookTitle || enrichedData.title) + (partial ? ' (部分生成)' : ''))
   }
