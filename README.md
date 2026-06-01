@@ -7,7 +7,7 @@ An advanced, LLM-powered collaborative document editing workspace. Inspired by O
 ## 🌟 Key Features
 
 ### 1. **Inline AI Document Editing & Diffs**
-*   **Selection-Aware Editing**: Highlight any section of your draft to request target modifications from the AI.
+*   **Selection-Aware Editing**: Highlight any section of your draft to request target modifications from the AI. Natively supports complex HTML (like images), serializing them to safe placeholders so the LLM doesn't overwrite your media.
 *   **Inline Diff View**: Real-time visual additions (green) and deletions (red) rendered directly in the editor. Accept or reject modifications on a per-change basis.
 *   **Quick Action Selection Bar**: Instant options to polish, shorten, extend, or explain selected texts.
 
@@ -36,9 +36,15 @@ An advanced, LLM-powered collaborative document editing workspace. Inspired by O
 *   Dynamic local model detection and custom base API URLs.
 
 ### 6. **Multi-Document & Version History**
-*   **Chapters Manager**: Organize chapters or sections in a collapsible sidebar.
+*   **Chapters Manager**: Organize chapters or sections in a collapsible sidebar. Each chapter spins up an independent, isolated editing context to guarantee Undo/Redo histories never collide.
 *   **Auto-Save & Snapshotting**: Create manual or automated snapshots and restore past versions.
-*   **Import / Export**: Import from `.md`, `.html`, or `.txt`. Export documents to Markdown, raw HTML, or plain text.
+*   **Import / Export**: Import from web URLs, `.md`, `.html`, or `.txt`. Features a resilient image extraction pipeline to securely scrape web content. Export documents to Markdown, raw HTML, or plain text.
+
+---
+
+## 📜 License
+
+This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)** - see the [LICENSE](LICENSE) file for details.
 
 ---
 
