@@ -21,9 +21,9 @@ describe('exportDocument', () => {
     } as unknown as HTMLAnchorElement
 
     vi.spyOn(document, 'createElement').mockReturnValue(mockAnchor)
-    vi.spyOn(document.body, 'appendChild').mockImplementation(mockAppendChild)
-    vi.spyOn(document.body, 'removeChild').mockImplementation(mockRemoveChild)
-    global.URL.createObjectURL = mockCreateObjectURL
+    vi.spyOn(document.body, 'appendChild').mockImplementation(mockAppendChild as any)
+    vi.spyOn(document.body, 'removeChild').mockImplementation(mockRemoveChild as any)
+    globalThis.URL.createObjectURL = mockCreateObjectURL as any
   })
 
   afterEach(() => {
@@ -34,7 +34,8 @@ describe('exportDocument', () => {
     id: 'doc1',
     title: 'Chapter 1',
     content: '<h1>Chapter 1</h1><p>Test content</p>',
-    version: 1
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
   }
 
   it('exports a single document as HTML', () => {
@@ -46,7 +47,7 @@ describe('exportDocument', () => {
     expect(mockRemoveChild).toHaveBeenCalled()
     
     // Check if the mock object was assigned correct download name
-    const mockAnchor = document.createElement.mock.results[0].value
+    const mockAnchor = vi.mocked(document.createElement).mock.results[0].value as HTMLAnchorElement
     expect(mockAnchor.download).toBe('My_Book_Chapter_1.html')
     expect(mockAnchor.href).toBe('blob:test-url')
   })
@@ -56,7 +57,8 @@ describe('exportDocument', () => {
       id: 'doc2',
       title: 'Chapter 2',
       content: '<h1>Chapter 2</h1><p>More content</p>',
-      version: 1
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
     }
     
     exportDocument('markdown', true, [dummyDoc, doc2], dummyDoc, 'My Book')
@@ -64,7 +66,7 @@ describe('exportDocument', () => {
     expect(mockCreateObjectURL).toHaveBeenCalled()
     expect(mockClick).toHaveBeenCalled()
     
-    const mockAnchor = document.createElement.mock.results[0].value
+    const mockAnchor = vi.mocked(document.createElement).mock.results[0].value as HTMLAnchorElement
     expect(mockAnchor.download).toBe('My_Book.md')
   })
 
@@ -74,7 +76,7 @@ describe('exportDocument', () => {
     expect(mockCreateObjectURL).toHaveBeenCalled()
     expect(mockClick).toHaveBeenCalled()
     
-    const mockAnchor = document.createElement.mock.results[0].value
+    const mockAnchor = vi.mocked(document.createElement).mock.results[0].value as HTMLAnchorElement
     expect(mockAnchor.download).toBe('My_Book_Title_Chapter_1.txt')
   })
 })

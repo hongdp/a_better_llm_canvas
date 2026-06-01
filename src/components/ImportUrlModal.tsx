@@ -42,6 +42,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
   const [progress, setProgress] = useState('')
   const [errorMsg, setErrorMsg] = useState('')
   const [scrapedData, setScrapedData] = useState<ScrapedData | null>(null)
+  const [selectedImageIndices, setSelectedImageIndices] = useState<number[]>([])
   const [chapterPlan, setChapterPlan] = useState<ChapterPlan | null>(null)
   const [generatedChapters, setGeneratedChapters] = useState<GeneratedChapter[]>([])
   const [analyzedIndices, setAnalyzedIndices] = useState<number[]>([])
@@ -58,6 +59,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
     setProgress('')
     setErrorMsg('')
     setScrapedData(null)
+    setSelectedImageIndices([])
     setChapterPlan(null)
     setGeneratedChapters([])
     setAnalyzedIndices([])
@@ -184,6 +186,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
 
       const processedData = await preprocessScrapedData(data)
       setScrapedData(processedData)
+      setSelectedImageIndices(processedData.images.map(img => img.index))
       setStatus('preview')
       setProgress('')
     } catch (err: any) {
@@ -256,6 +259,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
 
       const processedData = await preprocessScrapedData(data)
       setScrapedData(processedData)
+      setSelectedImageIndices(processedData.images.map(img => img.index))
       setStatus('preview')
       setProgress('')
     } catch (err: any) {
@@ -508,22 +512,29 @@ ${interleavedContent}
               images: data.images.map(img => ({ ...img, alt: '（配图已脱敏）' }))
             }
             currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange, chPlan.imageIndices)
+            currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange, chPlan.imageIndices)
           }
+
+          // Generate dynamic examples based on the actual images in this chapter
+          const hasImages = chPlan.imageIndices && chPlan.imageIndices.length > 0;
+          const exampleIndex = hasImages ? chPlan.imageIndices[0] : 2;
+          const exampleTag = `{{IMG-${exampleIndex}}}`;
+          const exampleList = hasImages ? chPlan.imageIndices.map(i => `{{IMG-${i}}}`).join(' 和 ') : '{{IMG-2}} 等';
 
           systemPrompt = {
             role: 'system',
             content: `你是一位才华横溢的小说家。你的任务是根据提供的小说大纲、前文结尾、下一章大纲规划、当前章节规划和原始素材，创作当前章节的精彩小说内容。
 
-${userCustomPrompt ? `用户自定义写作指导：\n${userCustomPrompt}\n\n` : ''}注意：原文中的 [📷 图片描述 IMG-N] 标记表示该位置有一张配图。请在改写时：
+${userCustomPrompt ? `用户自定义写作指导：\n${userCustomPrompt}\n\n` : ''}注意：原文中的 [📷 图片描述 IMG-XXX] 标记表示该位置有一张配图。请在改写时：
 - 将图片描述的内容自然融入叙事（描写图片中展现的场景、环境氛围等）。
-- 在图片应该出现的位置使用 {{IMG-N}} 占位标记，前端会自动替换为实际图片。
+- 在图片应该出现的位置，严格使用纯数字的占位标记，例如 ${exampleTag}，前端会自动替换为实际图片。请注意占位符内的数字必须是对应图片的真实编号，绝对不能包含英文字母！
 
 写作要求：
 1. **严格限制写作范围**：当前章节**只允许**对本章对应的段落范围进行创作，绝对不能超出范围，严禁提前编写属于后续章节的情节，确保每个章节边界清晰。
 2. 保持原文的核心情节和信息不变。
 3. 用优美的文学语言改写，增加丰富的细节描写、心理活动 and 生动的对话。
 4. **前后衔接有序**：
-   - **开头衔接**：请仔细阅读提供的“前文结尾”，保证本章的开头能与其无缝、流畅地衔接。
+   - **开头衔接**：请仔细阅读提供的“前文结尾”，保证本章的开头能与其无缝、流畅地衔接。**强烈强调：输出的文字绝对不要与“前文结尾”的内容有任何重复，必须紧接着前文的情节继续往后写。**
    - **结尾衔接**：请仔细阅读提供的“下章大纲规划”，保证本章的结尾能够自然地向下一章过渡，建立有序的承接关系。
 5. **文章篇幅控制**：确保整章写作的字数达到5000字左右。你应该通过补充生动的对话、丰富的环境细节描写、细致的角色动作以及深刻的内心独白来进行文学扩写，使篇幅显著充实，严禁敷衍或字数不足，同时也要避免无意义的重复注水。
 6. 使用与原文相同的语言。
@@ -531,13 +542,13 @@ ${userCustomPrompt ? `用户自定义写作指导：\n${userCustomPrompt}\n\n` :
 输出格式要求：
 - 只输出一个合法的 JSON 对象，不要有任何其他文字。
 - 使用 HTML 格式（p, em, strong 等标签），并以 <h1>当前章节标题</h1> 作为开头。
-- 在图片应该出现的位置，使用占位标记 {{IMG-N}}（N为图片编号）。
+- 在图片应该出现的位置，严格使用带有具体数字的占位标记，例如 ${exampleTag}。绝对不能使用非数字字符。
 
 JSON格式：
 {
   "chapterNumber": ${chPlan.chapterNumber},
   "title": "${chPlan.title.replace(/"/g, '\\"')}",
-  "content": "<h1>${chPlan.title.replace(/"/g, '\\"')}</h1><p>正文第一段...</p><p>{{IMG-N}}</p><p>正文第二段...</p>"
+  "content": "<h1>${chPlan.title.replace(/"/g, '\\"')}</h1><p>正文第一段...</p><p>${exampleTag}</p><p>正文第二段...</p>"
 }`
           }
 
@@ -575,7 +586,7 @@ ${currentImageDescriptions}
 ${currentInterleavedContent}
 ---
 
-请根据本章规划和素材，创作本章的完整小说正文（目标字数在5000字左右），输出合法的 JSON 格式。并在合适的位置插入对应的 {{IMG-N}} 占位符。`,
+请根据本章规划和素材，创作本章的完整小说正文（目标字数在5000字左右），输出合法的 JSON 格式。并在合适的位置插入对应的图片占位符（数字必须完全匹配，请使用类似 ${exampleList} 的格式）。`,
             images: currentImages.map(img => img.base64)
           }
 
@@ -1150,7 +1161,11 @@ ${currentInterleavedContent}
 
     try {
       // Phase 0: Image description analysis
-      enrichedData = await analyzeImages(scrapedData)
+      const dataToProcess = {
+        ...scrapedData,
+        images: scrapedData.images.filter(img => selectedImageIndices.includes(img.index))
+      }
+      enrichedData = await analyzeImages(dataToProcess)
 
       // Phase 1: Analysis
       const plan = await runPhase1(enrichedData)
@@ -1351,8 +1366,20 @@ ${currentInterleavedContent}
                   backgroundColor: 'var(--bg-tertiary)',
                   borderRadius: '6px'
                 }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600, marginBottom: '2px' }}>
-                    📷 配图描述（将提供给AI分析）:
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
+                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      📷 选择保留的配图 (将在生成中被AI使用):
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <button 
+                        onClick={() => setSelectedImageIndices(scrapedData.images.map(img => img.index))}
+                        style={{ fontSize: '0.7rem', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      >全选</button>
+                      <button 
+                        onClick={() => setSelectedImageIndices([])}
+                        style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
+                      >全不选</button>
+                    </div>
                   </div>
                   {(() => {
                     const sortedImages = [
@@ -1361,19 +1388,34 @@ ${currentInterleavedContent}
                         .filter((img): img is NonNullable<typeof img> => !!img),
                       ...scrapedData.images.filter(img => !analyzedIndices.includes(img.index))
                     ]
-                    return sortedImages.slice(0, 20).map((img, idx) => (
+                    return sortedImages.map((img, idx) => (
                       <div key={idx} style={{
                         display: 'flex',
                         alignItems: 'center',
-                        gap: '8px',
-                        fontSize: '0.75rem'
+                        gap: '12px',
+                        fontSize: '0.75rem',
+                        opacity: selectedImageIndices.includes(img.index) ? 1 : 0.5,
+                        padding: '4px 0'
                       }}>
+                        <input
+                          type="checkbox"
+                          checked={selectedImageIndices.includes(img.index)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedImageIndices(prev => [...prev, img.index])
+                            } else {
+                              setSelectedImageIndices(prev => prev.filter(id => id !== img.index))
+                            }
+                          }}
+                          disabled={status !== 'preview'}
+                          style={{ cursor: status === 'preview' ? 'pointer' : 'default' }}
+                        />
                         <img
                           src={img.base64}
                           alt={img.alt || `Image ${idx}`}
                           style={{
-                            width: '36px',
-                            height: '36px',
+                            width: '72px',
+                            height: '72px',
                             objectFit: 'cover',
                             borderRadius: '4px',
                             border: '1px solid var(--border-color)',
@@ -1394,11 +1436,6 @@ ${currentInterleavedContent}
                       </div>
                     ))
                   })()}
-                  {scrapedData.images.length > 20 && (
-                    <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', textAlign: 'center' }}>
-                      ... 还有 {scrapedData.images.length - 20} 张图片
-                    </div>
-                  )}
                 </div>
               )}
             </div>

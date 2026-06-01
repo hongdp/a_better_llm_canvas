@@ -128,13 +128,14 @@ The fluffy orange tabby cat
     const cleanActiveContent = preserveImagesWithPlaceholders(activeDoc?.content || '')
 
     if (selectedText) {
+      const cleanSelectedText = preserveImagesWithPlaceholders(selectedText)
       return {
         role: 'user',
         content: `I have selected the following text in the document. I want you to focus your action on this specific text.
 ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
 CURRENT SELECTED TEXT:
 """
-${selectedText}
+${cleanSelectedText}
 """
 
 CURRENT ACTIVE DOCUMENT CONTENT (For context):

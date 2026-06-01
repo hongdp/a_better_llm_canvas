@@ -42,6 +42,7 @@ interface AppState {
   importAllDocuments: (docs: { title: string; content: string }[]) => void
   reorderDocuments: (newDocs: CanvasDocument[]) => void
   deleteDocument: (id: string) => void
+  updateDocument: (id: string, updates: Partial<CanvasDocument>) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
   toggleReference: (id: string) => void
   clearReferences: () => void
@@ -740,6 +741,23 @@ export const useAppStore = create<AppState>((set) => {
           // Remove from selected reference list if present
           selectedReferenceIds: state.selectedReferenceIds.filter((refId) => refId !== id)
         }
+      })
+    },
+
+    updateDocument: (id, updates) => {
+      set((state) => {
+        const updatedDocs = state.documents.map((d) => {
+          if (d.id === id) {
+            return {
+              ...d,
+              ...updates,
+              updatedAt: new Date().toISOString(),
+            }
+          }
+          return d
+        })
+        saveDocumentsToIndexedDB(updatedDocs, false)
+        return { documents: updatedDocs }
       })
     },
 

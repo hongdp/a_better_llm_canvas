@@ -2,6 +2,7 @@ import React, { useEffect } from 'react'
 import { useEditor, EditorContent, Mark, mergeAttributes, Extension, Node } from '@tiptap/react'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
+import { DOMSerializer } from '@tiptap/pm/model'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
@@ -275,8 +276,12 @@ export const Editor: React.FC<EditorProps> = ({
       if (empty) {
         setSelectedText('')
       } else {
-        const text = editor.state.doc.textBetween(from, to, ' ')
-        setSelectedText(text)
+        const slice = editor.state.doc.slice(from, to)
+        const serializer = DOMSerializer.fromSchema(editor.state.schema)
+        const frag = serializer.serializeFragment(slice.content)
+        const div = document.createElement('div')
+        div.appendChild(frag)
+        setSelectedText(div.innerHTML)
       }
     }
   })

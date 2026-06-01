@@ -35,6 +35,7 @@ function App() {
     activeDocumentId,
     isSidebarOpen,
     updateActiveDocument,
+    updateDocument,
     toggleSidebar,
     activeProvider,
     setProvider,
@@ -283,7 +284,7 @@ function App() {
 
   // Memoized editor onChange — avoids re-creating this on every render which
   // would cause the Editor to re-render on each App state change (e.g. chat input typing).
-  const handleEditorChange = useCallback((html: string) => {
+  const handleEditorChangeFor = useCallback((id: string, html: string) => {
     triggerUnsaved()
     const updates: Partial<CanvasDocument> = { content: html }
     // Sync title if the document starts with an <h1> tag
@@ -293,14 +294,14 @@ function App() {
     if (firstChild && firstChild.tagName.toUpperCase() === 'H1') {
       const extractedTitle = firstChild.textContent?.trim()
       const currentTitle = useAppStore.getState().documents.find(
-        d => d.id === useAppStore.getState().activeDocumentId
+        d => d.id === id
       )?.title
       if (extractedTitle && extractedTitle !== currentTitle) {
         updates.title = extractedTitle
       }
     }
-    useAppStore.getState().updateActiveDocument(updates)
-  }, [triggerUnsaved])
+    updateDocument(id, updates)
+  }, [triggerUnsaved, updateDocument])
 
   // Insert a generated image (base64 data URL) into the active editor at cursor position
   const handleInsertGeneratedImage = useCallback((dataUrl: string, altText: string) => {
@@ -833,10 +834,21 @@ function App() {
               )}
 
               <div className="canvas-editor-container">
-                <Editor 
-                  content={activeDoc.content} 
-                  onChange={handleEditorChange}
-                />
+                {documents.map(doc => (
+                  <div 
+                    key={doc.id} 
+                    style={{ 
+                      display: doc.id === activeDocumentId ? 'block' : 'none', 
+                      height: '100%',
+                      width: '100%'
+                    }}
+                  >
+                    <Editor 
+                      content={doc.content} 
+                      onChange={(html) => handleEditorChangeFor(doc.id, html)}
+                    />
+                  </div>
+                ))}
               </div>
 
 

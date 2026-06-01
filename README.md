@@ -86,3 +86,89 @@ npm run build
 *   **Editor Engine**: TipTap / ProseMirror.
 *   **State Management**: Zustand.
 *   **Server Middleware**: Express-style middleware configured inside `vite.config.ts` for database state persistence and authentication endpoints.
+
+---
+
+## 🖥 Deployment (Systemd Services)
+
+The app runs as **two independent systemd user services** on the dev server, ensuring persistence across terminal closes, automatic crash recovery, and boot-time startup.
+
+### Architecture
+```
+┌─────────────────────────────────────────────┐
+│  systemd user services                      │
+│                                             │
+│  web-canvas-api   (Python, port 3000)       │
+│       ↕  Vite proxy (/api/* → :3000)        │
+│  web-canvas-vite  (Node/Vite, port 5173)    │
+│       ↕  HTTPS (self-signed cert)           │
+│  LAN clients (192.168.0.110:5173)           │
+└─────────────────────────────────────────────┘
+```
+
+### Service Files
+Located at `~/.config/systemd/user/`:
+
+| Service | File | Description |
+|---|---|---|
+| `web-canvas-api` | `web-canvas-api.service` | Python API server (storage, auth, books CRUD) |
+| `web-canvas-vite` | `web-canvas-vite.service` | Vite dev server (frontend, HMR, HTTPS, proxy) |
+
+### Common Commands
+
+```bash
+# Restart both services
+./restart.sh
+# — or manually:
+systemctl --user restart web-canvas-api web-canvas-vite
+
+# Check status
+systemctl --user status web-canvas-api web-canvas-vite
+
+# Stop both
+systemctl --user stop web-canvas-vite web-canvas-api
+
+# View logs (live)
+journalctl --user -u web-canvas-api -f
+journalctl --user -u web-canvas-vite -f
+# — or from log files:
+tail -f ~/Workspace/web_canvas/api-server.log
+tail -f ~/Workspace/web_canvas/vite-server.log
+
+# Reload after editing service files
+systemctl --user daemon-reload
+systemctl --user restart web-canvas-api web-canvas-vite
+
+# Enable auto-start on login
+systemctl --user enable web-canvas-api web-canvas-vite
+```
+
+### Key Config
+
+| Setting | Value |
+|---|---|
+| Storage directory | `/mnt/smb_data/media/noval/workspace` |
+| API host/port | `127.0.0.1:3000` (localhost only) |
+| Vite host/port | `0.0.0.0:5173` (LAN-accessible, HTTPS) |
+| Python binary | `/home/hongdp/miniconda3/bin/python3` |
+| Restart policy | `Restart=always`, `RestartSec=2` |
+
+### Environment / Secrets
+All API keys and the storage path are stored in `.env.local` (git-ignored):
+```bash
+# .env.local (example)
+VITE_STORAGE_DIR=/mnt/smb_data/media/noval/workspace
+VITE_GEMINI_API_KEY=your-key
+VITE_OPENAI_API_KEY=your-key
+VITE_GROK_API_KEY=your-key
+```
+
+### Troubleshooting
+
+| Symptom | Check | Fix |
+|---|---|---|
+| "NetworkError when attempting to fetch resource" | `systemctl --user status web-canvas-api` | `systemctl --user restart web-canvas-api web-canvas-vite` |
+| Port 5173 in use | `fuser 5173/tcp` | `fuser -k 5173/tcp` then restart |
+| API won't start | `tail -30 api-server.log` | Check Python deps, storage mount |
+| Vite won't start | `tail -30 vite-server.log` | Check Node version, `npm install` |
+| SW SSL error on LAN | Expected — SW only registers on `localhost` | Use "Add to Home Screen" for PWA |

@@ -562,9 +562,10 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                             if len(parts) == 2:
                                 header, b64_data = parts
                                 raw_bytes = base64.b64decode(b64_data)
-                                converted_bytes = _resize_and_convert_to_jpeg(raw_bytes)
-                                converted_b64 = base64.b64encode(converted_bytes).decode("ascii")
-                                abs_src = f"data:image/jpeg;base64,{converted_b64}"
+                                if is_gif or len(raw_bytes) > 1 * 1024 * 1024:
+                                    converted_bytes = _resize_and_convert_to_jpeg(raw_bytes)
+                                    converted_b64 = base64.b64encode(converted_bytes).decode("ascii")
+                                    abs_src = f"data:image/jpeg;base64,{converted_b64}"
                         except Exception as e:
                             print(f"[API Server] Failed to convert inline base64 image: {e}")
                         images.append({
@@ -582,7 +583,7 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
             img_resp = http_requests.get(
                 img["url"],
                 headers={"User-Agent": SCRAPE_USER_AGENT},
-                timeout=15,
+                timeout=5,
                 stream=True
             )
             img_resp.raise_for_status()
@@ -625,9 +626,13 @@ def _parse_html_to_scraped_data(html_content: str, url: str = None) -> dict:
                 return
             
             if content:
-                converted_content = _resize_and_convert_to_jpeg(content)
-                b64 = base64.b64encode(converted_content).decode("ascii")
-                img["base64"] = f"data:image/jpeg;base64,{b64}"
+                if is_gif or len(content) > 1 * 1024 * 1024:
+                    converted_content = _resize_and_convert_to_jpeg(content)
+                    b64 = base64.b64encode(converted_content).decode("ascii")
+                    img["base64"] = f"data:image/jpeg;base64,{b64}"
+                else:
+                    b64 = base64.b64encode(content).decode("ascii")
+                    img["base64"] = f"data:{content_type};base64,{b64}"
         except Exception as e:
             print(f"[Import URL] Failed to download image {img.get('url')}: {e}")
 
