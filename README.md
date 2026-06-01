@@ -1,6 +1,6 @@
 # Web Canvas (a_better_llm_canvas)
 
-An advanced, LLM-powered collaborative document editing workspace. Inspired by OpenAI Canvas, Web Canvas allows writers to draft, structure, and refine multi-chapter books or documentation side-by-side with an LLM chat assistant.
+An advanced, LLM-powered document editing workspace. Inspired by OpenAI Canvas, Web Canvas allows writers to draft, structure, and refine multi-chapter books or documentation side-by-side with an LLM chat assistant.
 
 ---
 
