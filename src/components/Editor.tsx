@@ -225,12 +225,14 @@ interface EditorProps {
   content: string
   onChange: (html: string) => void
   placeholder?: string
+  isActive?: boolean
 }
 
 export const Editor: React.FC<EditorProps> = ({ 
   content, 
   onChange, 
-  placeholder = 'Start writing your document here or let the assistant draft it...'
+  placeholder = 'Start writing your document here or let the assistant draft it...',
+  isActive = true
 }) => {
   const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
 
@@ -302,13 +304,15 @@ export const Editor: React.FC<EditorProps> = ({
 
   // Sync editor reference globally for bulk actions
   useEffect(() => {
-    if (editor) {
+    if (editor && isActive) {
       setActiveEditor(editor)
     }
     return () => {
-      setActiveEditor(null)
+      if (isActive) {
+        setActiveEditor(null)
+      }
     }
-  }, [editor, setActiveEditor])
+  }, [editor, isActive, setActiveEditor])
 
   // Prevent rendering if editor is not initialized
   if (!editor) {

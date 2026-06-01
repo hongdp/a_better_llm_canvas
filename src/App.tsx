@@ -844,6 +844,7 @@ function App() {
                     }}
                   >
                     <Editor 
+                      isActive={doc.id === activeDocumentId}
                       content={doc.content} 
                       onChange={(html) => handleEditorChangeFor(doc.id, html)}
                     />
