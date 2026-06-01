@@ -1,6 +1,7 @@
 import React from 'react'
 import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert, Image, RotateCcw } from 'lucide-react'
 import { useAppStore, type LLMProvider, PROVIDER_MODELS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from '../store/useAppStore'
+import { useTranslation } from '../i18n'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -28,6 +29,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
     imageAnalysisPrompt,
     setImageAnalysisPrompt
   } = useAppStore()
+
+  const { t } = useTranslation()
 
   const [activeTab, setActiveTab] = React.useState<LLMProvider>('gemini')
 
@@ -70,7 +73,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Shield size={18} style={{ color: 'var(--accent)' }} />
-            <h3>{`${labels[activeTab]} Configuration`}</h3>
+            <h3>{`${labels[activeTab]} ${t.settings.title}`}</h3>
           </div>
           <button onClick={onClose} className="btn-icon" title="Close" type="button">
             <X size={18} />
@@ -157,7 +160,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
 
               {/* Model Selector Dropdown */}
               <div className="form-group">
-                <label htmlFor="model-select">Active Model</label>
+                <label htmlFor="model-select">{t.settings.modelName}</label>
                 <select
                   id="model-select"
                   value={currentConfig.model}
@@ -181,7 +184,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
               {/* API Key Input */}
               <div className="form-group">
                 <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                  <Key size={14} /> {activeTab === 'ollama' ? 'API Key (Optional)' : `${labels[activeTab]} API Key`}
+                  <Key size={14} /> {activeTab === 'ollama' ? 'API Key (Optional)' : `${labels[activeTab]} ${t.settings.apiKey}`}
                 </label>
                 <input
                   id="api-key-input"
@@ -201,7 +204,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
 
               {/* Base URL Input */}
               <div className="form-group">
-                <label htmlFor="base-url-input">API Base URL</label>
+                <label htmlFor="base-url-input">{t.settings.baseUrl}</label>
                 <input
                   id="base-url-input"
                   type="text"
@@ -534,7 +537,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
 
         <div className="modal-footer">
           <button onClick={onClose} className="btn-primary" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }} type="button">
-            <Save size={16} /> Save & Close
+            <Save size={16} /> {t.settings.save}
           </button>
         </div>
       </div>

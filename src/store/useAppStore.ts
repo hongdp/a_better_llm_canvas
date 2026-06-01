@@ -23,9 +23,11 @@ if (typeof window !== 'undefined') {
 
 
 interface AppState {
-  // Theme state
+  // Theme & Language state
   theme: 'dark' | 'light'
   setTheme: (theme: 'dark' | 'light') => void
+  language: 'en' | 'zh'
+  setLanguage: (lang: 'en' | 'zh') => void
 
   // Multi-document state
   documents: CanvasDocument[]
@@ -508,6 +510,21 @@ const loadSavedTheme = (): 'dark' | 'light' => {
   return 'dark'
 }
 
+const loadSavedLanguage = (): 'en' | 'zh' => {
+  const saved = localStorage.getItem('web_canvas_language')
+  if (saved === 'en' || saved === 'zh') return saved
+  const cookieSaved = getCookie('__Secure-web_canvas_language')
+  if (cookieSaved === 'en' || cookieSaved === 'zh') {
+    localStorage.setItem('web_canvas_language', cookieSaved)
+    return cookieSaved
+  }
+  // Auto-detect browser language if possible
+  if (typeof navigator !== 'undefined' && navigator.language.startsWith('zh')) {
+    return 'zh'
+  }
+  return 'en'
+}
+
 const loadSavedSidebarOpen = (): boolean => {
   const saved = localStorage.getItem('web_canvas_sidebar_open')
   if (saved !== null) return saved !== 'false'
@@ -600,12 +617,18 @@ export const useAppStore = create<AppState>((set) => {
   const initialDebugMode = isEnvDebug || loadSavedDebugMode() || (localStorage.getItem('web_canvas_debug_mode') === null && getCookie('__Secure-web_canvas_debug_mode') === '' && import.meta.env.DEV)
 
   return {
-    // Theme state
+    // Theme & Language state
     theme: loadSavedTheme(),
     setTheme: (theme) => {
       localStorage.setItem('web_canvas_theme', theme)
       setCookie('__Secure-web_canvas_theme', theme)
       set({ theme })
+    },
+    language: loadSavedLanguage(),
+    setLanguage: (language) => {
+      localStorage.setItem('web_canvas_language', language)
+      setCookie('__Secure-web_canvas_language', language)
+      set({ language })
     },
 
     // Multi-document state

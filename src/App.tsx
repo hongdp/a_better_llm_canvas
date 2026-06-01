@@ -44,12 +44,16 @@ import { useImageUpload } from './hooks/useImageUpload'
 import { useModelFetcher } from './hooks/useModelFetcher'
 import { useDiffHandlers } from './hooks/useDiffHandlers'
 import { useChatLLM } from './hooks/useChatLLM'
+import { useTranslation } from './i18n'
 
 function App() {
+  const { t } = useTranslation()
   // Zustand store state
   const {
     theme,
     setTheme,
+    language,
+    setLanguage,
     documents,
     activeDocumentId,
     isSidebarOpen,
@@ -479,7 +483,7 @@ function App() {
             <button 
               onClick={toggleSidebar} 
               className="btn-icon" 
-              title="Open Chapters Sidebar"
+              title={t.app.sidebarToggle}
               type="button"
               style={{ marginRight: '0.5rem' }}
             >
@@ -514,7 +518,7 @@ function App() {
           {/* Dynamic Model Selector Dropdown */}
           {layoutMode !== 'portrait' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Model:</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{t.app.activeModel}</span>
               <select 
                 className="select-styled" 
                 value={activeConfig.model} 
@@ -537,7 +541,7 @@ function App() {
           {/* System Prompt Selector Dropdown */}
           {layoutMode !== 'portrait' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Prompt:</span>
+              <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{t.app.systemPrompt}</span>
               <select 
                 className="select-styled" 
                 value={activeSystemPromptId} 
@@ -557,7 +561,7 @@ function App() {
           <button 
             onClick={() => setIsSettingsOpen(true)} 
             className="btn-icon" 
-            title={`Open ${activeProvider} Settings`}
+            title={t.app.settingsTitle}
             type="button"
           >
             <Settings size={18} />
@@ -571,6 +575,17 @@ function App() {
             type="button"
           >
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+          </button>
+
+          {/* Language Switcher */}
+          <button 
+            onClick={() => setLanguage(language === 'en' ? 'zh' : 'en')} 
+            className="btn-icon font-medium text-xs" 
+            title={language === 'en' ? 'Switch to Chinese' : 'Switch to English'}
+            type="button"
+            style={{ width: '32px', height: '32px', display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          >
+            {language === 'en' ? '中' : 'EN'}
           </button>
 
           {/* User Profile & Logout */}
@@ -642,7 +657,7 @@ function App() {
                     <ChevronDown size={18} />
                   </button>
                 )}
-                <h2>Assistant Chat ({getProviderLabel(activeProvider)})</h2>
+                <h2>{t.app.chatTitle} ({getProviderLabel(activeProvider)})</h2>
               </div>
               <button 
                 onClick={handleClearChat} 
@@ -670,7 +685,7 @@ function App() {
                           className="btn-secondary"
                           type="button"
                         >
-                          Cancel
+                          {t.app.dismiss}
                         </button>
                         <button
                           onClick={() => handleResubmitMessage(msg.id, editingMessageText)}
@@ -757,7 +772,7 @@ function App() {
                 <button 
                   onClick={() => setErrorMsg(null)} 
                   className="btn-icon" 
-                  title="Dismiss error"
+                  title={t.app.dismiss}
                   type="button"
                   style={{ padding: '2px', color: '#f87171' }}
                 >
@@ -1098,7 +1113,7 @@ function App() {
                   <button 
                     onClick={() => setIsHistoryOpen(!isHistoryOpen)} 
                     className={`btn-icon ${isHistoryOpen ? 'active' : ''}`} 
-                    title="View snapshots history" 
+                    title={t.app.historyToggle} 
                     type="button"
                     style={{ color: isHistoryOpen ? 'var(--accent)' : 'inherit' }}
                   >
@@ -1134,7 +1149,7 @@ function App() {
                     <button 
                       onClick={() => setIsExportDropdownOpen(!isExportDropdownOpen)} 
                       className={`btn-icon ${isExportDropdownOpen ? 'active' : ''}`} 
-                      title="Export document"
+                      title={t.app.exportDoc}
                       type="button"
                       id="export-dropdown-trigger"
                     >
@@ -1235,21 +1250,21 @@ function App() {
 
               {hasPendingDiffs && (
                 <div className="diff-review-banner">
-                  <span className="diff-banner-text">Review proposed edits to this chapter:</span>
+                  <span className="diff-banner-text">{t.app.diffReview.title}</span>
                   <div className="diff-banner-actions">
                     <button 
                       onClick={handleAcceptAllDiffs} 
                       className="diff-banner-btn accept"
                       type="button"
                     >
-                      Accept All
+                      {t.app.diffReview.acceptAll}
                     </button>
                     <button 
                       onClick={handleRejectAllDiffs} 
                       className="diff-banner-btn reject"
                       type="button"
                     >
-                      Reject All
+                      {t.app.diffReview.rejectAll}
                     </button>
                   </div>
                 </div>
