@@ -4,7 +4,7 @@ cd "$(dirname "$0")"
 
 echo "[restart] Stopping existing processes..."
 fuser -k 5173/tcp 3000/tcp 2>/dev/null
-pkill -9 -f "vite|api_server|start-server" 2>/dev/null
+pkill -9 -f "vite|api_server" 2>/dev/null
 sleep 2
 
 echo "[restart] Starting dev server (nohup, detached)..."

@@ -86,6 +86,7 @@ experience of the document over the chat experience.
   implemented in v1).
 
 ### 2.5 Testing Strategy
+- **Mandatory Unit Tests**: All new functionalities and components MUST be accompanied by comprehensive unit tests. You must write tests alongside your code to ensure correctness and prevent future regressions.
 - **Unit tests** for state management, prompt construction, and document
   transformations.
 - **Integration tests** for the LLM provider abstraction (mock API responses).
@@ -158,7 +159,8 @@ Before merging any feature:
 - [ ] Is the document editing experience still smooth?
 - [ ] Are LLM edits reviewable and reversible?
 - [ ] Does it work in both light and dark mode?
-- [ ] Are there no regressions in existing E2E tests?
+- [ ] Have unit tests been added for the new functionalities?
+- [ ] Are there no regressions in existing tests (Unit/E2E)?
 
 ### 4.3 Documentation Rules
 - Every separate design or feature specification document created must be registered in the **Decision Log** inside the main design document ([design.md](file:///home/hongdp/Workspace/web_canvas/docs/design.md#L375)) to maintain clear traceability.
@@ -241,6 +243,9 @@ pkill -9 -f "api_server.py" || true
 pkill -9 -f "start-server.js" || true
 sleep 2   # wait for OS to release ports
 ```
+
+#### `pkill` and IDE Remote Connection Servers
+When writing restart scripts, do not use `pkill -f "start-server"` or similar broad patterns if using remote IDEs (like VS Code Remote SSH or other agentic IDE environments). The IDE backend connection often runs as a node process with `--start-server` in its command line. Using `pkill -f "start-server"` will inadvertently kill the IDE connection and terminate your SSH session. Instead, match the specific script name (e.g., `api_server.py`, `start-server.js`) or use `fuser -k` on specific ports.
 
 #### `start.sh -d` (daemon mode) is Unreliable in This Environment
 The `nohup` + `disown` approach in `start.sh -d` does not reliably keep processes alive in this shell environment. The processes start but die within seconds because the parent shell exits before the children are fully detached.

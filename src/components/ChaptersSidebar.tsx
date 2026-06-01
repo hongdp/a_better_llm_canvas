@@ -3,8 +3,10 @@ import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
 import { ImportUrlModal } from './ImportUrlModal'
+import { useTranslation } from '../i18n'
 
 export const ChaptersSidebar: React.FC = () => {
+  const { t } = useTranslation()
   const {
     documents,
     activeDocumentId,
@@ -247,7 +249,7 @@ export const ChaptersSidebar: React.FC = () => {
         <button 
           onClick={toggleSidebar} 
           className="btn-icon" 
-          title="Collapse Sidebar"
+          title={t.sidebar.collapse}
           type="button"
           style={{ padding: '0.25rem' }}
         >
@@ -269,9 +271,9 @@ export const ChaptersSidebar: React.FC = () => {
                 e.currentTarget.blur()
               }
             }}
-            placeholder="Untitled Book"
+            placeholder={t.sidebar.untitledBook}
             className="canvas-title-input"
-            title="Book Title"
+            title={t.sidebar.bookTitlePlaceholder}
             disabled={isStreaming}
             style={{
               fontSize: '0.95rem',
@@ -290,7 +292,7 @@ export const ChaptersSidebar: React.FC = () => {
             }}
             disabled={isStreaming}
             className="btn-icon"
-            title={isStreaming ? "Cannot manage books while streaming" : "Manage Server Books"}
+            title={isStreaming ? t.sidebar.manageBooksLocked : t.sidebar.manageBooks}
             type="button"
             style={{ 
               padding: '0.25rem', 
@@ -335,7 +337,7 @@ export const ChaptersSidebar: React.FC = () => {
             >
               <div 
                 className="chapter-grip"
-                title={isStreaming ? "Reordering locked while streaming" : "Drag to reorder"}
+                title={isStreaming ? t.sidebar.dragLocked : t.sidebar.dragToReorder}
                 draggable={false}
               >
                 <GripVertical size={13} />
@@ -352,7 +354,7 @@ export const ChaptersSidebar: React.FC = () => {
                   onClick={() => handleMoveUp(idx)}
                   disabled={idx === 0 || isStreaming}
                   className="btn-icon chapter-action-btn move-up"
-                  title="Move Up"
+                  title={t.sidebar.moveUp}
                   type="button"
                   style={{ padding: '0.15rem' }}
                 >
@@ -362,7 +364,7 @@ export const ChaptersSidebar: React.FC = () => {
                   onClick={() => handleMoveDown(idx)}
                   disabled={idx === documents.length - 1 || isStreaming}
                   className="btn-icon chapter-action-btn move-down"
-                  title="Move Down"
+                  title={t.sidebar.moveDown}
                   type="button"
                   style={{ padding: '0.15rem' }}
                 >
@@ -370,13 +372,13 @@ export const ChaptersSidebar: React.FC = () => {
                 </button>
                 <button
                   onClick={() => {
-                    if (confirm(`Are you sure you want to delete "${doc.title}"?`)) {
+                    if (confirm(t.sidebar.deleteChapterConfirm.replace('{title}', doc.title))) {
                       deleteDocument(doc.id)
                     }
                   }}
                   disabled={isStreaming}
                   className="btn-icon chapter-action-btn delete"
-                  title="Delete chapter"
+                  title={t.sidebar.deleteChapter}
                   type="button"
                   style={{ padding: '0.15rem' }}
                 >
@@ -406,7 +408,7 @@ export const ChaptersSidebar: React.FC = () => {
           }}
           type="button"
         >
-          <Plus size={16} /> New Chapter
+          <Plus size={16} /> {t.sidebar.newChapter}
         </button>
         <button
           onClick={() => {
@@ -428,7 +430,7 @@ export const ChaptersSidebar: React.FC = () => {
           }}
           type="button"
         >
-          <Globe size={16} /> 从URL导入
+          <Globe size={16} /> {t.sidebar.importUrl}
         </button>
         <button
           onClick={handleImportClick}
@@ -447,7 +449,7 @@ export const ChaptersSidebar: React.FC = () => {
           }}
           type="button"
         >
-          <Upload size={16} /> Import Chapter
+          <Upload size={16} /> {t.sidebar.importChapter}
         </button>
         <button
           onClick={handleReplaceClick}
@@ -466,7 +468,7 @@ export const ChaptersSidebar: React.FC = () => {
           }}
           type="button"
         >
-          <Upload size={16} /> Replace All Chapters
+          <Upload size={16} /> {t.sidebar.replaceAllChapters}
         </button>
         <input
           type="file"
@@ -500,11 +502,11 @@ export const ChaptersSidebar: React.FC = () => {
           >
             <div className="modal-header" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
               <ShieldAlert size={20} style={{ color: 'var(--accent)' }} />
-              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Replace All Chapters?</h3>
+              <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>{t.sidebar.replaceAllTitle}</h3>
             </div>
             <div className="modal-body" style={{ margin: '1rem 0', fontSize: '0.9rem', color: 'var(--text-secondary)', lineHeight: 1.5 }}>
               <p>This action will permanently delete all existing chapters in this project and replace them with the <strong>{pendingChapters.length}</strong> imported chapter(s).</p>
-              <p style={{ marginTop: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>Please make sure you have saved or exported a backup if you need to retain current data.</p>
+              <p style={{ marginTop: '0.5rem', color: 'var(--text-muted)', fontSize: '0.8rem' }}>{t.sidebar.replaceAllNotice}</p>
             </div>
             <div className="modal-footer" style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', paddingTop: '0.75rem', borderTop: '1px solid var(--border-color)' }}>
               <button 
@@ -513,7 +515,7 @@ export const ChaptersSidebar: React.FC = () => {
                 style={{ padding: '0.4rem 1rem', fontSize: '0.85rem' }}
                 type="button"
               >
-                Cancel
+                {t.app.dismiss}
               </button>
               <button 
                 onClick={() => {
@@ -525,7 +527,7 @@ export const ChaptersSidebar: React.FC = () => {
                 style={{ padding: '0.4rem 1rem', fontSize: '0.85rem' }}
                 type="button"
               >
-                Confirm Replace
+                {t.sidebar.confirmReplace}
               </button>
             </div>
           </div>
@@ -549,12 +551,12 @@ export const ChaptersSidebar: React.FC = () => {
             <div className="modal-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '1px solid var(--border-color)', paddingBottom: '0.75rem' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                 <Library size={18} style={{ color: 'var(--accent)' }} />
-                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>Manage Server Books</h3>
+                <h3 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 600 }}>{t.sidebar.manageBooks}</h3>
               </div>
               <button
                 onClick={() => setShowBookManager(false)}
                 className="btn-icon"
-                title="Close"
+                title={t.sidebar.close}
                 type="button"
                 style={{ padding: '0.25rem' }}
               >
@@ -567,7 +569,7 @@ export const ChaptersSidebar: React.FC = () => {
                 <form onSubmit={handleCreateBook} style={{ display: 'flex', gap: '0.5rem' }}>
                   <input
                     type="text"
-                    placeholder="Book Title..."
+                    placeholder={t.sidebar.bookTitlePlaceholder}
                     value={newBookName}
                     onChange={(e) => setNewBookName(e.target.value)}
                     className="form-input"
@@ -597,7 +599,7 @@ export const ChaptersSidebar: React.FC = () => {
                   }}
                   type="button"
                 >
-                  <Plus size={14} /> Create New Book
+                  <Plus size={14} /> {t.sidebar.createNewBook}
                 </button>
               )}
 
@@ -605,7 +607,7 @@ export const ChaptersSidebar: React.FC = () => {
                 {isLoadingBooks && availableBooks.length === 0 ? (
                   <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', padding: '2rem', color: 'var(--text-secondary)' }}>
                     <RefreshCw size={18} className="animate-spin" style={{ marginRight: '0.5rem' }} />
-                    <span>Loading books...</span>
+                    <span>{t.sidebar.loadingBooks}</span>
                   </div>
                 ) : availableBooks.length === 0 ? (
                   <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)', fontSize: '0.85rem' }}>
@@ -683,7 +685,7 @@ export const ChaptersSidebar: React.FC = () => {
                           ) : (
                             <button
                               onClick={async () => {
-                                if (confirm(`Are you sure you want to delete "${book.title}"? This will permanently delete the book data from the server.`)) {
+                                if (confirm(t.sidebar.deleteBookConfirm.replace('{title}', book.title))) {
                                   setDeletingBookId(book.id)
                                   try {
                                     await deleteBook(book.id)
@@ -696,7 +698,7 @@ export const ChaptersSidebar: React.FC = () => {
                               }}
                               disabled={isDeleting}
                               className="btn-icon"
-                              title="Delete Book"
+                              title={t.sidebar.deleteBook}
                               style={{ padding: '0.25rem', color: 'var(--text-muted)' }}
                               type="button"
                             >
@@ -722,7 +724,7 @@ export const ChaptersSidebar: React.FC = () => {
                 style={{ padding: '0.4rem 1rem', fontSize: '0.85rem' }}
                 type="button"
               >
-                Close
+                {t.sidebar.close}
               </button>
             </div>
           </div>

@@ -1,16 +1,15 @@
-import React from 'react'
+import React, { useState } from 'react'
 import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert, Image, RotateCcw } from 'lucide-react'
 import { useAppStore, type LLMProvider, PROVIDER_MODELS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
+import { useModelFetcher } from '../hooks/useModelFetcher'
 
 interface SettingsModalProps {
   isOpen: boolean
   onClose: () => void
-  errorMsg?: string | null
-  setErrorMsg?: (msg: string | null) => void
 }
 
-export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, errorMsg, setErrorMsg }) => {
+export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose }) => {
   const { 
     activeProvider,
     setProvider,
@@ -33,6 +32,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
   const { t } = useTranslation()
 
   const [activeTab, setActiveTab] = React.useState<LLMProvider>('gemini')
+  const [errorMsg, setErrorMsg] = useState<string | null>(null)
+  const [, setIsLoadingModels] = useState(false)
+
+  useModelFetcher(isOpen, setErrorMsg, setIsLoadingModels)
 
   // Set the default tab to the active provider when the modal opens
   React.useEffect(() => {
@@ -114,7 +117,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, e
                 <span>{errorMsg}</span>
               </div>
               <button 
-                onClick={() => setErrorMsg?.(null)} 
+                onClick={() => setErrorMsg(null)} 
                 className="btn-icon" 
                 title="Dismiss error"
                 type="button"

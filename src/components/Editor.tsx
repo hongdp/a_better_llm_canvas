@@ -224,18 +224,33 @@ interface EditorProps {
   content: string
   onChange: (html: string) => void
   placeholder?: string
-  onQuickAction?: (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => void
-  onGenerateImage?: (selectedText: string) => void
 }
 
 export const Editor: React.FC<EditorProps> = ({ 
   content, 
   onChange, 
-  placeholder = 'Start writing your document here or let the assistant draft it...',
-  onQuickAction,
-  onGenerateImage
+  placeholder = 'Start writing your document here or let the assistant draft it...'
 }) => {
   const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
+
+  const handleQuickAction = (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
+    let prompt = ''
+    switch (action) {
+      case 'rewrite':
+        prompt = 'Rewrite the selected text to make it flow better and sound more professional.'
+        break
+      case 'shorten':
+        prompt = 'Make the selected text more concise and to the point.'
+        break
+      case 'expand':
+        prompt = 'Elaborate on the selected text, adding more detail and depth.'
+        break
+      case 'grammar':
+        prompt = 'Fix any spelling, grammar, or punctuation errors in the selected text.'
+        break
+    }
+    window.dispatchEvent(new CustomEvent('send-quick-action', { detail: prompt }))
+  }
 
   const editor = useEditor({
     extensions: [
@@ -653,17 +668,15 @@ export const Editor: React.FC<EditorProps> = ({
             }
 
             // Normal text selection formatting & quick actions toolbar
-            if (!onQuickAction && !onGenerateImage) return null
-
             return (
               <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                {onGenerateImage && (
+                <>
                   <>
                     <button
                       onClick={() => {
                         const { from, to, empty } = editor.state.selection
                         const text = empty ? '' : editor.state.doc.textBetween(from, to, ' ')
-                        onGenerateImage(text)
+                        window.dispatchEvent(new CustomEvent('open-image-gen', { detail: text }))
                       }}
                       className="btn-icon"
                       title="Generate image from selection"
@@ -684,13 +697,12 @@ export const Editor: React.FC<EditorProps> = ({
                       <Wand2 size={13} />
                       Gen Image
                     </button>
-                    {onQuickAction && <div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)' }} />}
+                    {<div style={{ width: '1px', height: '16px', backgroundColor: 'var(--border-color)' }} />}
                   </>
-                )}
-                {onQuickAction && (
-                  <>
-                    <button
-                      onClick={() => onQuickAction('rewrite')}
+                </>
+                <>
+                  <button
+                    onClick={() => handleQuickAction('rewrite')}
                       className="btn-icon"
                       title="Rewrite selection"
                       type="button"
@@ -698,7 +710,7 @@ export const Editor: React.FC<EditorProps> = ({
                       <Sparkles size={16} style={{ color: 'var(--accent)' }} />
                     </button>
                     <button
-                      onClick={() => onQuickAction('shorten')}
+                      onClick={() => handleQuickAction('shorten')}
                       className="btn-icon"
                       title="Shorten text"
                       type="button"
@@ -706,7 +718,7 @@ export const Editor: React.FC<EditorProps> = ({
                       <ArrowDownToLine size={16} />
                     </button>
                     <button
-                      onClick={() => onQuickAction('expand')}
+                      onClick={() => handleQuickAction('expand')}
                       className="btn-icon"
                       title="Expand text"
                       type="button"
@@ -714,15 +726,14 @@ export const Editor: React.FC<EditorProps> = ({
                       <ArrowUpFromLine size={16} />
                     </button>
                     <button
-                      onClick={() => onQuickAction('grammar')}
+                      onClick={() => handleQuickAction('grammar')}
                       className="btn-icon"
                       title="Fix grammar & spelling"
                       type="button"
                     >
                       <Languages size={16} />
                     </button>
-                  </>
-                )}
+                </>
               </div>
             )
           })()}

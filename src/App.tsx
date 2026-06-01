@@ -1,36 +1,14 @@
 import { useState, useRef, useEffect, lazy, Suspense, useCallback, useMemo } from 'react'
-import { 
-  Send, 
-  Trash2, 
-  Download, 
-  Sun, 
-  Moon, 
-  History, 
-  Sparkles, 
-  BookOpen,
-  Settings,
-  RefreshCw,
-  AlertCircle,
-  Menu,
-  Paperclip,
-  X,
-  Save,
-  SquarePen,
-  ChevronDown,
-  ChevronUp,
-  LogOut,
-  Image,
-  Cloud,
-  CloudOff,
-  CloudUpload,
-  Square,
-  Clipboard,
-  Wand2
+import {
+  Sun, Moon, History, Sparkles, BookOpen, Settings,
+  Menu, LogOut, Cloud, CloudOff, CloudUpload,
+  Wand2, RefreshCw, Save, Download, X
 } from 'lucide-react'
+import { ChatPanel } from './components/ChatPanel'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { useAppStore, PROVIDER_MODELS } from './store/useAppStore'
 import type { CanvasDocument, LLMProvider } from './store/useAppStore'
-import { countWords, convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from './utils/text'
+import { countWords } from './utils/text'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 
 import { Editor } from './components/Editor'
@@ -40,11 +18,10 @@ const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => 
 const AuthForm = lazy(() => import('./components/AuthForm').then(m => ({ default: m.AuthForm })))
 const ImageGenerationModal = lazy(() => import('./components/ImageGenerationModal').then(m => ({ default: m.ImageGenerationModal })))
 
-import { useImageUpload } from './hooks/useImageUpload'
-import { useModelFetcher } from './hooks/useModelFetcher'
 import { useDiffHandlers } from './hooks/useDiffHandlers'
-import { useChatLLM } from './hooks/useChatLLM'
 import { useTranslation } from './i18n'
+import { exportDocument } from './utils/export'
+import { htmlToPlainText } from './utils/convert'
 
 function App() {
   const { t } = useTranslation()
@@ -57,36 +34,47 @@ function App() {
     documents,
     activeDocumentId,
     isSidebarOpen,
-    selectedReferenceIds,
     updateActiveDocument,
-    toggleReference,
     toggleSidebar,
     activeProvider,
+    setProvider,
     providerConfigs,
     updateProviderConfig,
     availableGeminiModels,
     availableGrokModels,
-    messages,
-    clearChat,
     isStreaming,
     customSystemPrompts,
     activeSystemPromptId,
+    setActiveSystemPromptId,
     selectedText,
     activeEditor,
-    resetSessionTokens,
     versions,
     bookTitle,
     isStoreInitialized,
     user,
     activeBookId,
     switchBook,
-    lastSyncedAt
+    lastSyncedAt,
+    logout,
+    serverSaveStatus,
+    syncToServer,
+    sessionInputTokens,
+    sessionCacheHitTokens,
+    sessionCacheMissTokens,
+    sessionOutputTokens,
+    createVersionSnapshot,
+    restoreVersion,
+    deleteVersionSnapshot
   } = useAppStore()
 
   // Local UI state
   const [chatWidth, setChatWidth] = useState(380)
   const [isResizing, setIsResizing] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
+  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
+  const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
+  const [imageGenInitialPrompt, setImageGenInitialPrompt] = useState('')
+  const [storageSize] = useState('0 B')
   const getLayoutMode = (width: number, height: number): 'desktop' | 'portrait' | 'landscape' | 'tablet-square' => {
     if (width >= 1024) return 'desktop'
     if (width > height && height < 500) return 'landscape'
@@ -98,7 +86,6 @@ function App() {
   const [layoutMode, setLayoutMode] = useState<'desktop' | 'portrait' | 'landscape' | 'tablet-square'>(
     getLayoutMode(window.innerWidth, window.innerHeight)
   )
-  const [isChatExpanded, setIsChatExpanded] = useState(false)
 
   // Save status state
   const [saveStatus, setSaveStatus] = useState<'saved' | 'unsaved'>('saved')
@@ -121,33 +108,6 @@ function App() {
     }
     setSaveStatus('saved')
   }, [])
-
-  // Multimodal image upload states & logic
-  const {
-    uploadedImages,
-    setUploadedImages,
-  } = useImageUpload()
-
-  const {
-    chatInput,
-    setChatInput,
-    chatInputRef,
-    chatEndRef,
-    setErrorMsg,
-    handleSendMessage,
-    handleStopGeneration
-  } = useChatLLM({
-    activeEditor,
-    selectedText,
-    uploadedImages,
-    setUploadedImages,
-    layoutMode,
-    setIsChatExpanded,
-    forceSave,
-    setSaveStatus
-  })
-
-  useModelFetcher(isSettingsOpen, setErrorMsg, () => {})
 
   // Image generation modal state
   const [isImageGenOpen, setIsImageGenOpen] = useState(false)
@@ -249,16 +209,18 @@ function App() {
   }
 
   const activeConfig = providerConfigs[activeProvider]
+  const documentPlainTextContext = useMemo(() => htmlToPlainText(activeDoc.content), [activeDoc.content])
+  const hasPendingDiffs = activeDoc.content.includes('data-diff-id')
 
   // Handle theme changes
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme)
   }, [theme])
 
-  // Scroll to bottom of chat
+  // Handle theme changes
   useEffect(() => {
-    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+    document.documentElement.setAttribute('data-theme', theme)
+  }, [theme])
 
   // Horizontal resizing handlers
   const startResizing = (e: React.MouseEvent) => {
@@ -304,30 +266,20 @@ function App() {
   )
 
   // Route editor selection quick action toolbar commands to LLM
-  const handleQuickAction = async (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
-    let prompt = ''
-    switch (action) {
-      case 'rewrite':
-        prompt = 'Rewrite the selected text to make it flow better and sound more professional.'
-        break
-      case 'shorten':
-        prompt = 'Make the selected text more concise and to the point.'
-        break
-      case 'expand':
-        prompt = 'Elaborate on the selected text, adding more detail and depth.'
-        break
-      case 'grammar':
-        prompt = 'Fix any spelling, grammar, or punctuation errors in the selected text.'
-        break
-    }
-    await handleSendMessage(undefined, prompt)
-  }
-
   // Open image generation modal with optional selected text as initial prompt
   const handleOpenImageGen = useCallback((selectedText: string) => {
     setImageGenInitialPrompt(selectedText)
     setIsImageGenOpen(true)
   }, [])
+
+  useEffect(() => {
+    const handleOpenImageEvent = (e: Event) => {
+      const customEvent = e as CustomEvent<string>
+      handleOpenImageGen(customEvent.detail)
+    }
+    window.addEventListener('open-image-gen', handleOpenImageEvent)
+    return () => window.removeEventListener('open-image-gen', handleOpenImageEvent)
+  }, [handleOpenImageGen])
 
   // Memoized editor onChange — avoids re-creating this on every render which
   // would cause the Editor to re-render on each App state change (e.g. chat input typing).
@@ -366,12 +318,6 @@ function App() {
     triggerUnsaved()
   }, [activeEditor, triggerUnsaved])
 
-  // Clear chat handler
-  const handleClearChat = () => {
-    clearChat()
-    resetSessionTokens()
-  }
-
   // Toggle theme helper
   const toggleTheme = () => {
     setTheme(theme === 'dark' ? 'light' : 'dark')
@@ -394,17 +340,6 @@ function App() {
       return availableGrokModels
     }
     return PROVIDER_MODELS[activeProvider] || []
-  }
-
-  const getProviderLabel = (prov: string) => {
-    return prov === 'grok' ? 'Grok' : prov.charAt(0).toUpperCase() + prov.slice(1)
-  }
-
-  const getResponderName = (msg: typeof messages[0]) => {
-    if (msg.role === 'user') return 'You'
-    const prov = msg.provider || activeProvider
-    const model = msg.model || activeConfig.model
-    return `${getProviderLabel(prov)} (${model})`
   }
 
   if (!isStoreInitialized) {
@@ -432,8 +367,8 @@ function App() {
           <Sparkles size={20} style={{ position: 'absolute', color: 'var(--accent)' }} />
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '0.25rem' }}>
-          <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0 }}>Materializing Canvas</h2>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>Checking workspace storage connection...</p>
+          <h2 style={{ fontSize: '1.25rem', fontWeight: 600, margin: 0 }}>{t.app.materializingCanvas}</h2>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>{t.app.checkingStorage}</p>
         </div>
       </div>
     )
@@ -464,7 +399,7 @@ function App() {
             }} />
             <Sparkles size={20} style={{ position: 'absolute', color: 'var(--accent)' }} />
           </div>
-          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>Loading authentication workspace...</p>
+          <p style={{ fontSize: '0.85rem', color: 'var(--text-secondary)', margin: 0 }}>{t.app.loadingAuth}</p>
         </div>
       }>
         <AuthForm />
@@ -500,7 +435,7 @@ function App() {
         <div className="app-header-right">
           {/* Provider Selector Dropdown */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>Provider:</span>
+            <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>{t.app.provider}</span>
             <select
               className="select-styled"
               value={activeProvider}
@@ -524,7 +459,6 @@ function App() {
                 value={activeConfig.model} 
                 onChange={handleModelChange}
                 title={`Select ${activeProvider} Model`}
-                disabled={activeProvider === 'gemini' && isLoadingModels}
               >
                 {getAvailableModels().map(model => (
                   <option key={model} value={model}>
@@ -532,9 +466,6 @@ function App() {
                   </option>
                 ))}
               </select>
-              {activeProvider === 'gemini' && isLoadingModels && (
-                <RefreshCw size={14} className="animate-spin" style={{ color: 'var(--text-muted)' }} />
-              )}
             </div>
           )}
 
@@ -571,7 +502,7 @@ function App() {
           <button 
             onClick={toggleTheme} 
             className="btn-icon" 
-            title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            title={theme === 'dark' ? t.app.switchToLight : t.app.switchToDark}
             type="button"
           >
             {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
@@ -592,17 +523,17 @@ function App() {
           {user && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginLeft: '0.25rem', borderLeft: '1px solid var(--border-color)', paddingLeft: '0.75rem' }}>
               <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 500 }}>
-                Hi, <strong style={{ color: 'var(--text-primary)' }}>{user.username}</strong>
+                {t.app.hi} <strong style={{ color: 'var(--text-primary)' }}>{user.username}</strong>
               </span>
               <button
                 onClick={async () => {
-                  if (window.confirm('Are you sure you want to log out?')) {
+                  if (window.confirm(t.app.logoutConfirm)) {
                     await logout()
                     window.location.reload()
                   }
                 }}
                 className="btn-icon"
-                title="Log Out"
+                title={t.app.logout}
                 type="button"
                 style={{ color: '#ef4444' }}
               >
@@ -632,382 +563,13 @@ function App() {
           />
         )}
 
-        {/* Resizable Chat Panel */}
-        <section 
-          className={`chat-panel ${isChatExpanded ? 'expanded' : ''}`} 
-            style={{ 
-              width: layoutMode === 'portrait' 
-                ? '100%' 
-                : layoutMode === 'landscape' 
-                ? '40%' 
-                : layoutMode === 'tablet-square' 
-                ? '45%' 
-                : `${chatWidth}px` 
-            }}
-          >
-            <div className="chat-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                {layoutMode === 'portrait' && (
-                  <button 
-                    onClick={() => setIsChatExpanded(false)} 
-                    className="btn-icon" 
-                    title="Collapse chat history"
-                    type="button"
-                  >
-                    <ChevronDown size={18} />
-                  </button>
-                )}
-                <h2>{t.app.chatTitle} ({getProviderLabel(activeProvider)})</h2>
-              </div>
-              <button 
-                onClick={handleClearChat} 
-                className="btn-icon" 
-                title="Clear chat history"
-                type="button"
-              >
-                <Trash2 size={16} />
-              </button>
-            </div>
-
-            <div className="chat-messages">
-              {messages.map(msg => (
-                <div key={msg.id} className={`chat-message ${msg.role}`}>
-                  {editingMessageId === msg.id ? (
-                    <div className="chat-message-edit-container">
-                      <textarea
-                        value={editingMessageText}
-                        onChange={(e) => setEditingMessageText(e.target.value)}
-                        className="chat-message-edit-textarea"
-                      />
-                      <div className="chat-message-edit-actions">
-                        <button
-                          onClick={() => setEditingMessageId(null)}
-                          className="btn-secondary"
-                          type="button"
-                        >
-                          {t.app.dismiss}
-                        </button>
-                        <button
-                          onClick={() => handleResubmitMessage(msg.id, editingMessageText)}
-                          className="btn-primary"
-                          type="button"
-                        >
-                          Save & Submit
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="chat-message-bubble">
-                        {msg.images && msg.images.length > 0 && (
-                          <div className="chat-message-images" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
-                            {msg.images.map((img, idx) => (
-                              <img 
-                                key={idx} 
-                                src={img} 
-                                alt={`Attachment ${idx + 1}`} 
-                                style={{ 
-                                  maxWidth: '120px', 
-                                  maxHeight: '120px', 
-                                  borderRadius: '6px', 
-                                  objectFit: 'cover',
-                                  border: '1px solid var(--border-color)' 
-                                }} 
-                              />
-                            ))}
-                          </div>
-                        )}
-                        <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-                      </div>
-                      <span className="chat-message-info" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
-                        <span>{getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                        {msg.role === 'user' && editingMessageId !== msg.id && !isStreaming && (
-                          <button
-                            onClick={() => {
-                              setEditingMessageId(msg.id)
-                              setEditingMessageText(msg.content)
-                            }}
-                            className="btn-icon"
-                            title="Edit message"
-                            type="button"
-                            style={{ padding: '0.1rem', background: 'transparent', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', opacity: 0.6 }}
-                            onMouseEnter={e => e.currentTarget.style.opacity = '1'}
-                            onMouseLeave={e => e.currentTarget.style.opacity = '0.6'}
-                          >
-                            <SquarePen size={12} />
-                          </button>
-                        )}
-                      </span>
-                    </>
-                  )}
-                </div>
-              ))}
-              {isStreaming && (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-                  <RefreshCw size={12} className="animate-spin" />
-                  <span>{getProviderLabel(activeProvider)} is streaming changes...</span>
-                </div>
-              )}
-              <div ref={chatEndRef} />
-            </div>
-
-            {errorMsg && (
-              <div style={{
-                margin: '0.75rem',
-                padding: '0.75rem',
-                borderRadius: '8px',
-                backgroundColor: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
-                color: '#f87171',
-                fontSize: '0.85rem',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                gap: '0.5rem'
-              }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                  <AlertCircle size={16} style={{ flexShrink: 0 }} />
-                  <span>{errorMsg}</span>
-                </div>
-                <button 
-                  onClick={() => setErrorMsg(null)} 
-                  className="btn-icon" 
-                  title={t.app.dismiss}
-                  type="button"
-                  style={{ padding: '2px', color: '#f87171' }}
-                >
-                  <X size={14} />
-                </button>
-              </div>
-            )}
-
-            {/* Reference Document Context Attach Bar */}
-            {documents.length > 1 && (
-              <div className="reference-selector-bar">
-                <span className="reference-title-label">
-                  <Paperclip size={10} /> Reference Context (Optional):
-                </span>
-                {documents
-                  .filter(doc => doc.id !== activeDocumentId)
-                  .map(doc => {
-                    const isSelected = selectedReferenceIds.includes(doc.id)
-                    return (
-                      <button
-                        key={doc.id}
-                        onClick={() => toggleReference(doc.id)}
-                        className={`reference-tag ${isSelected ? 'active' : ''}`}
-                        disabled={isStreaming}
-                        type="button"
-                      >
-                        {doc.title}
-                      </button>
-                    )
-                  })
-                }
-              </div>
-            )}
-
-            <form onSubmit={handleSendMessage} className="chat-input-container">
-              {uploadedImages.length > 0 && (
-                <div className="chat-upload-previews" style={{ 
-                  display: 'flex', 
-                  gap: '8px', 
-                  padding: '8px 12px', 
-                  flexWrap: 'wrap',
-                  border: '1px solid var(--border-color)',
-                  borderBottom: 'none',
-                  backgroundColor: 'var(--bg-tertiary)',
-                  borderTopLeftRadius: '10px',
-                  borderTopRightRadius: '10px',
-                  marginBottom: '-1px'
-                }}>
-                  {uploadedImages.map((img, idx) => (
-                    <div key={idx} style={{ position: 'relative', display: 'inline-block' }}>
-                      <img 
-                        src={img} 
-                        alt="Upload preview" 
-                        className="chat-upload-preview-img"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setUploadedImages(prev => prev.filter((_, i) => i !== idx))}
-                        style={{
-                          position: 'absolute',
-                          top: '-4px',
-                          right: '-4px',
-                          backgroundColor: 'rgba(239, 68, 68, 0.9)',
-                          color: 'white',
-                          border: 'none',
-                          borderRadius: '50%',
-                          width: '16px',
-                          height: '16px',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          fontSize: '8px',
-                          cursor: 'pointer',
-                          padding: 0
-                        }}
-                      >
-                        <X size={8} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="chat-input-wrapper" style={{
-                borderTopLeftRadius: uploadedImages.length > 0 ? '0px' : undefined,
-                borderTopRightRadius: uploadedImages.length > 0 ? '0px' : undefined
-              }}>
-                {layoutMode === 'portrait' && (
-                  <button
-                    type="button"
-                    onClick={() => setIsChatExpanded(!isChatExpanded)}
-                    className={`btn-icon chat-expand-toggle-btn ${isChatExpanded ? 'expanded' : ''}`}
-                    title={isChatExpanded ? "Collapse Chat History" : "Expand Chat History"}
-                    style={{ marginRight: '0.25rem', padding: '0.25rem' }}
-                  >
-                    {isChatExpanded ? <ChevronDown size={18} /> : <ChevronUp size={18} />}
-                  </button>
-                )}
-                <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
-                  <div
-                    ref={chatInputRef}
-                    contentEditable={!isStreaming}
-                    onInput={async e => {
-                      const container = e.currentTarget
-                      const imgs = Array.from(container.getElementsByTagName('img'))
-                      if (imgs.length > 0) {
-                        const newImages: string[] = []
-                        for (const img of imgs) {
-                          const src = img.src
-                          if (src) {
-                            let dataUrl = src
-                            if (src.startsWith('blob:')) {
-                              try {
-                                dataUrl = await convertBlobUrlToDataUrl(src)
-                              } catch (err) {
-                                console.error('Failed to convert blob URL:', err)
-                              }
-                            }
-                            try {
-                              const processedDataUrl = await convertGifToJpegIfNeeded(dataUrl)
-                              newImages.push(processedDataUrl)
-                            } catch (err) {
-                              console.error('Failed to process pasted/dropped GIF image:', err)
-                              newImages.push(dataUrl)
-                            }
-                          }
-                          img.remove()
-                        }
-                        if (newImages.length > 0) {
-                          setUploadedImages(prev => {
-                            if (prev.length + newImages.length > 3) {
-                              alert('You can attach a maximum of 3 images.')
-                              return prev
-                            }
-                            return [...prev, ...newImages]
-                          })
-                        }
-                      }
-                      setChatInput(container.innerText || '')
-                    }}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        handleSendMessage()
-                      }
-                    }}
-                    onPaste={handlePaste}
-                    className="chat-textarea"
-                    style={{
-                      overflowY: 'auto',
-                      minHeight: '24px',
-                      maxHeight: '120px',
-                      userSelect: 'text',
-                      WebkitUserSelect: 'text',
-                      outline: 'none',
-                      whiteSpace: 'pre-wrap',
-                      wordBreak: 'break-word',
-                      width: '100%'
-                    }}
-                  />
-                  {!chatInput && (
-                    <span 
-                      style={{
-                        position: 'absolute',
-                        left: 0,
-                        top: 0,
-                        color: 'var(--text-muted)',
-                        pointerEvents: 'none',
-                        userSelect: 'none',
-                        fontStyle: 'normal'
-                      }}
-                    >
-                      {`Instruct ${activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1)} (${activeConfig.model})...`}
-                    </span>
-                  )}
-                </div>
-                <button
-                  type="button"
-                  className="btn-icon"
-                  title="Upload image"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={isStreaming}
-                  style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
-                >
-                  <Image size={18} />
-                </button>
-                <button
-                  type="button"
-                  className="btn-icon"
-                  title="Paste image from clipboard"
-                  onClick={handlePasteFromClipboard}
-                  disabled={isStreaming}
-                  style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
-                >
-                  <Clipboard size={18} />
-                </button>
-                <input
-                  type="file"
-                  ref={fileInputRef}
-                  onChange={handleImageUpload}
-                  accept="image/*"
-                  multiple
-                  style={{ display: 'none' }}
-                />
-                {isStreaming ? (
-                  <button 
-                    type="button" 
-                    className="btn-icon animate-pulse" 
-                    title="Stop generation"
-                    onClick={() => {
-                      handleStopGeneration()
-                    }}
-                    style={{ 
-                      color: '#ef4444',
-                      cursor: 'pointer'
-                    }}
-                  >
-                    <Square size={16} fill="#ef4444" />
-                  </button>
-                ) : (
-                  <button 
-                    type="submit" 
-                    className="btn-icon" 
-                    title="Send instruction"
-                    disabled={!chatInput.trim() && uploadedImages.length === 0}
-                    style={{ 
-                      color: (chatInput.trim() || uploadedImages.length > 0) ? 'var(--accent)' : 'var(--text-muted)',
-                      cursor: (chatInput.trim() || uploadedImages.length > 0) ? 'pointer' : 'default'
-                    }}
-                  >
-                    <Send size={18} />
-                  </button>
-                )}
-              </div>
-            </form>
-          </section>
+        <ChatPanel
+          chatWidth={chatWidth}
+          layoutMode={layoutMode}
+          isHistoryOpen={isHistoryOpen}
+          forceSave={forceSave}
+          setSaveStatus={setSaveStatus}
+        />
 
         {/* Resizing Divider Gutter */}
         {layoutMode === 'desktop' && (
@@ -1274,8 +836,6 @@ function App() {
                 <Editor 
                   content={activeDoc.content} 
                   onChange={handleEditorChange}
-                  onQuickAction={handleQuickAction}
-                  onGenerateImage={handleOpenImageGen}
                 />
               </div>
 
@@ -1370,8 +930,6 @@ function App() {
         <SettingsModal 
           isOpen={isSettingsOpen} 
           onClose={() => setIsSettingsOpen(false)} 
-          errorMsg={errorMsg}
-          setErrorMsg={setErrorMsg}
         />
       </Suspense>
 
