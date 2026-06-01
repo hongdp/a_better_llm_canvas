@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { getTimestampId, stripIncompleteEndTag } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 
 interface UseChatLLMProps {
@@ -343,7 +343,7 @@ ${cleanActiveContent}
             if (isSelectionEdit) {
               const cleanedText = stripIncompleteEndTag(finalSelectionReplaceText)
               if (cleanedText && activeEditor && selectionRangeRef.current) {
-                const restoredText = restoreImagesFromPlaceholders(cleanedText)
+                const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
                 const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
                 const { from } = selectionRangeRef.current
                 const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
@@ -359,7 +359,7 @@ ${cleanActiveContent}
                 s.updateActiveDocument({ content: activeEditor.getHTML() })
               }
             } else if (finalCanvasText.trim()) {
-              const restoredText = restoreImagesFromPlaceholders(finalCanvasText)
+              const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
               const diffed = diffHtml(originalDocContent, restoredText)
               s.updateActiveDocument({ content: diffed })
             }

@@ -133,8 +133,7 @@ async function streamOpenAI(
 
   // Check if Ollama by checking baseUrl or apiKey
   const isOllama = config.apiKey === 'ollama-no-key' || config.baseUrl.includes('localhost') || config.baseUrl.includes('127.0.0.1');
-  const isGrok = config.provider === 'grok' || config.baseUrl.includes('x.ai');
-  if (!isOllama && !isGrok) {
+  if (!isOllama) {
     body['stream_options'] = { include_usage: true }
   }
 

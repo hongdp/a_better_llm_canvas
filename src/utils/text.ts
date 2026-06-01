@@ -26,6 +26,19 @@ export function stripIncompleteEndTag(text: string): string {
 }
 
 /**
+ * Clean up LLM-generated HTML:
+ * 1. Remove blank `<p>` tags that contain only whitespace or &nbsp;.
+ * 2. Collapse whitespace (including newlines) between block-level tags
+ *    so that `</p>\n<p>` doesn't produce an extra blank line in TipTap.
+ */
+export function stripBlankParagraphs(html: string): string {
+  return html
+    .replace(/<p>\s*(<br\s*\/?>)?\s*<\/p>/gi, '')
+    .replace(/<p>(\s|&nbsp;)+<\/p>/gi, '')
+    .replace(/(<\/(p|h[1-6]|blockquote|ul|ol|li|div)>)\s+(<(p|h[1-6]|blockquote|ul|ol|li|div)[\s>])/gi, '$1$3')
+}
+
+/**
  * Count words in HTML content.
  * Handles CJK (Chinese/Japanese/Korean) characters as individual words,
  * and uses Unicode-aware word boundaries for Latin text.
