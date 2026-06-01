@@ -30,12 +30,8 @@ import {
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { useAppStore, PROVIDER_MODELS } from './store/useAppStore'
 import type { CanvasDocument, LLMProvider } from './store/useAppStore'
-import { streamLLM } from './services/llm'
-import type { LLMMessage } from './services/llm'
-import { diffHtml } from './utils/diff'
-import { htmlToMarkdown, htmlToPlainText } from './utils/convert'
-import { getTimestampId, stripIncompleteEndTag, countWords, convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from './utils/text'
-import { DOMParser as ProseMirrorDOMParser, Node as ProseMirrorNode, Mark as ProseMirrorMark } from '@tiptap/pm/model'
+import { countWords, convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from './utils/text'
+import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 
 import { Editor } from './components/Editor'
 
@@ -44,26 +40,10 @@ const SettingsModal = lazy(() => import('./components/SettingsModal').then(m => 
 const AuthForm = lazy(() => import('./components/AuthForm').then(m => ({ default: m.AuthForm })))
 const ImageGenerationModal = lazy(() => import('./components/ImageGenerationModal').then(m => ({ default: m.ImageGenerationModal })))
 
-
-
-// Fallback standard Gemini models
-const FALLBACK_GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
-  'gemini-1.5-flash-8b'
-]
-
-// Fallback standard Grok models
-const FALLBACK_GROK_MODELS = [
-  'grok-4.3',
-  'grok-build-0.1',
-  'grok-3',
-  'grok-2',
-  'grok-2-vision',
-  'grok-beta'
-]
+import { useImageUpload } from './hooks/useImageUpload'
+import { useModelFetcher } from './hooks/useModelFetcher'
+import { useDiffHandlers } from './hooks/useDiffHandlers'
+import { useChatLLM } from './hooks/useChatLLM'
 
 function App() {
   // Zustand store state
@@ -78,48 +58,28 @@ function App() {
     toggleReference,
     toggleSidebar,
     activeProvider,
-    setProvider,
     providerConfigs,
     updateProviderConfig,
     availableGeminiModels,
-    setAvailableGeminiModels,
     availableGrokModels,
-    setAvailableGrokModels,
     messages,
-    addMessage,
     clearChat,
-    setMessages,
     isStreaming,
-    setStreaming,
     customSystemPrompts,
     activeSystemPromptId,
-    setActiveSystemPromptId,
-    debugMode,
     selectedText,
     activeEditor,
-    sessionInputTokens,
-    sessionOutputTokens,
-    sessionCacheHitTokens,
-    sessionCacheMissTokens,
-    addSessionTokens,
     resetSessionTokens,
     versions,
-    createVersionSnapshot,
-    restoreVersion,
-    deleteVersionSnapshot,
     bookTitle,
     isStoreInitialized,
-    serverSaveStatus,
-    syncToServer,
     user,
-    logout,
     activeBookId,
     switchBook,
     lastSyncedAt
   } = useAppStore()
 
   // Local UI state
-  const [chatInput, setChatInput] = useState('')
   const [chatWidth, setChatWidth] = useState(380)
   const [isResizing, setIsResizing] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
@@ -135,280 +95,6 @@ function App() {
     getLayoutMode(window.innerWidth, window.innerHeight)
   )
   const [isChatExpanded, setIsChatExpanded] = useState(false)
-  const [isHistoryOpen, setIsHistoryOpen] = useState(false)
-  const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
-  const [errorMsg, setErrorMsg] = useState<string | null>(null)
-  const [isLoadingModels, setIsLoadingModels] = useState(false)
-  const [storageSize, setStorageSize] = useState('0.00 KB')
-
-  // Image generation modal state
-  const [isImageGenOpen, setIsImageGenOpen] = useState(false)
-  const [imageGenInitialPrompt, setImageGenInitialPrompt] = useState('')
-
-  // Revert & Edit Past Message state
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
-  const [editingMessageText, setEditingMessageText] = useState('')
-
-  // Multimodal image upload states
-  const [uploadedImages, setUploadedImages] = useState<string[]>([])
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const chatInputRef = useRef<HTMLDivElement>(null)
-
-  const processFiles = (files: File[]) => {
-    const imageFiles = files.filter(file => file.type.startsWith('image/'))
-    if (imageFiles.length === 0) return
-
-    // Filter out files exceeding the size limit (invalid images) first.
-    // GIFs can be up to 15MB, other formats up to 2MB.
-    const validSizeFiles = imageFiles.filter(file => {
-      const isGif = file.type === 'image/gif'
-      const limit = isGif ? 15 * 1024 * 1024 : 2 * 1024 * 1024
-      if (file.size > limit) {
-        alert(`Image "${file.name}" exceeds the ${isGif ? '15MB' : '2MB'} size limit.`)
-        return false
-      }
-      return true
-    })
-    if (validSizeFiles.length === 0) return
-
-    // Check maximum attachment limit using only valid images
-    if (uploadedImages.length + validSizeFiles.length > 3) {
-      alert('You can attach a maximum of 3 images.')
-      return
-    }
-
-    validSizeFiles.forEach(file => {
-      const reader = new FileReader()
-      reader.onload = async (event) => {
-        if (event.target?.result) {
-          const rawDataUrl = event.target.result as string
-          try {
-            const processedDataUrl = await convertGifToJpegIfNeeded(rawDataUrl)
-            
-            // Post-check size to ensure it fits in 2MB limit after conversion
-            const approxSize = processedDataUrl.length * 0.75
-            if (approxSize > 2 * 1024 * 1024) {
-              alert(`Image "${file.name}" is too large (exceeds 2MB) after conversion.`)
-              return
-            }
-
-            setUploadedImages(prev => {
-              if (prev.length >= 3) {
-                alert('You can attach a maximum of 3 images.')
-                return prev
-              }
-              return [...prev, processedDataUrl]
-            })
-          } catch (err) {
-            console.error('Failed to process image file:', err)
-          }
-        }
-      }
-      reader.readAsDataURL(file)
-    })
-  }
-
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files) return
-    const files = Array.from(e.target.files)
-    processFiles(files)
-    e.target.value = ''
-  }
-
-  const handlePaste = async (e: React.ClipboardEvent<HTMLDivElement>) => {
-    const files: File[] = []
-    
-    // Check e.clipboardData.files first (preferred by some mobile browsers)
-    if (e.clipboardData.files && e.clipboardData.files.length > 0) {
-      for (let i = 0; i < e.clipboardData.files.length; i++) {
-        const file = e.clipboardData.files[i]
-        if (file && file.type.startsWith('image/')) {
-          files.push(file)
-        }
-      }
-    }
-    
-    // Fallback to e.clipboardData.items
-    if (files.length === 0 && e.clipboardData.items) {
-      const items = e.clipboardData.items
-      for (let i = 0; i < items.length; i++) {
-        if (items[i].type.startsWith('image/')) {
-          const file = items[i].getAsFile()
-          if (file) {
-            files.push(file)
-          }
-        }
-      }
-    }
-
-    if (files.length > 0) {
-      e.preventDefault() // Prevent pasting image binary raw text
-      processFiles(files)
-      return
-    }
-
-    // Fallback for browsers that trigger paste event but do not expose inline clipboardData files
-    try {
-      if (navigator.clipboard && navigator.clipboard.read) {
-        const clipboardItems = await navigator.clipboard.read()
-        const clipFiles: File[] = []
-        for (const item of clipboardItems) {
-          // Direct image types
-          for (const type of item.types) {
-            if (type.startsWith('image/')) {
-              try {
-                const blob = await item.getType(type)
-                const file = new File([blob], `pasted-image.${type.split('/')[1] || 'png'}`, { type })
-                clipFiles.push(file)
-              } catch (getTypeErr) {
-                console.warn(`Failed to read type ${type} from inline paste fallback:`, getTypeErr)
-              }
-            }
-          }
-          // Fallback html image tags
-          if (clipFiles.length === 0 && item.types.includes('text/html')) {
-            try {
-              const blob = await item.getType('text/html')
-              const htmlText = await blob.text()
-              const parser = new DOMParser()
-              const doc = parser.parseFromString(htmlText, 'text/html')
-              const imgs = Array.from(doc.getElementsByTagName('img'))
-              for (const img of imgs) {
-                const src = img.src
-                if (src) {
-                  if (src.startsWith('data:')) {
-                    const res = await fetch(src)
-                    const resBlob = await res.blob()
-                    const file = new File([resBlob], 'pasted-image.png', { type: resBlob.type })
-                    clipFiles.push(file)
-                  } else if (src.startsWith('blob:')) {
-                    const dataUrl = await convertBlobUrlToDataUrl(src)
-                    const res = await fetch(dataUrl)
-                    const resBlob = await res.blob()
-                    const file = new File([resBlob], 'pasted-image.png', { type: resBlob.type })
-                    clipFiles.push(file)
-                  } else if (src.startsWith('http')) {
-                    try {
-                      const res = await fetch(src, { mode: 'cors' })
-                      const resBlob = await res.blob()
-                      const file = new File([resBlob], 'pasted-image.png', { type: resBlob.type })
-                      clipFiles.push(file)
-                    } catch (fetchErr) {
-                      console.warn('Failed to fetch external inline image:', fetchErr)
-                    }
-                  }
-                }
-              }
-            } catch (htmlErr) {
-              console.warn('Failed to parse HTML from inline paste fallback:', htmlErr)
-            }
-          }
-        }
-        if (clipFiles.length > 0) {
-          e.preventDefault()
-          processFiles(clipFiles)
-        }
-      }
-    } catch (err) {
-      console.warn('Fallback Clipboard API read failed:', err)
-    }
-  }
-
-  const handlePasteFromClipboard = async () => {
-    // Check permission if query is supported
-    if (navigator.permissions && navigator.permissions.query) {
-      try {
-        const permission = await navigator.permissions.query({
-          name: 'clipboard-read' as any
-        })
-        if (permission.state === 'denied') {
-          alert('Clipboard read permission is denied. Please enable clipboard access for this site in your browser settings.')
-          return
-        }
-      } catch (e) {
-        // clipboard-read permission query might not be supported, ignore
-      }
-    }
-
-    try {
-      if (!navigator.clipboard || !navigator.clipboard.read) {
-        alert('Your browser does not support the clipboard reading API.')
-        return
-      }
-      
-      const clipboardItems = await navigator.clipboard.read()
-      const files: File[] = []
-      
-      for (const item of clipboardItems) {
-        // Direct image types
-        for (const type of item.types) {
-          if (type.startsWith('image/')) {
-            try {
-              const blob = await item.getType(type)
-              const file = new File([blob], `clipboard-image.${type.split('/')[1] || 'png'}`, { type })
-              files.push(file)
-            } catch (getTypeErr) {
-              console.warn(`Failed to read type ${type} from clipboard:`, getTypeErr)
-            }
-          }
-        }
-
-        // Fallback: HTML content image tags
-        if (files.length === 0 && item.types.includes('text/html')) {
-          try {
-            const blob = await item.getType('text/html')
-            const htmlText = await blob.text()
-            const parser = new DOMParser()
-            const doc = parser.parseFromString(htmlText, 'text/html')
-            const imgs = Array.from(doc.getElementsByTagName('img'))
-            for (const img of imgs) {
-              const src = img.src
-              if (src) {
-                if (src.startsWith('data:')) {
-                  const res = await fetch(src)
-                  const resBlob = await res.blob()
-                  const file = new File([resBlob], 'clipboard-image.png', { type: resBlob.type })
-                  files.push(file)
-                } else if (src.startsWith('blob:')) {
-                  const dataUrl = await convertBlobUrlToDataUrl(src)
-                  const res = await fetch(dataUrl)
-                  const resBlob = await res.blob()
-                  const file = new File([resBlob], 'clipboard-image.png', { type: resBlob.type })
-                  files.push(file)
-                } else if (src.startsWith('http')) {
-                  try {
-                    const res = await fetch(src, { mode: 'cors' })
-                    const resBlob = await res.blob()
-                    const file = new File([resBlob], 'clipboard-image.png', { type: resBlob.type })
-                    files.push(file)
-                  } catch (fetchErr) {
-                    console.warn('Failed to fetch external clipboard image:', fetchErr)
-                  }
-                }
-              }
-            }
-          } catch (htmlErr) {
-            console.warn('Failed to parse HTML from clipboard:', htmlErr)
-          }
-        }
-      }
-      
-      if (files.length > 0) {
-        processFiles(files)
-      } else {
-        alert('No image found in clipboard. Please make sure you have copied an image first.')
-      }
-    } catch (err) {
-      console.error('Failed to read clipboard:', err)
-      alert('Could not read clipboard. Please ensure you copy an image and grant clipboard permissions.')
-    }
-  }
-
-  // Text selection tracking refs for token optimization replacement
-  const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
-  const selectionEndRef = useRef<number | null>(null)
-  const originalSelectedTextRef = useRef<string>('')
-  const abortControllerRef = useRef<AbortController | null>(null)
 
   // Save status state
   const [saveStatus, setSaveStatus] = useState<'saved' | 'unsaved'>('saved')
@@ -424,13 +110,43 @@ function App() {
     }, 1500)
   }, [])
 
-  const forceSave = () => {
+  const forceSave = useCallback(() => {
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current)
       saveTimeoutRef.current = null
     }
     setSaveStatus('saved')
-  }
+  }, [])
+
+  // Multimodal image upload states & logic
+  const {
+    uploadedImages,
+    setUploadedImages,
+  } = useImageUpload()
+
+  const {
+    chatInput,
+    setChatInput,
+    chatInputRef,
+    chatEndRef,
+    setErrorMsg,
+    handleSendMessage,
+    handleStopGeneration
+  } = useChatLLM({
+    activeEditor,
+    selectedText,
+    uploadedImages,
+    setUploadedImages,
+    layoutMode,
+    setIsChatExpanded,
+    forceSave,
+    setSaveStatus
+  })
+
+  useModelFetcher(isSettingsOpen, setErrorMsg, () => {})
+
+  // Image generation modal state
+  const [isImageGenOpen, setIsImageGenOpen] = useState(false)
 
   // Clear timeout on unmount
   useEffect(() => {
@@ -468,24 +184,6 @@ function App() {
     setSaveStatus('saved')
   }, [activeDocumentId])
 
-  // Calculate total localStorage usage in bytes, then format to KB
-  const updateStorageSize = () => {
-    let total = 0
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i)
-      if (key) {
-        total += (key.length + (localStorage.getItem(key) || '').length) * 2
-      }
-    }
-    setStorageSize((total / 1024).toFixed(2) + ' KB')
-  }
-
-  // Update storage usage when documents, versions, theme or LLM configurations change
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    updateStorageSize()
-  }, [documents, versions, theme, providerConfigs])
-
   // Track window size for mobile responsive layouts
   useEffect(() => {
     const handleResize = () => {
@@ -495,58 +193,22 @@ function App() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
-  // 1. Cross-Tab Sync: Listen to storage event to sync custom system prompts & LLM configs across tabs
-  useEffect(() => {
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'web_canvas_system_prompts_backup') {
-        try {
-          const parsed = e.newValue ? JSON.parse(e.newValue) : null
-          if (parsed && parsed.version === 1) {
-            useAppStore.setState({
-              customSystemPrompts: parsed.prompts,
-              activeSystemPromptId: parsed.activePromptId
-            })
-          }
-        } catch (err) {
-          console.error('Failed to sync system prompts from storage event', err)
-        }
-      } else if (e.key === 'web_canvas_providers_backup') {
-        try {
-          const parsed = e.newValue ? JSON.parse(e.newValue) : null
-          if (parsed && parsed.version === 2) {
-            useAppStore.setState({
-              providerConfigs: parsed.data
-            })
-          }
-        } catch (err) {
-          console.error('Failed to sync LLM configs from storage event', err)
-        }
-      }
-    }
-
-    window.addEventListener('storage', handleStorageChange)
-    return () => window.removeEventListener('storage', handleStorageChange)
-  }, [])
-
   // 2. Cross-Device Sync: Fetch server books and check for modifications on tab focus/visibility change
   useEffect(() => {
     const checkServerUpdates = async () => {
       const state = useAppStore.getState()
-      // Only check if user is logged in, there are no unsaved local changes, and we're not currently streaming or saving
-      if (!state.user || state.serverSaveStatus !== 'saved' || state.isStreaming) return
+      if (!state.user || state.isStreaming) return
 
       try {
         const res = await fetch('/api/books')
         if (res.ok) {
           const books = await res.json()
-          useAppStore.setState({ availableBooks: books })
           
           const currentBook = books.find((b: any) => b.id === state.activeBookId)
           if (currentBook) {
             const serverUpdatedAt = currentBook.updatedAt
             const localLastSyncedAt = state.lastSyncedAt
 
-            // If server's updatedAt is newer than local lastSyncedAt, trigger a book switch to pull latest data
             if (serverUpdatedAt && (!localLastSyncedAt || new Date(serverUpdatedAt) > new Date(localLastSyncedAt))) {
               console.log('Server changes detected. Syncing active book from server:', state.activeBookId)
               await state.switchBook(state.activeBookId)
@@ -573,51 +235,7 @@ function App() {
     }
   }, [activeBookId, switchBook, lastSyncedAt])
 
-  // Dismiss export dropdown on outside click
-  useEffect(() => {
-    const handleOutsideClick = (e: MouseEvent) => {
-      const target = e.target as HTMLElement
-      if (!target.closest('#export-dropdown-trigger')) {
-        setIsExportDropdownOpen(false)
-      }
-    }
-    if (isExportDropdownOpen) {
-      window.addEventListener('click', handleOutsideClick)
-    }
-    return () => {
-      window.removeEventListener('click', handleOutsideClick)
-    }
-  }, [isExportDropdownOpen])
-
-
-
-  const chatEndRef = useRef<HTMLDivElement>(null)
   const isResizingRef = useRef(false)
-  const accumulatedTextRef = useRef('')
-  const imagePlaceholdersRef = useRef<{ placeholder: string; tag: string }[]>([])
-
-  const extractImagesToPlaceholders = (html: string): string => {
-    if (!html) return html
-    const regex = /<img\s+[^>]*src=["']data:image\/[^"']+["'][^>]*>/gi
-    return html.replace(regex, (match) => {
-      let existing = imagePlaceholdersRef.current.find(item => item.tag === match)
-      if (!existing) {
-        const placeholder = `{{IMAGE_PLACEHOLDER_${imagePlaceholdersRef.current.length}}}`
-        existing = { placeholder, tag: match }
-        imagePlaceholdersRef.current.push(existing)
-      }
-      return existing.placeholder
-    })
-  }
-
-  const restoreImagesFromPlaceholders = (html: string): string => {
-    if (!html) return html
-    let result = html
-    imagePlaceholdersRef.current.forEach(item => {
-      result = result.replaceAll(item.placeholder, item.tag)
-    })
-    return result
-  }
 
   // Retrieve active document
   const activeDoc = documents.find(d => d.id === activeDocumentId) || documents[0] || {
@@ -626,20 +244,7 @@ function App() {
     content: '<p>Start writing...</p>'
   }
 
-  // Memoized plain-text snippet of the active document for image gen context.
-  // htmlToPlainText is expensive — only recompute when content actually changes.
-  const documentPlainTextContext = useMemo(
-    () => htmlToPlainText(activeDoc.content).slice(0, 1500),
-    [activeDoc.content]
-  )
-
   const activeConfig = providerConfigs[activeProvider]
-  const geminiConfig = providerConfigs.gemini
-  const geminiApiKey = geminiConfig.apiKey
-  const geminiBaseUrl = geminiConfig.baseUrl
-  const grokConfig = providerConfigs.grok
-  const grokApiKey = grokConfig.apiKey
-  const grokBaseUrl = grokConfig.baseUrl
 
   // Handle theme changes
   useEffect(() => {
@@ -650,111 +255,6 @@ function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
-
-  // Fetch official Gemini models dynamically when API Key or Base URL changes (only when Settings are open)
-  useEffect(() => {
-    if (!isSettingsOpen) return
-
-    const fetchOfficialModels = async () => {
-      if (!geminiApiKey || geminiApiKey === 'ollama-no-key') {
-        setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-        return
-      }
-
-      setIsLoadingModels(true)
-      try {
-        let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`
-        if (geminiBaseUrl && geminiBaseUrl !== 'https://generativelanguage.googleapis.com/v1beta') {
-          url = `${geminiBaseUrl.replace(/\/$/, '')}/models?key=${geminiApiKey}`
-        }
-
-        const res = await fetch(url)
-        if (res.ok) {
-          const data = await res.json()
-          if (data.models && Array.isArray(data.models)) {
-            const filtered = data.models
-              .filter((m: { name: string; supportedGenerationMethods?: string[] }) => 
-                (m.supportedGenerationMethods?.includes('generateContent') || 
-                 m.supportedGenerationMethods?.includes('streamGenerateContent')) &&
-                !m.name.includes('embedding') &&
-                !m.name.includes('aqa')
-              )
-              .map((m: { name: string }) => {
-                return m.name.startsWith('models/') ? m.name.slice(7) : m.name
-              })
-
-            if (filtered.length > 0) {
-              setAvailableGeminiModels(filtered)
-              if (!filtered.includes(geminiConfig.model)) {
-                updateProviderConfig('gemini', { model: filtered[0] })
-              }
-              setErrorMsg(null)
-            } else {
-              setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-              setErrorMsg('No compatible generation models returned from Gemini API.')
-            }
-          } else {
-            setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-            setErrorMsg('Invalid model list response format from Gemini API.')
-          }
-        } else {
-          setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-          setErrorMsg(`Failed to load official Gemini models: ${res.status} ${res.statusText}. Using fallback models.`)
-        }
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e))
-        console.error('Failed to fetch official Gemini models, using fallbacks', err)
-        setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-        setErrorMsg(`Failed to connect to Gemini API: ${err.message}. Using fallback models.`)
-      } finally {
-        setIsLoadingModels(false)
-      }
-    }
-
-    fetchOfficialModels()
-  }, [isSettingsOpen, geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model])
-
-  // Fetch official Grok models dynamically when API Key or Base URL changes (only when Settings are open)
-  useEffect(() => {
-    if (!isSettingsOpen) return
-
-    const fetchGrokModels = async () => {
-      if (!grokApiKey) {
-        setAvailableGrokModels(FALLBACK_GROK_MODELS)
-        return
-      }
-      try {
-        const url = `${grokBaseUrl.replace(/\/$/, '')}/models`
-        const res = await fetch(url, {
-          headers: {
-            'Authorization': `Bearer ${grokApiKey}`
-          }
-        })
-        if (res.ok) {
-          const data = await res.json()
-          if (data.data && Array.isArray(data.data)) {
-            const list = data.data
-              .map((m: { id: string }) => m.id)
-              .sort((a: string, b: string) => {
-                if (a.startsWith('grok-3') && !b.startsWith('grok-3')) return -1
-                if (!a.startsWith('grok-3') && b.startsWith('grok-3')) return 1
-                return a.localeCompare(b)
-              })
-            if (list.length > 0) {
-              setAvailableGrokModels(list)
-              if (!list.includes(grokConfig.model)) {
-                updateProviderConfig('grok', { model: list[0] })
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Failed to fetch official Grok models', err)
-      }
-    }
-    fetchGrokModels()
-  }, [isSettingsOpen, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
-
 
   // Horizontal resizing handlers
   const startResizing = (e: React.MouseEvent) => {
@@ -792,621 +292,12 @@ function App() {
     }
   }, [])
 
-  // Static system prompt: contains only stable instructions that rarely change.
-  // This maximizes LLM API prefix cache hits across consecutive requests.
-  const buildStaticSystemPrompt = () => {
-    const activePromptItem = customSystemPrompts.find(p => p.id === activeSystemPromptId) || customSystemPrompts[0]
-    const customPromptText = activePromptItem?.content || ''
-
-    return {
-      role: 'system' as const,
-      content: `You are an expert document writing and editing assistant.
-You help the user write, edit, and polish the ACTIVE document shown on their screen.
-
-${customPromptText ? `USER CUSTOM SYSTEM PROMPT / INSTRUCTIONAL GUIDELINES:\n${customPromptText}\n\n` : ''}CRITICAL RULES:
-1. If your response updates the ACTIVE document, you have two options depending on scope:
-   a. [PREFERRED FOR SELECTED EDITS]: If the user has selected text (provided in "CURRENT SELECTED TEXT IN ACTIVE DOCUMENT") and you are only updating/modifying that selection, output ONLY the updated selection content wrapped inside "<selection_replace>" XML tags. Do not output the rest of the document. This is highly preferred to save output tokens and speed up the reply.
-   b. [FOR FULL DOCUMENT EDITS]: If you are rewriting the entire document or editing multiple non-contiguous parts of it, wrap the FULL updated document text inside "<canvas>" XML tags.
-2. Write conversational feedback/explanations OUTSIDE the XML tags (either outside "<canvas>" or outside "<selection_replace>") for the chat panel.
-3. Output the document content (inside "<canvas>" or "<selection_replace>") as clean HTML (using tags like h1, h2, h3, p, ul, ol, li, strong, em, blockquote, pre, code). You CAN output exactly one Heading 1 (<h1>) tag at the very beginning of a full document inside "<canvas>" to represent/change the chapter title. Do NOT output Heading 1 (<h1>) tags anywhere else; use Heading 2 (<h2>) or below for subsequent sections.
-4. If the user instruction is just conversational and does not require updating the document, DO NOT output any XML block. Just write a conversational reply.
-5. If the document content contains image placeholders like "{{IMAGE_PLACEHOLDER_N}}", you MUST preserve them exactly as they are at their correct positions in the document. Do not alter, delete, or translate these placeholders.`
-    }
-  }
-
-  // Dynamic context: contains document content, references, selection etc.
-  // Separated from system prompt so the stable prefix can be cached by LLM APIs.
-  const buildDynamicContext = (finalReferenceIds: string[]) => {
-    let referenceDocsContext = ''
-    finalReferenceIds.forEach(refId => {
-      const refDoc = documents.find(d => d.id === refId)
-      if (refDoc) {
-        const cleanRefContent = extractImagesToPlaceholders(refDoc.content)
-        referenceDocsContext += `\nREFERENCE DOCUMENT "${refDoc.title}" (READ-ONLY):\n"""\nTitle: ${refDoc.title}\nContent:\n${cleanRefContent}\n"""\n`
-      }
-    })
-
-    // Build overall project outline context
-    const outlineList = documents
-      .map(d => `- ${d.title}${d.id === activeDocumentId ? ' (Active / Editing Target)' : ''}`)
-      .join('\n')
-
-    // Construct selection context block
-    const selectionContext = selectedText
-      ? `\nCURRENT SELECTED TEXT IN ACTIVE DOCUMENT (Focus your edits ONLY on this section if the user instructs so):\n"""\n${selectedText}\n"""\n`
-      : ''
-
-    const cleanActiveContent = extractImagesToPlaceholders(activeDoc.content)
-
-    return {
-      role: 'user' as const,
-      content: `[DOCUMENT CONTEXT - Do not respond to this message directly, wait for the user's instruction in the next message.]
-
-CHAPTER OUTLINE (OVERVIEW OF ALL WRITTEN CHAPTERS):
-${outlineList}
-${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
-${selectionContext}
-CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
-"""
-${cleanActiveContent}
-"""`
-    }
-  }
-
-  // Shared LLM Streaming engine
-  const startLLMStreaming = async (
-    apiMessages: LLMMessage[],
-    assistantMsgId: string,
-    originalDocContent: string,
-    attachmentsText: string,
-    estimatedInputTokens: number
-  ) => {
-    // Abort any existing stream just in case
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort()
-    }
-    abortControllerRef.current = new AbortController()
-    const signal = abortControllerRef.current.signal
-
-    // Capture and store current selection indices before streaming starts
-    if (activeEditor && selectedText) {
-      selectionRangeRef.current = {
-        from: activeEditor.state.selection.from,
-        to: activeEditor.state.selection.to
-      }
-      selectionEndRef.current = activeEditor.state.selection.to
-      originalSelectedTextRef.current = selectedText
-    } else {
-      selectionRangeRef.current = null
-      selectionEndRef.current = null
-      originalSelectedTextRef.current = ''
-    }
-
-    try {
-      await streamLLM(
-        apiMessages,
-        { ...activeConfig, provider: activeProvider, debug: debugMode, signal },
-        {
-          onChunk: (chunk: string) => {
-            accumulatedTextRef.current += chunk
-            const raw = accumulatedTextRef.current
-
-            let chatText: string
-            let canvasText = ''
-            let selectionReplaceText = ''
-            let isSelectionEdit = false
-
-            const canvasStart = '<canvas>'
-            const canvasEnd = '</canvas>'
-            const selectionStart = '<selection_replace>'
-            const selectionEndTag = '</selection_replace>'
-
-            const canvasIdx = raw.indexOf(canvasStart)
-            const selectionIdx = raw.indexOf(selectionStart)
-
-            if (selectionIdx !== -1) {
-              isSelectionEdit = true
-              chatText = raw.substring(0, selectionIdx).trim()
-              const rest = raw.substring(selectionIdx + selectionStart.length)
-              const endIdx = rest.indexOf(selectionEndTag)
-              if (endIdx !== -1) {
-                selectionReplaceText = rest.substring(0, endIdx)
-                chatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
-              } else {
-                selectionReplaceText = rest
-              }
-            } else if (canvasIdx !== -1) {
-              chatText = raw.substring(0, canvasIdx).trim()
-              const rest = raw.substring(canvasIdx + canvasStart.length)
-              const endIdx = rest.indexOf(canvasEnd)
-              if (endIdx !== -1) {
-                canvasText = rest.substring(0, endIdx)
-                chatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
-              } else {
-                canvasText = rest
-              }
-            } else {
-              chatText = raw
-            }
-
-            // Prepend visual attachment details to conversational text
-            const displayChatText = attachmentsText 
-              ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
-              : (chatText || 'Updating document...')
-
-            // Update assistant message from fresh store state
-            const latestMessages = useAppStore.getState().messages
-            setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return {
-                    ...m,
-                    content: displayChatText
-                  }
-                }
-                return m
-              })
-            )
-
-            // Dynamic document insertion
-            // NOTE: During streaming we avoid restoreImagesFromPlaceholders() and
-            // updateActiveDocument() on every chunk — both are expensive when images
-            // (large base64 strings) are present. The authoritative save happens in onDone.
-            if (isSelectionEdit) {
-              const cleanedText = stripIncompleteEndTag(selectionReplaceText)
-              if (cleanedText && activeEditor && selectionRangeRef.current) {
-                const { from } = selectionRangeRef.current
-                const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
-
-                // Restore images for live editor preview (selection text is small, usually no images)
-                const restoredText = restoreImagesFromPlaceholders(cleanedText)
-                const tempDiv = document.createElement('div')
-                tempDiv.innerHTML = restoredText
-                const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
-
-                const tr = activeEditor.state.tr
-                tr.replace(from, currentEnd, slice)
-                activeEditor.view.dispatch(tr)
-
-                selectionEndRef.current = from + slice.size
-                // Skip updateActiveDocument here to avoid serializing full HTML with
-                // images and writing to IndexedDB on every chunk. onDone handles the final save.
-                setSaveStatus('unsaved')
-              }
-            } else if (canvasText.trim()) {
-              // For full-document canvas edits, skip restoring images and updating store
-              // on every chunk — image base64 strings can be MBs and this ran per-chunk.
-              // onDone will do the final restore + diff + save.
-              setSaveStatus('unsaved')
-            }
-          },
-          onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
-            setStreaming(false)
-
-            // Calculate final response output tokens using API metadata or fallback estimations
-            let finalInputTokens = estimatedInputTokens
-            let finalOutputTokens = Math.ceil(fullText.length / 4)
-            let cacheHits = 0
-
-            if (usage) {
-              finalInputTokens = usage.promptTokens
-              finalOutputTokens = usage.completionTokens
-              cacheHits = usage.cachedPromptTokens || 0
-            }
-
-            addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
-
-            let finalChatText: string
-            let finalCanvasText = ''
-            let finalSelectionReplaceText = ''
-            let isSelectionEdit = false
-
-            const canvasStart = '<canvas>'
-            const canvasEnd = '</canvas>'
-            const selectionStart = '<selection_replace>'
-            const selectionEndTag = '</selection_replace>'
-
-            const canvasIdx = fullText.indexOf(canvasStart)
-            const selectionIdx = fullText.indexOf(selectionStart)
-
-            if (selectionIdx !== -1) {
-              isSelectionEdit = true
-              finalChatText = fullText.substring(0, selectionIdx).trim()
-              const rest = fullText.substring(selectionIdx + selectionStart.length)
-              const endIdx = rest.indexOf(selectionEndTag)
-              if (endIdx !== -1) {
-                finalSelectionReplaceText = rest.substring(0, endIdx)
-                finalChatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
-              } else {
-                finalSelectionReplaceText = rest
-              }
-            } else if (canvasIdx !== -1) {
-              finalChatText = fullText.substring(0, canvasIdx).trim()
-              const rest = fullText.substring(canvasIdx + canvasStart.length)
-              const endIdx = rest.indexOf(canvasEnd)
-              if (endIdx !== -1) {
-                finalCanvasText = rest.substring(0, endIdx)
-                finalChatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
-              } else {
-                finalCanvasText = rest
-              }
-            } else {
-              finalChatText = fullText
-            }
-
-            const displayChatText = attachmentsText 
-              ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
-              : (finalChatText.trim() || 'Document updated successfully.')
-
-            const latestMessages = useAppStore.getState().messages
-            setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return {
-                    ...m,
-                    content: displayChatText
-                  }
-                }
-                return m
-              })
-            )
-
-            // Apply HTML-aware diff highlights on completion
-            if (isSelectionEdit) {
-              const cleanedText = stripIncompleteEndTag(finalSelectionReplaceText)
-              if (cleanedText && activeEditor && selectionRangeRef.current) {
-                const restoredText = restoreImagesFromPlaceholders(cleanedText)
-                const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
-                const { from } = selectionRangeRef.current
-                const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
-
-                const tempDiv = document.createElement('div')
-                tempDiv.innerHTML = diffed
-                const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
-
-                const tr = activeEditor.state.tr
-                tr.replace(from, currentEnd, slice)
-                activeEditor.view.dispatch(tr)
-
-                updateActiveDocument({ content: activeEditor.getHTML() })
-              }
-            } else if (finalCanvasText.trim()) {
-              const restoredText = restoreImagesFromPlaceholders(finalCanvasText)
-              const diffed = diffHtml(originalDocContent, restoredText)
-              updateActiveDocument({ content: diffed })
-            }
-            forceSave()
-          },
-          onError: (err: Error) => {
-            setStreaming(false)
-            
-            const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
-            if (isAbort) {
-              // Keep the partial generated text! Just force save it.
-              forceSave()
-              return
-            }
-
-            setErrorMsg(err.message)
-            
-            const displayChatText = attachmentsText
-              ? `${attachmentsText}\n\n⚠️ Error during stream: ${err.message}`
-              : `⚠️ Error during stream: ${err.message}`
-
-            const latestMessages = useAppStore.getState().messages
-            setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return {
-                    ...m,
-                    content: displayChatText
-                  }
-                }
-                return m
-              })
-            )
-
-            // Revert document to original state before the edit attempt if error occurs
-            updateActiveDocument({ content: originalDocContent })
-            forceSave()
-          }
-        }
-      )
-    } catch (e) {
-      const err = e instanceof Error ? e : new Error(String(e))
-      setStreaming(false)
-      setErrorMsg(err.message || 'Failed to initialize LLM stream.')
-    }
-  }
-
-  // Send message handler (streaming and parsing)
-  const handleSendMessage = async (e?: React.FormEvent, customPrompt?: string) => {
-    e?.preventDefault()
-    
-    const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
-    if (!promptText || isStreaming) return
-
-    imagePlaceholdersRef.current = []
-
-    if (layoutMode === 'portrait') {
-      setIsChatExpanded(true)
-    }
-
-    setErrorMsg(null)
-    const originalDocContent = activeDoc.content
-    
-    // Create an auto-save snapshot before LLM modifications
-    createVersionSnapshot(`Auto-save before: "${promptText.substring(0, 30)}${promptText.length > 30 ? '...' : ''}"`)
-    
-    if (!customPrompt) {
-      setChatInput('')
-      if (chatInputRef.current) {
-        chatInputRef.current.innerHTML = ''
-      }
-    }
-
-    // 1. Scan user prompt for other chapter title mentions to automatically attach them
-    const autoDetectedIds: string[] = []
-    documents.forEach(doc => {
-      if (doc.id !== activeDocumentId) {
-        // Strip Chapter numbering from titles for natural mention matching
-        const cleanTitle = doc.title.toLowerCase().replace(/chapter\s*\d+\s*:\s*/g, '')
-        if (
-          promptText.toLowerCase().includes(doc.title.toLowerCase()) ||
-          (cleanTitle.length > 3 && promptText.toLowerCase().includes(cleanTitle))
-        ) {
-          autoDetectedIds.push(doc.id)
-        }
-      }
-    })
-
-    // Combine manual selected reference IDs with auto-detected ones
-    const finalReferenceIds = Array.from(new Set([...selectedReferenceIds, ...autoDetectedIds]))
-
-    // 2. Add user message
-    const userMsgId = getTimestampId('user')
-    const userMsg = {
-      id: userMsgId,
-      role: 'user' as const,
-      content: promptText,
-      images: uploadedImages.length > 0 ? uploadedImages : undefined,
-      timestamp: new Date().toISOString(),
-      provider: activeProvider,
-      model: activeConfig.model
-    }
-    addMessage(userMsg)
-    setUploadedImages([])
-
-    // 3. Add assistant placeholder
-    const assistantMsgId = getTimestampId('assistant')
-    const assistantPlaceholder = {
-      id: assistantMsgId,
-      role: 'assistant' as const,
-      content: 'Thinking...',
-      timestamp: new Date().toISOString(),
-      provider: activeProvider,
-      model: activeConfig.model
-    }
-    addMessage(assistantPlaceholder)
-    setStreaming(true)
-
-    accumulatedTextRef.current = ''
-
-    // 4. Build messages: stable system prefix + dynamic context + history
-    const staticSystem = buildStaticSystemPrompt()
-    const dynamicContext = buildDynamicContext(finalReferenceIds)
-    // Assistant acknowledgment bridges the context (user role) and chat history
-    const contextAck: LLMMessage = { role: 'assistant', content: 'Understood. I have the document context. What would you like me to do?' }
-
-    // Map chat history to LLM provider structure
-    const historyMessages: LLMMessage[] = messages
-      .filter(m => m.id !== 'welcome') // skip initial welcome for cleaner context
-      .map(m => ({
-        role: m.role,
-        content: m.content,
-        images: m.images
-      }))
-
-    // Add current user prompt
-    historyMessages.push({
-      role: 'user',
-      content: promptText,
-      images: userMsg.images
-    })
-
-    const apiMessages = [staticSystem, dynamicContext, contextAck, ...historyMessages]
-    const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
-
-    // Construct visual attachment text indicators
-    const attachmentsText = finalReferenceIds
-      .map(id => {
-        const doc = documents.find(d => d.id === id)
-        return doc ? `[Attached Context: ${doc.title}]` : ''
-      })
-      .filter(Boolean)
-      .join('\n')
-
-    await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens)
-  }
-
-  // Edit and Resubmit message handler
-  const handleResubmitMessage = async (msgId: string, newContent: string) => {
-    const trimmed = newContent.trim()
-    if (!trimmed || isStreaming) return
-
-    imagePlaceholdersRef.current = []
-
-    if (layoutMode === 'portrait') {
-      setIsChatExpanded(true)
-    }
-
-    setEditingMessageId(null)
-    setErrorMsg(null)
-
-    // Find the message index
-    const targetIdx = messages.findIndex(m => m.id === msgId)
-    if (targetIdx === -1) return
-
-    // Truncate message history from target message index, replacing the edited content
-    const truncatedMessages = messages.slice(0, targetIdx + 1).map((m, idx) => {
-      if (idx === targetIdx) {
-        return {
-          ...m,
-          content: trimmed,
-          timestamp: new Date().toISOString()
-        }
-      }
-      return m
-    })
-
-    const originalDocContent = activeDoc.content
-    createVersionSnapshot(`Auto-save before edit: "${trimmed.substring(0, 30)}${trimmed.length > 30 ? '...' : ''}"`)
-
-    // Update store state with truncated history
-    setMessages(truncatedMessages)
-
-    // Add new assistant reply placeholder
-    const assistantMsgId = getTimestampId('assistant')
-    const assistantPlaceholder = {
-      id: assistantMsgId,
-      role: 'assistant' as const,
-      content: 'Thinking...',
-      timestamp: new Date().toISOString(),
-      provider: activeProvider,
-      model: activeConfig.model
-    }
-    setMessages([...truncatedMessages, assistantPlaceholder])
-    setStreaming(true)
-
-    accumulatedTextRef.current = ''
-
-    // Scan user prompt for other chapter title mentions
-    const autoDetectedIds: string[] = []
-    documents.forEach(doc => {
-      if (doc.id !== activeDocumentId) {
-        const cleanTitle = doc.title.toLowerCase().replace(/chapter\s*\d+\s*:\s*/g, '')
-        if (
-          trimmed.toLowerCase().includes(doc.title.toLowerCase()) ||
-          (cleanTitle.length > 3 && trimmed.toLowerCase().includes(cleanTitle))
-        ) {
-          autoDetectedIds.push(doc.id)
-        }
-      }
-    })
-
-    const finalReferenceIds = Array.from(new Set([...selectedReferenceIds, ...autoDetectedIds]))
-
-    // Build messages: stable system prefix + dynamic context + history
-    const staticSystem = buildStaticSystemPrompt()
-    const dynamicContext = buildDynamicContext(finalReferenceIds)
-    const contextAck: LLMMessage = { role: 'assistant', content: 'Understood. I have the document context. What would you like me to do?' }
-
-    // Map history to provider messages
-    const historyMessages: LLMMessage[] = truncatedMessages
-      .filter(m => m.id !== 'welcome')
-      .map(m => ({
-        role: m.role,
-        content: m.content,
-        images: m.images
-      }))
-
-    const apiMessages = [staticSystem, dynamicContext, contextAck, ...historyMessages]
-    const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
-
-    const attachmentsText = finalReferenceIds
-      .map(id => {
-        const doc = documents.find(d => d.id === id)
-        return doc ? `[Attached Context: ${doc.title}]` : ''
-      })
-      .filter(Boolean)
-      .join('\n')
-
-    await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens)
-  }
-
-  const hasPendingDiffs = activeDoc.content.includes('data-diff-id')
-
-  // Accept all additions and finalize all deletions in active document
-  const handleAcceptAllDiffs = () => {
-    if (activeEditor) {
-      const { state, view } = activeEditor
-      const { doc } = state
-      const tr = state.tr
-      const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
-
-      doc.descendants((node: ProseMirrorNode, pos: number) => {
-        if (node.isText) {
-          node.marks.forEach((mark: ProseMirrorMark) => {
-            if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
-              changes.push({
-                from: pos,
-                to: pos + node.nodeSize,
-                type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
-              })
-            }
-          })
-        }
-      })
-
-      changes.sort((a, b) => b.from - a.from)
-      changes.forEach(change => {
-        if (change.type === 'addition') {
-          tr.removeMark(change.from, change.to, state.schema.marks.diffAddition)
-        } else {
-          tr.delete(change.from, change.to)
-        }
-      })
-      view.dispatch(tr)
-      updateActiveDocument({ content: activeEditor.getHTML() })
-    } else {
-      const cleaned = activeDoc.content
-        .replace(/<ins[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/ins>/g, '$1')
-        .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '')
-      updateActiveDocument({ content: cleaned })
-    }
-    triggerUnsaved()
-  }
-
-  // Reject all additions and restore all deleted text in active document
-  const handleRejectAllDiffs = () => {
-    if (activeEditor) {
-      const { state, view } = activeEditor
-      const { doc } = state
-      const tr = state.tr
-      const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
-
-      doc.descendants((node: ProseMirrorNode, pos: number) => {
-        if (node.isText) {
-          node.marks.forEach((mark: ProseMirrorMark) => {
-            if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
-              changes.push({
-                from: pos,
-                to: pos + node.nodeSize,
-                type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
-              })
-            }
-          })
-        }
-      })
-
-      changes.sort((a, b) => b.from - a.from)
-      changes.forEach(change => {
-        if (change.type === 'addition') {
-          tr.delete(change.from, change.to)
-        } else {
-          tr.removeMark(change.from, change.to, state.schema.marks.diffDeletion)
-        }
-      })
-      view.dispatch(tr)
-      updateActiveDocument({ content: activeEditor.getHTML() })
-    } else {
-      const cleaned = activeDoc.content
-        .replace(/<ins[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/ins>/g, '')
-        .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '$1')
-      updateActiveDocument({ content: cleaned })
-    }
-    triggerUnsaved()
-  }
+  const { handleAcceptAllDiffs, handleRejectAllDiffs } = useDiffHandlers(
+    activeEditor,
+    activeDoc,
+    updateActiveDocument,
+    triggerUnsaved
+  )
 
   // Route editor selection quick action toolbar commands to LLM
   const handleQuickAction = async (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
@@ -1484,103 +375,7 @@ ${cleanActiveContent}
 
   // Export document handler
   const handleExport = (format: 'html' | 'markdown' | 'txt', exportAll: boolean) => {
-    const element = document.createElement("a")
-    let content = ''
-    let filename: string
-    let mimeType: string
-    
-    const cleanBookTitle = bookTitle.trim().replace(/[/\\?%*:|"<>\s]+/g, '_').replace(/_+/g, '_') || 'Book'
-    const cleanChapterTitle = activeDoc.title.trim().replace(/[/\\?%*:|"<>\s]+/g, '_').replace(/_+/g, '_') || 'Chapter'
-    const baseFilename = exportAll 
-      ? cleanBookTitle 
-      : `${cleanBookTitle}_${cleanChapterTitle}`
-
-
-    if (format === 'html') {
-      let bodyContent = ''
-      if (exportAll) {
-        documents.forEach((doc, idx) => {
-          const contentTrimmed = doc.content.trim()
-          const startsWithH1 = contentTrimmed.startsWith('<h1') || contentTrimmed.startsWith('<h1>')
-          if (startsWithH1) {
-            bodyContent += `${doc.content}\n`
-          } else {
-            bodyContent += `<h1>${doc.title}</h1>\n${doc.content}\n`
-          }
-          if (idx < documents.length - 1) {
-            bodyContent += `<hr style="margin: 3rem 0; border: none; border-top: 1px solid #cbd5e1;" />\n`
-          }
-        })
-      } else {
-        bodyContent = activeDoc.content
-      }
-
-      content = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>${exportAll ? 'All Chapters Combined' : activeDoc.title}</title>
-  <style>
-    body { font-family: system-ui, -apple-system, sans-serif; line-height: 1.6; color: #1e293b; max-width: 740px; margin: 2rem auto; padding: 0 1rem; }
-    h1, h2, h3 { color: #0f172a; }
-    blockquote { border-left: 4px solid #f59e0b; padding-left: 1rem; font-style: italic; color: #475569; }
-    pre { background-color: #f1f5f9; padding: 1rem; border-radius: 6px; overflow-x: auto; }
-    code { font-family: monospace; background-color: #f1f5f9; padding: 0.2rem 0.4rem; border-radius: 4px; }
-  </style>
-</head>
-<body>
-  ${bodyContent}
-</body>
-</html>`
-      filename = `${baseFilename}.html`
-      mimeType = 'text/html'
-    } else if (format === 'markdown') {
-      if (exportAll) {
-        documents.forEach((doc, idx) => {
-          const markdownContent = htmlToMarkdown(doc.content)
-          const startsWithH1 = markdownContent.trim().startsWith('# ')
-          if (startsWithH1) {
-            content += `${markdownContent}\n`
-          } else {
-            content += `# ${doc.title}\n\n${markdownContent}\n`
-          }
-          if (idx < documents.length - 1) {
-            content += `\n---\n\n`
-          }
-        })
-      } else {
-        content = htmlToMarkdown(activeDoc.content)
-      }
-      filename = `${baseFilename}.md`
-      mimeType = 'text/markdown'
-    } else {
-      if (exportAll) {
-        documents.forEach((doc, idx) => {
-          const plainTextContent = htmlToPlainText(doc.content)
-          const lines = plainTextContent.trim().split('\n')
-          const startsWithHeading = lines.length > 1 && lines[1].trim().length > 0 && /^[=]+$/.test(lines[1].trim())
-          if (startsWithHeading) {
-            content += `${plainTextContent}\n`
-          } else {
-            content += `${doc.title}\n${'='.repeat(doc.title.length)}\n\n${plainTextContent}\n`
-          }
-          if (idx < documents.length - 1) {
-            content += `\n\n\n`
-          }
-        })
-      } else {
-        content = htmlToPlainText(activeDoc.content)
-      }
-      filename = `${baseFilename}.txt`
-      mimeType = 'text/plain'
-    }
-
-    const file = new Blob([content], { type: mimeType })
-    element.href = URL.createObjectURL(file)
-    element.download = filename
-    document.body.appendChild(element)
-    element.click()
-    document.body.removeChild(element)
+    exportDocument(format, exportAll, documents, activeDoc, bookTitle)
   }
 
   const handleModelChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -2172,7 +967,7 @@ ${cleanActiveContent}
                     className="btn-icon animate-pulse" 
                     title="Stop generation"
                     onClick={() => {
-                      abortControllerRef.current?.abort()
+                      handleStopGeneration()
                     }}
                     style={{ 
                       color: '#ef4444',
