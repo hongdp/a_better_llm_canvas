@@ -164,6 +164,11 @@ Before merging any feature:
 - Every separate design or feature specification document created must be registered in the **Decision Log** inside the main design document ([design.md](file:///home/hongdp/Workspace/web_canvas/docs/design.md#L375)) to maintain clear traceability.
 - Always ensure all related design documents, feature specifications, and Decision Log entries are fully updated **before** committing changes or concluding a phase of work.
 
+### 4.4 Language Policy
+To ensure the codebase remains universally accessible and maintainable:
+- **English Only for Project Files**: All project source code, documentation, inline comments, variable names, function definitions, pull request descriptions, and Git commit messages **MUST** be written in English.
+- **Exceptions (Data and Configurations)**: You are allowed to use other languages (e.g., Chinese, Spanish, etc.) **ONLY** within data files, localized asset bundles, translation files (i18n), or user-facing configuration defaults where multiple languages are supported as part of the app's functionality.
+
 ---
 
 ## 5. Local Deployment Workflow
