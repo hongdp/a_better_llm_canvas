@@ -93,6 +93,35 @@ experience of the document over the chat experience.
 - **E2E tests** for critical user flows: create document → chat edit → review
   diff → accept/reject.
 
+#### 2.5.1 Unit Testing Guidelines
+These rules govern how unit tests are written and run in this project. The stack is **Vitest** (`jsdom` environment, globals enabled) configured in [vitest.config.ts](file:///home/hongdp/Workspace/web_canvas/vitest.config.ts).
+
+**Tooling & Commands**
+- Run the full suite with `npm test` (`vitest run`). Use `npm run test:watch` while developing and `npm run test:coverage` to inspect coverage.
+- Tests run under `jsdom`; browser globals (`window`, `document`, `localStorage`) are available. Shared setup lives in [src/test-setup.ts](file:///home/hongdp/Workspace/web_canvas/src/test-setup.ts) — register global mocks/polyfills there, not in individual specs.
+
+**File Layout & Naming**
+- Co-locate tests in a `__tests__/` directory next to the code under test (e.g. `src/utils/__tests__/text.test.ts` for `src/utils/text.ts`).
+- Name files `<module>.test.ts`. The runner only discovers `src/**/__tests__/**/*.test.ts` — files outside this pattern will be silently ignored.
+- Import the functions under test by relative path and the matchers explicitly: `import { describe, it, expect } from 'vitest'`.
+
+**What to Test (priority order)**
+1. **Pure logic first**: extract document transformations, prompt construction, parsing (e.g. the canvas markup protocol), diffing, serialization, and migrations into pure functions and test them exhaustively. These are the highest-value, lowest-cost tests.
+2. **State management**: Zustand store actions and reducers — assert on the resulting state, including the stale-closure and optimistic-update behaviors described in §2.1 and §3.2.
+3. **Persistence & migrations**: every versioned-envelope migration (§2.6) MUST have a test that feeds in a prior-version payload and asserts the upgraded shape, including default-field merging.
+4. **Components**: test behavior (rendered output, event handlers, state transitions) rather than implementation details.
+
+**Test Structure & Quality**
+- Group related cases under a `describe` block per function/unit; write one `it` per behavior with a sentence-style name describing the expected outcome.
+- Cover the **happy path, edge cases, and error/empty inputs** (empty strings, nulls, boundary sizes, malformed input). Follow the existing thoroughness in [text.test.ts](file:///home/hongdp/Workspace/web_canvas/src/utils/__tests__/text.test.ts).
+- Each test must be **deterministic and isolated**: no reliance on real network, wall-clock ordering, or leftover state from other tests. Reset shared state (store, mocks, storage) in `beforeEach`/`afterEach`.
+- **Mock at boundaries only**: stub LLM provider calls, `fetch`, and timers with `vi.mock` / `vi.useFakeTimers`. Never mock the unit under test itself.
+- Assert on **observable outcomes**, not internal call sequencing, unless the interaction itself is the contract (e.g. a provider adapter must send a specific request shape).
+
+**Coverage Expectations**
+- Coverage is collected (v8) over `src/utils/**`, `src/services/import/**`, and `src/store/persistence.ts`. New pure-logic modules in these areas are expected to keep coverage high — when adding a non-trivial module elsewhere that warrants coverage, extend the `include` list in [vitest.config.ts](file:///home/hongdp/Workspace/web_canvas/vitest.config.ts).
+- A new feature is not "done" until `npm test` passes locally and the new logic is covered. This is part of the §4.1 pre-commit verification and the §4.2 review checklist.
+
 ### 2.6 Persistent Data Versioning
 - **Versioned Envelopes**: Any persistent structures stored client-side (cookies, localStorage, or IndexedDB) that are subject to future updates MUST be stored in a versioned envelope `{ version: number, data: T }`.
 - **Sequential Schema Migrations**: When updating a schema, increment the version number and write a safe, sequential migration pipeline (e.g., `v0 ➔ v1 ➔ v2`) to dynamically parse, map, and rewrite the stored state without destroying existing user settings.
@@ -176,6 +205,7 @@ For smaller inline fixes, a one-liner comment explaining "why" (not "what") is s
 - Feature branches named `feat/<short-description>`.
 - Conventional commits: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`.
 - **Pre-commit Verification**: Always execute comprehensive testing and compilation validation (e.g., run `npx tsc --noEmit` and build verification) **before** committing changes to ensure no broken code enters the branch history.
+- **Pre-commit Unit Test Gate**: The full unit test suite (`npm test`) MUST pass **before** any commit. Never commit with failing or skipped tests. If a change touches tested logic, run the suite and confirm green; if it adds new logic, the accompanying tests (see §2.5) must be present and passing. A red suite is a hard block on committing — fix the code or the test, never bypass the gate.
 - **User Approval**: Never perform git commits unless explicit instruction or approval is obtained from the user.
 - **Pre-commit Security Check**: Always perform a careful security scan (e.g., check `git diff` or staged files) **before** committing to ensure no private information, API keys, or local deployment configurations are accidentally staged or checked in.
 

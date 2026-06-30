@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -116,5 +116,107 @@ describe('countWords', () => {
     // The word regex uses typographic hyphens (\u2011, etc.), not ASCII "-"
     // So "well-known" splits into 2 tokens, giving count 3 with "concept"
     expect(countWords('<p>well-known concept</p>')).toBe(3)
+  })
+})
+
+// \u2500\u2500 extractTaggedBlock \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+describe('extractTaggedBlock', () => {
+  it('reports not found when the tag is absent', () => {
+    const r = extractTaggedBlock('just a chat reply', 'canvas')
+    expect(r.found).toBe(false)
+    expect(r.closed).toBe(false)
+    expect(r.before).toBe('just a chat reply')
+  })
+
+  it('extracts a complete block and surrounding chat text', () => {
+    const r = extractTaggedBlock('Sure!<canvas><p>Hi</p></canvas>Done', 'canvas')
+    expect(r.found).toBe(true)
+    expect(r.closed).toBe(true)
+    expect(r.inner).toBe('<p>Hi</p>')
+    expect(r.before).toBe('Sure!')
+    expect(r.after).toBe('Done')
+  })
+
+  it('reports closed=false when the closing tag never arrived (truncation)', () => {
+    const r = extractTaggedBlock('Here:<canvas><p>partial content', 'canvas')
+    expect(r.found).toBe(true)
+    expect(r.closed).toBe(false)
+    expect(r.inner).toBe('<p>partial content')
+  })
+
+  it('is case-insensitive and tolerates attributes on the open tag', () => {
+    const r = extractTaggedBlock('<Canvas data-x="1"><p>Body</p></CANVAS>', 'canvas')
+    expect(r.found).toBe(true)
+    expect(r.closed).toBe(true)
+    expect(r.inner).toBe('<p>Body</p>')
+  })
+
+  it('tolerates whitespace inside the closing tag', () => {
+    const r = extractTaggedBlock('<canvas><p>X</p></canvas >', 'canvas')
+    expect(r.closed).toBe(true)
+    expect(r.inner).toBe('<p>X</p>')
+  })
+
+  it('strips a wrapping markdown code fence from the inner HTML', () => {
+    const r = extractTaggedBlock('<canvas>\n```html\n<p>Fenced</p>\n```\n</canvas>', 'canvas')
+    expect(r.inner).toBe('<p>Fenced</p>')
+  })
+
+  it('works for the selection_replace tag too', () => {
+    const r = extractTaggedBlock('ok<selection_replace>new text</selection_replace>', 'selection_replace')
+    expect(r.found).toBe(true)
+    expect(r.inner).toBe('new text')
+  })
+})
+
+// \u2500\u2500 hasElisionMarkers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+describe('hasElisionMarkers', () => {
+  it('flags an HTML comment that says the rest is unchanged', () => {
+    expect(hasElisionMarkers('<p>Intro</p><!-- rest of the document unchanged -->')).toBe(true)
+  })
+
+  it('flags a bracketed continuation placeholder', () => {
+    expect(hasElisionMarkers('<p>Start</p>[content continues]')).toBe(true)
+  })
+
+  it('flags a parenthetical "remains the same" placeholder', () => {
+    expect(hasElisionMarkers('<p>A</p>(rest of the chapter remains the same)')).toBe(true)
+  })
+
+  it('flags a whole-paragraph ellipsis', () => {
+    expect(hasElisionMarkers('<p>A</p><p>...</p><p>B</p>')).toBe(true)
+    expect(hasElisionMarkers('<p>A</p><p>\u2026</p><p>B</p>')).toBe(true)
+  })
+
+  it('does NOT flag a bare ellipsis inside prose (legitimate in fiction)', () => {
+    expect(hasElisionMarkers('<p>"Wait...," she whispered.</p>')).toBe(false)
+  })
+
+  it('does NOT flag ordinary content', () => {
+    expect(hasElisionMarkers('<h1>Title</h1><p>A full paragraph of real content.</p>')).toBe(false)
+  })
+
+  it('does NOT flag the word "continues" used naturally in prose', () => {
+    // Keyword must appear inside a comment/bracket/paren placeholder, not free prose.
+    expect(hasElisionMarkers('<p>The road continues for miles.</p>')).toBe(false)
+  })
+})
+
+// \u2500\u2500 validateCanvasReplacement \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+describe('validateCanvasReplacement', () => {
+  it('returns "truncated" when the closing tag was not found', () => {
+    expect(validateCanvasReplacement('<p>partial', false)).toBe('truncated')
+  })
+
+  it('returns "elided" when the closed output abbreviates content', () => {
+    expect(validateCanvasReplacement('<p>A</p><!-- rest unchanged -->', true)).toBe('elided')
+  })
+
+  it('returns null for a complete, full replacement', () => {
+    expect(validateCanvasReplacement('<h1>Title</h1><p>Full content here.</p>', true)).toBeNull()
+  })
+
+  it('prioritizes truncation over elision', () => {
+    expect(validateCanvasReplacement('<p>A</p><!-- rest unchanged -->', false)).toBe('truncated')
   })
 })

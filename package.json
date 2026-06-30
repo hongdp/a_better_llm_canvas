@@ -12,7 +12,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "@tiptap/extension-placeholder": "^3.23.6",

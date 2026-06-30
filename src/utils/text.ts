@@ -26,6 +26,116 @@ export function stripIncompleteEndTag(text: string): string {
 }
 
 /**
+ * Result of extracting an XML-like tagged block (e.g. `<canvas>...</canvas>`)
+ * from a raw LLM response.
+ */
+export interface TaggedBlock {
+  /** An opening tag was found. */
+  found: boolean
+  /** A matching closing tag was found (false ⇒ the stream was likely truncated). */
+  closed: boolean
+  /** Content between the tags (partial if `closed` is false). */
+  inner: string
+  /** Text before the opening tag. */
+  before: string
+  /** Text after the closing tag (empty if `closed` is false). */
+  after: string
+}
+
+/**
+ * Robustly extract the first `<tag>...</tag>` block from an LLM response.
+ *
+ * Unlike a plain `indexOf('<tag>')`, this tolerates the real-world variations
+ * models emit: case differences (`<Canvas>`), attributes (`<canvas foo="bar">`),
+ * and whitespace in the closing tag (`</canvas >`). It also surrounds an
+ * optional ```html / ``` markdown code fence so a fenced block still parses.
+ *
+ * Crucially it reports whether the closing tag was actually seen, so callers
+ * can refuse to apply a destructive document replacement built from a
+ * truncated (cut-off) response.
+ */
+export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
+  const openRe = new RegExp(`<${tag}(?:\\s[^>]*)?>`, 'i')
+  const openMatch = openRe.exec(text)
+  if (!openMatch) {
+    return { found: false, closed: false, inner: '', before: text, after: '' }
+  }
+
+  const before = text.substring(0, openMatch.index)
+  const rest = text.substring(openMatch.index + openMatch[0].length)
+
+  const closeRe = new RegExp(`</${tag}\\s*>`, 'i')
+  const closeMatch = closeRe.exec(rest)
+  if (!closeMatch) {
+    return { found: true, closed: false, inner: rest, before, after: '' }
+  }
+
+  const inner = rest.substring(0, closeMatch.index)
+  const after = rest.substring(closeMatch.index + closeMatch[0].length)
+
+  // Strip a wrapping markdown code fence around the inner HTML, if present.
+  const fenced = inner.match(/^\s*```(?:html)?\s*([\s\S]*?)\s*```\s*$/i)
+  return {
+    found: true,
+    closed: true,
+    inner: fenced ? fenced[1] : inner,
+    before,
+    after
+  }
+}
+
+/**
+ * Detect explicit "elision" / lazy-omission markers in an LLM-produced document
+ * replacement. When asked to re-emit a long document, models often abbreviate
+ * unchanged regions with placeholders like `<!-- rest unchanged -->` or
+ * `[content continues]`. Diffing the original against such output silently
+ * deletes everything that was elided, so callers should refuse to apply it.
+ *
+ * Only flags EXPLICIT omission language (keywords inside comments / brackets /
+ * parentheses) or a whole-paragraph ellipsis — never a bare "..." inside prose,
+ * which is legitimate in fiction.
+ */
+export function hasElisionMarkers(html: string): boolean {
+  const keyword = '(?:unchanged|omitted|omit|continues?|rest of (?:the |your )?(?:document|text|content|chapter)|remains? (?:the )?same|same as (?:before|above|previous)|as before|truncat\\w*|abbreviat\\w*|previous content|earlier content)'
+
+  // 1. HTML comment containing omission language: <!-- ... rest unchanged -->
+  if (new RegExp(`<!--[\\s\\S]*?${keyword}[\\s\\S]*?-->`, 'i').test(html)) {
+    return true
+  }
+  // 2. Bracketed placeholder: [content continues], [unchanged], [...]
+  if (new RegExp(`\\[[^\\]]{0,60}?${keyword}[^\\]]{0,40}?\\]`, 'i').test(html)) {
+    return true
+  }
+  // 3. Parenthetical placeholder: (rest of the document remains the same)
+  if (new RegExp(`\\([^)]{0,60}?${keyword}[^)]{0,40}?\\)`, 'i').test(html)) {
+    return true
+  }
+  // 4. A paragraph whose entire content is just an ellipsis.
+  if (/<p>\s*(?:\.\.\.|…)\s*<\/p>/i.test(html)) {
+    return true
+  }
+  return false
+}
+
+/**
+ * Validate a full-document (`<canvas>`) replacement before applying it as a diff.
+ *
+ * Returns a machine-readable reason string when the replacement looks unsafe to
+ * apply (and would likely destroy content), or `null` when it is safe.
+ *
+ * - `'truncated'` — the closing tag never arrived; the response was cut off.
+ * - `'elided'`    — the output abbreviates unchanged regions with placeholders.
+ */
+export function validateCanvasReplacement(
+  newHtml: string,
+  closingTagFound: boolean
+): 'truncated' | 'elided' | null {
+  if (!closingTagFound) return 'truncated'
+  if (hasElisionMarkers(newHtml)) return 'elided'
+  return null
+}
+
+/**
  * Clean up LLM-generated HTML:
  * 1. Remove blank `<p>` tags that contain only whitespace or &nbsp;.
  * 2. Collapse whitespace (including newlines) between block-level tags

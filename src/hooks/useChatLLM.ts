@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, extractTaggedBlock, validateCanvasReplacement } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 
 interface UseChatLLMProps {
@@ -292,43 +292,51 @@ ${cleanActiveContent}
             let finalCanvasText = ''
             let finalSelectionReplaceText = ''
             let isSelectionEdit = false
+            let canvasClosed = false
 
-            const canvasStart = '<canvas>'
-            const canvasEnd = '</canvas>'
-            const selectionStart = '<selection_replace>'
-            const selectionEndTag = '</selection_replace>'
+            // Robustly extract the tagged block (tolerates case / attributes /
+            // whitespace) and, critically, reports whether the closing tag
+            // actually arrived so we can refuse to apply a truncated rewrite.
+            const selectionBlock = extractTaggedBlock(fullText, 'selection_replace')
+            const canvasBlock = extractTaggedBlock(fullText, 'canvas')
 
-            const canvasIdx = fullText.indexOf(canvasStart)
-            const selectionIdx = fullText.indexOf(selectionStart)
-
-            if (selectionIdx !== -1) {
+            if (selectionBlock.found) {
               isSelectionEdit = true
-              finalChatText = fullText.substring(0, selectionIdx).trim()
-              const rest = fullText.substring(selectionIdx + selectionStart.length)
-              const endIdx = rest.indexOf(selectionEndTag)
-              if (endIdx !== -1) {
-                finalSelectionReplaceText = rest.substring(0, endIdx)
-                finalChatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
-              } else {
-                finalSelectionReplaceText = rest
+              finalSelectionReplaceText = selectionBlock.inner
+              finalChatText = selectionBlock.before.trim()
+              if (selectionBlock.after.trim()) {
+                finalChatText += '\n\n' + selectionBlock.after.trim()
               }
-            } else if (canvasIdx !== -1) {
-              finalChatText = fullText.substring(0, canvasIdx).trim()
-              const rest = fullText.substring(canvasIdx + canvasStart.length)
-              const endIdx = rest.indexOf(canvasEnd)
-              if (endIdx !== -1) {
-                finalCanvasText = rest.substring(0, endIdx)
-                finalChatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
-              } else {
-                finalCanvasText = rest
+            } else if (canvasBlock.found) {
+              canvasClosed = canvasBlock.closed
+              finalCanvasText = canvasBlock.inner
+              finalChatText = canvasBlock.before.trim()
+              if (canvasBlock.after.trim()) {
+                finalChatText += '\n\n' + canvasBlock.after.trim()
               }
             } else {
               finalChatText = fullText
             }
 
-            const displayChatText = attachmentsText 
+            // Guard the destructive full-document replacement: if the response
+            // was cut off (no closing tag) or abbreviates unchanged regions
+            // with placeholders, applying the diff would silently delete
+            // content. Skip it, keep the original, and tell the user.
+            let canvasIssue: 'truncated' | 'elided' | null = null
+            if (!isSelectionEdit && finalCanvasText.trim()) {
+              const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
+              canvasIssue = validateCanvasReplacement(candidate, canvasClosed)
+            }
+
+            const warningNote = canvasIssue === 'truncated'
+              ? '\n\n⚠️ The response was cut off before the document update finished, so no changes were applied (your document is unchanged). Please retry — for long documents, try editing a smaller selection at a time.'
+              : canvasIssue === 'elided'
+              ? '\n\n⚠️ The response abbreviated unchanged parts of the document, so applying it would have deleted content. No changes were applied. Please retry — for long documents, try editing a smaller selection at a time.'
+              : ''
+
+            const displayChatText = (attachmentsText
               ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
-              : (finalChatText.trim() || 'Document updated successfully.')
+              : (finalChatText.trim() || 'Document updated successfully.')) + warningNote
 
             const latestMessages = useAppStore.getState().messages
             s.setMessages(
@@ -358,10 +366,13 @@ ${cleanActiveContent}
 
                 s.updateActiveDocument({ content: activeEditor.getHTML() })
               }
-            } else if (finalCanvasText.trim()) {
+            } else if (finalCanvasText.trim() && !canvasIssue) {
               const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
               const diffed = diffHtml(originalDocContent, restoredText)
               s.updateActiveDocument({ content: diffed })
+            } else if (canvasIssue) {
+              // Ensure the document is left exactly as it was before streaming.
+              s.updateActiveDocument({ content: originalDocContent })
             }
             forceSave()
           },

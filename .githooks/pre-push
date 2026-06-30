@@ -1,0 +1,24 @@
+#!/bin/sh
+#
+# Pre-push hook: run the unit test suite before allowing a push to GitHub.
+# Enforces the "Pre-commit/Pre-push Unit Test Gate" in SKILL.md (§4.1).
+#
+# Activated via `core.hooksPath=.githooks` (set by the npm `prepare` script,
+# or manually with `git config core.hooksPath .githooks`).
+#
+# To bypass in an emergency: `git push --no-verify` (discouraged).
+
+echo "[pre-push] Running unit tests (npm test)..."
+
+npm test
+status=$?
+
+if [ $status -ne 0 ]; then
+  echo ""
+  echo "[pre-push] ❌ Unit tests failed. Push aborted."
+  echo "[pre-push] Fix the failing tests, or bypass with 'git push --no-verify' (discouraged)."
+  exit 1
+fi
+
+echo "[pre-push] ✅ Unit tests passed. Proceeding with push."
+exit 0
