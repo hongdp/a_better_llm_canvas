@@ -173,9 +173,41 @@ def init_db():
                 PRIMARY KEY (username, book_id, id)
             );
         """)
+        
+        # Migrate per-book settings to global settings if not done yet
+        # Settings (API keys, system prompts, theme) are user-level, not per-book
+        existing_global = conn.execute(
+            "SELECT 1 FROM book_settings WHERE book_id = '__global__'"
+        ).fetchone()
+        if not existing_global:
+            # Copy settings from 'default' book (where migration put them) to __global__
+            default_settings = conn.execute(
+                "SELECT * FROM book_settings WHERE book_id = 'default'"
+            ).fetchone()
+            if default_settings:
+                conn.execute(
+                    """INSERT OR IGNORE INTO book_settings 
+                       (username, book_id, active_provider, provider_configs,
+                        custom_system_prompts, active_system_prompt_id, theme, debug_mode)
+                       VALUES (?, '__global__', ?, ?, ?, ?, ?, ?)""",
+                    (
+                        default_settings["username"],
+                        default_settings["active_provider"],
+                        default_settings["provider_configs"],
+                        default_settings["custom_system_prompts"],
+                        default_settings["active_system_prompt_id"],
+                        default_settings["theme"],
+                        default_settings["debug_mode"],
+                    )
+                )
+                print("[Init] Migrated settings from 'default' book to global settings.")
+        
         conn.commit()
     finally:
         conn.close()
+
+# Global settings are stored with this special book_id
+GLOBAL_SETTINGS_BOOK_ID = "__global__"
 
 # ── Content file helpers ───────────────────────────────────────────────────────
 def _get_content_dir(username: str, book_id: str) -> str:
@@ -665,21 +697,32 @@ async def create_book(request: Request):
                 (active_doc_id, username, book_id)
             )
 
-        # Save settings
-        conn.execute(
-            """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
-               custom_system_prompts, active_system_prompt_id, theme, debug_mode)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                username, book_id,
-                body.get("activeProvider"),
-                json.dumps(body.get("providerConfigs")) if body.get("providerConfigs") else None,
-                json.dumps(body.get("customSystemPrompts")) if body.get("customSystemPrompts") else None,
-                body.get("activeSystemPromptId"),
-                body.get("theme"),
-                1 if body.get("debugMode") else 0
+        # Save settings to global (upsert — settings are user-level)
+        settings_fields = ["activeProvider", "providerConfigs", "customSystemPrompts",
+                          "activeSystemPromptId", "theme", "debugMode"]
+        if any(k in body for k in settings_fields):
+            conn.execute(
+                """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
+                   custom_system_prompts, active_system_prompt_id, theme, debug_mode)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(username, book_id) DO UPDATE SET
+                   active_provider = COALESCE(excluded.active_provider, book_settings.active_provider),
+                   provider_configs = COALESCE(excluded.provider_configs, book_settings.provider_configs),
+                   custom_system_prompts = COALESCE(excluded.custom_system_prompts, book_settings.custom_system_prompts),
+                   active_system_prompt_id = COALESCE(excluded.active_system_prompt_id, book_settings.active_system_prompt_id),
+                   theme = COALESCE(excluded.theme, book_settings.theme),
+                   debug_mode = COALESCE(excluded.debug_mode, book_settings.debug_mode)
+                """,
+                (
+                    username, GLOBAL_SETTINGS_BOOK_ID,
+                    body.get("activeProvider"),
+                    json.dumps(body.get("providerConfigs")) if body.get("providerConfigs") else None,
+                    json.dumps(body.get("customSystemPrompts")) if body.get("customSystemPrompts") else None,
+                    body.get("activeSystemPromptId"),
+                    body.get("theme"),
+                    (1 if body.get("debugMode") else 0) if "debugMode" in body else None
+                )
             )
-        )
 
         # Save initial messages
         messages = body.get("messages", [])
@@ -732,10 +775,10 @@ async def get_book(request: Request, book_id: str):
             (username, safe_book_id)
         ).fetchall()
 
-        # Get settings
+        # Get global user settings (shared across all books)
         settings = conn.execute(
             "SELECT * FROM book_settings WHERE username = ? AND book_id = ?",
-            (username, safe_book_id)
+            (username, GLOBAL_SETTINGS_BOOK_ID)
         ).fetchone()
 
         # Get versions
@@ -854,7 +897,7 @@ async def update_book(request: Request, book_id: str):
             params
         )
 
-        # Update settings (upsert)
+        # Update global settings (upsert) — settings are user-level, shared across all books
         settings_fields = ["activeProvider", "providerConfigs", "customSystemPrompts",
                           "activeSystemPromptId", "theme", "debugMode"]
         has_settings = any(k in body for k in settings_fields)
@@ -872,7 +915,7 @@ async def update_book(request: Request, book_id: str):
                    debug_mode = COALESCE(excluded.debug_mode, book_settings.debug_mode)
                 """,
                 (
-                    username, safe_book_id,
+                    username, GLOBAL_SETTINGS_BOOK_ID,
                     body.get("activeProvider"),
                     json.dumps(body["providerConfigs"]) if "providerConfigs" in body else None,
                     json.dumps(body["customSystemPrompts"]) if "customSystemPrompts" in body else None,
@@ -1304,10 +1347,10 @@ async def get_storage_legacy(request: Request, bookId: str = "default"):
                 "content": content,
             })
 
-        # Get settings
+        # Get global user settings (shared across all books)
         settings = conn.execute(
             "SELECT * FROM book_settings WHERE username = ? AND book_id = ?",
-            (username, safe_book_id)
+            (username, GLOBAL_SETTINGS_BOOK_ID)
         ).fetchone()
 
         # Get messages
@@ -1433,7 +1476,7 @@ async def save_storage_legacy(request: Request, bookId: str = "default"):
                 )
                 save_version_content(username, safe_book_id, ver_id, ver_content)
 
-        # Upsert settings
+        # Upsert global settings
         conn.execute(
             """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
                custom_system_prompts, active_system_prompt_id, theme, debug_mode)
@@ -1447,7 +1490,7 @@ async def save_storage_legacy(request: Request, bookId: str = "default"):
                debug_mode = excluded.debug_mode
             """,
             (
-                username, safe_book_id,
+                username, GLOBAL_SETTINGS_BOOK_ID,
                 body.get("activeProvider"),
                 json.dumps(body.get("providerConfigs")) if body.get("providerConfigs") else None,
                 json.dumps(body.get("customSystemPrompts")) if body.get("customSystemPrompts") else None,
