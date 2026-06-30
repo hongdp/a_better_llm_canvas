@@ -84,4 +84,67 @@ describe('diffHtml', () => {
     expect(result).toContain('<del')
     expect(result).toContain('<ins')
   })
+
+  it('only marks the changed block in a multi-paragraph document', () => {
+    const oldHtml = '<p>First paragraph stays.</p><p>Second changes here.</p><p>Third stays too.</p>'
+    const newHtml = '<p>First paragraph stays.</p><p>Second is rewritten now.</p><p>Third stays too.</p>'
+    const result = diffHtml(oldHtml, newHtml)
+    // Unchanged paragraphs must appear verbatim, with no diff markup around them.
+    expect(result).toContain('<p>First paragraph stays.</p>')
+    expect(result).toContain('<p>Third stays too.</p>')
+    // Only the middle paragraph carries ins/del.
+    expect(result).toContain('<del')
+    expect(result).toContain('<ins')
+    // The untouched words are not wrapped in ins/del.
+    expect(result).not.toMatch(/<(ins|del)[^>]*>[^<]*First/)
+    expect(result).not.toMatch(/<(ins|del)[^>]*>[^<]*Third/)
+  })
+
+  it('handles inserted and deleted whole paragraphs', () => {
+    const oldHtml = '<p>Keep one.</p><p>Delete me.</p>'
+    const newHtml = '<p>Keep one.</p><p>Brand new.</p>'
+    const result = diffHtml(oldHtml, newHtml)
+    expect(result).toContain('<p>Keep one.</p>')
+    expect(result).toContain('<del')
+    expect(result).toContain('<ins')
+  })
+
+  it('diffs a small change inside a large document quickly and minimally', () => {
+    // 800-paragraph document; only one paragraph changes. The block-level pass
+    // should keep this fast and produce a tiny diff (no whole-doc token LCS).
+    const paras = (changed: boolean) =>
+      Array.from({ length: 800 }, (_, i) =>
+        i === 400
+          ? `<p>paragraph ${i} ${changed ? 'edited' : 'original'} text here</p>`
+          : `<p>paragraph ${i} body text that stays the same across versions</p>`
+      ).join('')
+    const start = performance.now()
+    const result = diffHtml(paras(false), paras(true))
+    const elapsed = performance.now() - start
+    expect(elapsed).toBeLessThan(300)
+    // Exactly one change region.
+    const delCount = (result.match(/<del/g) || []).length
+    const insCount = (result.match(/<ins/g) || []).length
+    expect(delCount).toBe(1)
+    expect(insCount).toBe(1)
+    expect(result).toContain('original')
+    expect(result).toContain('edited')
+  })
+
+  it('diffs a large full rewrite quickly via the coarse fallback (no O(n^2) freeze)', () => {
+    // Two large, almost-entirely-different documents with no shared prefix/suffix
+    // would otherwise build a multi-million-cell LCS matrix and block for seconds.
+    const oldHtml = '<p>' + Array.from({ length: 4000 }, (_, i) => `old${i}`).join(' ') + '</p>'
+    const newHtml = '<p>' + Array.from({ length: 4000 }, (_, i) => `new${i}`).join(' ') + '</p>'
+    const start = performance.now()
+    const result = diffHtml(oldHtml, newHtml)
+    const elapsed = performance.now() - start
+    // Coarse path is effectively instant; assert it stays well under a second.
+    expect(elapsed).toBeLessThan(500)
+    expect(result).toContain('<del')
+    expect(result).toContain('<ins')
+    // All old words removed, all new words inserted.
+    expect(result).toContain('old0')
+    expect(result).toContain('new0')
+  })
 })

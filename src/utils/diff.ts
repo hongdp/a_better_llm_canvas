@@ -57,8 +57,85 @@ function computeLcs(X: string[], Y: string[]): DiffItem[] {
   return result.reverse()
 }
 
+// Closing tags that end a logical block (paragraph, heading, list item, …).
+// We split the token stream on these so the expensive token-level LCS only runs
+// on the blocks that actually changed.
+const BLOCK_CLOSE_RE = /^<\/(p|h[1-6]|li|blockquote|pre|ul|ol|div|td|th|tr|table|figure|figcaption|section|article|header|footer)>$/i
+
 /**
- * Diff two HTML strings token-by-token and render a merged HTML containing <ins> and <del> tags.
+ * Group a flat token list into block-level chunks (one chunk per paragraph /
+ * heading / list item, etc.). Each chunk is the list of tokens up to and
+ * including its closing block tag.
+ */
+function groupIntoBlocks(tokens: string[]): string[][] {
+  const blocks: string[][] = []
+  let current: string[] = []
+  for (const tok of tokens) {
+    current.push(tok)
+    if (BLOCK_CLOSE_RE.test(tok)) {
+      blocks.push(current)
+      current = []
+    }
+  }
+  if (current.length) blocks.push(current)
+  return blocks
+}
+
+// Above this many DP cells the token-level LCS is too expensive to run inline,
+// so fall back to a coarse delete-all-then-insert-all diff for that region.
+const MAX_LCS_CELLS = 1_500_000
+
+/**
+ * Diff two token lists (a single changed region) with prefix/suffix trimming
+ * and a capped LCS. Returns token-level DiffItems.
+ */
+function diffTokens(oldTokens: string[], newTokens: string[]): DiffItem[] {
+  let prefix = 0
+  while (
+    prefix < oldTokens.length &&
+    prefix < newTokens.length &&
+    oldTokens[prefix] === newTokens[prefix]
+  ) {
+    prefix++
+  }
+
+  let suffix = 0
+  while (
+    suffix < oldTokens.length - prefix &&
+    suffix < newTokens.length - prefix &&
+    oldTokens[oldTokens.length - 1 - suffix] === newTokens[newTokens.length - 1 - suffix]
+  ) {
+    suffix++
+  }
+
+  const prefixTokens = oldTokens.slice(0, prefix)
+  const suffixTokens = oldTokens.slice(oldTokens.length - suffix)
+  const middleOld = oldTokens.slice(prefix, oldTokens.length - suffix)
+  const middleNew = newTokens.slice(prefix, newTokens.length - suffix)
+
+  const middleDiff: DiffItem[] =
+    middleOld.length * middleNew.length > MAX_LCS_CELLS
+      ? [
+          ...middleOld.map(value => ({ type: 'delete' as const, value })),
+          ...middleNew.map(value => ({ type: 'insert' as const, value }))
+        ]
+      : computeLcs(middleOld, middleNew)
+
+  return [
+    ...prefixTokens.map(value => ({ type: 'equal' as const, value })),
+    ...middleDiff,
+    ...suffixTokens.map(value => ({ type: 'equal' as const, value }))
+  ]
+}
+
+/**
+ * Diff two HTML strings and render a merged HTML containing <ins> and <del> tags.
+ *
+ * Two-level diff: an LCS over block-level chunks (cheap — there are far fewer
+ * blocks than tokens) identifies which paragraphs/headings actually changed,
+ * then a token-level LCS runs only on those. This keeps both the computation
+ * and the resulting diff small even for large documents, where a single
+ * whole-document token LCS would freeze the UI and produce a giant diff.
  */
 export function diffHtml(oldHtml: string, newHtml: string): string {
   // Tokenize: Matches HTML tags (<p>, </h1>), words (Hello, text), or whitespaces (\n, spaces)
@@ -66,41 +143,49 @@ export function diffHtml(oldHtml: string, newHtml: string): string {
   const oldTokens = oldHtml.match(tokenRegex) || []
   const newTokens = newHtml.match(tokenRegex) || []
 
-  // 1. Prefix Optimization
-  let prefixCount = 0
-  while (
-    prefixCount < oldTokens.length &&
-    prefixCount < newTokens.length &&
-    oldTokens[prefixCount] === newTokens[prefixCount]
-  ) {
-    prefixCount++
+  // 1. Block-level LCS to locate the changed blocks.
+  const oldBlocks = groupIntoBlocks(oldTokens)
+  const newBlocks = groupIntoBlocks(newTokens)
+  const blockDiff = computeLcs(
+    oldBlocks.map(b => b.join('')),
+    newBlocks.map(b => b.join(''))
+  )
+
+  // 2. Walk the block diff; emit unchanged blocks verbatim and token-diff each
+  //    contiguous run of changed (deleted/inserted) blocks.
+  const fullDiff: DiffItem[] = []
+  let oi = 0
+  let ni = 0
+  let pendingOld: string[] = []
+  let pendingNew: string[] = []
+
+  const flushPending = () => {
+    if (pendingOld.length && pendingNew.length) {
+      for (const item of diffTokens(pendingOld, pendingNew)) fullDiff.push(item)
+    } else if (pendingOld.length) {
+      for (const value of pendingOld) fullDiff.push({ type: 'delete', value })
+    } else if (pendingNew.length) {
+      for (const value of pendingNew) fullDiff.push({ type: 'insert', value })
+    }
+    pendingOld = []
+    pendingNew = []
   }
 
-  // 2. Suffix Optimization
-  let suffixCount = 0
-  while (
-    suffixCount < oldTokens.length - prefixCount &&
-    suffixCount < newTokens.length - prefixCount &&
-    oldTokens[oldTokens.length - 1 - suffixCount] === newTokens[newTokens.length - 1 - suffixCount]
-  ) {
-    suffixCount++
+  for (const d of blockDiff) {
+    if (d.type === 'equal') {
+      flushPending()
+      for (const value of oldBlocks[oi]) fullDiff.push({ type: 'equal', value })
+      oi++
+      ni++
+    } else if (d.type === 'delete') {
+      for (const value of oldBlocks[oi]) pendingOld.push(value)
+      oi++
+    } else {
+      for (const value of newBlocks[ni]) pendingNew.push(value)
+      ni++
+    }
   }
-
-  const prefixTokens = oldTokens.slice(0, prefixCount)
-  const suffixTokens = oldTokens.slice(oldTokens.length - suffixCount)
-  
-  const middleOld = oldTokens.slice(prefixCount, oldTokens.length - suffixCount)
-  const middleNew = newTokens.slice(prefixCount, newTokens.length - suffixCount)
-
-  // 3. Compute LCS on the changed middle region
-  const middleDiff = computeLcs(middleOld, middleNew)
-
-  // 4. Assemble full token sequence
-  const fullDiff: DiffItem[] = [
-    ...prefixTokens.map(tok => ({ type: 'equal' as const, value: tok })),
-    ...middleDiff,
-    ...suffixTokens.map(tok => ({ type: 'equal' as const, value: tok }))
-  ]
+  flushPending()
 
   // 5. Render to HTML with custom ins/del wrappers and grouped IDs
   let html = ''
