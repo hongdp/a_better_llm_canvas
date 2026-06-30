@@ -1,12 +1,15 @@
-import React, { useState, useEffect } from 'react'
+import React, { useState, useEffect, useCallback } from 'react'
 import { 
-  Send, Trash2, AlertCircle, Paperclip, X, SquarePen, ChevronDown, ChevronUp, Image, Square, Clipboard, RefreshCw
+  Send, Trash2, AlertCircle, Paperclip, X, SquarePen, ChevronDown, ChevronUp, Image, Square, Clipboard, RefreshCw, Swords
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from '../utils/text'
 import { useImageUpload } from '../hooks/useImageUpload'
 import { useChatLLM } from '../hooks/useChatLLM'
+import { useRoleplayLLM } from '../hooks/useRoleplayLLM'
 import { useTranslation } from '../i18n'
+import { RoleplayBanner } from './RoleplayBanner'
+import { RoleplaySetupModal } from './RoleplaySetupModal'
 
 interface ChatPanelProps {
   chatWidth: number
@@ -36,10 +39,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     resetSessionTokens,
     isStreaming,
     selectedText,
-    activeEditor
+    activeEditor,
+    roleplayMode,
+    roleplayConfig,
+    setRoleplayMode,
+    setRoleplayConfig
   } = useAppStore()
 
   const [isChatExpanded, setIsChatExpanded] = useState(false)
+  const [isRpSetupOpen, setIsRpSetupOpen] = useState(false)
   const activeConfig = providerConfigs[activeProvider]
 
   const {
@@ -51,21 +59,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     handlePasteFromClipboard
   } = useImageUpload()
 
-  const {
-    chatInput,
-    setChatInput,
-    chatInputRef,
-    chatEndRef,
-    errorMsg,
-    setErrorMsg,
-    editingMessageId,
-    setEditingMessageId,
-    editingMessageText,
-    setEditingMessageText,
-    handleSendMessage,
-    handleResubmitMessage,
-    handleStopGeneration
-  } = useChatLLM({
+  const chatLLM = useChatLLM({
     activeEditor,
     selectedText,
     uploadedImages,
@@ -75,6 +69,38 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     forceSave,
     setSaveStatus
   })
+
+  const rpLLM = useRoleplayLLM({
+    uploadedImages,
+    setUploadedImages: (imgs: string[]) => setUploadedImages(imgs),
+    layoutMode,
+    setIsChatExpanded,
+  })
+
+  // Route to the right hook based on mode
+  const chatInput = roleplayMode ? rpLLM.rpChatInput : chatLLM.chatInput
+  const setChatInput = roleplayMode ? rpLLM.setRpChatInput : chatLLM.setChatInput
+  const chatInputRef = roleplayMode ? rpLLM.rpChatInputRef : chatLLM.chatInputRef
+  const chatEndRef = roleplayMode ? rpLLM.rpChatEndRef : chatLLM.chatEndRef
+  const errorMsg = roleplayMode ? rpLLM.rpErrorMsg : chatLLM.errorMsg
+  const setErrorMsg = roleplayMode ? rpLLM.setRpErrorMsg : chatLLM.setErrorMsg
+  const handleSendMessage = roleplayMode ? rpLLM.handleRpSendMessage : chatLLM.handleSendMessage
+  const handleStopGeneration = roleplayMode ? rpLLM.handleRpStopGeneration : chatLLM.handleStopGeneration
+  const { editingMessageId, setEditingMessageId, editingMessageText, setEditingMessageText, handleResubmitMessage } = chatLLM
+
+  // Handle starting a new RP game
+  const handleStartRpGame = useCallback(async (config: { characterName: string; genre: string; difficulty: 'easy' | 'normal' | 'hard'; customWorldDesc?: string }) => {
+    setIsRpSetupOpen(false)
+    await rpLLM.handleInitializeGame(config)
+  }, [rpLLM])
+
+  // Handle ending the RP game
+  const handleEndRpGame = useCallback(() => {
+    if (window.confirm('End the current roleplay session? Your game documents will be preserved.')) {
+      setRoleplayMode(false)
+      setRoleplayConfig(null)
+    }
+  }, [setRoleplayMode, setRoleplayConfig])
 
   const getProviderLabel = (prov: string) => {
     return prov === 'grok' ? 'Grok' : prov.charAt(0).toUpperCase() + prov.slice(1)
@@ -107,9 +133,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+
   return (
+    <>
     <section 
-      className={`chat-panel ${isChatExpanded ? 'expanded' : ''} ${isHistoryOpen ? 'open' : ''}`} 
+      className={`chat-panel ${isChatExpanded ? 'expanded' : ''} ${isHistoryOpen ? 'open' : ''} ${roleplayMode ? 'rp-active' : ''}`} 
       style={{ 
         width: layoutMode === 'portrait' 
           ? '100%' 
@@ -132,95 +160,159 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               <ChevronDown size={18} />
             </button>
           )}
-          <h2>{t.app.chatTitle} ({getProviderLabel(activeProvider)})</h2>
+          <h2>{roleplayMode ? '⚔️ Roleplay' : t.app.chatTitle} ({getProviderLabel(activeProvider)})</h2>
         </div>
-        <button 
-          onClick={handleClearChat} 
-          className="btn-icon" 
-          title={t.app.clearChat}
-          type="button"
-        >
-          <Trash2 size={16} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+          {/* Roleplay Toggle Button */}
+          <button
+            onClick={() => {
+              if (roleplayMode) {
+                handleEndRpGame()
+              } else {
+                setIsRpSetupOpen(true)
+              }
+            }}
+            className={`rp-toggle-btn ${roleplayMode ? 'active' : ''}`}
+            title={roleplayMode ? 'End roleplay session' : 'Start a roleplay game'}
+            type="button"
+            disabled={isStreaming}
+          >
+            <Swords size={13} />
+            {roleplayMode ? 'RP On' : 'RP'}
+          </button>
+          <button 
+            onClick={handleClearChat} 
+            className="btn-icon" 
+            title={t.app.clearChat}
+            type="button"
+          >
+            <Trash2 size={16} />
+          </button>
+        </div>
       </div>
 
+      {/* Roleplay Banner — shows game stats when RP is active */}
+      {roleplayMode && roleplayConfig && (
+        <RoleplayBanner onEndGame={handleEndRpGame} />
+      )}
+
       <div className="chat-messages">
-        {messages.map(msg => (
-          <div key={msg.id} className={`chat-message ${msg.role}`}>
-            {editingMessageId === msg.id ? (
-              <div className="chat-message-edit-container">
-                <textarea
-                  value={editingMessageText}
-                  onChange={(e) => setEditingMessageText(e.target.value)}
-                  className="chat-message-edit-textarea"
-                />
-                <div className="chat-message-edit-actions">
-                  <button
-                    onClick={() => setEditingMessageId(null)}
-                    className="btn-secondary"
-                    type="button"
-                  >
-                    {t.app.dismiss}
-                  </button>
-                  <button
-                    onClick={() => handleResubmitMessage(msg.id, editingMessageText)}
-                    className="btn-primary"
-                    type="button"
-                  >
-                    {t.app.saveAndSubmit}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <div className="chat-message-bubble">
-                  {msg.images && msg.images.length > 0 && (
-                    <div className="chat-message-images" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
-                      {msg.images.map((img, idx) => (
-                        <img 
-                          key={idx} 
-                          src={img} 
-                          alt={`Attachment ${idx + 1}`} 
-                          style={{ 
-                            maxWidth: '120px', 
-                            maxHeight: '120px', 
-                            borderRadius: '6px', 
-                            objectFit: 'cover',
-                            border: '1px solid var(--border-color)' 
-                          }} 
-                        />
-                      ))}
-                    </div>
-                  )}
-                  <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-                </div>
-                <span className="chat-message-info" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
-                  <span>{getResponderName(msg)} • {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                  {msg.role === 'user' && editingMessageId !== msg.id && !isStreaming && (
+        {messages.map(msg => {
+          // Determine RP-specific CSS classes
+          const rpClass = msg.rpType === 'narration' ? 'rp-narration'
+            : msg.rpType === 'action' ? 'rp-action'
+            : msg.rpType === 'system_event' ? 'rp-system-event'
+            : ''
+
+          return (
+            <div key={msg.id} className={`chat-message ${msg.role} ${rpClass}`}>
+              {editingMessageId === msg.id && !roleplayMode ? (
+                <div className="chat-message-edit-container">
+                  <textarea
+                    value={editingMessageText}
+                    onChange={(e) => setEditingMessageText(e.target.value)}
+                    className="chat-message-edit-textarea"
+                  />
+                  <div className="chat-message-edit-actions">
                     <button
-                      onClick={() => {
-                        setEditingMessageId(msg.id)
-                        setEditingMessageText(msg.content)
-                      }}
-                      className="btn-icon"
-                      title={t.app.editMessage}
+                      onClick={() => setEditingMessageId(null)}
+                      className="btn-secondary"
                       type="button"
-                      style={{ padding: '0.1rem', background: 'transparent', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', opacity: 0.6 }}
-                      onMouseEnter={e => e.currentTarget.style.opacity = '1'}
-                      onMouseLeave={e => e.currentTarget.style.opacity = '0.6'}
                     >
-                      <SquarePen size={12} />
+                      {t.app.dismiss}
                     </button>
+                    <button
+                      onClick={() => handleResubmitMessage(msg.id, editingMessageText)}
+                      className="btn-primary"
+                      type="button"
+                    >
+                      {t.app.saveAndSubmit}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="chat-message-bubble">
+                    {/* RP Action Prefix for user messages */}
+                    {msg.rpType === 'action' && roleplayConfig && (
+                      <div className="rp-action-prefix">
+                        <Swords size={11} />
+                        {roleplayConfig.characterName}
+                      </div>
+                    )}
+                    {msg.images && msg.images.length > 0 && (
+                      <div className="chat-message-images" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
+                        {msg.images.map((img, idx) => (
+                          <img 
+                            key={idx} 
+                            src={img} 
+                            alt={`Attachment ${idx + 1}`} 
+                            style={{ 
+                              maxWidth: '120px', 
+                              maxHeight: '120px', 
+                              borderRadius: '6px', 
+                              objectFit: 'cover',
+                              border: '1px solid var(--border-color)' 
+                            }} 
+                          />
+                        ))}
+                      </div>
+                    )}
+                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+
+                    {/* RP Choices — clickable action buttons */}
+                    {msg.rpChoices && msg.rpChoices.length > 0 && !isStreaming && (
+                      <div className="rp-choices-container">
+                        <div className="rp-choices-label">Choose your path:</div>
+                        {msg.rpChoices.map((choice, idx) => (
+                          <button
+                            key={idx}
+                            className="rp-choice-btn"
+                            type="button"
+                            onClick={() => handleSendMessage(undefined, choice)}
+                            disabled={isStreaming}
+                          >
+                            <span className="rp-choice-number">{idx + 1}</span>
+                            {choice}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {msg.rpType !== 'system_event' && (
+                    <span className="chat-message-info" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
+                      <span>
+                        {msg.rpType === 'narration' ? '🎲 Game Master' : msg.rpType === 'action' ? `⚔️ ${roleplayConfig?.characterName || 'Player'}` : getResponderName(msg)}
+                        {' • '}
+                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                      </span>
+                      {msg.role === 'user' && !roleplayMode && editingMessageId !== msg.id && !isStreaming && (
+                        <button
+                          onClick={() => {
+                            setEditingMessageId(msg.id)
+                            setEditingMessageText(msg.content)
+                          }}
+                          className="btn-icon"
+                          title={t.app.editMessage}
+                          type="button"
+                          style={{ padding: '0.1rem', background: 'transparent', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', opacity: 0.6 }}
+                          onMouseEnter={e => e.currentTarget.style.opacity = '1'}
+                          onMouseLeave={e => e.currentTarget.style.opacity = '0.6'}
+                        >
+                          <SquarePen size={12} />
+                        </button>
+                      )}
+                    </span>
                   )}
-                </span>
-              </>
-            )}
-          </div>
-        ))}
+                </>
+              )}
+            </div>
+          )
+        })}
         {isStreaming && (
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
             <RefreshCw size={12} className="animate-spin" />
-            <span>{getProviderLabel(activeProvider)} {t.app.streamingChanges}</span>
+            <span>{roleplayMode ? '🎲 Game Master is narrating...' : `${getProviderLabel(activeProvider)} ${t.app.streamingChanges}`}</span>
           </div>
         )}
         <div ref={chatEndRef} />
@@ -425,9 +517,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   width: '100%'
                 }}
               >
-                {t.app.instructPlaceholder
-                  .replace('{provider}', activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1))
-                  .replace('{model}', activeConfig.model)
+                {roleplayMode && roleplayConfig
+                  ? `What do you do, ${roleplayConfig.characterName}?`
+                  : t.app.instructPlaceholder
+                    .replace('{provider}', activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1))
+                    .replace('{model}', activeConfig.model)
                 }
               </span>
             )}
@@ -492,5 +586,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </form>
     </section>
+
+    {/* Roleplay Setup Modal */}
+    <RoleplaySetupModal
+      isOpen={isRpSetupOpen}
+      onClose={() => setIsRpSetupOpen(false)}
+      onStartGame={handleStartRpGame}
+    />
+    </>
   )
 }

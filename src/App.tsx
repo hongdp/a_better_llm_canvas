@@ -834,22 +834,41 @@ function App() {
               )}
 
               <div className="canvas-editor-container">
-                {documents.map(doc => (
-                  <div 
-                    key={doc.id} 
-                    style={{ 
-                      display: doc.id === activeDocumentId ? 'block' : 'none', 
-                      height: '100%',
-                      width: '100%'
-                    }}
-                  >
-                    <Editor 
-                      isActive={doc.id === activeDocumentId}
-                      content={doc.content} 
-                      onChange={(html) => handleEditorChangeFor(doc.id, html)}
-                    />
-                  </div>
-                ))}
+                {documents.map(doc => {
+                  const isActive = doc.id === activeDocumentId
+                  if (!isActive) return null
+                  
+                  // Show loading skeleton if content not yet loaded from server
+                  if (doc.contentLoaded === false && doc.content === '') {
+                    return (
+                      <div key={doc.id} style={{ 
+                        display: 'flex', 
+                        flexDirection: 'column',
+                        justifyContent: 'center', 
+                        alignItems: 'center',
+                        height: '100%',
+                        gap: '1rem',
+                        color: 'var(--text-muted)' 
+                      }}>
+                        <div className="loading-spinner" style={{ width: 32, height: 32 }} />
+                        <span>Loading chapter content...</span>
+                      </div>
+                    )
+                  }
+
+                  return (
+                    <div 
+                      key={doc.id} 
+                      style={{ height: '100%', width: '100%' }}
+                    >
+                      <Editor 
+                        isActive={true}
+                        content={doc.content} 
+                        onChange={(html) => handleEditorChangeFor(doc.id, html)}
+                      />
+                    </div>
+                  )
+                })}
               </div>
 
 

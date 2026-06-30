@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef } from 'react'
 import { useEditor, EditorContent, Mark, mergeAttributes, Extension, Node } from '@tiptap/react'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
@@ -236,6 +236,13 @@ export const Editor: React.FC<EditorProps> = ({
 }) => {
   const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
 
+  // Track content strings that originated FROM this editor's onUpdate.
+  // When the content prop changes because of our own edit (user typed/pasted → onUpdate
+  // → onChange → Zustand → re-render → new content prop), we must NOT call setContent
+  // because the editor already has the correct state. Calling setContent in this case
+  // causes a race condition where slightly-stale store HTML overwrites the live editor.
+  const contentFromEditorRef = useRef<string | null>(null)
+
   const handleQuickAction = (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
     let prompt = ''
     switch (action) {
@@ -271,7 +278,10 @@ export const Editor: React.FC<EditorProps> = ({
     ],
     content,
     onUpdate: ({ editor }) => {
-      onChange(editor.getHTML())
+      const html = editor.getHTML()
+      // Mark this content as originating from the editor itself
+      contentFromEditorRef.current = html
+      onChange(html)
     },
     onSelectionUpdate: ({ editor }) => {
       const { from, to, empty } = editor.state.selection
@@ -288,9 +298,20 @@ export const Editor: React.FC<EditorProps> = ({
     }
   })
 
-  // Synchronize incoming content updates (e.g. from LLM streaming) with TipTap
+  // Synchronize incoming content updates (e.g. from LLM streaming, version restore) with TipTap.
+  // CRITICAL: Skip when the content prop is just echoing back what we sent via onUpdate,
+  // otherwise we get a race condition that causes user edits to "roll back".
   useEffect(() => {
-    if (editor && content !== editor.getHTML()) {
+    if (!editor) return
+
+    // If this content originated from our own editor's onUpdate, skip the sync.
+    // The editor already has the correct state; overwriting it would cause rollback.
+    if (contentFromEditorRef.current === content) {
+      return
+    }
+
+    // Content came from an external source (LLM streaming, version restore, etc.)
+    if (content !== editor.getHTML()) {
       editor.commands.setContent(content, { emitUpdate: false })
     }
   }, [content, editor])

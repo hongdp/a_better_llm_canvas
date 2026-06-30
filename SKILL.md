@@ -60,7 +60,7 @@ experience of the document over the chat experience.
   - **Operational transforms or CRDTs** for future collaborative editing.
   - **Structured diffs** so LLM edits can be shown as additions/deletions.
   - **Serialization** to Markdown and plain text for LLM prompt construction.
-- **TipTap Sync Hook**: TipTap only reads content once on mount. To synchronize programmatically updated content (e.g., LLM streams), implement a `useEffect` hook that checks for updates and calls `editor.commands.setContent(content, { emitUpdate: false })` to avoid loop recursion.
+- **TipTap Sync Hook**: TipTap only reads content once on mount. To synchronize programmatically updated content (e.g., LLM streams), implement a `useEffect` hook that checks for updates and calls `editor.commands.setContent(content, { emitUpdate: false })` to avoid loop recursion. **Critical**: Use a `contentFromEditorRef` to track content that originated from the editor's own `onUpdate` callback, and skip `setContent` when the incoming content matches — otherwise user edits will "roll back" due to a race condition in the `onUpdate → Zustand → re-render → useEffect` loop. See § 3.2 and `Editor.tsx`.
 
 ### 2.3 LLM Integration
 - **Provider-agnostic**: Abstract the LLM API behind a provider interface.
@@ -120,6 +120,9 @@ experience of the document over the chat experience.
   the network round-trip time — no artificial buffering.
 - **Large documents**: The editor must handle documents up to 50,000 words
   without jank. Virtualize the rendering if needed.
+- **TipTap Content Sync — Avoiding the Rollback Race Condition**: When TipTap's `onUpdate` fires, the new HTML flows through `onChange → Zustand → React re-render → content prop`. The `useEffect` that synchronizes the `content` prop back into TipTap must **never** overwrite the editor with content that originated from its own `onUpdate`. Use a ref (`contentFromEditorRef`) to track editor-originated HTML and skip `setContent` when the incoming prop matches. Without this guard, user edits (especially large pastes) appear to "roll back" after a brief delay because the slightly-stale store HTML overwrites the live editor state. See `Editor.tsx`.
+- **Optimistic UI for Server-Dependent Operations**: Any operation that creates, updates, or deletes data on the server (e.g., book creation, book deletion) must update the local Zustand state **synchronously first** and perform the server round-trip in the background (fire-and-forget). The UI should never block waiting for a server response. If the server call fails, surface an error indicator (e.g., `serverSaveStatus: 'failed'`) but do not roll back the local state. See `createNewBook` in `useAppStore.ts`.
+- **Lightweight Server Metadata Extraction**: When the server needs to list items whose full data is very large (e.g., book JSON files containing embedded base64 images, chat history, chapters), never fully parse the entire file just to extract metadata fields. Instead, read only the first few KB and use regex to extract the needed fields. Ensure the save endpoint reorders JSON keys to place metadata fields (`bookTitle`, `updatedAt`) at the top of the file so they are always within the read window. See `extract_book_metadata` and `save_storage` in `api_server.py`.
 
 ### 3.3 Persistence & Recovery
 - **Auto-save to localStorage / Backend**: Auto-save updates asynchronously in the background. In local setups, changes are persisted via write-through caching.
@@ -140,6 +143,29 @@ experience of the document over the chat experience.
   average edit cycle length).
 - Error reporting for failed LLM calls (rate limits, malformed responses) to
   surface issues to the user gracefully.
+
+### 3.6 Performance Optimization Documentation
+Performance fixes are uniquely fragile — a developer who doesn't understand **why** a pattern exists may inadvertently revert it during a "cleanup" refactor. To prevent this, all performance optimizations must be documented **inline in the code** with the following structure:
+
+1. **Problem Statement**: What symptom was observed (e.g., "editor content rolls back after paste", "book creation takes 5+ seconds").
+2. **Root Cause**: The technical explanation of why the problem occurs (e.g., "race condition in the TipTap ↔ Zustand sync loop", "server parses 50MB JSON per book for a list endpoint").
+3. **Fix Rationale**: Why this specific solution was chosen and what constraints it satisfies (e.g., "ref-based tracking avoids the race without breaking LLM streaming sync", "regex on first 4KB avoids full parse while key reordering guarantees the fields are within the read window").
+
+Use a structured block comment format for significant optimizations:
+```typescript
+// ── Performance-Critical: <Title> ──────────────────────────────
+// Problem: <what the user sees>
+// Root Cause: <why it happens technically>
+// Fix: <what we do and why this approach>
+// ───────────────────────────────────────────────────────────────
+```
+
+For smaller inline fixes, a one-liner comment explaining "why" (not "what") is sufficient:
+```typescript
+// Skip setContent when the content came from our own onUpdate to prevent rollback
+```
+
+**This rule applies equally to frontend and backend code.** Server-side performance patterns (e.g., lightweight metadata extraction, JSON key reordering) must also carry rationale comments.
 
 ---
 

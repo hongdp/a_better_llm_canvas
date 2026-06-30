@@ -39,3 +39,6 @@ public/sensitive_words.json
 # Python artifacts
 __pycache__/
 *.pyc
+
+# Local SQLite database (not on network mounts)
+.local_db/
