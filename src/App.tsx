@@ -24,6 +24,12 @@ import { useTranslation } from './i18n'
 import { exportDocument } from './utils/export'
 import { htmlToPlainText } from './utils/convert'
 
+// Stable no-op callbacks for the app-level model fetch (the Settings modal
+// passes its own real error/loading setters). Must be module-scoped so their
+// identity never changes between renders — otherwise useModelFetcher's effect
+// deps change every render and refetch in a loop (429 rate-limit).
+const noop = () => {}
+
 function App() {
   const { t } = useTranslation()
   // Zustand store state
@@ -113,7 +119,7 @@ function App() {
 
   // Keep the live model lists (Gemini/Grok) populated app-wide so the top-bar
   // model dropdown matches Settings even before Settings is ever opened.
-  useModelFetcher(true, () => {}, () => {})
+  useModelFetcher(true, noop, noop)
 
   // Image generation modal state
   const [isImageGenOpen, setIsImageGenOpen] = useState(false)
