@@ -19,6 +19,7 @@ const AuthForm = lazy(() => import('./components/AuthForm').then(m => ({ default
 const ImageGenerationModal = lazy(() => import('./components/ImageGenerationModal').then(m => ({ default: m.ImageGenerationModal })))
 
 import { useDiffHandlers } from './hooks/useDiffHandlers'
+import { useModelFetcher } from './hooks/useModelFetcher'
 import { useTranslation } from './i18n'
 import { exportDocument } from './utils/export'
 import { htmlToPlainText } from './utils/convert'
@@ -109,6 +110,10 @@ function App() {
     }
     setSaveStatus('saved')
   }, [])
+
+  // Keep the live model lists (Gemini/Grok) populated app-wide so the top-bar
+  // model dropdown matches Settings even before Settings is ever opened.
+  useModelFetcher(true, () => {}, () => {})
 
   // Image generation modal state
   const [isImageGenOpen, setIsImageGenOpen] = useState(false)

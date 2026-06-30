@@ -19,7 +19,11 @@ const FALLBACK_GROK_MODELS = [
 ]
 
 export function useModelFetcher(
-  isSettingsOpen: boolean,
+  // When true the hook fetches the live model lists. Passed `isSettingsOpen`
+  // from the Settings modal (so it refreshes + surfaces errors there), and
+  // `true` from the app root so the top-bar model dropdown is populated even
+  // before Settings is ever opened.
+  enabled: boolean,
   setErrorMsg: (msg: string | null) => void,
   setIsLoadingModels: (loading: boolean) => void
 ) {
@@ -40,7 +44,7 @@ export function useModelFetcher(
 
   // Fetch official Gemini models dynamically when API Key or Base URL changes
   useEffect(() => {
-    if (!isSettingsOpen) return
+    if (!enabled) return
 
     const fetchOfficialModels = async () => {
       if (!geminiApiKey || geminiApiKey === 'ollama-no-key') {
@@ -99,11 +103,11 @@ export function useModelFetcher(
     }
 
     fetchOfficialModels()
-  }, [isSettingsOpen, geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model, setErrorMsg, setIsLoadingModels])
+  }, [enabled, geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model, setErrorMsg, setIsLoadingModels])
 
   // Fetch official Grok models dynamically when API Key or Base URL changes
   useEffect(() => {
-    if (!isSettingsOpen) return
+    if (!enabled) return
 
     const fetchGrokModels = async () => {
       if (!grokApiKey) {
@@ -140,5 +144,5 @@ export function useModelFetcher(
       }
     }
     fetchGrokModels()
-  }, [isSettingsOpen, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
+  }, [enabled, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
 }
