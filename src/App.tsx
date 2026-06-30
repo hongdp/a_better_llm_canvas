@@ -164,6 +164,15 @@ function App() {
       const state = useAppStore.getState()
       if (!state.user || state.isStreaming) return
 
+      // Do NOT pull-overwrite from the server while we have local changes that
+      // haven't been flushed yet. The save is debounced (~3s), so right after a
+      // generation the new content (including pending diffs) lives only in
+      // memory. Reloading from the server here would clobber it — this is what
+      // made AI diffs vanish when DevTools/window focus changed mid-debounce.
+      if (state.serverSaveStatus === 'saving') return
+      const activeDoc = state.documents.find(d => d.id === state.activeDocumentId)
+      if (activeDoc?.content?.includes('data-diff-id')) return
+
       try {
         const res = await fetch('/api/books')
         if (res.ok) {
