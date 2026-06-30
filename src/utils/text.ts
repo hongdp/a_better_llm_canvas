@@ -135,6 +135,134 @@ export function validateCanvasReplacement(
   return null
 }
 
+/** A single localized search/replace edit emitted by the LLM. */
+export interface EditBlock {
+  /** Exact text from the current document to locate. */
+  search: string
+  /** Text to substitute in its place (may be empty for a deletion). */
+  replace: string
+}
+
+/** Result of parsing `<edit>` / conflict-marker blocks from an LLM response. */
+export interface ParsedEdits {
+  blocks: EditBlock[]
+  /** Chat text before the edit region. */
+  before: string
+  /** Chat text after the edit region. */
+  after: string
+}
+
+// Matches one Aider-style conflict block:
+//   <<<<<<< SEARCH
+//   ...search...
+//   =======
+//   ...replace...
+//   >>>>>>> REPLACE
+// Marker lengths and trailing label whitespace are tolerated.
+const EDIT_BLOCK_RE = /<{5,}\s*SEARCH[^\n]*\n([\s\S]*?)\n={3,}[^\n]*\n([\s\S]*?)\n>{5,}\s*REPLACE/gi
+
+/**
+ * Parse localized edit blocks from an LLM response.
+ *
+ * This is the parser for Method A (search/replace edits): rather than re-emit
+ * the whole document, the model emits only the changed regions as
+ * SEARCH/REPLACE pairs. Parsing is lenient — the conflict markers are matched
+ * globally whether or not they are wrapped in `<edit>` tags, and the surrounding
+ * `<edit>`/`<edits>` sugar is stripped from the returned chat text.
+ */
+export function parseEditBlocks(text: string): ParsedEdits {
+  const blocks: EditBlock[] = []
+  let firstStart = -1
+  let lastEnd = -1
+
+  EDIT_BLOCK_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = EDIT_BLOCK_RE.exec(text)) !== null) {
+    if (m[1].trim()) {
+      blocks.push({ search: m[1], replace: m[2] })
+    }
+    if (firstStart === -1) firstStart = m.index
+    lastEnd = EDIT_BLOCK_RE.lastIndex
+  }
+
+  if (blocks.length === 0) {
+    return { blocks, before: '', after: '' }
+  }
+
+  const stripSugar = (s: string) => s.replace(/<\/?edits?\s*>/gi, '').trim()
+  return {
+    blocks,
+    before: stripSugar(text.slice(0, firstStart)),
+    after: stripSugar(text.slice(lastEnd))
+  }
+}
+
+/** Result of applying a list of edit blocks to a document. */
+export interface ApplyEditsResult {
+  /** The document after all matched edits were applied. */
+  html: string
+  /** Edits whose SEARCH text could not be located (left unapplied). */
+  failed: EditBlock[]
+}
+
+/**
+ * Locate `search` in `haystack` and return the string with it replaced by
+ * `replace`, or `null` if it cannot be found. Tries progressively fuzzier
+ * matches so a model that doesn't reproduce whitespace byte-for-byte still
+ * applies: exact ⇒ trimmed ⇒ whitespace-insensitive.
+ */
+function applyOneEdit(haystack: string, search: string, replace: string): string | null {
+  // 1. Exact substring.
+  const exactIdx = haystack.indexOf(search)
+  if (exactIdx !== -1) {
+    return haystack.slice(0, exactIdx) + replace + haystack.slice(exactIdx + search.length)
+  }
+
+  const trimmed = search.trim()
+  if (!trimmed) return null
+
+  // 2. Trimmed exact substring.
+  const trimmedIdx = haystack.indexOf(trimmed)
+  if (trimmedIdx !== -1) {
+    return haystack.slice(0, trimmedIdx) + replace + haystack.slice(trimmedIdx + trimmed.length)
+  }
+
+  // 3. Whitespace-insensitive: runs of whitespace match any whitespace run.
+  const pattern = trimmed
+    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\s+/g, '\\s+')
+  try {
+    const re = new RegExp(pattern)
+    const match = re.exec(haystack)
+    if (match) {
+      return haystack.slice(0, match.index) + replace + haystack.slice(match.index + match[0].length)
+    }
+  } catch {
+    // Malformed pattern — treat as not found.
+  }
+  return null
+}
+
+/**
+ * Apply a list of search/replace edits to a document, sequentially. Each edit
+ * runs against the result of the previous one. Edits whose SEARCH text cannot
+ * be located are collected in `failed` and skipped rather than applied
+ * destructively, so unmatched content is never lost.
+ */
+export function applyEditBlocks(originalHtml: string, blocks: EditBlock[]): ApplyEditsResult {
+  let html = originalHtml
+  const failed: EditBlock[] = []
+  for (const block of blocks) {
+    const result = applyOneEdit(html, block.search, block.replace)
+    if (result === null) {
+      failed.push(block)
+    } else {
+      html = result
+    }
+  }
+  return { html, failed }
+}
+
 /**
  * Clean up LLM-generated HTML:
  * 1. Remove blank `<p>` tags that contain only whitespace or &nbsp;.

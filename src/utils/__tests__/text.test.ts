@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -218,5 +218,115 @@ describe('validateCanvasReplacement', () => {
 
   it('prioritizes truncation over elision', () => {
     expect(validateCanvasReplacement('<p>A</p><!-- rest unchanged -->', false)).toBe('truncated')
+  })
+})
+
+// ── parseEditBlocks ───────────────────────────────────────────────────────────
+describe('parseEditBlocks', () => {
+  const block = (search: string, replace: string) =>
+    `<edit>\n<<<<<<< SEARCH\n${search}\n=======\n${replace}\n>>>>>>> REPLACE\n</edit>`
+
+  it('returns no blocks when there are no markers', () => {
+    const r = parseEditBlocks('just a normal chat reply')
+    expect(r.blocks).toHaveLength(0)
+  })
+
+  it('parses a single edit block with search and replace', () => {
+    const r = parseEditBlocks(block('<p>old</p>', '<p>new</p>'))
+    expect(r.blocks).toHaveLength(1)
+    expect(r.blocks[0].search).toBe('<p>old</p>')
+    expect(r.blocks[0].replace).toBe('<p>new</p>')
+  })
+
+  it('parses multiple edit blocks', () => {
+    const text = block('<p>a</p>', '<p>A</p>') + '\n' + block('<p>b</p>', '<p>B</p>')
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toHaveLength(2)
+    expect(r.blocks[1].search).toBe('<p>b</p>')
+    expect(r.blocks[1].replace).toBe('<p>B</p>')
+  })
+
+  it('captures chat text before and after the edit region, stripping <edit> sugar', () => {
+    const text = `Here is the change.\n${block('<p>x</p>', '<p>y</p>')}\nLet me know!`
+    const r = parseEditBlocks(text)
+    expect(r.before).toBe('Here is the change.')
+    expect(r.after).toBe('Let me know!')
+  })
+
+  it('parses an empty REPLACE as a deletion', () => {
+    const text = `<edit>\n<<<<<<< SEARCH\n<p>remove me</p>\n=======\n\n>>>>>>> REPLACE\n</edit>`
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toHaveLength(1)
+    expect(r.blocks[0].search).toBe('<p>remove me</p>')
+    expect(r.blocks[0].replace.trim()).toBe('')
+  })
+
+  it('parses conflict markers even without <edit> wrapper tags', () => {
+    const text = `<<<<<<< SEARCH\n<p>raw</p>\n=======\n<p>wrapped</p>\n>>>>>>> REPLACE`
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toHaveLength(1)
+    expect(r.blocks[0].search).toBe('<p>raw</p>')
+  })
+
+  it('ignores a block whose SEARCH is blank', () => {
+    const text = `<<<<<<< SEARCH\n   \n=======\n<p>new</p>\n>>>>>>> REPLACE`
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toHaveLength(0)
+  })
+})
+
+// ── applyEditBlocks ───────────────────────────────────────────────────────────
+describe('applyEditBlocks', () => {
+  it('applies an exact-match edit', () => {
+    const r = applyEditBlocks('<p>a</p><p>b</p>', [{ search: '<p>a</p>', replace: '<p>A</p>' }])
+    expect(r.html).toBe('<p>A</p><p>b</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('reports an edit whose SEARCH is not found, leaving the doc unchanged', () => {
+    const r = applyEditBlocks('<p>a</p>', [{ search: '<p>missing</p>', replace: '<p>X</p>' }])
+    expect(r.html).toBe('<p>a</p>')
+    expect(r.failed).toHaveLength(1)
+  })
+
+  it('matches despite whitespace differences (newlines / indentation)', () => {
+    const original = '<p>hello</p>\n<p>world</p>'
+    // Model emits the search with different internal whitespace.
+    const r = applyEditBlocks(original, [{ search: '<p>hello</p> <p>world</p>', replace: '<p>done</p>' }])
+    expect(r.html).toBe('<p>done</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('trims surrounding whitespace on the search text', () => {
+    const r = applyEditBlocks('<p>keep</p>', [{ search: '\n  <p>keep</p>  \n', replace: '<p>kept</p>' }])
+    expect(r.html).toBe('<p>kept</p>')
+  })
+
+  it('applies multiple edits sequentially', () => {
+    const r = applyEditBlocks('<p>a</p><p>b</p><p>c</p>', [
+      { search: '<p>a</p>', replace: '<p>A</p>' },
+      { search: '<p>c</p>', replace: '<p>C</p>' }
+    ])
+    expect(r.html).toBe('<p>A</p><p>b</p><p>C</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('applies matched edits and skips unmatched ones in the same batch', () => {
+    const r = applyEditBlocks('<p>a</p><p>b</p>', [
+      { search: '<p>a</p>', replace: '<p>A</p>' },
+      { search: '<p>zzz</p>', replace: '<p>Z</p>' }
+    ])
+    expect(r.html).toBe('<p>A</p><p>b</p>')
+    expect(r.failed).toHaveLength(1)
+  })
+
+  it('handles a deletion (empty replace)', () => {
+    const r = applyEditBlocks('<p>a</p><p>b</p>', [{ search: '<p>a</p>', replace: '' }])
+    expect(r.html).toBe('<p>b</p>')
+  })
+
+  it('does not treat $ in replacement as a special token', () => {
+    const r = applyEditBlocks('<p>price</p>', [{ search: '<p>price</p>', replace: '<p>$5 & $10</p>' }])
+    expect(r.html).toBe('<p>$5 & $10</p>')
   })
 })

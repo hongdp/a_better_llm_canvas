@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, extractTaggedBlock, validateCanvasReplacement } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, extractTaggedBlock, validateCanvasReplacement, parseEditBlocks, applyEditBlocks } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 
 interface UseChatLLMProps {
@@ -78,28 +78,49 @@ export function useChatLLM({
 
 CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
 1. ALWAYS communicate with the user normally in the chat interface. You are a helpful assistant.
-2. If the user asks you to modify the current document or write new content for the document, you MUST use the <canvas> or <selection_replace> tags to apply the changes.
+2. If the user asks you to modify the current document, you MUST apply the changes using <edit>, <selection_replace>, or <canvas> tags (chosen per the rules below).
 3. Use <selection_replace>...</selection_replace> if the user has selected specific text in the editor and wants you to rewrite, expand, or fix it. Only put the new text for the selection inside the tag. Do NOT include the surrounding text.
-4. Use <canvas>...</canvas> for all other document additions, full rewrites, or structural changes. When using <canvas>, output the ENTIRE updated document content inside the tags. You must output the entire document, not just the new parts.
-5. You MUST return beautifully formatted HTML inside the <canvas> or <selection_replace> tags.
+4. PREFER <edit> blocks for targeted changes to specific parts of an existing document (rewriting a sentence/paragraph, fixing wording, inserting or removing a section). Emit ONLY the changed regions — never the whole document. Each change is one block in this EXACT format:
+   <edit>
+   <<<<<<< SEARCH
+   (exact HTML copied verbatim from the CURRENT ACTIVE DOCUMENT CONTENT)
+   =======
+   (the new HTML that replaces it)
+   >>>>>>> REPLACE
+   </edit>
+   - The SEARCH text MUST be copied EXACTLY from the current document HTML (same tags, same words) so it can be located. Include enough surrounding context to make it unique.
+   - Emit multiple <edit> blocks for multiple separate changes.
+   - To delete content, leave the REPLACE section empty. To insert, SEARCH for an existing nearby element and REPLACE it with itself plus the new content.
+5. Use <canvas>...</canvas> ONLY for brand-new documents, full rewrites, or heavy restructuring where most of the document changes. When using <canvas>, output the ENTIRE updated document content inside the tags — never abbreviate or use placeholders like "<!-- unchanged -->".
+6. You MUST return beautifully formatted HTML inside all tags.
    - Use <h1>, <h2>, <h3> for headings.
    - Use <p> for paragraphs.
    - Use <blockquote> for quotes.
    - Use <strong>, <em> for emphasis.
    - Use <ul>, <ol>, <li> for lists.
-6. The user will provide you with the "CURRENT ACTIVE DOCUMENT CONTENT". This is the HTML of the document they are currently working on. You must preserve existing formatting unless asked to change it.
-7. Any text outside of <canvas> or <selection_replace> tags will be displayed as a normal chat message to the user.
-8. Do NOT use markdown inside the <canvas> or <selection_replace> tags. Use ONLY HTML.
-9. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, use <canvas> and rewrite the full document.
+7. The user will provide you with the "CURRENT ACTIVE DOCUMENT CONTENT". This is the HTML of the document they are currently working on. You must preserve existing formatting unless asked to change it.
+8. Any text outside of the tags will be displayed as a normal chat message to the user.
+9. Do NOT use markdown inside any tag. Use ONLY HTML.
+10. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, prefer <edit> for targeted changes, and <canvas> for full rewrites.
 
 EXAMPLES:
 
-User: "Write a short paragraph about a cat."
+User: "Write a short paragraph about a cat." (empty document)
 Assistant: Sure! Here is a paragraph about a cat.
 <canvas>
 <h1>The Cat</h1>
 <p>The cat is a small, furry mammal...</p>
 </canvas>
+
+User: "Make the second paragraph more vivid." (document already has content)
+Assistant: I've made that paragraph more vivid.
+<edit>
+<<<<<<< SEARCH
+<p>The cat sat on the mat.</p>
+=======
+<p>The sleek tabby stretched lazily across the sun-warmed mat.</p>
+>>>>>>> REPLACE
+</edit>
 
 User (with selection "The cat"): "Make this more descriptive."
 Assistant: I have made the description more vivid.
@@ -209,6 +230,8 @@ ${cleanActiveContent}
 
             const canvasIdx = raw.indexOf(canvasStart)
             const selectionIdx = raw.indexOf(selectionStart)
+            // First sign of an <edit> block (open tag or a SEARCH conflict marker).
+            const editMatchIdx = raw.search(/<edit\b|<{5,}\s*SEARCH/i)
 
             if (selectionIdx !== -1) {
               isSelectionEdit = true
@@ -221,6 +244,10 @@ ${cleanActiveContent}
               } else {
                 selectionReplaceText = rest
               }
+            } else if (editMatchIdx !== -1 && (canvasIdx === -1 || editMatchIdx < canvasIdx)) {
+              // Edit blocks are applied on completion; during streaming just hide
+              // the noisy SEARCH/REPLACE markup and show the surrounding chat.
+              chatText = raw.substring(0, editMatchIdx).trim()
             } else if (canvasIdx !== -1) {
               chatText = raw.substring(0, canvasIdx).trim()
               const rest = raw.substring(canvasIdx + canvasStart.length)
@@ -292,12 +319,15 @@ ${cleanActiveContent}
             let finalCanvasText = ''
             let finalSelectionReplaceText = ''
             let isSelectionEdit = false
+            let isEditMode = false
             let canvasClosed = false
 
             // Robustly extract the tagged block (tolerates case / attributes /
             // whitespace) and, critically, reports whether the closing tag
             // actually arrived so we can refuse to apply a truncated rewrite.
+            // Priority: selection_replace > localized edits > full-doc canvas.
             const selectionBlock = extractTaggedBlock(fullText, 'selection_replace')
+            const parsedEdits = parseEditBlocks(fullText)
             const canvasBlock = extractTaggedBlock(fullText, 'canvas')
 
             if (selectionBlock.found) {
@@ -306,6 +336,12 @@ ${cleanActiveContent}
               finalChatText = selectionBlock.before.trim()
               if (selectionBlock.after.trim()) {
                 finalChatText += '\n\n' + selectionBlock.after.trim()
+              }
+            } else if (parsedEdits.blocks.length > 0) {
+              isEditMode = true
+              finalChatText = parsedEdits.before
+              if (parsedEdits.after) {
+                finalChatText += (finalChatText ? '\n\n' : '') + parsedEdits.after
               }
             } else if (canvasBlock.found) {
               canvasClosed = canvasBlock.closed
@@ -318,21 +354,40 @@ ${cleanActiveContent}
               finalChatText = fullText
             }
 
+            // Apply localized search/replace edits by rebuilding the full
+            // document locally, then reuse the existing diff machinery.
+            // Edits whose SEARCH text can't be located are skipped (never
+            // destructive) and reported to the user.
+            let editDiffedDoc: string | null = null
+            let editFailedCount = 0
+            if (isEditMode) {
+              const placeholderOriginal = preserveImagesWithPlaceholders(originalDocContent)
+              const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsedEdits.blocks)
+              editFailedCount = failed.length
+              if (parsedEdits.blocks.length - failed.length > 0) {
+                const newDoc = stripBlankParagraphs(restoreImagesFromPlaceholders(newPlaceholderDoc))
+                editDiffedDoc = diffHtml(originalDocContent, newDoc)
+              }
+            }
+
             // Guard the destructive full-document replacement: if the response
             // was cut off (no closing tag) or abbreviates unchanged regions
             // with placeholders, applying the diff would silently delete
             // content. Skip it, keep the original, and tell the user.
             let canvasIssue: 'truncated' | 'elided' | null = null
-            if (!isSelectionEdit && finalCanvasText.trim()) {
+            if (!isSelectionEdit && !isEditMode && finalCanvasText.trim()) {
               const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
               canvasIssue = validateCanvasReplacement(candidate, canvasClosed)
             }
 
-            const warningNote = canvasIssue === 'truncated'
+            let warningNote = canvasIssue === 'truncated'
               ? '\n\n⚠️ The response was cut off before the document update finished, so no changes were applied (your document is unchanged). Please retry — for long documents, try editing a smaller selection at a time.'
               : canvasIssue === 'elided'
               ? '\n\n⚠️ The response abbreviated unchanged parts of the document, so applying it would have deleted content. No changes were applied. Please retry — for long documents, try editing a smaller selection at a time.'
               : ''
+            if (editFailedCount > 0) {
+              warningNote += `\n\n⚠️ ${editFailedCount} suggested change${editFailedCount > 1 ? 's' : ''} could not be located in the current document and ${editFailedCount > 1 ? 'were' : 'was'} skipped. The text to change may have moved or differ from what was matched.`
+            }
 
             const displayChatText = (attachmentsText
               ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
@@ -366,6 +421,10 @@ ${cleanActiveContent}
 
                 s.updateActiveDocument({ content: activeEditor.getHTML() })
               }
+            } else if (isEditMode) {
+              // Apply the locally-rebuilt diff, or leave the document untouched
+              // if no edit could be located.
+              s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
             } else if (finalCanvasText.trim() && !canvasIssue) {
               const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
               const diffed = diffHtml(originalDocContent, restoredText)
@@ -411,7 +470,7 @@ ${cleanActiveContent}
       s.setStreaming(false)
       setErrorMsg(err.message || 'Failed to initialize LLM stream.')
     }
-  }, [activeEditor, selectedText, restoreImagesFromPlaceholders, forceSave, setSaveStatus])
+  }, [activeEditor, selectedText, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus])
 
   // Send message handler
   const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
