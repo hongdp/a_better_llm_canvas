@@ -76,7 +76,7 @@ export const RoleplaySetupModal: React.FC<RoleplaySetupModalProps> = ({
         {/* Header */}
         <div className="rp-modal-header">
           <h2>
-            <Swords size={18} style={{ color: '#a78bfa' }} />
+            <Swords size={18} style={{ color: 'var(--accent)' }} />
             New Roleplay Adventure
           </h2>
           <button onClick={onClose} className="btn-icon" title="Close" type="button">
@@ -89,7 +89,7 @@ export const RoleplaySetupModal: React.FC<RoleplaySetupModalProps> = ({
           {/* Character Name */}
           <div className="rp-field-group">
             <label className="rp-field-label" htmlFor="rp-character-name">
-              <Sparkles size={12} style={{ color: '#a78bfa', display: 'inline' }} />{' '}
+              <Sparkles size={12} style={{ color: 'var(--accent)', display: 'inline' }} />{' '}
               Character Name <span style={{ color: '#ef4444' }}>*</span>
             </label>
             <input
@@ -166,8 +166,8 @@ export const RoleplaySetupModal: React.FC<RoleplaySetupModalProps> = ({
                 marginBottom: '0.3rem',
                 padding: '0.4rem 0.6rem',
                 borderRadius: '6px',
-                background: 'rgba(124, 58, 237, 0.06)',
-                border: '1px solid rgba(124, 58, 237, 0.12)',
+                background: 'rgba(128, 128, 128, 0.06)',
+                border: '1px solid rgba(128, 128, 128, 0.12)',
               }}>
                 Describe your game world, rules, and setting. The GM will build the adventure based on your description. Include things like: theme, setting, available abilities, key factions, tone, or any game mechanics you want.
               </div>

@@ -180,7 +180,7 @@ function pillBtn(active: boolean, onClick: () => void, label: string) {
         borderRadius: '6px',
         fontSize: '0.775rem',
         border: active ? '1px solid var(--accent)' : '1px solid var(--border-color)',
-        backgroundColor: active ? 'rgba(245, 158, 11, 0.15)' : 'var(--bg-tertiary)',
+        backgroundColor: active ? 'rgba(128, 128, 128, 0.15)' : 'var(--bg-tertiary)',
         color: active ? 'var(--accent)' : 'var(--text-secondary)',
         cursor: 'pointer',
         transition: 'all 0.15s',
@@ -403,12 +403,12 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
   const accentBtnStyle = (disabled: boolean): React.CSSProperties => ({
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '0.45rem',
     padding: '0.55rem 1.1rem', borderRadius: '8px', border: 'none',
-    background: disabled ? 'var(--bg-tertiary)' : 'linear-gradient(135deg, var(--accent), #f97316)',
-    color: disabled ? 'var(--text-muted)' : 'white',
+    background: disabled ? 'var(--bg-tertiary)' : 'var(--accent)',
+    color: disabled ? 'var(--text-muted)' : 'var(--accent-text)',
     fontSize: '0.875rem', fontWeight: 600,
     cursor: disabled ? 'not-allowed' : 'pointer',
     transition: 'all 0.18s',
-    boxShadow: disabled ? 'none' : '0 3px 12px rgba(245, 158, 11, 0.35)',
+    boxShadow: disabled ? 'none' : '0 3px 12px rgba(128, 128, 128, 0.35)',
     flex: '0 0 auto',
   })
 
@@ -462,11 +462,11 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <div style={{
               width: 34, height: 34, borderRadius: '9px',
-              background: 'linear-gradient(135deg, var(--accent), #f97316)',
+              background: 'var(--accent)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              boxShadow: '0 2px 8px rgba(245, 158, 11, 0.35)',
+              boxShadow: '0 2px 8px rgba(128, 128, 128, 0.35)',
             }}>
-              <Wand2 size={17} style={{ color: 'white' }} />
+              <Wand2 size={17} style={{ color: 'var(--accent-text)' }} />
             </div>
             <div>
               <div style={{ fontSize: '0.975rem', fontWeight: 700 }}>AI Image Generation</div>
@@ -506,7 +506,7 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
               }}>
                 <div style={{
                   width: 20, height: 20, borderRadius: '50%',
-                  background: 'var(--accent)', color: 'white',
+                  background: 'var(--accent)', color: 'var(--accent-text)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: '0.7rem', fontWeight: 700, flexShrink: 0,
                 }}>1</div>
@@ -591,7 +591,7 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
               <div style={{
                 display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                 padding: '0.6rem 0.85rem',
-                backgroundColor: enhancedPrompt ? 'rgba(245, 158, 11, 0.07)' : 'var(--bg-tertiary)',
+                backgroundColor: enhancedPrompt ? 'rgba(128, 128, 128, 0.07)' : 'var(--bg-tertiary)',
                 borderBottom: '1px solid var(--border-color)',
               }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -982,8 +982,8 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
               {revisedPrompt && (
                 <div style={{
                   padding: '0.55rem 0.7rem', borderRadius: '7px',
-                  backgroundColor: 'rgba(245, 158, 11, 0.08)',
-                  border: '1px solid rgba(245, 158, 11, 0.25)',
+                  backgroundColor: 'rgba(128, 128, 128, 0.08)',
+                  border: '1px solid rgba(128, 128, 128, 0.25)',
                   fontSize: '0.77rem', color: 'var(--text-secondary)',
                 }}>
                   <span style={{ fontWeight: 600, color: 'var(--accent)', display: 'block', marginBottom: '0.2rem' }}>

@@ -662,7 +662,7 @@ export const ChaptersSidebar: React.FC = () => {
                               <span style={{
                                 fontSize: '0.65rem',
                                 backgroundColor: 'var(--accent)',
-                                color: '#0d0e12',
+                                color: 'var(--accent-text)',
                                 padding: '1px 6px',
                                 borderRadius: '10px',
                                 fontWeight: 600,

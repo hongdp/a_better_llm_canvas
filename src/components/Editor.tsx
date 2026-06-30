@@ -712,8 +712,8 @@ export const Editor: React.FC<EditorProps> = ({
                       title="Generate image from selection"
                       type="button"
                       style={{
-                        background: 'linear-gradient(135deg, var(--accent), #a78bfa)',
-                        color: 'white',
+                        background: 'var(--accent)',
+                        color: 'var(--accent-text)',
                         borderRadius: '6px',
                         padding: '4px 8px',
                         display: 'flex',

@@ -545,7 +545,7 @@ function App() {
                 className="btn-icon"
                 title={t.app.logout}
                 type="button"
-                style={{ color: '#ef4444' }}
+                style={{ color: 'var(--text-secondary)' }}
               >
                 <LogOut size={16} />
               </button>
@@ -629,7 +629,7 @@ function App() {
                     }
                     type="button"
                     style={{
-                      color: saveStatus === 'unsaved' ? 'var(--accent)' : '#10b981',
+                      color: saveStatus === 'unsaved' ? 'var(--accent)' : 'var(--text-muted)',
                       cursor: saveStatus === 'unsaved' ? 'pointer' : 'default',
                     }}
                   >
@@ -661,11 +661,11 @@ function App() {
                     style={{
                       color:
                         serverSaveStatus === 'saved'
-                          ? '#10b981'
+                          ? 'var(--text-muted)'
                           : serverSaveStatus === 'saving'
                           ? 'var(--accent)'
                           : serverSaveStatus === 'failed'
-                          ? '#ef4444'
+                          ? 'var(--diff-remove-text)'
                           : 'var(--text-muted)',
                       cursor: serverSaveStatus === 'failed' ? 'pointer' : 'default',
                       opacity: serverSaveStatus === 'local-only' ? 0.4 : 1,
@@ -699,8 +699,8 @@ function App() {
                     title="Generate image with AI (uses selected text as prompt)"
                     type="button"
                     style={{
-                      background: 'linear-gradient(135deg, var(--accent), #a78bfa)',
-                      color: 'white',
+                      background: 'var(--accent)',
+                      color: 'var(--accent-text)',
                       borderRadius: '7px',
                       padding: '5px 10px',
                       display: 'flex',
@@ -709,7 +709,7 @@ function App() {
                       fontSize: '0.78rem',
                       fontWeight: 600,
                       border: 'none',
-                      boxShadow: '0 2px 8px rgba(124, 58, 237, 0.3)',
+                      boxShadow: 'var(--shadow-sm)',
                     }}
                   >
                     <Wand2 size={14} />
