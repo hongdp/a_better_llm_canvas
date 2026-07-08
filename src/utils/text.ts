@@ -206,10 +206,110 @@ export interface ApplyEditsResult {
 }
 
 /**
+ * Build a regex pattern from `search` where characters the LLM commonly
+ * normalizes are matched as equivalence classes instead of literally:
+ * whitespace runs ⇔ `&nbsp;`, straight ⇔ curly quotes, `&` ⇔ `&amp;`.
+ * Everything else is escaped and matched exactly (tags included).
+ */
+function buildFuzzyPattern(search: string): string {
+  let out = ''
+  let i = 0
+  const isWs = (idx: number) => /\s/.test(search[idx]) || search.startsWith('&nbsp;', idx)
+  while (i < search.length) {
+    if (isWs(i)) {
+      out += '(?:\\s|&nbsp;)+'
+      while (i < search.length && isWs(i)) i += search.startsWith('&nbsp;', i) ? 6 : 1
+      continue
+    }
+    const ch = search[i]
+    if (ch === "'" || ch === '‘' || ch === '’' || search.startsWith('&#39;', i) || search.startsWith('&apos;', i)) {
+      out += "(?:'|‘|’|&#39;|&apos;)"
+      i += search.startsWith('&#39;', i) ? 5 : search.startsWith('&apos;', i) ? 6 : 1
+      continue
+    }
+    if (ch === '"' || ch === '“' || ch === '”' || search.startsWith('&quot;', i)) {
+      out += '(?:"|“|”|&quot;)'
+      i += search.startsWith('&quot;', i) ? 6 : 1
+      continue
+    }
+    if (ch === '&') {
+      out += '(?:&amp;|&)'
+      i += search.startsWith('&amp;', i) ? 5 : 1
+      continue
+    }
+    out += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    i++
+  }
+  return out
+}
+
+/**
+ * Reduce an HTML fragment to comparable plain text: tags stripped, common
+ * entities decoded, quotes straightened, whitespace collapsed. Used for the
+ * last-resort block-level text match.
+ */
+function htmlToComparableText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&#39;|&apos;|[‘’]/gi, "'")
+    .replace(/&quot;|[“”]/gi, '"')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+// Closing tags that terminate a top-level block, for the block-text fallback.
+const EDIT_BLOCK_SPLIT_RE = /<\/(?:p|h[1-6]|blockquote|pre|ul|ol|table|figure|div)>/gi
+
+/**
+ * Last-resort match: if the SEARCH's *plain text* equals the plain text of a
+ * contiguous run of whole blocks (paragraphs/headings/lists), replace those
+ * whole blocks. This survives the model dropping or altering inline tags
+ * (<strong>, <em>, attributes) in its SEARCH copy, and can never produce
+ * unbalanced HTML because only complete blocks are swapped.
+ */
+function replaceByBlockText(haystack: string, search: string, replace: string): string | null {
+  const searchText = htmlToComparableText(search)
+  if (!searchText) return null
+
+  // Split the haystack into block segments, each ending at a closing block tag.
+  const segments: { start: number; end: number; text: string }[] = []
+  EDIT_BLOCK_SPLIT_RE.lastIndex = 0
+  let segStart = 0
+  let m: RegExpExecArray | null
+  while ((m = EDIT_BLOCK_SPLIT_RE.exec(haystack)) !== null) {
+    const end = m.index + m[0].length
+    segments.push({ start: segStart, end, text: htmlToComparableText(haystack.slice(segStart, end)) })
+    segStart = end
+  }
+  if (segStart < haystack.length) {
+    segments.push({ start: segStart, end: haystack.length, text: htmlToComparableText(haystack.slice(segStart)) })
+  }
+
+  // Find a contiguous run of blocks whose concatenated text equals searchText.
+  for (let i = 0; i < segments.length; i++) {
+    if (!segments[i].text) continue
+    let acc = ''
+    for (let j = i; j < segments.length; j++) {
+      if (segments[j].text) acc = acc ? acc + ' ' + segments[j].text : segments[j].text
+      if (acc === searchText) {
+        return haystack.slice(0, segments[i].start) + replace + haystack.slice(segments[j].end)
+      }
+      if (acc.length > searchText.length) break
+    }
+  }
+  return null
+}
+
+/**
  * Locate `search` in `haystack` and return the string with it replaced by
  * `replace`, or `null` if it cannot be found. Tries progressively fuzzier
- * matches so a model that doesn't reproduce whitespace byte-for-byte still
- * applies: exact ⇒ trimmed ⇒ whitespace-insensitive.
+ * matches so a model that doesn't reproduce the document byte-for-byte still
+ * applies: exact ⇒ trimmed ⇒ whitespace-insensitive ⇒ entity/quote-insensitive
+ * ⇒ whole-block plain-text match.
  */
 function applyOneEdit(haystack: string, search: string, replace: string): string | null {
   // 1. Exact substring.
@@ -227,20 +327,20 @@ function applyOneEdit(haystack: string, search: string, replace: string): string
     return haystack.slice(0, trimmedIdx) + replace + haystack.slice(trimmedIdx + trimmed.length)
   }
 
-  // 3. Whitespace-insensitive: runs of whitespace match any whitespace run.
-  const pattern = trimmed
-    .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/\s+/g, '\\s+')
+  // 3+4. Fuzzy regex: whitespace runs ⇔ &nbsp;, curly ⇔ straight quotes,
+  // & ⇔ &amp; — the substitutions LLMs most often make when copying HTML.
   try {
-    const re = new RegExp(pattern)
+    const re = new RegExp(buildFuzzyPattern(trimmed))
     const match = re.exec(haystack)
     if (match) {
       return haystack.slice(0, match.index) + replace + haystack.slice(match.index + match[0].length)
     }
   } catch {
-    // Malformed pattern — treat as not found.
+    // Malformed pattern — fall through to the block-text match.
   }
-  return null
+
+  // 5. Whole-block plain-text match (tolerates dropped/altered inline tags).
+  return replaceByBlockText(haystack, trimmed, replace)
 }
 
 /**

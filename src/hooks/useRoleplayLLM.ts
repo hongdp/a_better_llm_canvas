@@ -2,7 +2,17 @@ import { useState, useRef, useCallback } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
 import { getTimestampId } from '../utils/text'
+import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText } from '../utils/llmContext'
 import type { ChatMessage, RoleplayConfig } from '../types/chat'
+
+// Approximate character budget for roleplay chat history sent to the LLM.
+// Older narration beyond this window is dropped — the world lore and game
+// state documents carry the durable canon forward.
+const MAX_RP_HISTORY_CHARS = 80_000
+const KEEP_IMAGES_IN_LAST_MESSAGES = 4
+// World lore lives in the system prompt every turn; the model keeps rewriting
+// it via <story_lore>, so cap it before it dominates the token budget.
+const MAX_LORE_CHARS = 30_000
 
 interface UseRoleplayLLMProps {
   uploadedImages: string[]
@@ -72,13 +82,6 @@ Other rules:
 - End each narration with a sense of anticipation or a question to prompt action.
 - Do NOT wrap your XML tags in markdown code blocks or backticks. Output them as raw XML.`
   }
-}
-
-/**
- * Strip all HTML tags from a string, returning plain text.
- */
-function stripHtmlTags(html: string): string {
-  return html.replace(/<[^>]*>?/gm, '')
 }
 
 /**
@@ -536,7 +539,11 @@ export function useRoleplayLLM({
 
     accumulatedTextRef.current = ''
 
-    // 3. Build API messages
+    // 3. Build API messages.
+    // Prompt layout mirrors useChatLLM: [system + world lore (stable across
+    // turns)] + [windowed history] + [volatile game state merged into the
+    // final user action]. Keeping the volatile part last preserves provider
+    // prompt-cache prefixes turn over turn.
     const systemPrompt = buildRoleplaySystemPrompt(rpConfig)
 
     // Fetch story lore and game state documents for context
@@ -544,24 +551,18 @@ export function useRoleplayLLM({
     const storyLoreDoc = currentState.documents.find(d => d.id === rpConfig.storyLoreDocId)
     const gameStateDoc = currentState.documents.find(d => d.id === rpConfig.gameStateDocId)
 
-    const storyLoreContext: LLMMessage = {
-      role: 'user',
-      content: `WORLD LORE:\n${stripHtmlTags(storyLoreDoc?.content || '')}`
-    }
-
-    const gameStateContext: LLMMessage = {
-      role: 'user',
-      content: `CURRENT GAME STATE:\n${stripHtmlTags(gameStateDoc?.content || '')}`
-    }
-
-    const contextAck: LLMMessage = {
-      role: 'assistant',
-      content: 'Understood. I have the world lore and game state context. I am ready to continue the adventure.'
+    // World lore changes rarely (only when the model emits <story_lore>), so
+    // it lives in the system prompt where it stays cacheable. Capped so a
+    // long campaign's ever-growing lore can't crowd out the actual story.
+    const loreText = truncateWithNotice(htmlToPlainText(storyLoreDoc?.content || ''), MAX_LORE_CHARS)
+    if (loreText) {
+      systemPrompt.content += `\n\nWORLD LORE (established canon — stay consistent with it):\n${loreText}`
     }
 
     // Build chat history from RP messages (excluding system events and the
-    // messages we just added as context)
-    const historyMessages: LLMMessage[] = currentState.messages
+    // assistant placeholder we just added). The last entry is the action the
+    // player just sent — it is replaced below by the merged final message.
+    const filteredHistory = currentState.messages
       .filter(m =>
         m.id !== 'welcome' &&
         m.rpType !== 'system_event' &&
@@ -569,16 +570,28 @@ export function useRoleplayLLM({
       )
       .map(m => ({
         role: m.role,
-        content: m.content,
+        content: stripChatDisplayArtifacts(m.content),
         images: m.images
       }))
 
+    const historyMessages: LLMMessage[] = trimHistoryForContext(
+      filteredHistory.slice(0, -1),
+      { maxChars: MAX_RP_HISTORY_CHARS, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
+    )
+    if (historyMessages.length > 0) {
+      historyMessages[historyMessages.length - 1].cacheHint = true
+    }
+
+    const finalUserMessage: LLMMessage = {
+      role: 'user',
+      content: `CURRENT GAME STATE:\n${htmlToPlainText(gameStateDoc?.content || '')}\n\nMY ACTION:\n${promptText}`,
+      images: userMsg.images
+    }
+
     const apiMessages: LLMMessage[] = [
       systemPrompt,
-      storyLoreContext,
-      gameStateContext,
-      contextAck,
-      ...historyMessages
+      ...historyMessages,
+      finalUserMessage
     ]
 
     // 4–5. Stream the response

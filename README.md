@@ -107,7 +107,7 @@ The app runs as **two independent systemd user services** on the dev server, ens
 │  web-canvas-api   (Python, port 3000)       │
 │       ↕  Vite proxy (/api/* → :3000)        │
 │  web-canvas-vite  (Node/Vite, port 5173)    │
-│       ↕  HTTPS (self-signed cert)           │
+│       ↕  HTTPS (self-signed cert, IP SAN)   │
 │  LAN clients (192.168.0.110:5173)           │
 └─────────────────────────────────────────────┘
 ```
@@ -173,8 +173,24 @@ VITE_GROK_API_KEY=your-key
 
 | Symptom | Check | Fix |
 |---|---|---|
-| "NetworkError when attempting to fetch resource" | `systemctl --user status web-canvas-api` | `systemctl --user restart web-canvas-api web-canvas-vite` |
+| "NetworkError" only in Firefox (Chrome works) | Cert's SAN must list the IP you browse to (see TLS Cert below) | Visit `https://<ip>:5173/` → "Advanced" → "Accept the Risk"; clear any stale cert exception for that IP |
+| "NetworkError when attempting to fetch resource" (all browsers) | `systemctl --user status web-canvas-api` | `systemctl --user restart web-canvas-api web-canvas-vite` |
 | Port 5173 in use | `fuser 5173/tcp` | `fuser -k 5173/tcp` then restart |
 | API won't start | `tail -30 api-server.log` | Check Python deps, storage mount |
 | Vite won't start | `tail -30 vite-server.log` | Check Node version, `npm install` |
 | SW SSL error on LAN | Expected — SW only registers on `localhost` | Use "Add to Home Screen" for PWA |
+
+### TLS Cert (local HTTPS)
+
+Vite serves HTTPS using a self-signed cert at `certs/dev-cert.pem` (private key `certs/dev-key.pem`, git-ignored). The cert's **Subject Alternative Name** must list every host/IP you browse to — as `IP Address` entries for IP access, not `DNS`. Chrome tolerates a mismatch after you click through, but Firefox then rejects same-origin `fetch()`/XHR with "NetworkError when attempting to fetch resource".
+
+To add a new IP/hostname, edit the `[alt]` section of `certs/san.cnf` and regenerate:
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout certs/dev-key.pem -out certs/dev-cert.pem \
+  -days 825 -config certs/san.cnf
+./restart.sh
+# verify:
+openssl x509 -in certs/dev-cert.pem -noout -ext subjectAltName
+```
+Browsers must re-accept the cert after regeneration.

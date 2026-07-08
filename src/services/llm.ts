@@ -391,7 +391,10 @@ async function streamAnthropic(
   const body: Record<string, any> = {
     model: config.model,
     messages: anthropicMessages,
-    max_tokens: Math.min(config.maxOutputTokens || 8192, 8192),
+    // Respect the user's configured limit as-is: modern Claude models accept
+    // far more than 8192 output tokens, and clamping silently truncated long
+    // full-document <canvas> rewrites.
+    max_tokens: config.maxOutputTokens || 8192,
     stream: true,
   }
 
@@ -406,20 +409,26 @@ async function streamAnthropic(
     ]
   }
 
-  // Mark the first user message (dynamic document context) for caching too,
-  // as it often stays the same across a few consecutive requests
-  if (anthropicMessages.length > 0 && typeof anthropicMessages[0].content === 'string') {
-    anthropicMessages[0] = {
-      ...anthropicMessages[0],
-      content: [
-        {
-          type: 'text',
-          text: anthropicMessages[0].content,
-          cache_control: { type: 'ephemeral' }
-        }
+  // Place cache breakpoints where the caller marked the end of a stable
+  // prefix (`cacheHint`, e.g. the last history message before the volatile
+  // document context). Anthropic looks back from each breakpoint for hits,
+  // so a breakpoint that advances turn-by-turn still reads last turn's cache.
+  // Max 3 message-level breakpoints (the system block uses the 4th slot).
+  let cacheBreakpoints = 0
+  const nonSystemSources = messages.filter((m) => m.role !== 'system')
+  nonSystemSources.forEach((source, idx) => {
+    if (!source.cacheHint || cacheBreakpoints >= 3 || !source.content) return
+    const target = anthropicMessages[idx]
+    if (typeof target.content === 'string') {
+      target.content = [
+        { type: 'text', text: target.content, cache_control: { type: 'ephemeral' } }
       ]
+      cacheBreakpoints++
+    } else if (Array.isArray(target.content) && target.content.length > 0) {
+      target.content[target.content.length - 1].cache_control = { type: 'ephemeral' }
+      cacheBreakpoints++
     }
-  }
+  })
 
   const url = `${config.baseUrl}/messages`
   const headers: Record<string, string> = {
