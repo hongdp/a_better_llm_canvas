@@ -329,4 +329,69 @@ describe('applyEditBlocks', () => {
     const r = applyEditBlocks('<p>price</p>', [{ search: '<p>price</p>', replace: '<p>$5 & $10</p>' }])
     expect(r.html).toBe('<p>$5 & $10</p>')
   })
+
+  // ── fuzzy level 4: entity / quote equivalence ──────────────────────────────
+  it('matches when the doc has &nbsp; but the search has a plain space', () => {
+    const r = applyEditBlocks('<p>hello&nbsp;world</p>', [{ search: '<p>hello world</p>', replace: '<p>hi</p>' }])
+    expect(r.html).toBe('<p>hi</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('matches when the doc has curly quotes but the search has straight quotes', () => {
+    const r = applyEditBlocks('<p>she said “hi” and it’s fine</p>', [
+      { search: `<p>she said "hi" and it's fine</p>`, replace: '<p>ok</p>' }
+    ])
+    expect(r.html).toBe('<p>ok</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('matches when the doc has &amp; but the search has a bare &', () => {
+    const r = applyEditBlocks('<p>salt &amp; pepper</p>', [{ search: '<p>salt & pepper</p>', replace: '<p>spices</p>' }])
+    expect(r.html).toBe('<p>spices</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('matches when doc has &#39; but the search has a curly apostrophe', () => {
+    const r = applyEditBlocks('<p>it&#39;s here</p>', [{ search: '<p>it’s here</p>', replace: '<p>found</p>' }])
+    expect(r.html).toBe('<p>found</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  // ── fuzzy level 5: whole-block plain-text match ────────────────────────────
+  it('matches a whole block even when the search dropped inline tags', () => {
+    const doc = '<p>keep</p><p>The <strong>bold</strong> truth stays.</p><p>tail</p>'
+    // Model copied the paragraph text but lost the <strong> markup.
+    const r = applyEditBlocks(doc, [{ search: '<p>The bold truth stays.</p>', replace: '<p>Rewritten.</p>' }])
+    expect(r.html).toBe('<p>keep</p><p>Rewritten.</p><p>tail</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('matches a run of blocks by text when attributes differ', () => {
+    const doc = '<h2 id="x">Title</h2><p class="lead">First para.</p><p>after</p>'
+    // Model re-emitted the tags without the attributes.
+    const r = applyEditBlocks(doc, [
+      { search: '<h2>Title</h2><p>First para.</p>', replace: '<h2>New</h2><p>Changed.</p>' }
+    ])
+    expect(r.html).toBe('<h2>New</h2><p>Changed.</p><p>after</p>')
+    expect(r.failed).toHaveLength(0)
+  })
+
+  it('block-text match replaces whole blocks only — partial-paragraph text does not match', () => {
+    const doc = '<p>alpha beta gamma</p>'
+    const r = applyEditBlocks(doc, [{ search: 'beta', replace: 'BETA' }])
+    // 'beta' matches as a plain substring (level 1), so it applies directly…
+    expect(r.html).toBe('<p>alpha BETA gamma</p>')
+    // …but a *paragraph-wrapped* partial text must not swap the whole block.
+    const r2 = applyEditBlocks(doc, [{ search: '<p>alpha beta</p>', replace: '<p>X</p>' }])
+    expect(r2.failed).toHaveLength(1)
+    expect(r2.html).toBe(doc)
+  })
+
+  it('still fails cleanly when the text genuinely is not in the document', () => {
+    const r = applyEditBlocks('<p>real content</p>', [
+      { search: '<p>hallucinated content</p>', replace: '<p>X</p>' }
+    ])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe('<p>real content</p>')
+  })
 })
