@@ -5,6 +5,17 @@ import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, extractTaggedBlock, validateCanvasReplacement, parseEditBlocks, applyEditBlocks } from '../utils/text'
 import { diffHtml } from '../utils/diff'
+import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText, detectReferencedDocIds, buildAttachmentsLabel } from '../utils/llmContext'
+
+// Approximate character budget for chat history sent to the LLM. History is
+// windowed (most recent first) so long sessions don't grow the prompt without
+// bound; the active document is always sent in full separately.
+const MAX_HISTORY_CHARS = 80_000
+// Base64 images are only re-sent for the most recent messages — older ones
+// dominate token cost while rarely being referenced again.
+const KEEP_IMAGES_IN_LAST_MESSAGES = 4
+// Per-document cap for read-only reference documents attached as context.
+const MAX_REFERENCE_DOC_CHARS = 20_000
 
 interface UseChatLLMProps {
   activeEditor: Editor | null
@@ -42,6 +53,12 @@ export function useChatLLM({
   const selectionEndRef = useRef<number | null>(null)
   const originalSelectedTextRef = useRef<string>('')
   const imagePlaceholdersRef = useRef<{ placeholder: string; tag: string }[]>([])
+  // Throttles the live selection-edit preview: re-parsing + replacing the whole
+  // (growing) replacement on every streamed token is O(n²) and re-renders
+  // ProseMirror per token, which stutters once the output passes a few
+  // paragraphs. onDone always applies the final result, so coalescing the
+  // intermediate previews is safe.
+  const lastSelectionPreviewRef = useRef(0)
 
   // Simple image preservation during LLM streaming
   const preserveImagesWithPlaceholders = useCallback((html: string) => {
@@ -70,8 +87,13 @@ export function useChatLLM({
     return restored
   }, [])
 
-  // Build static system prompt
-  const buildStaticSystemPrompt = useCallback((): LLMMessage => {
+  // Build the system prompt: a static instruction block (kept stable so
+  // provider-side prompt caching works) plus the user's selected system
+  // prompt preset, which only changes when they pick a different preset.
+  const buildSystemPrompt = useCallback((): LLMMessage => {
+    const s = useAppStore.getState()
+    const preset = s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)
+    const customInstructions = preset?.content?.trim()
     return {
       role: 'system',
       content: `You are an elite creative writing assistant and document editor. You help authors write, format, rewrite, and structure their books/documents.
@@ -88,7 +110,8 @@ CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
    (the new HTML that replaces it)
    >>>>>>> REPLACE
    </edit>
-   - The SEARCH text MUST be copied EXACTLY from the current document HTML (same tags, same words) so it can be located. Include enough surrounding context to make it unique.
+   - The SEARCH text MUST be copied EXACTLY, character-for-character, from the CURRENT ACTIVE DOCUMENT CONTENT: same tags (including inline tags like <strong>/<em> and their attributes), same HTML entities (&nbsp;, &amp;, ...), same punctuation and quote characters. Do NOT paraphrase, re-wrap, or "clean up" the copied HTML — any difference prevents the edit from being located.
+   - Prefer starting SEARCH at a block boundary (e.g. from the opening <p> or <h2> tag) and spanning whole blocks. Include enough surrounding context to make it unique.
    - Emit multiple <edit> blocks for multiple separate changes.
    - To delete content, leave the REPLACE section empty. To insert, SEARCH for an existing nearby element and REPLACE it with itself plus the new content.
 5. Use <canvas>...</canvas> ONLY for brand-new documents, full rewrites, or heavy restructuring where most of the document changes. When using <canvas>, output the ENTIRE updated document content inside the tags — never abbreviate or use placeholders like "<!-- unchanged -->".
@@ -126,20 +149,27 @@ User (with selection "The cat"): "Make this more descriptive."
 Assistant: I have made the description more vivid.
 <selection_replace>
 The fluffy orange tabby cat
-</selection_replace>`
+</selection_replace>${customInstructions ? `
+
+USER'S CUSTOM WRITING INSTRUCTIONS (apply these to all content you write):
+${customInstructions}` : ''}`
     }
   }, [])
 
-  // Build dynamic context (reference docs + active doc)
-  const buildDynamicContext = useCallback((finalReferenceIds: string[]): LLMMessage => {
+  // Build the volatile document context (reference docs + active doc).
+  // Returned as a string that is merged into the FINAL user message: keeping
+  // it after the (stable) chat history preserves provider prompt-cache
+  // prefixes across turns, and keeps the document close to the request so
+  // <edit> SEARCH blocks are copied from nearby, current content.
+  const buildDynamicContext = useCallback((finalReferenceIds: string[]): string => {
     const s = useAppStore.getState()
-    
+
     // Build context string for explicitly selected secondary documents
     const referenceDocsContext = finalReferenceIds
       .map(id => {
         const doc = s.documents.find(d => d.id === id)
         if (!doc) return ''
-        const textContent = doc.content.replace(/<[^>]*>?/gm, '')
+        const textContent = truncateWithNotice(htmlToPlainText(doc.content), MAX_REFERENCE_DOC_CHARS)
         return `--- DOCUMENT: ${doc.title} ---\n${textContent}\n`
       })
       .filter(Boolean)
@@ -150,9 +180,7 @@ The fluffy orange tabby cat
 
     if (selectedText) {
       const cleanSelectedText = preserveImagesWithPlaceholders(selectedText)
-      return {
-        role: 'user',
-        content: `I have selected the following text in the document. I want you to focus your action on this specific text.
+      return `I have selected the following text in the document. I want you to focus your action on this specific text.
 ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
 CURRENT SELECTED TEXT:
 """
@@ -163,18 +191,14 @@ CURRENT ACTIVE DOCUMENT CONTENT (For context):
 """
 ${cleanActiveContent}
 """`
-      }
     } else {
-      return {
-        role: 'user',
-        content: `Here is the current state of my document.
+      return `Here is the current state of my document.
 ${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
 
 CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
 """
 ${cleanActiveContent}
 """`
-      }
     }
   }, [selectedText, preserveImagesWithPlaceholders])
 
@@ -194,6 +218,9 @@ ${cleanActiveContent}
     }
     abortControllerRef.current = new AbortController()
     const signal = abortControllerRef.current.signal
+
+    // Reset the live-preview throttle so the first chunk renders immediately.
+    lastSelectionPreviewRef.current = 0
 
     // Capture and store current selection indices before streaming starts
     if (activeEditor && selectedText) {
@@ -279,8 +306,20 @@ ${cleanActiveContent}
             )
 
             if (isSelectionEdit) {
+              // Throttle the live preview: applying it on every token re-parses
+              // the whole growing replacement and re-renders ProseMirror each
+              // time (O(n²)), stuttering past a few paragraphs. ~60ms ≈ 16fps is
+              // smooth; the final, exact result is applied in onDone regardless.
+              const SELECTION_PREVIEW_THROTTLE_MS = 60
+              const now = Date.now()
               const cleanedText = stripIncompleteEndTag(selectionReplaceText)
-              if (cleanedText && activeEditor && selectionRangeRef.current) {
+              if (
+                cleanedText &&
+                activeEditor &&
+                selectionRangeRef.current &&
+                now - lastSelectionPreviewRef.current >= SELECTION_PREVIEW_THROTTLE_MS
+              ) {
+                lastSelectionPreviewRef.current = now
                 const { from } = selectionRangeRef.current
                 const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
@@ -364,6 +403,14 @@ ${cleanActiveContent}
               const placeholderOriginal = preserveImagesWithPlaceholders(originalDocContent)
               const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsedEdits.blocks)
               editFailedCount = failed.length
+              if (failed.length > 0) {
+                // Surface the unmatched SEARCH text for diagnosis — the usual
+                // cause is the model paraphrasing instead of copying verbatim.
+                console.warn(
+                  `[edit-apply] ${failed.length}/${parsedEdits.blocks.length} edit block(s) failed to match.`,
+                  failed.map(f => ({ search: f.search }))
+                )
+              }
               if (parsedEdits.blocks.length - failed.length > 0) {
                 const newDoc = stripBlankParagraphs(restoreImagesFromPlaceholders(newPlaceholderDoc))
                 editDiffedDoc = diffHtml(originalDocContent, newDoc)
@@ -499,19 +546,7 @@ ${cleanActiveContent}
       }
     }
 
-    const autoDetectedIds: string[] = []
-    s.documents.forEach(doc => {
-      if (doc.id !== s.activeDocumentId) {
-        const cleanTitle = doc.title.toLowerCase().replace(/chapter\s*\d+\s*:\s*/g, '')
-        if (
-          promptText.toLowerCase().includes(doc.title.toLowerCase()) ||
-          (cleanTitle.length > 3 && promptText.toLowerCase().includes(cleanTitle))
-        ) {
-          autoDetectedIds.push(doc.id)
-        }
-      }
-    })
-
+    const autoDetectedIds = detectReferencedDocIds(promptText, s.documents, s.activeDocumentId)
     const finalReferenceIds = Array.from(new Set([...s.selectedReferenceIds, ...autoDetectedIds]))
 
     const userMsgId = getTimestampId('user')
@@ -541,37 +576,39 @@ ${cleanActiveContent}
 
     accumulatedTextRef.current = ''
 
-    const staticSystem = buildStaticSystemPrompt()
+    const systemPrompt = buildSystemPrompt()
     const dynamicContext = buildDynamicContext(finalReferenceIds)
-    const contextAck: LLMMessage = { role: 'assistant', content: 'Understood. I have the document context. What would you like me to do?' }
 
-    const historyMessages: LLMMessage[] = s.messages
-      .filter(m => m.id !== 'welcome')
-      .map(m => ({
-        role: m.role,
-        content: m.content,
-        images: m.images
-      }))
+    // Prompt layout: [stable system] + [stable, windowed history] + [volatile
+    // document context merged into the final user message]. The stable prefix
+    // is what makes provider prompt caching effective turn over turn.
+    const historyMessages: LLMMessage[] = trimHistoryForContext(
+      s.messages
+        .filter(m => m.id !== 'welcome')
+        .map(m => ({
+          role: m.role,
+          content: stripChatDisplayArtifacts(m.content),
+          images: m.images
+        })),
+      { maxChars: MAX_HISTORY_CHARS, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
+    )
+    if (historyMessages.length > 0) {
+      historyMessages[historyMessages.length - 1].cacheHint = true
+    }
 
-    historyMessages.push({
+    const finalUserMessage: LLMMessage = {
       role: 'user',
-      content: promptText,
+      content: `${dynamicContext}\n\nUSER REQUEST:\n${promptText}`,
       images: userMsg.images
-    })
+    }
 
-    const apiMessages = [staticSystem, dynamicContext, contextAck, ...historyMessages]
+    const apiMessages = [systemPrompt, ...historyMessages, finalUserMessage]
     const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
-    const attachmentsText = finalReferenceIds
-      .map(id => {
-        const doc = s.documents.find(d => d.id === id)
-        return doc ? `[Attached Context: ${doc.title}]` : ''
-      })
-      .filter(Boolean)
-      .join('\n')
+    const attachmentsText = buildAttachmentsLabel(finalReferenceIds, s.documents)
 
     await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens)
-  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, buildStaticSystemPrompt, buildDynamicContext, startLLMStreaming])
+  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, buildSystemPrompt, buildDynamicContext, startLLMStreaming])
 
   // Edit and Resubmit message handler
   const handleResubmitMessage = useCallback(async (msgId: string, newContent: string) => {
@@ -618,46 +655,43 @@ ${cleanActiveContent}
 
     accumulatedTextRef.current = ''
 
-    const autoDetectedIds: string[] = []
-    s.documents.forEach(doc => {
-      if (doc.id !== s.activeDocumentId) {
-        const cleanTitle = doc.title.toLowerCase().replace(/chapter\s*\d+\s*:\s*/g, '')
-        if (
-          trimmed.toLowerCase().includes(doc.title.toLowerCase()) ||
-          (cleanTitle.length > 3 && trimmed.toLowerCase().includes(cleanTitle))
-        ) {
-          autoDetectedIds.push(doc.id)
-        }
-      }
-    })
-
+    const autoDetectedIds = detectReferencedDocIds(trimmed, s.documents, s.activeDocumentId)
     const finalReferenceIds = Array.from(new Set([...s.selectedReferenceIds, ...autoDetectedIds]))
 
-    const staticSystem = buildStaticSystemPrompt()
+    const systemPrompt = buildSystemPrompt()
     const dynamicContext = buildDynamicContext(finalReferenceIds)
-    const contextAck: LLMMessage = { role: 'assistant', content: 'Understood. I have the document context. What would you like me to do?' }
 
-    const historyMessages: LLMMessage[] = truncatedMessages
-      .filter(m => m.id !== 'welcome')
-      .map(m => ({
-        role: m.role,
-        content: m.content,
-        images: m.images
-      }))
+    // Same prompt layout as handleSendMessage: stable prefix first, volatile
+    // document context merged into the final (edited) user message.
+    const editedMsg = truncatedMessages[truncatedMessages.length - 1]
+    const historyMessages: LLMMessage[] = trimHistoryForContext(
+      truncatedMessages
+        .slice(0, -1)
+        .filter(m => m.id !== 'welcome')
+        .map(m => ({
+          role: m.role,
+          content: stripChatDisplayArtifacts(m.content),
+          images: m.images
+        })),
+      { maxChars: MAX_HISTORY_CHARS, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
+    )
+    if (historyMessages.length > 0) {
+      historyMessages[historyMessages.length - 1].cacheHint = true
+    }
 
-    const apiMessages = [staticSystem, dynamicContext, contextAck, ...historyMessages]
+    const finalUserMessage: LLMMessage = {
+      role: 'user',
+      content: `${dynamicContext}\n\nUSER REQUEST:\n${trimmed}`,
+      images: editedMsg?.images
+    }
+
+    const apiMessages = [systemPrompt, ...historyMessages, finalUserMessage]
     const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
-    const attachmentsText = finalReferenceIds
-      .map(id => {
-        const doc = s.documents.find(d => d.id === id)
-        return doc ? `[Attached Context: ${doc.title}]` : ''
-      })
-      .filter(Boolean)
-      .join('\n')
+    const attachmentsText = buildAttachmentsLabel(finalReferenceIds, s.documents)
 
     await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens)
-  }, [layoutMode, setIsChatExpanded, buildStaticSystemPrompt, buildDynamicContext, startLLMStreaming])
+  }, [layoutMode, setIsChatExpanded, buildSystemPrompt, buildDynamicContext, startLLMStreaming])
 
   // Stop generation
   const handleStopGeneration = useCallback(() => {

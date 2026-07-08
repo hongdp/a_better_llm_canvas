@@ -72,6 +72,24 @@ experience of the document over the chat experience.
   context, instruction) behind the scenes.
 - **Context windowing**: For long documents, send only relevant sections (around
   the selection or the full document if small enough), not the entire history.
+  Chat history is trimmed to a character budget (most recent first), base64
+  images are only re-sent for the last few messages, and read-only reference
+  documents are truncated per-doc with an explicit notice (`src/utils/llmContext.ts`).
+- **History hygiene**: What the model sees as its own past turns must be what it
+  actually said. UI-appended artifacts (`[Attached Context: …]` labels, `⚠️`
+  truncation/edit-skip/stream-error notes) are stripped before messages re-enter
+  the prompt; empty messages are dropped and consecutive same-role turns merged
+  so stricter providers never see an invalid sequence. Read-only context
+  (reference docs, world lore, game state) is converted to structured plain text
+  (`htmlToPlainText` — block boundaries kept, entities decoded); only the active
+  document keeps verbatim HTML, which the `<edit>` SEARCH protocol requires.
+- **Cache-friendly prompt layout**: Assemble requests as
+  `[stable system prompt] + [windowed chat history] + [volatile document/game-state
+  context merged into the FINAL user message]`. Volatile content must come last:
+  it changes every turn, and placing it early invalidates provider prompt caches
+  (OpenAI/Gemini prefix caching, Anthropic `cache_control` — hinted via
+  `LLMMessage.cacheHint` on the last history message). It also keeps the current
+  document adjacent to the request, which improves `<edit>` SEARCH fidelity.
 - **Canvas Markup Protocol**: Restructure streaming data separating conversational response text from document updates using XML-like blocks. The LLM wraps document updates inside `<canvas>...</canvas>` blocks, which the frontend extracts to stream directly to the editor canvas while routing outer text to the chat.
 - **Dynamic Model Discovery**: Fetch available models dynamically via Google's ListModels API or provider configuration endpoints when the API key is set, falling back to static offline model lists if configuration is missing.
 - **Safety Self-Healing & Prompt Editor UI**: When an LLM request fails due to a safety threshold or guideline violation (e.g. 403 Safety/CSAM blocks), the app automatically triggers a self-healing retry by applying local sensitive word censorship to the user prompts. If this auto-retry fails, the system transitions to an interactive Prompt Editor UI (`status === 'prompt_edit'`), allowing users to inspect/edit the raw system/user prompts, retry manually, or save progress and exit.
