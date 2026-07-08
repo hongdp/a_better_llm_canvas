@@ -179,7 +179,7 @@ When integrating new LLM providers, developers **must** prioritize retrieving mo
 |---------------|---------|
 | Standalone App Shell | Service worker (`sw.js`) utilizes stale-while-revalidate and cache-first strategies to speed up page loading and prevent page state reloads when backgrounded. |
 | Manifest Config | Provides PWA properties for "Add to Home Screen" support on desktop/mobile and configures notch-friendly status bar orientations. |
-| Secure Local Access | Integrates local HTTPS basic SSL keys to support service worker API registration across the local area network (LAN). |
+| Secure Local Access | Serves local HTTPS with a self-signed cert whose SAN lists the LAN/Tailscale IPs (as `IP Address` entries), enabling service-worker registration and avoiding Firefox's "NetworkError" on same-origin fetch. |
 
 ---
 
@@ -442,7 +442,7 @@ In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios
 | LLM streaming | **Fetch API + ReadableStream** | Vercel AI SDK |
 | Persistence | **IndexedDB** (heavy documents/versions) + **localStorage** (configs/preferences) | Server storage API (FastAPI backend) |
 | Testing | **Vitest + Playwright** | Jest, Cypress |
-| Local HTTPS | **@vitejs/plugin-basic-ssl** | custom keys |
+| Local HTTPS | **Self-signed cert with IP SAN** (`certs/`, OpenSSL) | @vitejs/plugin-basic-ssl (dropped — no IP SAN) |
 | Deployment | **Vercel / Netlify** (static) | Python self-hosted server |
 
 ---
@@ -496,7 +496,7 @@ In Landscape (wide and short) and Tablet/Square (iPad / Foldables) aspect ratios
 
 ### M8 — PWA, HTML Scraping, & AI Image Generation
 - [x] Build and register Progressive Web Application (PWA) manifest and caching service worker (`sw.js`).
-- [x] Enable basic SSL plugin in Vite configurations to allow secure local HTTPS connections for PWA testing.
+- [x] Serve secure local HTTPS via a self-signed cert with IP SAN entries (`certs/`) for PWA testing and cross-browser LAN access (fixes Firefox same-origin fetch).
 - [x] Create cross-provider Image Generation service supporting OpenAI DALL-E, Google Imagen, Stability AI, and Grok Image.
 - [x] Design and implement an interactive Image Generation Modal with LLM-powered prompt enhancement, aspect ratio, negative prompts, and dynamic model discovery.
 - [x] Implement client-side and backend-assisted webpage HTML scrapers to parse paragraphs and images in document order.

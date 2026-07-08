@@ -42,3 +42,6 @@ __pycache__/
 
 # Local SQLite database (not on network mounts)
 .local_db/
+
+# Local self-signed dev TLS cert (regenerate via certs/san.cnf)
+certs/dev-key.pem
