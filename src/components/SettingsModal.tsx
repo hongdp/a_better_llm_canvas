@@ -25,6 +25,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     setActiveSystemPromptId,
     debugMode,
     setDebugMode,
+    agenticLookupEnabled,
+    setAgenticLookupEnabled,
     imageAnalysisPrompt,
     setImageAnalysisPrompt
   } = useAppStore()
@@ -265,6 +267,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   }}
                 >
                   Enable Debug Mode (logs request/response in console)
+                </label>
+              </div>
+
+              {/* Agentic Chapter Lookup Checkbox */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+                <input
+                  id="agentic-lookup-checkbox"
+                  type="checkbox"
+                  checked={agenticLookupEnabled}
+                  onChange={(e) => setAgenticLookupEnabled(e.target.checked)}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    accentColor: 'var(--accent)',
+                    cursor: 'pointer'
+                  }}
+                />
+                <label
+                  htmlFor="agentic-lookup-checkbox"
+                  style={{
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  Agentic chapter lookup (the assistant may fetch other chapters mid-request)
                 </label>
               </div>
 

@@ -4,6 +4,7 @@ import {
 } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from '../utils/text'
+import { selectReferenceChapters, type SelectionResult } from '../utils/contextSelection'
 import { useImageUpload } from '../hooks/useImageUpload'
 import { useChatLLM } from '../hooks/useChatLLM'
 import { useRoleplayLLM } from '../hooks/useRoleplayLLM'
@@ -30,8 +31,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const {
     documents,
     activeDocumentId,
-    selectedReferenceIds,
-    toggleReference,
+    pinnedReferenceIds,
+    blockedReferenceIds,
+    cycleReferenceState,
+    wholeBookMode,
+    setWholeBookMode,
     activeProvider,
     providerConfigs,
     messages,
@@ -87,6 +91,25 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const handleSendMessage = roleplayMode ? rpLLM.handleRpSendMessage : chatLLM.handleSendMessage
   const handleStopGeneration = roleplayMode ? rpLLM.handleRpStopGeneration : chatLLM.handleStopGeneration
   const { editingMessageId, setEditingMessageId, editingMessageText, setEditingMessageText, handleResubmitMessage } = chatLLM
+
+  // Live preview of the Layer 1 auto-selection: recomputed (debounced) as the
+  // user types so the tag bar shows what will be attached BEFORE sending.
+  // The preview omits the previous-turn continuity signal (it lives inside
+  // useChatLLM); the difference is at most one low-score tag.
+  const [selectionPreview, setSelectionPreview] = useState<SelectionResult | null>(null)
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSelectionPreview(documents.length < 2 ? null : selectReferenceChapters({
+        promptText: chatInput,
+        recentHistory: messages.filter(m => m.id !== 'welcome').map(m => m.content),
+        documents,
+        activeDocumentId,
+        pinnedIds: pinnedReferenceIds,
+        blockedIds: blockedReferenceIds
+      }))
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [chatInput, documents, activeDocumentId, pinnedReferenceIds, blockedReferenceIds, messages])
 
   // Handle starting a new RP game
   const handleStartRpGame = useCallback(async (config: { characterName: string; genre: string; difficulty: 'easy' | 'normal' | 'hard'; customWorldDesc?: string }) => {
@@ -354,23 +377,53 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <span className="reference-title-label">
             <Paperclip size={10} /> {t.app.referenceContext}
           </span>
-          {documents
+          <button
+            onClick={() => setWholeBookMode(!wholeBookMode)}
+            className={`reference-tag whole-book ${wholeBookMode ? 'active' : ''}`}
+            disabled={isStreaming}
+            title={t.app.wholeBookHint}
+            type="button"
+          >
+            📚 {t.app.wholeBookTag}
+          </button>
+          {!wholeBookMode && documents
             .filter(doc => doc.id !== activeDocumentId)
             .map(doc => {
-              const isSelected = selectedReferenceIds.includes(doc.id)
+              const isPinned = pinnedReferenceIds.includes(doc.id)
+              const isBlocked = blockedReferenceIds.includes(doc.id)
+              const isAuto = !isPinned && !isBlocked && (selectionPreview?.autoIds.includes(doc.id) ?? false)
+              const stateClass = isPinned ? 'active' : isBlocked ? 'blocked' : isAuto ? 'auto' : ''
+              const hint = isPinned
+                ? t.app.referencePinnedHint
+                : isBlocked
+                  ? t.app.referenceBlockedHint
+                  : isAuto
+                    ? t.app.referenceAutoHint
+                    : t.app.referenceNeutralHint
               return (
                 <button
                   key={doc.id}
-                  onClick={() => toggleReference(doc.id)}
-                  className={`reference-tag ${isSelected ? 'active' : ''}`}
+                  onClick={() => cycleReferenceState(doc.id)}
+                  className={`reference-tag ${stateClass}`}
                   disabled={isStreaming}
+                  title={hint}
                   type="button"
                 >
-                  {doc.title}
+                  {isAuto ? '✨ ' : ''}{doc.title}
                 </button>
               )
             })
           }
+          {!wholeBookMode && selectionPreview && selectionPreview.attachedIds.length > 0 && (
+            <span className="reference-budget-chip" title={t.app.referenceBudgetHint}>
+              ~{Math.ceil(selectionPreview.estimatedChars / 1000)}k / 60k
+            </span>
+          )}
+          {wholeBookMode && (
+            <span className="reference-budget-chip" title={t.app.wholeBookHint}>
+              ~{Math.ceil(documents.filter(d => d.id !== activeDocumentId).reduce((sum, d) => sum + d.content.length, 0) / 1000)}k
+            </span>
+          )}
         </div>
       )}
 

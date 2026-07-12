@@ -109,6 +109,85 @@ export const safeIndexedDBSet = (key: string, value: any): void => {
   })
 }
 
+// ── Versioned documents envelope ──────────────────────────────────────────────
+// Documents persist in IndexedDB inside a versioned envelope so the shape can
+// evolve with sequential migrations. History:
+//   v0 — legacy bare CanvasDocument[] written before envelopes existed
+//   v1 — envelope introduced; docs gained optional summary fields
+//   v2 — per-doc selectedReferenceIds replaced by pinnedReferenceIds (sticky
+//        pins) + blockedReferenceIds (never auto-attach)
+export const DOCUMENTS_ENVELOPE_VERSION = 2
+
+export interface DocumentsEnvelope {
+  version: number
+  data: CanvasDocument[]
+}
+
+const wrapDocumentsEnvelope = (documents: CanvasDocument[]): DocumentsEnvelope => ({
+  version: DOCUMENTS_ENVELOPE_VERSION,
+  data: documents
+})
+
+/** v1 → v2: the old manual selection becomes sticky pins. */
+const migrateDocsV1toV2 = (docs: CanvasDocument[]): CanvasDocument[] =>
+  docs.map(doc => {
+    if (doc.pinnedReferenceIds !== undefined || doc.selectedReferenceIds === undefined) {
+      return doc
+    }
+    const { selectedReferenceIds, ...rest } = doc
+    return { ...rest, pinnedReferenceIds: selectedReferenceIds, blockedReferenceIds: [] }
+  })
+
+/**
+ * Migrate a raw persisted documents payload (any historical shape) to the
+ * current version. Returns null for unrecognized/corrupt payloads so callers
+ * fall back to defaults instead of loading garbage.
+ */
+export const migrateDocumentsPayload = (raw: unknown): CanvasDocument[] | null => {
+  if (raw == null) return null
+
+  let version: number
+  let docs: CanvasDocument[]
+  if (Array.isArray(raw)) {
+    // v0: legacy bare array (v0 → v1 added only optional fields; no rewrite)
+    version = 1
+    docs = raw as CanvasDocument[]
+  } else if (typeof raw === 'object' && 'version' in raw && Array.isArray((raw as DocumentsEnvelope).data)) {
+    const envelope = raw as DocumentsEnvelope
+    if (envelope.version < 1 || envelope.version > DOCUMENTS_ENVELOPE_VERSION) {
+      // A future version we don't understand — refuse rather than mis-read.
+      console.warn(`[Storage] Unknown documents envelope version ${envelope.version}; ignoring.`)
+      return null
+    }
+    version = envelope.version
+    docs = envelope.data
+  } else {
+    console.warn('[Storage] Unrecognized documents payload shape; ignoring.')
+    return null
+  }
+
+  // Sequential migrations to the current version.
+  if (version < 2) docs = migrateDocsV1toV2(docs)
+  return docs
+}
+
+/**
+ * Load documents from IndexedDB, migrating legacy payloads to the current
+ * envelope version. Migrated payloads are rewritten back to storage.
+ */
+export const loadDocumentsFromIndexedDB = async (): Promise<CanvasDocument[] | null> => {
+  const raw = await db.get<unknown>('web_canvas_documents')
+  const documents = migrateDocumentsPayload(raw)
+  const isCurrent = !Array.isArray(raw) &&
+    typeof raw === 'object' && raw !== null &&
+    (raw as DocumentsEnvelope).version === DOCUMENTS_ENVELOPE_VERSION
+  if (documents && !isCurrent) {
+    // Persist the upgraded envelope so legacy shapes disappear after one load.
+    safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
+  }
+  return documents
+}
+
 // ── Debounced document save ───────────────────────────────────────────────────
 let saveDocsTimeout: ReturnType<typeof setTimeout> | null = null
 
@@ -118,11 +197,11 @@ export const saveDocumentsToIndexedDB = (documents: CanvasDocument[], immediate 
       clearTimeout(saveDocsTimeout)
       saveDocsTimeout = null
     }
-    safeIndexedDBSet('web_canvas_documents', documents)
+    safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
   } else {
     if (saveDocsTimeout) clearTimeout(saveDocsTimeout)
     saveDocsTimeout = setTimeout(() => {
-      safeIndexedDBSet('web_canvas_documents', documents)
+      safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
       saveDocsTimeout = null
     }, 1000)
   }
@@ -136,7 +215,7 @@ export const flushPendingDocumentSave = (documents: CanvasDocument[]) => {
   if (saveDocsTimeout) {
     clearTimeout(saveDocsTimeout)
     saveDocsTimeout = null
-    safeIndexedDBSet('web_canvas_documents', documents)
+    safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
   }
 }
 

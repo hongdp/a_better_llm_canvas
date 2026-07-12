@@ -81,16 +81,15 @@ REFERENCE DOCUMENT "Chapter 1: Introduction" (READ-ONLY):
 
 ## 4. Context Selection Mechanisms
 
-Web Canvas supports two ways to attach reference documents into the API context:
-
-### 4.1 Manual Selector Tags
-Below the chat input textarea, a reference tag bar displays all documents in the project (excluding the active document).
-- Clicking a tag toggles the document's ID inside `selectedReferenceIds`.
-- Selected tags are highlighted in amber-gold (`.reference-tag.active`).
-- These selections are cleared automatically once a chat prompt has been sent.
-
-### 4.2 Auto-Mention Scanning
-The input text is scanned for references to other chapters when the user submits a message:
-- The parser removes chapter prefixes (e.g. `Chapter 1: Setup` -> `Setup`) and checks if the text includes the document's title or cleaned title.
-- Mentions (e.g., "Review against Setup Guide" or "Compare with Chapter 1") trigger automatic context attachment.
-- Auto-attached documents appear with visual labels (`[Attached Context: Chapter 2]`) in the chat message bubble.
+> **Superseded:** context selection has been upgraded to a layered system —
+> always-on chapter index, score-based auto-selection with pin/block manual
+> control, agentic `<lookup>` fetching, and a whole-book mode. See
+> [smart_context_selection.md](smart_context_selection.md) for the current
+> design. Summary of what replaced the mechanisms below:
+>
+> - The per-doc `selectedReferenceIds` (cleared after every send) became
+>   **sticky `pinnedReferenceIds`** plus **`blockedReferenceIds`**; tags now
+>   cycle neutral → pinned → blocked and show live auto-selection previews.
+> - Title-mention scanning still exists but is one signal inside the
+>   deterministic scorer (`src/utils/contextSelection.ts`).
+> - `[Attached Context: …]` labels remain, now marking `(auto)` attachments.

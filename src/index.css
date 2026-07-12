@@ -942,6 +942,31 @@ body {
   pointer-events: none;
 }
 
+/* Auto-selected by the context scorer for the current prompt (ephemeral). */
+.reference-tag.auto {
+  border-color: var(--accent);
+  border-style: dashed;
+  color: var(--accent);
+  background-color: transparent;
+}
+
+/* Blocked from auto-attachment for the active document. */
+.reference-tag.blocked {
+  opacity: 0.45;
+  text-decoration: line-through;
+  border-style: dotted;
+}
+
+.reference-budget-chip {
+  font-size: 0.7rem;
+  padding: 0.15rem 0.4rem;
+  border-radius: 10px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .msg-attachment-tag {
   display: inline-flex;
   align-items: center;

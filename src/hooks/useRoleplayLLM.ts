@@ -374,7 +374,8 @@ export function useRoleplayLLM({
         id,
         title: '🎮 Game State',
         content: '<p>Initializing game state...</p>',
-        selectedReferenceIds: [] as string[],
+        pinnedReferenceIds: [] as string[],
+        blockedReferenceIds: [] as string[],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }

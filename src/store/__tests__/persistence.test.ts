@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getCookie, clearCookie, localStorage as ls } from '../persistence'
+import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION } from '../persistence'
+import type { CanvasDocument } from '../../types/document'
 
 // ── getCookie ─────────────────────────────────────────────────────────────────
 describe('getCookie', () => {
@@ -92,5 +93,84 @@ describe('localStorage wrapper', () => {
 
     window.localStorage.setItem = originalSetItem
     warnSpy.mockRestore()
+  })
+})
+
+// ── migrateDocumentsPayload (versioned documents envelope) ────────────────────
+describe('migrateDocumentsPayload', () => {
+  const legacyDoc: CanvasDocument = {
+    id: 'doc-1',
+    title: 'Chapter 1',
+    content: '<p>Hello</p>',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z'
+  }
+
+  it('migrates a legacy v0 bare array, preserving all fields', () => {
+    const result = migrateDocumentsPayload([legacyDoc])
+    expect(result).toEqual([legacyDoc])
+    // New optional summary fields default to absent — that is a valid v1 doc.
+    expect(result![0].summary).toBeUndefined()
+    expect(result![0].summaryContentHash).toBeUndefined()
+  })
+
+  it('reads a current-version envelope', () => {
+    const doc: CanvasDocument = { ...legacyDoc, summary: 'A summary', summaryContentHash: 'abc123' }
+    const result = migrateDocumentsPayload({ version: DOCUMENTS_ENVELOPE_VERSION, data: [doc] })
+    expect(result).toEqual([doc])
+    expect(result![0].summary).toBe('A summary')
+  })
+
+  it('returns null for null/undefined (first run, nothing stored)', () => {
+    expect(migrateDocumentsPayload(null)).toBeNull()
+    expect(migrateDocumentsPayload(undefined)).toBeNull()
+  })
+
+  it('refuses an unknown future envelope version', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(migrateDocumentsPayload({ version: DOCUMENTS_ENVELOPE_VERSION + 1, data: [legacyDoc] })).toBeNull()
+    expect(warnSpy).toHaveBeenCalled()
+    warnSpy.mockRestore()
+  })
+
+  it('refuses corrupt payload shapes', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(migrateDocumentsPayload('garbage')).toBeNull()
+    expect(migrateDocumentsPayload({ version: 1 })).toBeNull()
+    expect(migrateDocumentsPayload(42)).toBeNull()
+    warnSpy.mockRestore()
+  })
+
+  it('accepts an empty legacy array (user deleted everything)', () => {
+    expect(migrateDocumentsPayload([])).toEqual([])
+  })
+
+  it('migrates v0 selectedReferenceIds to pinnedReferenceIds', () => {
+    const v0Doc = { ...legacyDoc, selectedReferenceIds: ['doc-2', 'doc-3'] }
+    const result = migrateDocumentsPayload([v0Doc])
+    expect(result![0].pinnedReferenceIds).toEqual(['doc-2', 'doc-3'])
+    expect(result![0].blockedReferenceIds).toEqual([])
+    expect(result![0].selectedReferenceIds).toBeUndefined()
+  })
+
+  it('migrates a v1 envelope to v2, converting selection to pins', () => {
+    const v1Doc = { ...legacyDoc, summary: 'S', summaryContentHash: 'h', selectedReferenceIds: ['doc-9'] }
+    const result = migrateDocumentsPayload({ version: 1, data: [v1Doc] })
+    expect(result![0].pinnedReferenceIds).toEqual(['doc-9'])
+    expect(result![0].selectedReferenceIds).toBeUndefined()
+    // v1 fields survive the v1→v2 step
+    expect(result![0].summary).toBe('S')
+  })
+
+  it('leaves docs without legacy selection untouched in v1→v2', () => {
+    const result = migrateDocumentsPayload({ version: 1, data: [legacyDoc] })
+    expect(result![0].pinnedReferenceIds).toBeUndefined()
+    expect(result![0].blockedReferenceIds).toBeUndefined()
+  })
+
+  it('does not re-migrate a current v2 envelope', () => {
+    const v2Doc: CanvasDocument = { ...legacyDoc, pinnedReferenceIds: ['a'], blockedReferenceIds: ['b'] }
+    const result = migrateDocumentsPayload({ version: DOCUMENTS_ENVELOPE_VERSION, data: [v2Doc] })
+    expect(result).toEqual([v2Doc])
   })
 })

@@ -11,12 +11,33 @@ import type { ChatMessage, RoleplayConfig } from '../types/chat'
 import type { DocumentVersion, CanvasDocument } from '../types/document'
 
 
-import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave } from './persistence'
+import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave, loadDocumentsFromIndexedDB } from './persistence'
 
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
     const state = useAppStore.getState()
     flushPendingDocumentSave(state.documents)
+  })
+}
+
+/**
+ * The server document metadata endpoints don't round-trip client-side summary
+ * fields (SQLite columns are fixed), so rebuilding the document list from
+ * server metadata would silently wipe locally generated summaries. Carry them
+ * over from the previous in-memory documents by id; staleness is re-checked
+ * lazily against content once it loads.
+ */
+const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: CanvasDocument[]): CanvasDocument[] => {
+  const prevById = new Map(prevDocs.map(d => [d.id, d]))
+  return serverDocs.map(doc => {
+    const prev = prevById.get(doc.id)
+    if (!prev) return doc
+    return {
+      ...doc,
+      ...(prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {}),
+      ...(prev.pinnedReferenceIds ? { pinnedReferenceIds: prev.pinnedReferenceIds } : {}),
+      ...(prev.blockedReferenceIds ? { blockedReferenceIds: prev.blockedReferenceIds } : {})
+    }
   })
 }
 
@@ -33,7 +54,17 @@ interface AppState {
   documents: CanvasDocument[]
   activeDocumentId: string
   isSidebarOpen: boolean
-  selectedReferenceIds: string[]
+  // Reference selection for the ACTIVE document (mirrors of its per-doc
+  // fields): pins always attach and stick across turns; blocked chapters are
+  // never auto-attached. Auto-selected ids are ephemeral (computed at send
+  // time by utils/contextSelection) and never stored.
+  pinnedReferenceIds: string[]
+  blockedReferenceIds: string[]
+  // Whole-book mode ("All chapters" super-tag). One-shot by design: it
+  // auto-resets after a send so the entire book isn't re-billed every turn.
+  // Deliberately NOT persisted.
+  wholeBookMode: boolean
+  setWholeBookMode: (enabled: boolean) => void
   bookTitle: string
   setBookTitle: (title: string) => void
   
@@ -44,7 +75,9 @@ interface AppState {
   deleteDocument: (id: string) => void
   updateDocument: (id: string, updates: Partial<CanvasDocument>) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
-  toggleReference: (id: string) => void
+  setDocumentSummary: (id: string, summary: string, contentHash: string) => void
+  /** Cycle a chapter's manual reference state: neutral → pinned → blocked → neutral. */
+  cycleReferenceState: (id: string) => void
   clearReferences: () => void
   toggleSidebar: () => void
 
@@ -65,6 +98,10 @@ interface AppState {
   setAvailableGrokModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
+  // Agentic chapter lookup: lets the model request full chapter text
+  // mid-turn via the <lookup> protocol (multi-chapter books only).
+  agenticLookupEnabled: boolean
+  setAgenticLookupEnabled: (enabled: boolean) => void
 
   // Image analysis prompt
   imageAnalysisPrompt: string
@@ -642,7 +679,10 @@ export const useAppStore = create<AppState>((set) => {
     documents: initialDocs,
     activeDocumentId: initialActiveId,
     isSidebarOpen: loadSavedSidebarOpen(),
-    selectedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.selectedReferenceIds || [],
+    pinnedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.pinnedReferenceIds || [],
+    blockedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.blockedReferenceIds || [],
+    wholeBookMode: false,
+    setWholeBookMode: (enabled) => set({ wholeBookMode: enabled }),
     bookTitle: localStorage.getItem('web_canvas_book_title') || 'Untitled Book',
     setBookTitle: (title) => {
       localStorage.setItem('web_canvas_book_title', title)
@@ -653,9 +693,10 @@ export const useAppStore = create<AppState>((set) => {
       localStorage.setItem('web_canvas_active_document_id', id)
       set((state) => {
         const targetDoc = state.documents.find((d) => d.id === id)
-        return { 
+        return {
           activeDocumentId: id,
-          selectedReferenceIds: (targetDoc?.selectedReferenceIds || []).filter(refId => refId !== id)
+          pinnedReferenceIds: (targetDoc?.pinnedReferenceIds || []).filter(refId => refId !== id),
+          blockedReferenceIds: (targetDoc?.blockedReferenceIds || []).filter(refId => refId !== id)
         }
       })
 
@@ -686,7 +727,8 @@ export const useAppStore = create<AppState>((set) => {
         title,
         content,
         contentLoaded: true,
-        selectedReferenceIds: [],
+        pinnedReferenceIds: [],
+        blockedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
@@ -697,10 +739,11 @@ export const useAppStore = create<AppState>((set) => {
         saveDocumentsToIndexedDB(updatedDocs, true)
         localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         docId = newDoc.id
-        return { 
+        return {
           documents: updatedDocs,
           activeDocumentId: newDoc.id,
-          selectedReferenceIds: []
+          pinnedReferenceIds: [],
+          blockedReferenceIds: []
         }
       })
 
@@ -730,7 +773,8 @@ export const useAppStore = create<AppState>((set) => {
         title: doc.title || `Chapter ${idx + 1}`,
         content: doc.content || '<p></p>',
         contentLoaded: true,
-        selectedReferenceIds: [],
+        pinnedReferenceIds: [],
+        blockedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }))
@@ -741,7 +785,8 @@ export const useAppStore = create<AppState>((set) => {
         return {
           documents: formattedDocs,
           activeDocumentId: formattedDocs[0].id,
-          selectedReferenceIds: []
+          pinnedReferenceIds: [],
+          blockedReferenceIds: []
         }
       })
     },
@@ -783,7 +828,8 @@ export const useAppStore = create<AppState>((set) => {
             title: 'Chapter 1: Welcome',
             content: '<h1>Getting Started</h1><p>Start writing...</p>',
             contentLoaded: true,
-            selectedReferenceIds: [],
+            pinnedReferenceIds: [],
+            blockedReferenceIds: [],
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
@@ -797,8 +843,9 @@ export const useAppStore = create<AppState>((set) => {
         return {
           documents: filteredDocs,
           activeDocumentId: newActiveId,
-          // Remove from selected reference list if present
-          selectedReferenceIds: state.selectedReferenceIds.filter((refId) => refId !== id)
+          // Remove from manual reference lists if present
+          pinnedReferenceIds: state.pinnedReferenceIds.filter((refId) => refId !== id),
+          blockedReferenceIds: state.blockedReferenceIds.filter((refId) => refId !== id)
         }
       })
 
@@ -848,25 +895,50 @@ export const useAppStore = create<AppState>((set) => {
       })
     },
 
-    toggleReference: (id) => {
+    setDocumentSummary: (id, summary, contentHash) => {
+      // Deliberately does NOT bump updatedAt: a summary refresh is derived
+      // metadata, not a user edit — bumping would churn server sync status
+      // and re-mark the summary's own source content as newer than it.
       set((state) => {
-        const refs = state.selectedReferenceIds.includes(id)
-          ? state.selectedReferenceIds.filter((refId) => refId !== id)
-          : [...state.selectedReferenceIds, id]
+        const updatedDocs = state.documents.map((d) =>
+          d.id === id ? { ...d, summary, summaryContentHash: contentHash } : d
+        )
+        saveDocumentsToIndexedDB(updatedDocs, false)
+        return { documents: updatedDocs }
+      })
+    },
+
+    cycleReferenceState: (id) => {
+      set((state) => {
+        // neutral → pinned → blocked → neutral. The UI's "auto" state is
+        // ephemeral (scorer output) and behaves as neutral here: clicking an
+        // auto tag promotes it to a sticky pin.
+        let pinned = state.pinnedReferenceIds
+        let blocked = state.blockedReferenceIds
+        if (pinned.includes(id)) {
+          pinned = pinned.filter((refId) => refId !== id)
+          blocked = [...blocked, id]
+        } else if (blocked.includes(id)) {
+          blocked = blocked.filter((refId) => refId !== id)
+        } else {
+          pinned = [...pinned, id]
+        }
 
         const updatedDocs = state.documents.map((d) => {
           if (d.id === state.activeDocumentId) {
             return {
               ...d,
-              selectedReferenceIds: refs,
+              pinnedReferenceIds: pinned,
+              blockedReferenceIds: blocked,
               updatedAt: new Date().toISOString(),
             }
           }
           return d
         })
         saveDocumentsToIndexedDB(updatedDocs, true)
-        return { 
-          selectedReferenceIds: refs,
+        return {
+          pinnedReferenceIds: pinned,
+          blockedReferenceIds: blocked,
           documents: updatedDocs
         }
       })
@@ -878,7 +950,8 @@ export const useAppStore = create<AppState>((set) => {
           if (d.id === state.activeDocumentId) {
             return {
               ...d,
-              selectedReferenceIds: [],
+              pinnedReferenceIds: [],
+              blockedReferenceIds: [],
               updatedAt: new Date().toISOString(),
             }
           }
@@ -886,7 +959,8 @@ export const useAppStore = create<AppState>((set) => {
         })
         saveDocumentsToIndexedDB(updatedDocs, true)
         return {
-          selectedReferenceIds: [],
+          pinnedReferenceIds: [],
+          blockedReferenceIds: [],
           documents: updatedDocs
         }
       })
@@ -1005,6 +1079,11 @@ export const useAppStore = create<AppState>((set) => {
         saveConfigsToCookie(updatedConfigs)
         return { providerConfigs: updatedConfigs }
       })
+    },
+    agenticLookupEnabled: localStorage.getItem('web_canvas_agentic_lookup') !== 'false',
+    setAgenticLookupEnabled: (enabled) => {
+      localStorage.setItem('web_canvas_agentic_lookup', String(enabled))
+      set({ agenticLookupEnabled: enabled })
     },
     debugMode: initialDebugMode,
     setDebugMode: (enabled) => {
@@ -1302,14 +1381,17 @@ export const useAppStore = create<AppState>((set) => {
 
             // Build document list from server metadata (content not loaded yet)
             if (server.documents) {
-              const docs: CanvasDocument[] = server.documents.map((d: any) => ({
-                id: d.id,
-                title: d.title,
-                content: '', // Content will be lazy-loaded
-                contentLoaded: false,
-                createdAt: d.createdAt,
-                updatedAt: d.updatedAt,
-              }))
+              const docs: CanvasDocument[] = carryOverLocalSummaries(
+                server.documents.map((d: any) => ({
+                  id: d.id,
+                  title: d.title,
+                  content: '', // Content will be lazy-loaded
+                  contentLoaded: false,
+                  createdAt: d.createdAt,
+                  updatedAt: d.updatedAt,
+                })),
+                state.documents
+              )
               updates.documents = docs
               saveDocumentsToIndexedDB(docs, true)
             }
@@ -1744,7 +1826,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
     let loadedDocs: CanvasDocument[] | null = null
     let loadedVersions: DocumentVersion[] | null = null
     try {
-      loadedDocs = await db.get<CanvasDocument[]>('web_canvas_documents')
+      loadedDocs = await loadDocumentsFromIndexedDB()
       loadedVersions = await db.get<DocumentVersion[]>('web_canvas_versions')
     } catch (dbErr) {
       console.error('[IndexedDB] Failed to load data:', dbErr)
@@ -1753,10 +1835,12 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
     const documentsToSet = (loadedDocs && loadedDocs.length > 0) ? loadedDocs : MOCK_DOCUMENTS
     const versionsToSet = loadedVersions || []
 
+    const activeLoadedDoc = documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)
     useAppStore.setState({
       documents: documentsToSet,
       versions: versionsToSet,
-      selectedReferenceIds: documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)?.selectedReferenceIds || []
+      pinnedReferenceIds: activeLoadedDoc?.pinnedReferenceIds || [],
+      blockedReferenceIds: activeLoadedDoc?.blockedReferenceIds || []
     })
 
     // Set isStoreInitialized immediately so the UI boots up instantly using offline/local cache
@@ -1806,14 +1890,17 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
 
           // Build documents from metadata (without content — lazy-loaded)
           if (serverData.documents) {
-            const docs: CanvasDocument[] = serverData.documents.map((d: any) => ({
-              id: d.id,
-              title: d.title,
-              content: '', // Will be lazy-loaded for active doc
-              contentLoaded: false,
-              createdAt: d.createdAt,
-              updatedAt: d.updatedAt,
-            }))
+            const docs: CanvasDocument[] = carryOverLocalSummaries(
+              serverData.documents.map((d: any) => ({
+                id: d.id,
+                title: d.title,
+                content: '', // Will be lazy-loaded for active doc
+                contentLoaded: false,
+                createdAt: d.createdAt,
+                updatedAt: d.updatedAt,
+              })),
+              useAppStore.getState().documents
+            )
             updates.documents = docs
             saveDocumentsToIndexedDB(docs, true)
           }
