@@ -12,6 +12,11 @@ export interface ProviderConfig {
   systemPrompt?: string
   geminiSafetySettings?: GeminiSafetySetting[]
   maxOutputTokens?: number
+  /**
+   * Cheap "utility" model for background chapter summaries (Flash/Haiku
+   * class). Empty/absent = use the main chat `model`.
+   */
+  summaryModel?: string
 }
 
 export interface LLMMessage {

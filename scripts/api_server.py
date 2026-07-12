@@ -201,7 +201,15 @@ def init_db():
                     )
                 )
                 print("[Init] Migrated settings from 'default' book to global settings.")
-        
+
+        # Schema migration: chapter summary metadata (smart context selection).
+        # SQLite has no IF NOT EXISTS for columns, so probe table_info first.
+        doc_columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "summary" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN summary TEXT")
+            conn.execute("ALTER TABLE documents ADD COLUMN summary_content_hash TEXT")
+            print("[Init] Migrated documents table: added summary columns.")
+
         conn.commit()
     finally:
         conn.close()
@@ -804,6 +812,8 @@ async def get_book(request: Request, book_id: str):
                     "sortOrder": d["sort_order"],
                     "createdAt": d["created_at"],
                     "updatedAt": d["updated_at"],
+                    "summary": d["summary"],
+                    "summaryContentHash": d["summary_content_hash"],
                 }
                 for d in docs
             ],
@@ -1014,6 +1024,8 @@ async def get_document(request: Request, book_id: str, doc_id: str):
         "sortOrder": doc["sort_order"],
         "createdAt": doc["created_at"],
         "updatedAt": doc["updated_at"],
+        "summary": doc["summary"],
+        "summaryContentHash": doc["summary_content_hash"],
     }
 
 
@@ -1046,6 +1058,12 @@ async def update_document(request: Request, book_id: str, doc_id: str):
         if "title" in body:
             updates.append("title = ?")
             params.append(body["title"])
+        if "summary" in body:
+            updates.append("summary = ?")
+            params.append(body["summary"])
+        if "summaryContentHash" in body:
+            updates.append("summary_content_hash = ?")
+            params.append(body["summaryContentHash"])
         updates.append("updated_at = ?")
         params.append(now)
         params.extend([username, safe_book_id, safe_doc_id])
@@ -1130,8 +1148,9 @@ async def create_documents(request: Request, book_id: str):
                 sort_order = max_order + 1 + idx
 
             conn.execute(
-                "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (doc_id, username, safe_book_id, doc_title, sort_order, doc_created, doc_updated)
+                "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, summary, summary_content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, username, safe_book_id, doc_title, sort_order, doc_created, doc_updated,
+                 doc.get("summary"), doc.get("summaryContentHash"))
             )
             save_document_content(username, safe_book_id, doc_id, doc_content)
             created_ids.append(doc_id)

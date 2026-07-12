@@ -26,6 +26,9 @@ const EDIT_IDLE_MS = 60_000
 const DEFER_RETRY_MS = 10_000
 
 const pendingQueue: string[] = []
+// Ids whose refresh was requested manually — they bypass the staleness check
+// (but never the loaded/length guards).
+const forcedIds = new Set<string>()
 let processing = false
 let idleTimer: ReturnType<typeof setTimeout> | null = null
 let idleDocId: string | null = null
@@ -38,16 +41,18 @@ const debugLog = (...args: unknown[]) => {
 }
 
 /** A doc qualifies for a refresh when it's stale and long enough to need one. */
-const needsRefresh = (docId: string): boolean => {
+const needsRefresh = (docId: string, force = false): boolean => {
   const doc = useAppStore.getState().documents.find(d => d.id === docId)
   if (!doc || doc.contentLoaded === false) return false
   if (doc.content.length < MIN_CHARS_FOR_SUMMARY) return false
-  return isSummaryStale(doc)
+  return force || isSummaryStale(doc)
 }
 
-/** Queue a summary refresh for a document (deduplicated). */
-export const enqueueSummaryRefresh = (docId: string) => {
-  if (!needsRefresh(docId)) return
+/** Queue a summary refresh for a document (deduplicated). `force` skips the
+ * staleness check — used by the manual sidebar refresh. */
+export const enqueueSummaryRefresh = (docId: string, force = false) => {
+  if (!needsRefresh(docId, force)) return
+  if (force) forcedIds.add(docId)
   if (!pendingQueue.includes(docId)) {
     pendingQueue.push(docId)
     debugLog('enqueued', docId, `(queue: ${pendingQueue.length})`)
@@ -72,7 +77,11 @@ const summarizeDocument = async (docId: string): Promise<void> => {
 
   const contentHash = hashDocumentContent(doc.content)
   const input = buildSummaryInput(doc)
-  const config = s.providerConfigs[s.activeProvider]
+  const baseConfig = s.providerConfigs[s.activeProvider]
+  // Summaries prefer the cheap utility model when configured (Settings).
+  const config = baseConfig.summaryModel?.trim()
+    ? { ...baseConfig, model: baseConfig.summaryModel.trim() }
+    : baseConfig
 
   const messages = [
     {
@@ -123,8 +132,9 @@ const processQueue = async (): Promise<void> => {
         return
       }
       const docId = pendingQueue.shift()!
+      const force = forcedIds.delete(docId)
       // Re-check: content may have changed (or been summarized) since enqueue.
-      if (!needsRefresh(docId)) continue
+      if (!needsRefresh(docId, force)) continue
       await summarizeDocument(docId)
     }
   } finally {

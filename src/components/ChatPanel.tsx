@@ -371,6 +371,46 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       )}
 
+      {/* Whole-book cost consent (3 options; blocks the send until chosen) */}
+      {chatLLM.wholeBookConsent && (
+        <div className="whole-book-consent glass-panel" style={{
+          margin: '0.75rem',
+          padding: '0.75rem',
+          borderRadius: '8px',
+          border: '1px solid var(--accent)',
+          backgroundColor: 'var(--accent-glow)',
+          fontSize: '0.85rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.6rem'
+        }}>
+          <span style={{ color: 'var(--text-primary)' }}>
+            📚 {(chatLLM.wholeBookConsent.batchCount
+              ? t.app.wholeBookConsentBatched
+                  .replace('{tokens}', String(chatLLM.wholeBookConsent.approxTokensK))
+                  .replace('{chapters}', String(chatLLM.wholeBookConsent.chapterCount))
+                  .replace('{calls}', String(chatLLM.wholeBookConsent.batchCount))
+              : t.app.wholeBookConsentSingle
+                  .replace('{tokens}', String(chatLLM.wholeBookConsent.approxTokensK))
+                  .replace('{chapters}', String(chatLLM.wholeBookConsent.chapterCount)))}
+          </span>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn-primary" style={{ padding: '0.35rem 0.9rem', fontSize: '0.8rem' }}
+              onClick={() => chatLLM.resolveWholeBookConsent('proceed')}>
+              {t.app.wholeBookConsentProceed}
+            </button>
+            <button type="button" className="btn-secondary" style={{ padding: '0.35rem 0.9rem', fontSize: '0.8rem' }}
+              onClick={() => chatLLM.resolveWholeBookConsent('fast')}>
+              {t.app.wholeBookConsentFast}
+            </button>
+            <button type="button" className="btn-secondary" style={{ padding: '0.35rem 0.9rem', fontSize: '0.8rem' }}
+              onClick={() => chatLLM.resolveWholeBookConsent('cancel')}>
+              {t.app.wholeBookConsentCancel}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Reference Document Context Attach Bar */}
       {documents.length > 1 && (
         <div className="reference-selector-bar">
@@ -378,15 +418,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             <Paperclip size={10} /> {t.app.referenceContext}
           </span>
           <button
-            onClick={() => setWholeBookMode(!wholeBookMode)}
-            className={`reference-tag whole-book ${wholeBookMode ? 'active' : ''}`}
+            onClick={() => setWholeBookMode(wholeBookMode === 'off' ? 'once' : wholeBookMode === 'once' ? 'sticky' : 'off')}
+            className={`reference-tag whole-book ${wholeBookMode !== 'off' ? 'active' : ''}`}
             disabled={isStreaming}
-            title={t.app.wholeBookHint}
+            title={wholeBookMode === 'sticky' ? t.app.wholeBookStickyHint : wholeBookMode === 'once' ? t.app.wholeBookOnceHint : t.app.wholeBookHint}
             type="button"
           >
-            📚 {t.app.wholeBookTag}
+            {wholeBookMode === 'sticky' ? '📌' : '📚'} {t.app.wholeBookTag}{wholeBookMode === 'sticky' ? ` · ${t.app.wholeBookStickyLabel}` : ''}
           </button>
-          {!wholeBookMode && documents
+          {wholeBookMode === 'off' && documents
             .filter(doc => doc.id !== activeDocumentId)
             .map(doc => {
               const isPinned = pinnedReferenceIds.includes(doc.id)
@@ -414,12 +454,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               )
             })
           }
-          {!wholeBookMode && selectionPreview && selectionPreview.attachedIds.length > 0 && (
+          {wholeBookMode === 'off' && selectionPreview && selectionPreview.attachedIds.length > 0 && (
             <span className="reference-budget-chip" title={t.app.referenceBudgetHint}>
               ~{Math.ceil(selectionPreview.estimatedChars / 1000)}k / 60k
             </span>
           )}
-          {wholeBookMode && (
+          {wholeBookMode !== 'off' && (
             <span className="reference-budget-chip" title={t.app.wholeBookHint}>
               ~{Math.ceil(documents.filter(d => d.id !== activeDocumentId).reduce((sum, d) => sum + d.content.length, 0) / 1000)}k
             </span>

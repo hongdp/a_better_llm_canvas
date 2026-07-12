@@ -21,11 +21,12 @@ if (typeof window !== 'undefined') {
 }
 
 /**
- * The server document metadata endpoints don't round-trip client-side summary
- * fields (SQLite columns are fixed), so rebuilding the document list from
- * server metadata would silently wipe locally generated summaries. Carry them
- * over from the previous in-memory documents by id; staleness is re-checked
- * lazily against content once it loads.
+ * Rebuilding the document list from server metadata would wipe client-side
+ * fields the server doesn't round-trip. Summaries ARE server-synced now, so
+ * a server value wins; the local one only fills gaps (e.g. generated while
+ * logged out and not yet pushed). Pin/block reference lists remain
+ * local-only and always carry over. Staleness is re-checked lazily against
+ * content once it loads.
  */
 const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: CanvasDocument[]): CanvasDocument[] => {
   const prevById = new Map(prevDocs.map(d => [d.id, d]))
@@ -34,7 +35,7 @@ const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: CanvasD
     if (!prev) return doc
     return {
       ...doc,
-      ...(prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {}),
+      ...(!doc.summary && prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {}),
       ...(prev.pinnedReferenceIds ? { pinnedReferenceIds: prev.pinnedReferenceIds } : {}),
       ...(prev.blockedReferenceIds ? { blockedReferenceIds: prev.blockedReferenceIds } : {})
     }
@@ -63,8 +64,11 @@ interface AppState {
   // Whole-book mode ("All chapters" super-tag). One-shot by design: it
   // auto-resets after a send so the entire book isn't re-billed every turn.
   // Deliberately NOT persisted.
-  wholeBookMode: boolean
-  setWholeBookMode: (enabled: boolean) => void
+  // 'once' auto-resets after a send (the default click); 'sticky' keeps the
+  // whole book attached across turns, moving it into the stable prompt
+  // prefix so turns 2+ pay cache-read prices. Deliberately NOT persisted.
+  wholeBookMode: 'off' | 'once' | 'sticky'
+  setWholeBookMode: (mode: 'off' | 'once' | 'sticky') => void
   bookTitle: string
   setBookTitle: (title: string) => void
   
@@ -681,8 +685,8 @@ export const useAppStore = create<AppState>((set) => {
     isSidebarOpen: loadSavedSidebarOpen(),
     pinnedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.pinnedReferenceIds || [],
     blockedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.blockedReferenceIds || [],
-    wholeBookMode: false,
-    setWholeBookMode: (enabled) => set({ wholeBookMode: enabled }),
+    wholeBookMode: 'off',
+    setWholeBookMode: (mode) => set({ wholeBookMode: mode }),
     bookTitle: localStorage.getItem('web_canvas_book_title') || 'Untitled Book',
     setBookTitle: (title) => {
       localStorage.setItem('web_canvas_book_title', title)
@@ -906,6 +910,21 @@ export const useAppStore = create<AppState>((set) => {
         saveDocumentsToIndexedDB(updatedDocs, false)
         return { documents: updatedDocs }
       })
+
+      // Fire-and-forget server sync (optimistic-UI convention: local state is
+      // already updated; a failure just means the summary regenerates on the
+      // next device instead of syncing).
+      const state = useAppStore.getState()
+      if (state.user && state.activeBookId) {
+        fetch(`/api/books/${state.activeBookId}/documents/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': state.csrfToken || ''
+          },
+          body: JSON.stringify({ summary, summaryContentHash: contentHash })
+        }).catch(e => console.error('Failed to sync document summary to server', e))
+      }
     },
 
     cycleReferenceState: (id) => {
@@ -1389,6 +1408,8 @@ export const useAppStore = create<AppState>((set) => {
                   contentLoaded: false,
                   createdAt: d.createdAt,
                   updatedAt: d.updatedAt,
+                  summary: d.summary ?? undefined,
+                  summaryContentHash: d.summaryContentHash ?? undefined,
                 })),
                 state.documents
               )
@@ -1589,7 +1610,9 @@ export const useAppStore = create<AppState>((set) => {
               },
               body: JSON.stringify({
                 title: d.title,
-                content: d.content
+                content: d.content,
+                summary: d.summary ?? null,
+                summaryContentHash: d.summaryContentHash ?? null
               })
             }).catch(e => {
               console.error(`Failed to sync document ${d.id}`, e)
@@ -1898,6 +1921,8 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
                 contentLoaded: false,
                 createdAt: d.createdAt,
                 updatedAt: d.updatedAt,
+                summary: d.summary ?? undefined,
+                summaryContentHash: d.summaryContentHash ?? undefined,
               })),
               useAppStore.getState().documents
             )

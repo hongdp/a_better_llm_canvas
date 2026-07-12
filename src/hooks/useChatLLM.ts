@@ -37,6 +37,17 @@ interface LookupLoopContext {
   round: number
 }
 
+// Whole-book cost consent (spec §6): rendered as an inline 3-option panel in
+// ChatPanel; handleSendMessage awaits the user's choice BEFORE anything
+// enters the chat, so cancelling has zero side effects.
+export interface WholeBookConsentRequest {
+  approxTokensK: number
+  chapterCount: number
+  /** Total LLM calls for the batched (Rung 2) path; absent for Rung 1. */
+  batchCount?: number
+}
+export type WholeBookConsentChoice = 'proceed' | 'fast' | 'cancel'
+
 interface UseChatLLMProps {
   activeEditor: Editor | null
   selectedText: string
@@ -63,6 +74,24 @@ export function useChatLLM({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
+  const [wholeBookConsent, setWholeBookConsent] = useState<WholeBookConsentRequest | null>(null)
+  const consentResolveRef = useRef<((choice: WholeBookConsentChoice) => void) | null>(null)
+  // Sticky whole-book mode asks for consent only on its first send; the ref
+  // resets whenever a send happens with the mode off.
+  const stickyConsentGivenRef = useRef(false)
+
+  const requestWholeBookConsent = useCallback((req: WholeBookConsentRequest): Promise<WholeBookConsentChoice> => {
+    setWholeBookConsent(req)
+    return new Promise<WholeBookConsentChoice>(resolve => {
+      consentResolveRef.current = resolve
+    })
+  }, [])
+
+  const resolveWholeBookConsent = useCallback((choice: WholeBookConsentChoice) => {
+    setWholeBookConsent(null)
+    consentResolveRef.current?.(choice)
+    consentResolveRef.current = null
+  }, [])
 
   // Refs
   const chatInputRef = useRef<HTMLDivElement>(null)
@@ -756,9 +785,65 @@ ${cleanActiveContent}
     }
 
     setErrorMsg(null)
+
+    // ── Whole-book mode (escalation ladder, spec §6) ──────────────────────
+    // Plan + consent happen BEFORE anything enters the chat so 'cancel' has
+    // zero side effects. 'once' resets after the send; 'sticky' persists and
+    // moves the book into the stable prompt prefix (cache-read pricing on
+    // turns 2+), consenting only on its first send.
+    const wholeBookMode = s.documents.length > 1 ? s.wholeBookMode : 'off'
+    if (s.wholeBookMode === 'once') s.setWholeBookMode('off')
+
+    let wholeBookPlan: {
+      mode: 'full' | 'fast' | 'batched'
+      sticky: boolean
+      docs: typeof s.documents
+      batches: (typeof s.documents)[]
+      budgetChars: number
+    } | null = null
+
+    if (wholeBookMode !== 'off') {
+      const docs = s.documents.filter(d =>
+        d.id !== s.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
+      )
+      const totalChars = docs.reduce((sum, d) => sum + d.content.length, 0)
+      const budgetChars = WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000
+      const approxTokensK = Math.max(1, Math.round(totalChars / 4000))
+      // Rung 1 confirms above ~50k tokens; Rung 2 (multi-call) always confirms.
+      const CONFIRM_THRESHOLD_CHARS = 200_000
+      // Sticky only changes the layout when the book fits in one call —
+      // re-running a batched pass every turn would multiply cost, so an
+      // over-budget book behaves like 'once' even when sticky.
+      const sticky = wholeBookMode === 'sticky' && totalChars <= budgetChars
+
+      if (totalChars <= budgetChars) {
+        let mode: 'full' | 'fast' = 'full'
+        const needsConsent = totalChars > CONFIRM_THRESHOLD_CHARS &&
+          !(sticky && stickyConsentGivenRef.current)
+        if (needsConsent) {
+          const choice = await requestWholeBookConsent({ approxTokensK, chapterCount: docs.length })
+          if (choice === 'cancel') return
+          mode = choice === 'proceed' ? 'full' : 'fast'
+          if (sticky && choice === 'proceed') stickyConsentGivenRef.current = true
+        }
+        wholeBookPlan = { mode, sticky, docs, batches: [], budgetChars }
+      } else {
+        const batches = packChaptersIntoBatches(docs, budgetChars)
+        const choice = await requestWholeBookConsent({
+          approxTokensK,
+          chapterCount: docs.length,
+          batchCount: batches.length + 1
+        })
+        if (choice === 'cancel') return
+        wholeBookPlan = { mode: choice === 'proceed' ? 'batched' : 'fast', sticky: false, docs, batches, budgetChars }
+      }
+    } else {
+      stickyConsentGivenRef.current = false
+    }
+
     const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
     const originalDocContent = activeDoc?.content || ''
-    
+
     s.createVersionSnapshot(`Auto-save before: "${promptText.substring(0, 30)}${promptText.length > 30 ? '...' : ''}"`)
     
     if (!customPrompt) {
@@ -833,73 +918,67 @@ ${cleanActiveContent}
     // behind the in-flight stream) serve the next turn.
     enqueueStaleSummaryRefreshes()
 
-    // ── Whole-book mode (escalation ladder, spec §6) ──────────────────────
-    // One-shot: reset the super-tag immediately so the book is never
-    // silently re-billed on the next turn.
-    const wholeBook = s.wholeBookMode && s.documents.length > 1
-    if (s.wholeBookMode) s.setWholeBookMode(false)
-
+    // Execute the whole-book plan decided (and consented) before the message
+    // entered the chat.
     let attachedIds = finalReferenceIds
     let autoIds = selection.autoIds
     let dynamicContext: string
     let attachmentsText: string
     let allowLookup = true
+    // Sticky whole-book: the (unchanging) book text moves into the stable
+    // prompt prefix — right after the system prompt, before history — with
+    // its own cache breakpoint, so turns 2+ read it at cache prices. The
+    // volatile tail (index + active doc) stays in the final user message.
+    let bookPrefixMessages: LLMMessage[] = []
 
-    if (wholeBook) {
-      const otherDocs = s.documents.filter(d =>
-        d.id !== s.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
-      )
-      const totalChars = otherDocs.reduce((sum, d) => sum + d.content.length, 0)
-      const budgetChars = WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000
-      const approxTokens = Math.round(totalChars / 4 / 1000)
+    if (wholeBookPlan) {
+      const { mode, sticky, docs, batches, budgetChars } = wholeBookPlan
       allowLookup = false // everything available is already being provided
+      autoIds = []
 
-      if (totalChars <= budgetChars) {
-        // Rung 1: attach every chapter, single call. Confirm above ~50k tokens.
-        const CONFIRM_THRESHOLD_CHARS = 200_000
-        const proceed = totalChars <= CONFIRM_THRESHOLD_CHARS || window.confirm(
-          `Whole-book request: the full text of ${otherDocs.length} chapters (~${approxTokens}k tokens) will be sent in one call.\n\nOK — send full text\nCancel — fast mode (structure + summaries only)`
-        )
-        if (proceed) {
-          attachedIds = otherDocs.map(d => d.id)
-          autoIds = []
-          dynamicContext = buildDynamicContext(attachedIds, { perDocChars: Number.MAX_SAFE_INTEGER })
-          attachmentsText = `[Attached Context: Whole book (${otherDocs.length} chapters)]`
-        } else {
-          attachedIds = []
-          autoIds = []
-          dynamicContext = buildDynamicContext([], { includeWholeBookDigest: true })
-          attachmentsText = '[Attached Context: Whole-book digest (structure + summaries)]'
+      if (mode === 'full' && sticky) {
+        const bookText = docs
+          .map(d => `--- DOCUMENT: ${d.title} ---\n${htmlToPlainText(d.content)}`)
+          .join('\n\n')
+        bookPrefixMessages = [
+          {
+            role: 'user',
+            content: `REFERENCED BOOK CONTENT (read-only; every chapter except the active document — use it for details and consistency):\n\n${bookText}`,
+            cacheHint: true
+          },
+          // Providers require alternating roles; the ack keeps history's
+          // leading user turn valid after the injected user message.
+          { role: 'assistant', content: 'Understood. I have read the full book content and will use it as reference.' }
+        ]
+        attachedIds = docs.map(d => d.id)
+        dynamicContext = buildDynamicContext([])
+        attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, sticky)]`
+      } else if (mode === 'full') {
+        // Rung 1: attach every chapter, single call.
+        attachedIds = docs.map(d => d.id)
+        dynamicContext = buildDynamicContext(attachedIds, { perDocChars: Number.MAX_SAFE_INTEGER })
+        attachmentsText = `[Attached Context: Whole book (${docs.length} chapters)]`
+      } else if (mode === 'batched') {
+        // Rung 2: map-reduce over book-order batches, then answer from notes.
+        const notes = await runWholeBookBatches(promptText, batches, assistantMsgId, budgetChars)
+        if (notes === null) {
+          s.setStreaming(false)
+          s.setMessages(useAppStore.getState().messages.map(m =>
+            m.id === assistantMsgId
+              ? { ...m, content: '⚠️ Whole-book processing was cancelled or failed before completion. No answer was generated.' }
+              : m
+          ))
+          forceSave()
+          return
         }
+        attachedIds = []
+        dynamicContext = buildDynamicContext([], { notesBlock: notes })
+        attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, read in ${batches.length} batches)]`
       } else {
-        // Rung 2: the book exceeds the model's window — batched map-reduce,
-        // only with explicit consent (multi-call spend is never silent).
-        const batches = packChaptersIntoBatches(otherDocs, budgetChars)
-        const proceed = window.confirm(
-          `The book (~${approxTokens}k tokens) exceeds this model's context window.\n\nOK — process it in ${batches.length + 1} calls (batched reading, then the answer)\nCancel — fast mode (structure + summaries only)`
-        )
-        if (proceed) {
-          const notes = await runWholeBookBatches(promptText, batches, assistantMsgId, budgetChars)
-          if (notes === null) {
-            s.setStreaming(false)
-            s.setMessages(useAppStore.getState().messages.map(m =>
-              m.id === assistantMsgId
-                ? { ...m, content: '⚠️ Whole-book processing was cancelled or failed before completion. No answer was generated.' }
-                : m
-            ))
-            forceSave()
-            return
-          }
-          attachedIds = []
-          autoIds = []
-          dynamicContext = buildDynamicContext([], { notesBlock: notes })
-          attachmentsText = `[Attached Context: Whole book (${otherDocs.length} chapters, read in ${batches.length} batches)]`
-        } else {
-          attachedIds = []
-          autoIds = []
-          dynamicContext = buildDynamicContext([], { includeWholeBookDigest: true })
-          attachmentsText = '[Attached Context: Whole-book digest (structure + summaries)]'
-        }
+        // Rung 0 fast mode: structure + summaries, no full text.
+        attachedIds = []
+        dynamicContext = buildDynamicContext([], { includeWholeBookDigest: true })
+        attachmentsText = '[Attached Context: Whole-book digest (structure + summaries)]'
       }
       previousAttachedIdsRef.current = attachedIds
     } else {
@@ -913,7 +992,7 @@ ${cleanActiveContent}
       images: userMsg.images
     }
 
-    const apiMessages = [systemPrompt, ...historyMessages, finalUserMessage]
+    const apiMessages = [systemPrompt, ...bookPrefixMessages, ...historyMessages, finalUserMessage]
     const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
     // Arm the agentic lookup loop for multi-chapter books (when enabled).
@@ -931,7 +1010,7 @@ ${cleanActiveContent}
         : undefined
 
     await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens, lookupCtx)
-  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, buildSystemPrompt, buildDynamicContext, startLLMStreaming, runWholeBookBatches, forceSave])
+  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, buildSystemPrompt, buildDynamicContext, startLLMStreaming, runWholeBookBatches, forceSave, requestWholeBookConsent])
 
   // Edit and Resubmit message handler
   const handleResubmitMessage = useCallback(async (msgId: string, newContent: string) => {
@@ -1059,6 +1138,8 @@ ${cleanActiveContent}
     setEditingMessageText,
     handleSendMessage,
     handleResubmitMessage,
-    handleStopGeneration
+    handleStopGeneration,
+    wholeBookConsent,
+    resolveWholeBookConsent
   }
 }

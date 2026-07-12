@@ -64,3 +64,61 @@ def test_extract_inline_base64_image():
         img = result["images"][0]
         assert img["base64"].startswith("data:image/png;base64,")
 
+
+
+def test_init_db_migrates_summary_columns(tmp_path):
+    """A pre-summary database gains the summary columns on init_db, and
+    existing rows survive with NULL summaries."""
+    db_file = tmp_path / "metadata.db"
+
+    # Build the OLD schema (documents without summary columns) + one row.
+    import sqlite3
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE books (
+            id TEXT NOT NULL, username TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT 'Untitled Book',
+            active_document_id TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (username, id)
+        );
+        CREATE TABLE documents (
+            id TEXT NOT NULL, username TEXT NOT NULL, book_id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT 'Untitled Chapter',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (username, book_id, id)
+        );
+    """)
+    conn.execute(
+        "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at) VALUES ('d1', 'u', 'b', 'Ch 1', 0, 't', 't')"
+    )
+    conn.commit()
+    conn.close()
+
+    with patch.object(api_server, "DB_PATH", str(db_file)):
+        api_server.init_db()
+
+        conn = api_server.get_db()
+        try:
+            cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+            assert "summary" in cols
+            assert "summary_content_hash" in cols
+
+            row = conn.execute("SELECT * FROM documents WHERE id = 'd1'").fetchone()
+            assert row["summary"] is None
+
+            # Round-trip: a summary written the way update_document writes it.
+            conn.execute(
+                "UPDATE documents SET summary = ?, summary_content_hash = ? WHERE id = 'd1'",
+                ("A short summary.", "abc123"),
+            )
+            conn.commit()
+            row = conn.execute("SELECT * FROM documents WHERE id = 'd1'").fetchone()
+            assert row["summary"] == "A short summary."
+            assert row["summary_content_hash"] == "abc123"
+        finally:
+            conn.close()
+
+        # Idempotent: running init_db again must not fail on existing columns.
+        api_server.init_db()

@@ -1,7 +1,9 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
+import { enqueueSummaryRefresh } from '../services/chapterSummaries'
+import { isSummaryStale, MIN_CHARS_FOR_SUMMARY } from '../utils/chapterIndex'
 import { ImportUrlModal } from './ImportUrlModal'
 import { useTranslation } from '../i18n'
 
@@ -246,15 +248,29 @@ export const ChaptersSidebar: React.FC = () => {
           <BookOpen size={16} style={{ color: 'var(--text-secondary)' }} />
           <h2>Chapters</h2>
         </div>
-        <button 
-          onClick={toggleSidebar} 
-          className="btn-icon" 
-          title={t.sidebar.collapse}
-          type="button"
-          style={{ padding: '0.25rem' }}
-        >
-          <ChevronLeft size={16} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+          {documents.length > 1 && (
+            <button
+              onClick={() => documents.forEach(d => enqueueSummaryRefresh(d.id))}
+              disabled={isStreaming}
+              className="btn-icon"
+              title={t.sidebar.summarizeAll}
+              type="button"
+              style={{ padding: '0.25rem' }}
+            >
+              <Sparkles size={15} />
+            </button>
+          )}
+          <button
+            onClick={toggleSidebar}
+            className="btn-icon"
+            title={t.sidebar.collapse}
+            type="button"
+            style={{ padding: '0.25rem' }}
+          >
+            <ChevronLeft size={16} />
+          </button>
+        </div>
       </div>
 
       <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -345,11 +361,23 @@ export const ChaptersSidebar: React.FC = () => {
 
               <span className="chapter-title">{doc.title || 'Untitled Chapter'}</span>
               
-              <div 
-                className="chapter-actions" 
+              <div
+                className="chapter-actions"
                 onClick={(e) => e.stopPropagation()}
                 onDragStart={(e) => e.stopPropagation()}
               >
+                {doc.contentLoaded !== false && doc.content.length >= MIN_CHARS_FOR_SUMMARY && (
+                  <button
+                    onClick={() => enqueueSummaryRefresh(doc.id, true)}
+                    disabled={isStreaming}
+                    className="btn-icon chapter-action-btn"
+                    title={isSummaryStale(doc) ? t.sidebar.refreshSummaryStale : t.sidebar.refreshSummary}
+                    type="button"
+                    style={{ padding: '0.15rem' }}
+                  >
+                    <Sparkles size={13} style={isSummaryStale(doc) ? { color: 'var(--accent)' } : undefined} />
+                  </button>
+                )}
                 <button
                   onClick={() => handleMoveUp(idx)}
                   disabled={idx === 0 || isStreaming}

@@ -395,30 +395,38 @@ Each phase is independently shippable and useful.
   LLM-generated entity lists is free and likely sufficient; Layer 2 covers
   misses either way.
 
-## 11. Implementation Notes (v1 deviations)
+## 11. Implementation Notes
 
-Where the shipped v1 differs from the design above; each is a candidate
-follow-up, none blocks the core workflows:
+The v1 deviations originally listed here have been closed:
 
-- **Summaries are local-first, not server-synced.** The document endpoints
-  whitelist fields (SQLite columns are fixed), so summaries live in the
-  IndexedDB envelope only; server-metadata rebuilds carry them over from the
-  previous in-memory documents by id (`carryOverLocalSummaries`). Syncing
-  them server-side needs a backend schema change.
-- **Summaries use the active chat model.** The dedicated cheap "utility
-  model" setting is not implemented yet; calls stay small (capped input,
-  ~200-token output) so the cost delta is minor.
-- **Cost confirmations use `window.confirm`** with two outcomes (OK =
-  proceed, Cancel = fast mode/summaries-only) instead of the three-option
-  inline chat UI. A dedicated inline component can replace it later.
-- **Sticky whole-book cache placement (Rung 1) is not implemented** — the
-  super-tag is strictly one-shot, so the re-billing problem it solves cannot
-  occur yet. Implement the stable-prefix placement together with a "keep for
-  this conversation" second click.
-- **No manual "refresh summary" / "summarize all" sidebar buttons yet.**
-  Every send enqueues refreshes for all stale chapters (non-blocking), which
-  converges after the first message in a session; imported books get their
-  summaries the same way.
-- **Storage migration:** documents moved into a versioned IndexedDB envelope
-  (v2). v0 bare arrays and v1 envelopes migrate sequentially; the legacy
-  per-doc `selectedReferenceIds` becomes `pinnedReferenceIds`.
+- **Summaries are server-synced.** The `documents` table gained
+  `summary`/`summary_content_hash` columns (idempotent `ALTER TABLE`
+  migration in `init_db`, tested in `scripts/test_api_server.py`); document
+  PUT/POST accept the fields, book/document GET return them.
+  `carryOverLocalSummaries` remains as a fallback merge for summaries
+  generated while logged out — a server value wins over a local one.
+- **Summaries use a configurable utility model.** `ProviderConfig.summaryModel`
+  (Settings → per-provider "Summary Model" input); empty = the chat model.
+- **Cost consent is an inline 3-option panel** (Proceed / Fast mode / Cancel)
+  rendered in ChatPanel. Consent is awaited BEFORE the message enters the
+  chat, so Cancel has zero side effects.
+- **Sticky whole-book mode with stable-prefix cache placement.** The
+  super-tag cycles off → once → sticky. Sticky keeps the book attached every
+  turn as a `[user book-content (cacheHint) + assistant ack]` pair right
+  after the system prompt — byte-stable across turns, so turns 2+ pay
+  cache-read prices — while the volatile tail (index + active doc) stays in
+  the final user message. Sticky consents once per activation.
+- **Sidebar summary controls**: per-chapter regenerate (✨, amber when
+  stale; force-bypasses the staleness check) and a header "summarize all
+  stale chapters" action.
+
+Remaining known limitations:
+
+- **Sticky + over-budget books degrade to 'once' semantics**: re-running the
+  Rung 2 batched pass every turn would multiply cost, so an over-budget book
+  triggers the batched consent per send even when the tag is sticky. A
+  notes-caching scheme (reuse batch notes until the book content hash
+  changes) is the natural follow-up.
+- **Storage migration:** documents live in a versioned IndexedDB envelope
+  (v2). v0 bare arrays and v1 envelopes migrate sequentially; legacy per-doc
+  `selectedReferenceIds` becomes `pinnedReferenceIds`.
