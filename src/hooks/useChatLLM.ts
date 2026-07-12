@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, extractTaggedBlock, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
@@ -35,6 +35,25 @@ interface LookupLoopContext {
   attachedIds: string[]
   autoIds: string[]
   round: number
+}
+
+// A consented whole-book execution plan (spec §6), produced by planWholeBook
+// BEFORE anything enters the chat and executed by assembleChatRequest.
+interface WholeBookPlan {
+  mode: 'full' | 'fast' | 'batched'
+  /** Sticky layout: book text in the stable prompt prefix (cacheable). */
+  sticky: boolean
+  docs: { id: string; title: string; content: string }[]
+  batches: { id: string; title: string; content: string }[][]
+  budgetChars: number
+}
+
+/** Minimal chat-message shape needed to build history for the LLM. */
+interface HistorySourceMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+  images?: string[]
 }
 
 // Whole-book cost consent (spec §6): rendered as an inline 3-option panel in
@@ -600,44 +619,10 @@ ${cleanActiveContent}
 
             s.setStreaming(false)
 
-            let finalChatText: string
-            let finalCanvasText = ''
-            let finalSelectionReplaceText = ''
-            let isSelectionEdit = false
-            let isEditMode = false
-            let canvasClosed = false
-
-            // Robustly extract the tagged block (tolerates case / attributes /
-            // whitespace) and, critically, reports whether the closing tag
-            // actually arrived so we can refuse to apply a truncated rewrite.
+            // Classify the completed response (pure, tested in utils/text).
             // Priority: selection_replace > localized edits > full-doc canvas.
-            const selectionBlock = extractTaggedBlock(fullText, 'selection_replace')
-            const parsedEdits = parseEditBlocks(fullText)
-            const canvasBlock = extractTaggedBlock(fullText, 'canvas')
-
-            if (selectionBlock.found) {
-              isSelectionEdit = true
-              finalSelectionReplaceText = selectionBlock.inner
-              finalChatText = selectionBlock.before.trim()
-              if (selectionBlock.after.trim()) {
-                finalChatText += '\n\n' + selectionBlock.after.trim()
-              }
-            } else if (parsedEdits.blocks.length > 0) {
-              isEditMode = true
-              finalChatText = parsedEdits.before
-              if (parsedEdits.after) {
-                finalChatText += (finalChatText ? '\n\n' : '') + parsedEdits.after
-              }
-            } else if (canvasBlock.found) {
-              canvasClosed = canvasBlock.closed
-              finalCanvasText = canvasBlock.inner
-              finalChatText = canvasBlock.before.trim()
-              if (canvasBlock.after.trim()) {
-                finalChatText += '\n\n' + canvasBlock.after.trim()
-              }
-            } else {
-              finalChatText = fullText
-            }
+            const parsed = parseAssistantResponse(fullText)
+            const finalChatText = parsed.chatText
 
             // Apply localized search/replace edits by rebuilding the full
             // document locally, then reuse the existing diff machinery.
@@ -645,19 +630,19 @@ ${cleanActiveContent}
             // destructive) and reported to the user.
             let editDiffedDoc: string | null = null
             let editFailedCount = 0
-            if (isEditMode) {
+            if (parsed.kind === 'edits') {
               const placeholderOriginal = preserveImagesWithPlaceholders(originalDocContent)
-              const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsedEdits.blocks)
+              const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsed.editBlocks)
               editFailedCount = failed.length
               if (failed.length > 0) {
                 // Surface the unmatched SEARCH text for diagnosis — the usual
                 // cause is the model paraphrasing instead of copying verbatim.
                 console.warn(
-                  `[edit-apply] ${failed.length}/${parsedEdits.blocks.length} edit block(s) failed to match.`,
+                  `[edit-apply] ${failed.length}/${parsed.editBlocks.length} edit block(s) failed to match.`,
                   failed.map(f => ({ search: f.search }))
                 )
               }
-              if (parsedEdits.blocks.length - failed.length > 0) {
+              if (parsed.editBlocks.length - failed.length > 0) {
                 const newDoc = stripBlankParagraphs(restoreImagesFromPlaceholders(newPlaceholderDoc))
                 editDiffedDoc = diffHtml(originalDocContent, newDoc)
               }
@@ -668,9 +653,9 @@ ${cleanActiveContent}
             // with placeholders, applying the diff would silently delete
             // content. Skip it, keep the original, and tell the user.
             let canvasIssue: 'truncated' | 'elided' | null = null
-            if (!isSelectionEdit && !isEditMode && finalCanvasText.trim()) {
-              const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
-              canvasIssue = validateCanvasReplacement(candidate, canvasClosed)
+            if (parsed.kind === 'canvas' && parsed.canvasText.trim()) {
+              const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(parsed.canvasText))
+              canvasIssue = validateCanvasReplacement(candidate, parsed.canvasClosed)
             }
 
             let warningNote = canvasIssue === 'truncated'
@@ -696,8 +681,8 @@ ${cleanActiveContent}
               })
             )
 
-            if (isSelectionEdit) {
-              const cleanedText = stripIncompleteEndTag(finalSelectionReplaceText)
+            if (parsed.kind === 'selection') {
+              const cleanedText = stripIncompleteEndTag(parsed.selectionText)
               if (cleanedText && activeEditor && selectionRangeRef.current) {
                 const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
                 const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
@@ -714,12 +699,12 @@ ${cleanActiveContent}
 
                 s.updateActiveDocument({ content: activeEditor.getHTML() })
               }
-            } else if (isEditMode) {
+            } else if (parsed.kind === 'edits') {
               // Apply the locally-rebuilt diff, or leave the document untouched
               // if no edit could be located.
               s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
-            } else if (finalCanvasText.trim() && !canvasIssue) {
-              const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(finalCanvasText))
+            } else if (parsed.kind === 'canvas' && parsed.canvasText.trim() && !canvasIssue) {
+              const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(parsed.canvasText))
               const diffed = diffHtml(originalDocContent, restoredText)
               s.updateActiveDocument({ content: diffed })
             } else if (canvasIssue) {
@@ -770,138 +755,99 @@ ${cleanActiveContent}
     startLLMStreamingRef.current = startLLMStreaming
   }, [startLLMStreaming])
 
-  // Send message handler
-  const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
-    e?.preventDefault()
-    
+  // ── Whole-book planning (escalation ladder, spec §6) ────────────────────
+  // Plan + consent happen BEFORE anything enters the chat so 'cancelled' has
+  // zero side effects. 'once' resets after the send; 'sticky' persists and
+  // consents only on its first send.
+  const planWholeBook = useCallback(async (): Promise<WholeBookPlan | null | 'cancelled'> => {
     const s = useAppStore.getState()
-    const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
-    if (!promptText || s.isStreaming) return
-
-    imagePlaceholdersRef.current = []
-
-    if (layoutMode === 'portrait') {
-      setIsChatExpanded(true)
-    }
-
-    setErrorMsg(null)
-
-    // ── Whole-book mode (escalation ladder, spec §6) ──────────────────────
-    // Plan + consent happen BEFORE anything enters the chat so 'cancel' has
-    // zero side effects. 'once' resets after the send; 'sticky' persists and
-    // moves the book into the stable prompt prefix (cache-read pricing on
-    // turns 2+), consenting only on its first send.
     const wholeBookMode = s.documents.length > 1 ? s.wholeBookMode : 'off'
     if (s.wholeBookMode === 'once') s.setWholeBookMode('off')
 
-    let wholeBookPlan: {
-      mode: 'full' | 'fast' | 'batched'
-      sticky: boolean
-      docs: typeof s.documents
-      batches: (typeof s.documents)[]
-      budgetChars: number
-    } | null = null
-
-    if (wholeBookMode !== 'off') {
-      const docs = s.documents.filter(d =>
-        d.id !== s.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
-      )
-      const totalChars = docs.reduce((sum, d) => sum + d.content.length, 0)
-      const budgetChars = WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000
-      const approxTokensK = Math.max(1, Math.round(totalChars / 4000))
-      // Rung 1 confirms above ~50k tokens; Rung 2 (multi-call) always confirms.
-      const CONFIRM_THRESHOLD_CHARS = 200_000
-      // Sticky only changes the layout when the book fits in one call —
-      // re-running a batched pass every turn would multiply cost, so an
-      // over-budget book behaves like 'once' even when sticky.
-      const sticky = wholeBookMode === 'sticky' && totalChars <= budgetChars
-
-      if (totalChars <= budgetChars) {
-        let mode: 'full' | 'fast' = 'full'
-        const needsConsent = totalChars > CONFIRM_THRESHOLD_CHARS &&
-          !(sticky && stickyConsentGivenRef.current)
-        if (needsConsent) {
-          const choice = await requestWholeBookConsent({ approxTokensK, chapterCount: docs.length })
-          if (choice === 'cancel') return
-          mode = choice === 'proceed' ? 'full' : 'fast'
-          if (sticky && choice === 'proceed') stickyConsentGivenRef.current = true
-        }
-        wholeBookPlan = { mode, sticky, docs, batches: [], budgetChars }
-      } else {
-        const batches = packChaptersIntoBatches(docs, budgetChars)
-        const choice = await requestWholeBookConsent({
-          approxTokensK,
-          chapterCount: docs.length,
-          batchCount: batches.length + 1
-        })
-        if (choice === 'cancel') return
-        wholeBookPlan = { mode: choice === 'proceed' ? 'batched' : 'fast', sticky: false, docs, batches, budgetChars }
-      }
-    } else {
+    if (wholeBookMode === 'off') {
       stickyConsentGivenRef.current = false
+      return null
     }
 
-    const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
-    const originalDocContent = activeDoc?.content || ''
+    const docs = s.documents.filter(d =>
+      d.id !== s.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
+    )
+    const totalChars = docs.reduce((sum, d) => sum + d.content.length, 0)
+    const budgetChars = WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000
+    const approxTokensK = Math.max(1, Math.round(totalChars / 4000))
+    // Rung 1 confirms above ~50k tokens; Rung 2 (multi-call) always confirms.
+    const CONFIRM_THRESHOLD_CHARS = 200_000
+    // Sticky only changes the layout when the book fits in one call —
+    // re-running a batched pass every turn would multiply cost, so an
+    // over-budget book behaves like 'once' even when sticky.
+    const sticky = wholeBookMode === 'sticky' && totalChars <= budgetChars
 
-    s.createVersionSnapshot(`Auto-save before: "${promptText.substring(0, 30)}${promptText.length > 30 ? '...' : ''}"`)
-    
-    if (!customPrompt) {
-      setChatInput('')
-      if (chatInputRef.current) {
-        chatInputRef.current.innerHTML = ''
+    if (totalChars <= budgetChars) {
+      let mode: 'full' | 'fast' = 'full'
+      const needsConsent = totalChars > CONFIRM_THRESHOLD_CHARS &&
+        !(sticky && stickyConsentGivenRef.current)
+      if (needsConsent) {
+        const choice = await requestWholeBookConsent({ approxTokensK, chapterCount: docs.length })
+        if (choice === 'cancel') return 'cancelled'
+        mode = choice === 'proceed' ? 'full' : 'fast'
+        if (sticky && choice === 'proceed') stickyConsentGivenRef.current = true
       }
+      return { mode, sticky, docs, batches: [], budgetChars }
     }
+
+    const batches = packChaptersIntoBatches(docs, budgetChars)
+    const choice = await requestWholeBookConsent({
+      approxTokensK,
+      chapterCount: docs.length,
+      batchCount: batches.length + 1
+    })
+    if (choice === 'cancel') return 'cancelled'
+    return { mode: choice === 'proceed' ? 'batched' : 'fast', sticky: false, docs, batches, budgetChars }
+  }, [requestWholeBookConsent])
+
+  // ── Shared request assembly ─────────────────────────────────────────────
+  // Single source of truth for both send and resubmit: Layer 1 selection,
+  // prompt layout ([stable system] + [optional sticky book prefix] +
+  // [windowed history] + [volatile context in the final user message]),
+  // whole-book plan execution, and the lookup-loop arming. Returns null when
+  // a batched whole-book pass aborted/failed (already reported to the user).
+  const assembleChatRequest = useCallback(async (opts: {
+    promptText: string
+    images?: string[]
+    /** Messages that form the history window (excluding the new turn). */
+    historySource: HistorySourceMessage[]
+    assistantMsgId: string
+    originalDocContent: string
+    wholeBookPlan: WholeBookPlan | null
+  }): Promise<{
+    apiMessages: LLMMessage[]
+    attachmentsText: string
+    estimatedInputTokens: number
+    lookupCtx?: LookupLoopContext
+  } | null> => {
+    const s = useAppStore.getState()
+    const { promptText, images, historySource, assistantMsgId, wholeBookPlan } = opts
 
     // Layer 1 auto-selection: pinned chapters always attach; the scorer adds
     // relevant ones (title mentions, adjacency, keyword overlap, continuity)
     // under the context budget. Blocked chapters never auto-attach.
     const selection = selectReferenceChapters({
       promptText,
-      recentHistory: s.messages.filter(m => m.id !== 'welcome').map(m => m.content),
+      recentHistory: historySource.filter(m => m.id !== 'welcome').map(m => m.content),
       documents: s.documents,
       activeDocumentId: s.activeDocumentId,
       pinnedIds: s.pinnedReferenceIds,
       blockedIds: s.blockedReferenceIds,
       previousAttachedIds: previousAttachedIdsRef.current
     })
-    const finalReferenceIds = selection.attachedIds
-    previousAttachedIdsRef.current = finalReferenceIds
-
-    const userMsgId = getTimestampId('user')
-    const userMsg = {
-      id: userMsgId,
-      role: 'user' as const,
-      content: promptText,
-      images: uploadedImages.length > 0 ? uploadedImages : undefined,
-      timestamp: new Date().toISOString(),
-      provider: s.activeProvider,
-      model: s.providerConfigs[s.activeProvider].model
-    }
-    s.addMessage(userMsg)
-    setUploadedImages([])
-
-    const assistantMsgId = getTimestampId('assistant')
-    const assistantPlaceholder = {
-      id: assistantMsgId,
-      role: 'assistant' as const,
-      content: 'Thinking...',
-      timestamp: new Date().toISOString(),
-      provider: s.activeProvider,
-      model: s.providerConfigs[s.activeProvider].model
-    }
-    s.addMessage(assistantPlaceholder)
-    s.setStreaming(true)
-
-    accumulatedTextRef.current = ''
+    previousAttachedIdsRef.current = selection.attachedIds
 
     const systemPrompt = buildSystemPrompt()
 
-    // Prompt layout: [stable system] + [stable, windowed history] + [volatile
-    // document context merged into the final user message]. The stable prefix
-    // is what makes provider prompt caching effective turn over turn.
+    // Prompt layout: the stable prefix is what makes provider prompt caching
+    // effective turn over turn.
     const historyMessages: LLMMessage[] = trimHistoryForContext(
-      s.messages
+      historySource
         .filter(m => m.id !== 'welcome')
         .map(m => ({
           role: m.role,
@@ -920,7 +866,7 @@ ${cleanActiveContent}
 
     // Execute the whole-book plan decided (and consented) before the message
     // entered the chat.
-    let attachedIds = finalReferenceIds
+    let attachedIds = selection.attachedIds
     let autoIds = selection.autoIds
     let dynamicContext: string
     let attachmentsText: string
@@ -969,7 +915,7 @@ ${cleanActiveContent}
               : m
           ))
           forceSave()
-          return
+          return null
         }
         attachedIds = []
         dynamicContext = buildDynamicContext([], { notesBlock: notes })
@@ -989,11 +935,10 @@ ${cleanActiveContent}
     const finalUserMessage: LLMMessage = {
       role: 'user',
       content: `${dynamicContext}\n\nUSER REQUEST:\n${promptText}`,
-      images: userMsg.images
+      images
     }
 
     const apiMessages = [systemPrompt, ...bookPrefixMessages, ...historyMessages, finalUserMessage]
-    const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
 
     // Arm the agentic lookup loop for multi-chapter books (when enabled).
     // Pointless in whole-book mode: everything is already provided.
@@ -1001,7 +946,7 @@ ${cleanActiveContent}
       allowLookup && s.agenticLookupEnabled && s.documents.length > 1
         ? {
             promptText,
-            images: userMsg.images,
+            images,
             prefixMessages: [systemPrompt, ...historyMessages],
             attachedIds,
             autoIds,
@@ -1009,8 +954,84 @@ ${cleanActiveContent}
           }
         : undefined
 
-    await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens, lookupCtx)
-  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, buildSystemPrompt, buildDynamicContext, startLLMStreaming, runWholeBookBatches, forceSave, requestWholeBookConsent])
+    return {
+      apiMessages,
+      attachmentsText,
+      estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4),
+      lookupCtx
+    }
+  }, [buildSystemPrompt, buildDynamicContext, runWholeBookBatches, forceSave])
+
+  // Send message handler
+  const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
+    e?.preventDefault()
+
+    const s = useAppStore.getState()
+    const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
+    if (!promptText || s.isStreaming) return
+
+    imagePlaceholdersRef.current = []
+
+    if (layoutMode === 'portrait') {
+      setIsChatExpanded(true)
+    }
+
+    setErrorMsg(null)
+
+    const wholeBookPlan = await planWholeBook()
+    if (wholeBookPlan === 'cancelled') return
+
+    const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
+    const originalDocContent = activeDoc?.content || ''
+
+    s.createVersionSnapshot(`Auto-save before: "${promptText.substring(0, 30)}${promptText.length > 30 ? '...' : ''}"`)
+
+    if (!customPrompt) {
+      setChatInput('')
+      if (chatInputRef.current) {
+        chatInputRef.current.innerHTML = ''
+      }
+    }
+
+    const images = uploadedImages.length > 0 ? uploadedImages : undefined
+    const userMsg = {
+      id: getTimestampId('user'),
+      role: 'user' as const,
+      content: promptText,
+      images,
+      timestamp: new Date().toISOString(),
+      provider: s.activeProvider,
+      model: s.providerConfigs[s.activeProvider].model
+    }
+    s.addMessage(userMsg)
+    setUploadedImages([])
+
+    const assistantMsgId = getTimestampId('assistant')
+    s.addMessage({
+      id: assistantMsgId,
+      role: 'assistant' as const,
+      content: 'Thinking...',
+      timestamp: new Date().toISOString(),
+      provider: s.activeProvider,
+      model: s.providerConfigs[s.activeProvider].model
+    })
+    s.setStreaming(true)
+
+    accumulatedTextRef.current = ''
+
+    const request = await assembleChatRequest({
+      promptText,
+      images,
+      // History = the conversation BEFORE this turn (s was captured pre-add).
+      historySource: s.messages,
+      assistantMsgId,
+      originalDocContent,
+      wholeBookPlan
+    })
+    if (!request) return
+
+    await startLLMStreaming(request.apiMessages, assistantMsgId, originalDocContent, request.attachmentsText, request.estimatedInputTokens, request.lookupCtx)
+  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, planWholeBook, assembleChatRequest, startLLMStreaming])
 
   // Edit and Resubmit message handler
   const handleResubmitMessage = useCallback(async (msgId: string, newContent: string) => {
@@ -1037,84 +1058,41 @@ ${cleanActiveContent}
       return m
     })
 
+    // Resubmit honors whole-book mode the same way a fresh send does.
+    const wholeBookPlan = await planWholeBook()
+    if (wholeBookPlan === 'cancelled') return
+
     const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
     const originalDocContent = activeDoc?.content || ''
     s.createVersionSnapshot(`Auto-save before edit: "${trimmed.substring(0, 30)}${trimmed.length > 30 ? '...' : ''}"`)
 
-    s.setMessages(truncatedMessages)
-
     const assistantMsgId = getTimestampId('assistant')
-    const assistantPlaceholder = {
+    s.setMessages([...truncatedMessages, {
       id: assistantMsgId,
       role: 'assistant' as const,
       content: 'Thinking...',
       timestamp: new Date().toISOString(),
       provider: s.activeProvider,
       model: s.providerConfigs[s.activeProvider].model
-    }
-    s.setMessages([...truncatedMessages, assistantPlaceholder])
+    }])
     s.setStreaming(true)
 
     accumulatedTextRef.current = ''
 
-    const selection = selectReferenceChapters({
-      promptText: trimmed,
-      recentHistory: truncatedMessages.slice(0, -1).filter(m => m.id !== 'welcome').map(m => m.content),
-      documents: s.documents,
-      activeDocumentId: s.activeDocumentId,
-      pinnedIds: s.pinnedReferenceIds,
-      blockedIds: s.blockedReferenceIds,
-      previousAttachedIds: previousAttachedIdsRef.current
-    })
-    const finalReferenceIds = selection.attachedIds
-    previousAttachedIdsRef.current = finalReferenceIds
-
-    const systemPrompt = buildSystemPrompt()
-    const dynamicContext = buildDynamicContext(finalReferenceIds)
-
-    // Same prompt layout as handleSendMessage: stable prefix first, volatile
-    // document context merged into the final (edited) user message.
     const editedMsg = truncatedMessages[truncatedMessages.length - 1]
-    const historyMessages: LLMMessage[] = trimHistoryForContext(
-      truncatedMessages
-        .slice(0, -1)
-        .filter(m => m.id !== 'welcome')
-        .map(m => ({
-          role: m.role,
-          content: stripChatDisplayArtifacts(m.content),
-          images: m.images
-        })),
-      { maxChars: MAX_HISTORY_CHARS, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
-    )
-    if (historyMessages.length > 0) {
-      historyMessages[historyMessages.length - 1].cacheHint = true
-    }
+    const request = await assembleChatRequest({
+      promptText: trimmed,
+      images: editedMsg?.images,
+      // History = everything before the edited (resubmitted) message.
+      historySource: truncatedMessages.slice(0, -1),
+      assistantMsgId,
+      originalDocContent,
+      wholeBookPlan
+    })
+    if (!request) return
 
-    const finalUserMessage: LLMMessage = {
-      role: 'user',
-      content: `${dynamicContext}\n\nUSER REQUEST:\n${trimmed}`,
-      images: editedMsg?.images
-    }
-
-    const apiMessages = [systemPrompt, ...historyMessages, finalUserMessage]
-    const estimatedInputTokens = Math.ceil(JSON.stringify(apiMessages).length / 4)
-
-    const attachmentsText = buildAttachmentsLabel(finalReferenceIds, s.documents, selection.autoIds)
-
-    const lookupCtx: LookupLoopContext | undefined =
-      s.agenticLookupEnabled && s.documents.length > 1
-        ? {
-            promptText: trimmed,
-            images: editedMsg?.images,
-            prefixMessages: [systemPrompt, ...historyMessages],
-            attachedIds: finalReferenceIds,
-            autoIds: selection.autoIds,
-            round: 0
-          }
-        : undefined
-
-    await startLLMStreaming(apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens, lookupCtx)
-  }, [layoutMode, setIsChatExpanded, buildSystemPrompt, buildDynamicContext, startLLMStreaming])
+    await startLLMStreaming(request.apiMessages, assistantMsgId, originalDocContent, request.attachmentsText, request.estimatedInputTokens, request.lookupCtx)
+  }, [layoutMode, setIsChatExpanded, planWholeBook, assembleChatRequest, startLLMStreaming])
 
   // Stop generation
   const handleStopGeneration = useCallback(() => {

@@ -247,6 +247,70 @@ export function parseEditBlocks(text: string): ParsedEdits {
   }
 }
 
+/**
+ * A completed LLM response classified into the action the client must take.
+ * Priority (mirrors the Canvas Markup Protocol): selection_replace >
+ * localized edits > full-document canvas > plain chat.
+ */
+export interface ParsedAssistantResponse {
+  kind: 'selection' | 'edits' | 'canvas' | 'chat'
+  /** Conversational text outside the action tags (before + after joined). */
+  chatText: string
+  /** kind === 'selection': replacement text for the user's selection. */
+  selectionText: string
+  /** kind === 'edits': the parsed SEARCH/REPLACE blocks. */
+  editBlocks: EditBlock[]
+  /** kind === 'canvas': the full replacement document HTML. */
+  canvasText: string
+  /** kind === 'canvas': whether the closing tag arrived (guards truncation). */
+  canvasClosed: boolean
+}
+
+/**
+ * Classify a COMPLETE streamed response into the action to perform. Pure —
+ * the caller decides how to apply the action (diffing, editor transactions,
+ * warnings).
+ */
+export function parseAssistantResponse(fullText: string): ParsedAssistantResponse {
+  const result: ParsedAssistantResponse = {
+    kind: 'chat',
+    chatText: fullText,
+    selectionText: '',
+    editBlocks: [],
+    canvasText: '',
+    canvasClosed: false
+  }
+
+  const joinAround = (before: string, after: string): string => {
+    let text = before.trim()
+    if (after.trim()) {
+      text += (text ? '\n\n' : '') + after.trim()
+    }
+    return text
+  }
+
+  const selectionBlock = extractTaggedBlock(fullText, 'selection_replace')
+  const parsedEdits = parseEditBlocks(fullText)
+  const canvasBlock = extractTaggedBlock(fullText, 'canvas')
+
+  if (selectionBlock.found) {
+    result.kind = 'selection'
+    result.selectionText = selectionBlock.inner
+    result.chatText = joinAround(selectionBlock.before, selectionBlock.after)
+  } else if (parsedEdits.blocks.length > 0) {
+    result.kind = 'edits'
+    result.editBlocks = parsedEdits.blocks
+    result.chatText = joinAround(parsedEdits.before, parsedEdits.after)
+  } else if (canvasBlock.found) {
+    result.kind = 'canvas'
+    result.canvasText = canvasBlock.inner
+    result.canvasClosed = canvasBlock.closed
+    result.chatText = joinAround(canvasBlock.before, canvasBlock.after)
+  }
+
+  return result
+}
+
 /** Result of applying a list of edit blocks to a document. */
 export interface ApplyEditsResult {
   /** The document after all matched edits were applied. */

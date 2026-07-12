@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -442,5 +442,50 @@ describe('parseLookupRequest', () => {
     const r = parseLookupRequest('<lookup chapters=" \'Chapter 5\' ;  Chapter 6  "></lookup>')
     expect(r?.titles).toEqual(['Chapter 5', 'Chapter 6'])
     expect(r?.reason).toBe('')
+  })
+})
+
+// ── parseAssistantResponse ────────────────────────────────────────────────────
+describe('parseAssistantResponse', () => {
+  it('classifies a plain chat response', () => {
+    const r = parseAssistantResponse('Sure, here is my advice about pacing.')
+    expect(r.kind).toBe('chat')
+    expect(r.chatText).toBe('Sure, here is my advice about pacing.')
+  })
+
+  it('classifies a selection replacement with surrounding chat', () => {
+    const r = parseAssistantResponse('Done!\n<selection_replace>The fluffy cat</selection_replace>\nAnything else?')
+    expect(r.kind).toBe('selection')
+    expect(r.selectionText).toBe('The fluffy cat')
+    expect(r.chatText).toBe('Done!\n\nAnything else?')
+  })
+
+  it('classifies edit blocks and keeps surrounding chat', () => {
+    const text = 'I made the change.\n<edit>\n<<<<<<< SEARCH\n<p>old</p>\n=======\n<p>new</p>\n>>>>>>> REPLACE\n</edit>'
+    const r = parseAssistantResponse(text)
+    expect(r.kind).toBe('edits')
+    expect(r.editBlocks).toEqual([{ search: '<p>old</p>', replace: '<p>new</p>' }])
+    expect(r.chatText).toBe('I made the change.')
+  })
+
+  it('classifies a closed canvas rewrite', () => {
+    const r = parseAssistantResponse('Rewrote it.\n<canvas><h1>Doc</h1></canvas>')
+    expect(r.kind).toBe('canvas')
+    expect(r.canvasText).toBe('<h1>Doc</h1>')
+    expect(r.canvasClosed).toBe(true)
+    expect(r.chatText).toBe('Rewrote it.')
+  })
+
+  it('reports an unclosed canvas so truncation guards can refuse it', () => {
+    const r = parseAssistantResponse('<canvas><h1>Doc</h1><p>cut off')
+    expect(r.kind).toBe('canvas')
+    expect(r.canvasClosed).toBe(false)
+  })
+
+  it('prefers selection over edits over canvas when several appear', () => {
+    const both = '<selection_replace>x</selection_replace>\n<canvas><p>y</p></canvas>'
+    expect(parseAssistantResponse(both).kind).toBe('selection')
+    const editsAndCanvas = '<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n<canvas><p>y</p></canvas>'
+    expect(parseAssistantResponse(editsAndCanvas).kind).toBe('edits')
   })
 })
