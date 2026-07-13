@@ -18,6 +18,20 @@ import {
 
 type ImportStatus = 'idle' | 'fetching' | 'preview' | 'analyzing' | 'generating' | 'done' | 'error' | 'prompt_edit'
 
+// Error enriched with the prompt context that produced it, so the safety
+// prompt-editor UI can surface the failing prompts for a manual retry.
+interface EnrichedImportError extends Error {
+  isSafetyPromptContext?: boolean
+  phase?: number
+  chapterIndex?: number
+  systemPrompt?: LLMMessage
+  userPrompt?: LLMMessage
+}
+
+// Extract a human-readable message from an unknown caught value.
+const errorMessage = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err)
+
 
 
 interface ImportUrlModalProps {
@@ -160,7 +174,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       })
 
       if (!resp.ok) {
-        let errData: any = null
+        let errData: { detail?: string; error?: string }
         try {
           errData = await resp.json()
         } catch {
@@ -176,8 +190,8 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       let data: ScrapedData
       try {
         data = await resp.json()
-      } catch (e: any) {
-        throw new Error(`解析服务器返回的数据失败：${e.message || e}`)
+      } catch (e) {
+        throw new Error(`解析服务器返回的数据失败：${errorMessage(e)}`, { cause: e })
       }
 
       if (data.totalParagraphs === 0) {
@@ -189,9 +203,9 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       setSelectedImageIndices(processedData.images.map(img => img.index))
       setStatus('preview')
       setProgress('')
-    } catch (err: any) {
+    } catch (err) {
       setStatus('error')
-      setErrorMsg(err.message || '抓取失败')
+      setErrorMsg(errorMessage(err) || '抓取失败')
     }
   }
 
@@ -221,7 +235,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
         })
 
         if (!resp.ok) {
-          let errData: any = null
+          let errData: { detail?: string; error?: string }
           try {
             errData = await resp.json()
           } catch {
@@ -236,8 +250,8 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
 
         try {
           data = await resp.json()
-        } catch (err: any) {
-          throw new Error(`解析服务器返回的数据失败：${err.message || err}`)
+        } catch (err) {
+          throw new Error(`解析服务器返回的数据失败：${errorMessage(err)}`, { cause: err })
         }
       } else {
         // For small files (< 5MB), parse client-side to save bandwidth
@@ -262,9 +276,9 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       setSelectedImageIndices(processedData.images.map(img => img.index))
       setStatus('preview')
       setProgress('')
-    } catch (err: any) {
+    } catch (err) {
       setStatus('error')
-      setErrorMsg(err.message || '读取或解析本地网页失败')
+      setErrorMsg(errorMessage(err) || '读取或解析本地网页失败')
     } finally {
       if (localFileInputRef.current) {
         localFileInputRef.current.value = ''
@@ -363,15 +377,12 @@ ${interleavedContent}
 
       return new Promise<ChapterPlan>((resolve, reject) => {
         abortControllerRef.current = new AbortController()
-        let accumulated = ''
 
         streamLLM(
           [systemPrompt, userPrompt],
           { ...config, signal: abortControllerRef.current.signal },
           {
-            onChunk: (chunk: string) => {
-              accumulated += chunk
-            },
+            onChunk: () => { /* progress is only reported once the full plan arrives */ },
             onDone: (fullText: string) => {
               try {
                 let jsonStr = extractJson(fullText)
@@ -406,12 +417,12 @@ ${interleavedContent}
                 }
                 setChapterPlan(plan)
                 resolve(plan)
-              } catch (e: any) {
-                reject(new Error(`解析章节规划失败: ${e.message}. LLM输出: ${fullText.substring(0, 200)}...`))
+              } catch (e) {
+                reject(new Error(`解析章节规划失败: ${errorMessage(e)}. LLM输出: ${fullText.substring(0, 200)}...`, { cause: e }))
               }
             },
             onError: (err: Error) => {
-              const enrichedErr = err as any
+              const enrichedErr = err as EnrichedImportError
               enrichedErr.systemPrompt = systemPrompt
               enrichedErr.userPrompt = userPrompt
               reject(enrichedErr)
@@ -423,16 +434,17 @@ ${interleavedContent}
 
     try {
       return await doAnalysisAttempt(false)
-    } catch (err: any) {
+    } catch (err) {
       if (isSafetyError(err)) {
         console.warn('Phase 1 failed due to safety guidelines. Retrying with censored content...', err)
         setProgress('Phase 1 (安全重试): 发现内容敏感，正在对关键词进行本地脱敏后重新规划章节...')
         try {
           return await doAnalysisAttempt(true)
-        } catch (censoredErr: any) {
+        } catch (censoredErr) {
           if (isSafetyError(censoredErr)) {
-            censoredErr.isSafetyPromptContext = true
-            censoredErr.phase = 1
+            const enriched = censoredErr as EnrichedImportError
+            enriched.isSafetyPromptContext = true
+            enriched.phase = 1
           }
           throw censoredErr
         }
@@ -485,7 +497,7 @@ ${interleavedContent}
         try {
           let currentImages = chImages.filter(img => !img.failedAnalysis)
           let currentImageDescriptions = chImages.map(img => `- IMG-${img.index}: ${img.alt || '无描述'}`).join('\n')
-          let currentInterleavedContent = buildChapterInterleavedContent(data, chPlan.paragraphRange, chPlan.imageIndices)
+          let currentInterleavedContent = buildChapterInterleavedContent(data, chPlan.paragraphRange)
 
           if (attempt >= 2) {
             // Attempt 2: Strip all base64 images and simplify alt texts
@@ -495,7 +507,7 @@ ${interleavedContent}
               ...data,
               images: data.images.map(img => ({ ...img, alt: '（配图已脱敏）' }))
             }
-            currentInterleavedContent = buildChapterInterleavedContent(cleanData, chPlan.paragraphRange, chPlan.imageIndices)
+            currentInterleavedContent = buildChapterInterleavedContent(cleanData, chPlan.paragraphRange)
           }
 
           if (attempt >= 3) {
@@ -511,8 +523,8 @@ ${interleavedContent}
               paragraphs: censoredParagraphs,
               images: data.images.map(img => ({ ...img, alt: '（配图已脱敏）' }))
             }
-            currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange, chPlan.imageIndices)
-            currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange, chPlan.imageIndices)
+            currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange)
+            currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange)
           }
 
           // Generate dynamic examples based on the actual images in this chapter
@@ -610,8 +622,8 @@ ${currentInterleavedContent}
                       throw new Error('JSON 中缺少 title 或 content 字段')
                     }
                     resolve(chObj)
-                  } catch (e: any) {
-                    reject(new Error(`解析第 ${chPlan.chapterNumber} 章失败: ${e.message}. LLM 输出: ${fullText.substring(0, 200)}`))
+                  } catch (e) {
+                    reject(new Error(`解析第 ${chPlan.chapterNumber} 章失败: ${errorMessage(e)}. LLM 输出: ${fullText.substring(0, 200)}`, { cause: e }))
                   }
                 },
                 onError: (err: Error) => {
@@ -624,7 +636,7 @@ ${currentInterleavedContent}
           // Success - break out of the retry loop
           break
 
-        } catch (err: any) {
+        } catch (err) {
           if (abortControllerRef.current?.signal.aborted) {
             throw err
           }
@@ -638,11 +650,12 @@ ${currentInterleavedContent}
             await new Promise(r => setTimeout(r, 1000))
           } else {
             if (isSafety) {
-              err.isSafetyPromptContext = true
-              err.phase = 2
-              err.systemPrompt = systemPrompt
-              err.userPrompt = userPrompt
-              err.chapterIndex = i
+              const enriched = err as EnrichedImportError
+              enriched.isSafetyPromptContext = true
+              enriched.phase = 2
+              enriched.systemPrompt = systemPrompt
+              enriched.userPrompt = userPrompt
+              enriched.chapterIndex = i
             }
             // Not a safety error or max attempts reached, propagate the error
             throw err
@@ -771,16 +784,12 @@ ${currentInterleavedContent}
       const config = getActiveConfig()
 
       try {
-        const descriptions = await new Promise<{ index: any; description: string }[]>((resolve, reject) => {
-          let accumulated = ''
-
+        const descriptions = await new Promise<{ index: number | string; description: string }[]>((resolve, reject) => {
           streamLLM(
             [systemPrompt, userPrompt],
             { ...config, signal },
             {
-              onChunk: (chunk: string) => {
-                accumulated += chunk
-              },
+              onChunk: () => { /* descriptions are only parsed once the full response arrives */ },
               onDone: (fullText: string) => {
                 try {
                   const jsonStr = extractJson(fullText)
@@ -793,7 +802,7 @@ ${currentInterleavedContent}
                   }
                 } catch {
                   console.warn('[Image Analysis] Failed to parse JSON, using fallback parser')
-                  const fallbackDescs: { index: any; description: string }[] = []
+                  const fallbackDescs: { index: number | string; description: string }[] = []
                   const lines = fullText.split('\n')
                   for (const line of lines) {
                     const match = line.match(/(?:IMG-)?(\d+)\s*[:：\-—\s]\s*(.+)/i)
@@ -852,7 +861,7 @@ ${currentInterleavedContent}
         completedCount++
         setProgress(`Phase 0: AI 正在分析配图... (已完成 ${completedCount}/${validImages.length})`)
 
-      } catch (err: any) {
+      } catch (err) {
         if (signal.aborted) {
           throw err
         }
@@ -878,14 +887,14 @@ ${currentInterleavedContent}
     }
 
     // Run tasks with concurrency limit
-    const executing: Promise<any>[] = []
-    const results: Promise<any>[] = []
+    const executing: Promise<void>[] = []
+    const results: Promise<void>[] = []
 
     for (const img of validImages) {
       const p = processImage(img)
       results.push(p)
       if (concurrencyLimit < validImages.length) {
-        const e: Promise<any> = p.then(() => {
+        const e: Promise<void> = p.then(() => {
           const index = executing.indexOf(e)
           if (index > -1) executing.splice(index, 1)
         })
@@ -918,7 +927,7 @@ ${currentInterleavedContent}
 
   // Handles pipeline errors, including safety blocks and cancellations
   const handlePipelineError = (
-    err: any,
+    rawErr: unknown,
     context: {
       enrichedData: ScrapedData
       plan?: ChapterPlan
@@ -926,6 +935,7 @@ ${currentInterleavedContent}
       generatedChapters: GeneratedChapter[]
     }
   ) => {
+    const err = rawErr as EnrichedImportError
     const isAbort = err.message?.includes('abort') || err.name === 'AbortError'
     const isSafety = err.isSafetyPromptContext || isSafetyError(err)
 
@@ -955,7 +965,7 @@ ${currentInterleavedContent}
             setProgress(`✅ 取消成功：已导入已生成的前 ${context.generatedChapters.length} 个章节（含大纲）`)
           } else {
             setStatus('error')
-            setErrorMsg(`生成中断。已为您导入前 ${context.generatedChapters.length} 个生成的章节（含大纲）。错误原因: ${err.message || err}`)
+            setErrorMsg(`生成中断。已为您导入前 ${context.generatedChapters.length} 个生成的章节（含大纲）。错误原因: ${err.message || String(rawErr)}`)
           }
           return
         }
@@ -972,6 +982,7 @@ ${currentInterleavedContent}
     setStatus('error')
     setErrorMsg(err.message || '生成失败')
   }
+
 
   // Helper to execute Phase 2 generation and coordinate outline/chapter imports
   const executePhase2AndImport = async (
@@ -996,7 +1007,7 @@ ${currentInterleavedContent}
       importChaptersAndOutline(enrichedData, plan, chapters, false)
       setStatus('done')
       setProgress(`✅ 生成完成！已创建 ${chapters.length + 1} 个章节（含大纲）`)
-    } catch (err: any) {
+    } catch (err) {
       handlePipelineError(err, {
         enrichedData,
         plan,
@@ -1035,14 +1046,11 @@ ${currentInterleavedContent}
       if (phase === 1) {
         // Phase 1 retry
         const newPlan = await new Promise<ChapterPlan>((resolve, reject) => {
-          let accumulated = ''
           streamLLM(
             [sysMsg, userMsg],
             { ...config, signal },
             {
-              onChunk: (chunk: string) => {
-                accumulated += chunk
-              },
+              onChunk: () => { /* progress is only reported once the full plan arrives */ },
               onDone: (fullText: string) => {
                 try {
                   let jsonStr = extractJson(fullText)
@@ -1070,12 +1078,12 @@ ${currentInterleavedContent}
                   }
                   setChapterPlan(parsedPlan)
                   resolve(parsedPlan)
-                } catch (e: any) {
-                  reject(new Error(`解析章节规划失败: ${e.message}. LLM输出: ${fullText.substring(0, 200)}...`))
+                } catch (e) {
+                  reject(new Error(`解析章节规划失败: ${errorMessage(e)}. LLM输出: ${fullText.substring(0, 200)}...`, { cause: e }))
                 }
               },
               onError: (err: Error) => {
-                const enrichedErr = err as any
+                const enrichedErr = err as EnrichedImportError
                 enrichedErr.systemPrompt = sysMsg
                 enrichedErr.userPrompt = userMsg
                 reject(enrichedErr)
@@ -1112,12 +1120,12 @@ ${currentInterleavedContent}
                     throw new Error('JSON 中缺少 title 或 content 字段')
                   }
                   resolve(chObj)
-                } catch (e: any) {
-                  reject(new Error(`解析第 ${failedChapterPlan.chapterNumber} 章失败: ${e.message}. LLM 输出: ${fullText.substring(0, 200)}`))
+                } catch (e) {
+                  reject(new Error(`解析第 ${failedChapterPlan.chapterNumber} 章失败: ${errorMessage(e)}. LLM 输出: ${fullText.substring(0, 200)}`, { cause: e }))
                 }
               },
               onError: (err: Error) => {
-                const enrichedErr = err as any
+                const enrichedErr = err as EnrichedImportError
                 enrichedErr.systemPrompt = sysMsg
                 enrichedErr.userPrompt = userMsg
                 reject(enrichedErr)
@@ -1141,7 +1149,7 @@ ${currentInterleavedContent}
           setProgress(`✅ 生成完成！已创建 ${updatedGenerated.length + 1} 个章节（含大纲）`)
         }
       }
-    } catch (err: any) {
+    } catch (err) {
       handlePipelineError(err, {
         enrichedData,
         plan,
@@ -1172,7 +1180,7 @@ ${currentInterleavedContent}
 
       // Phase 2: Generation and import
       await executePhase2AndImport(enrichedData, plan, 0, [])
-    } catch (err: any) {
+    } catch (err) {
       handlePipelineError(err, {
         enrichedData: enrichedData || scrapedData,
         generatedChapters: []

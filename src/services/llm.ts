@@ -7,7 +7,7 @@ export type { LLMMessage, StreamCallbacks }
 /**
  * Mask sensitive credentials inside requests for safe debug logging.
  */
-function maskRequestDetails(url: string, headers: Record<string, string>, body: any) {
+function maskRequestDetails(url: string, headers: Record<string, string>, body: unknown) {
   const maskedHeaders = { ...headers }
   if (maskedHeaders['Authorization']) {
     maskedHeaders['Authorization'] = 'Bearer ***'
@@ -28,7 +28,7 @@ function maskRequestDetails(url: string, headers: Record<string, string>, body: 
  */
 export async function streamLLM(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string; debug?: boolean; signal?: AbortSignal },
+  config: ProviderConfig & { provider: string; debug?: boolean; signal?: AbortSignal; conversationId?: string },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const { provider, apiKey, debug } = config
@@ -68,8 +68,8 @@ export async function streamLLM(
     } else {
       throw new Error(`Unsupported LLM provider: ${provider}`)
     }
-  } catch (error: any) {
-    callbacks.onError(error instanceof Error ? error : new Error(error.message || 'Unknown network error'))
+  } catch (error) {
+    callbacks.onError(error instanceof Error ? error : new Error(String(error) || 'Unknown network error'))
   }
 }
 
@@ -78,7 +78,7 @@ export async function streamLLM(
  */
 async function streamOpenAI(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider?: string; debug?: boolean; signal?: AbortSignal },
+  config: ProviderConfig & { provider?: string; debug?: boolean; signal?: AbortSignal; conversationId?: string },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const headers: Record<string, string> = {
@@ -89,10 +89,18 @@ async function streamOpenAI(
     headers['Authorization'] = `Bearer ${config.apiKey}`
   }
 
+  // xAI routes requests with the same conversation id to the same cache
+  // shard, which maximizes automatic prompt-cache hits across turns.
+  if (config.provider === 'grok' && config.conversationId) {
+    headers['x-grok-conv-id'] = config.conversationId
+  }
+
   const url = `${config.baseUrl}/chat/completions`
   const openAIMessages = messages.map(m => {
     if (m.images && m.images.length > 0) {
-      const contentParts: any[] = [
+      const contentParts: Array<
+        { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+      > = [
         {
           type: 'text',
           text: m.content
@@ -121,7 +129,7 @@ async function streamOpenAI(
     }
   })
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model: config.model,
     messages: openAIMessages,
     stream: true,
@@ -179,7 +187,7 @@ async function streamGemini(
   const contents = messages
     .filter((m) => m.role !== 'system')
     .map((m) => {
-      const parts: any[] = [{ text: m.content }]
+      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: m.content }]
       if (m.images && m.images.length > 0) {
         m.images.forEach((img, idx) => {
           const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
@@ -200,7 +208,7 @@ async function streamGemini(
       }
     })
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     contents,
   }
 
@@ -344,17 +352,24 @@ async function streamGemini(
 /**
  * Anthropic Claude stream handler
  */
+interface AnthropicContentPart {
+  type: string
+  text?: string
+  source?: { type: string; media_type: string; data: string }
+  cache_control?: { type: string }
+}
+
 async function streamAnthropic(
   messages: LLMMessage[],
   config: ProviderConfig & { debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
-  const anthropicMessages = messages
+  const anthropicMessages: Array<{ role: string; content: string | AnthropicContentPart[] }> = messages
     .filter((m) => m.role !== 'system')
     .map(m => {
       if (m.images && m.images.length > 0) {
-        const content: any[] = [
+        const content: AnthropicContentPart[] = [
           {
             type: 'text',
             text: m.content
@@ -388,7 +403,7 @@ async function streamAnthropic(
       }
     })
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model: config.model,
     messages: anthropicMessages,
     // Respect the user's configured limit as-is: modern Claude models accept
@@ -462,7 +477,7 @@ async function streamAnthropic(
       } else if (json.type === 'message_delta' && json.delta?.text) {
         callbacks.onChunk(json.delta.text)
       }
-    } catch (e) {
+    } catch {
       // Ignore parse errors on structural messages
     }
   }, callbacks, config.signal)
@@ -505,17 +520,28 @@ async function readSSEStream(
         }
       }
       
-      // Parse Anthropic usage
+      // Parse Anthropic usage.
+      // Problem: session cache stats showed near-zero hits and negative
+      //   misses on Anthropic.
+      // Root cause: Anthropic's `input_tokens` EXCLUDES cached tokens —
+      //   cache_read/cache_creation are separate fields — so using it as the
+      //   total undercounted input, and `miss = input - hit` went negative
+      //   whenever the cache worked. Also `message_delta.usage.output_tokens`
+      //   is CUMULATIVE, so `+=` double-counted output.
+      // Fix: total input = input_tokens + cache_creation + cache_read;
+      //   treat message_delta's output as the authoritative running total.
       if (parsed.type === 'message_start' && parsed.message?.usage) {
         const u = parsed.message.usage
-        anthropicInputTokens = u.input_tokens || 0
-        anthropicOutputTokens += u.output_tokens || 0
+        anthropicInputTokens =
+          (u.input_tokens || 0) +
+          (u.cache_creation_input_tokens || 0) +
+          (u.cache_read_input_tokens || 0)
+        anthropicOutputTokens = u.output_tokens || 0
         anthropicCachedPromptTokens = u.cache_read_input_tokens || 0
-      } else if (parsed.type === 'message_delta' && parsed.usage) {
-        const u = parsed.usage
-        anthropicOutputTokens += u.output_tokens || 0
+      } else if (parsed.type === 'message_delta' && parsed.usage?.output_tokens) {
+        anthropicOutputTokens = parsed.usage.output_tokens
       }
-    } catch (e) {
+    } catch {
       // Not all data payloads are standard delta jsons
     }
   }

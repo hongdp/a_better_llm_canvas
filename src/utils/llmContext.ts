@@ -95,6 +95,9 @@ export function trimHistoryForContext(
  *   unmatched <edit> blocks, stream errors). These are the app talking to the
  *   user, not something the model said — feeding them back teaches the model
  *   to imitate them or apologize for failures it didn't emit.
+ * - "📖 …" / "📚 …" status bubbles left behind when an agentic lookup or a
+ *   whole-book batch pass was aborted mid-round — pure UI state, never
+ *   something the model said.
  * The result may be empty (e.g. a pure error message); callers rely on
  * `trimHistoryForContext` dropping empty messages.
  */
@@ -104,6 +107,7 @@ export function stripChatDisplayArtifacts(content: string): string {
     /(?:^|\n+)⚠️ (?:Error(?: during stream)?:|The response was cut off|The response abbreviated|\d+ suggested changes? could not be located)[\s\S]*$/,
     ''
   )
+  out = out.replace(/^[📖📚] [^\n]*\n?/gmu, '')
   return out.trim()
 }
 
@@ -166,17 +170,49 @@ export function detectReferencedDocIds(
 }
 
 /**
+ * Resolve chapter titles from a <lookup> request to document ids. Matching is
+ * fuzzy in the same spirit as detectReferencedDocIds: exact normalized title
+ * first, then substring containment either way (with a minimum length so a
+ * one-word title can't match everything). Returns ids in request order,
+ * deduplicated, active document excluded.
+ */
+export function resolveLookupTitles(
+  titles: string[],
+  documents: ReferenceDocLike[],
+  activeDocumentId: string | null
+): string[] {
+  const ids: string[] = []
+  for (const rawTitle of titles) {
+    const query = rawTitle.trim().toLowerCase()
+    if (query.length < 2) continue
+    let match = documents.find(d => d.id !== activeDocumentId && d.title.trim().toLowerCase() === query)
+    if (!match && query.length > 3) {
+      match = documents.find(d => {
+        if (d.id === activeDocumentId) return false
+        const title = d.title.trim().toLowerCase()
+        return title.length > 3 && (title.includes(query) || query.includes(title))
+      })
+    }
+    if (match && !ids.includes(match.id)) ids.push(match.id)
+  }
+  return ids
+}
+
+/**
  * Build the "[Attached Context: <title>]" label block shown above assistant
- * replies for auto/selected reference documents.
+ * replies for auto/selected reference documents. Ids listed in `autoIds` are
+ * marked "(auto)" so the user can tell scorer picks from their own pins.
  */
 export function buildAttachmentsLabel(
   ids: string[],
-  documents: ReferenceDocLike[]
+  documents: ReferenceDocLike[],
+  autoIds: string[] = []
 ): string {
   return ids
     .map(id => {
       const doc = documents.find(d => d.id === id)
-      return doc ? `[Attached Context: ${doc.title}]` : ''
+      if (!doc) return ''
+      return `[Attached Context: ${doc.title}${autoIds.includes(id) ? ' (auto)' : ''}]`
     })
     .filter(Boolean)
     .join('\n')

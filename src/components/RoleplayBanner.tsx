@@ -22,7 +22,7 @@ function extractStats(gameStateText: string): { label: string; value: string }[]
   for (const line of lines) {
     const trimmed = line.trim()
     // Match "SomeLabel: some value"
-    const match = trimmed.match(/^([A-Za-z\s\-\/]+?):\s*(.+)$/)
+    const match = trimmed.match(/^([A-Za-z\s\-/]+?):\s*(.+)$/)
     if (match) {
       const label = match[1].trim()
       const value = match[2].trim()

@@ -180,13 +180,14 @@ export function useImageUpload() {
     if (navigator.permissions && navigator.permissions.query) {
       try {
         const permission = await navigator.permissions.query({
-          name: 'clipboard-read' as any
+          // 'clipboard-read' is not in the TS DOM PermissionName union yet
+          name: 'clipboard-read' as unknown as PermissionName
         })
         if (permission.state === 'denied') {
           alert('Clipboard read permission is denied. Please enable clipboard access for this site in your browser settings.')
           return
         }
-      } catch (e) {
+      } catch {
         // clipboard-read permission query might not be supported, ignore
       }
     }

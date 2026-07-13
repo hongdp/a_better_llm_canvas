@@ -134,7 +134,6 @@ describe('diffHtml performance — match patterns', () => {
   })
 
   it('prints the performance table', () => {
-    // eslint-disable-next-line no-console
     console.table(results)
     expect(results.length).toBeGreaterThan(0)
   })
@@ -156,7 +155,6 @@ describe('edit-block pipeline performance', () => {
     const diffed = diffHtml(doc, applied.html)
     const ms = performance.now() - start
 
-    // eslint-disable-next-line no-console
     console.log(`[perf] edit-pipeline (parse+apply+diff, 5 edits / 400 paras): ${ms.toFixed(1)}ms, failed=${applied.failed.length}`)
 
     expect(parsed.blocks).toHaveLength(5)
@@ -176,7 +174,6 @@ describe('edit-block pipeline performance', () => {
     const applied = applyEditBlocks(doc, blocks)
     const ms = performance.now() - start
 
-    // eslint-disable-next-line no-console
     console.log(`[perf] edit-pipeline (fuzzy match, 400 paras): ${ms.toFixed(1)}ms, failed=${applied.failed.length}`)
 
     expect(applied.failed).toHaveLength(0)

@@ -9,14 +9,37 @@ export type { DocumentVersion, CanvasDocument } from '../types/document'
 import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../types/llm'
 import type { ChatMessage, RoleplayConfig } from '../types/chat'
 import type { DocumentVersion, CanvasDocument } from '../types/document'
+import type { Editor } from '@tiptap/react'
 
 
-import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave } from './persistence'
+import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave, loadDocumentsFromIndexedDB } from './persistence'
 
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
     const state = useAppStore.getState()
     flushPendingDocumentSave(state.documents)
+  })
+}
+
+/**
+ * Rebuilding the document list from server metadata would wipe client-side
+ * fields the server doesn't round-trip. Summaries ARE server-synced now, so
+ * a server value wins; the local one only fills gaps (e.g. generated while
+ * logged out and not yet pushed). Pin/block reference lists remain
+ * local-only and always carry over. Staleness is re-checked lazily against
+ * content once it loads.
+ */
+const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: CanvasDocument[]): CanvasDocument[] => {
+  const prevById = new Map(prevDocs.map(d => [d.id, d]))
+  return serverDocs.map(doc => {
+    const prev = prevById.get(doc.id)
+    if (!prev) return doc
+    return {
+      ...doc,
+      ...(!doc.summary && prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {}),
+      ...(prev.pinnedReferenceIds ? { pinnedReferenceIds: prev.pinnedReferenceIds } : {}),
+      ...(prev.blockedReferenceIds ? { blockedReferenceIds: prev.blockedReferenceIds } : {})
+    }
   })
 }
 
@@ -33,7 +56,20 @@ interface AppState {
   documents: CanvasDocument[]
   activeDocumentId: string
   isSidebarOpen: boolean
-  selectedReferenceIds: string[]
+  // Reference selection for the ACTIVE document (mirrors of its per-doc
+  // fields): pins always attach and stick across turns; blocked chapters are
+  // never auto-attached. Auto-selected ids are ephemeral (computed at send
+  // time by utils/contextSelection) and never stored.
+  pinnedReferenceIds: string[]
+  blockedReferenceIds: string[]
+  // Whole-book mode ("All chapters" super-tag). One-shot by design: it
+  // auto-resets after a send so the entire book isn't re-billed every turn.
+  // Deliberately NOT persisted.
+  // 'once' auto-resets after a send (the default click); 'sticky' keeps the
+  // whole book attached across turns, moving it into the stable prompt
+  // prefix so turns 2+ pay cache-read prices. Deliberately NOT persisted.
+  wholeBookMode: 'off' | 'once' | 'sticky'
+  setWholeBookMode: (mode: 'off' | 'once' | 'sticky') => void
   bookTitle: string
   setBookTitle: (title: string) => void
   
@@ -44,7 +80,9 @@ interface AppState {
   deleteDocument: (id: string) => void
   updateDocument: (id: string, updates: Partial<CanvasDocument>) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
-  toggleReference: (id: string) => void
+  setDocumentSummary: (id: string, summary: string, contentHash: string) => void
+  /** Cycle a chapter's manual reference state: neutral → pinned → blocked → neutral. */
+  cycleReferenceState: (id: string) => void
   clearReferences: () => void
   toggleSidebar: () => void
 
@@ -65,6 +103,10 @@ interface AppState {
   setAvailableGrokModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
+  // Agentic chapter lookup: lets the model request full chapter text
+  // mid-turn via the <lookup> protocol (multi-chapter books only).
+  agenticLookupEnabled: boolean
+  setAgenticLookupEnabled: (enabled: boolean) => void
 
   // Image analysis prompt
   imageAnalysisPrompt: string
@@ -99,8 +141,8 @@ interface AppState {
   // Selection & editor integration for inline diff review
   selectedText: string
   setSelectedText: (text: string) => void
-  activeEditor: any
-  setActiveEditor: (editor: any) => void
+  activeEditor: Editor | null
+  setActiveEditor: (editor: Editor | null) => void
 
   // Session stats & local storage tracking
   sessionInputTokens: number
@@ -274,14 +316,36 @@ const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePrompt
   }
 }
 
-const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
-  let parsed: any = null
+interface SavedPromptsEnvelope {
+  version?: number
+  prompts?: SystemPromptTemplate[]
+  activePromptId?: string
+}
 
+// Minimal shapes of the document/version metadata returned by the books API
+// (content is omitted server-side and lazy-loaded on demand).
+interface ServerDocumentMeta {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  summary?: string | null
+  summaryContentHash?: string | null
+}
+
+interface ServerVersionMeta {
+  id: string
+  documentId: string
+  title: string
+  timestamp: string
+}
+
+const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
   // 1. Try loading from localStorage backup first (prioritized)
   const backup = localStorage.getItem('web_canvas_system_prompts_backup')
   if (backup) {
     try {
-      parsed = JSON.parse(backup)
+      const parsed = JSON.parse(backup) as SavedPromptsEnvelope
       if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
         return {
           prompts: parsed.prompts || DEFAULT_SYSTEM_PROMPTS,
@@ -297,7 +361,7 @@ const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; active
   const saved = getCookie('__Secure-web_canvas_system_prompts')
   if (saved) {
     try {
-      parsed = JSON.parse(saved)
+      const parsed = JSON.parse(saved) as SavedPromptsEnvelope
       // Clean up the cookie since we've migrated
       setCookie('__Secure-web_canvas_system_prompts', '', -1)
       if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
@@ -366,19 +430,20 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
     if (!parsed || typeof parsed !== 'object' || !('version' in parsed)) {
       console.log('Migrating legacy (v0) LLM configs to v2')
       const migratedData = { ...DEFAULT_CONFIGS }
-      const rawData = parsed as any
+      const rawData = parsed as Partial<Record<LLMProvider, ProviderConfig & { systemPrompt?: string }>> | null
       let legacyPromptText = ''
       for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
-        if (rawData && rawData[p]) {
+        const rawConfig = rawData?.[p]
+        if (rawConfig) {
           migratedData[p] = {
             ...DEFAULT_CONFIGS[p],
-            ...rawData[p],
+            ...rawConfig,
           }
-          if (rawData[p].systemPrompt && !legacyPromptText) {
-            legacyPromptText = rawData[p].systemPrompt
+          if (rawConfig.systemPrompt && !legacyPromptText) {
+            legacyPromptText = rawConfig.systemPrompt
           }
           // Clean up legacy prompt field
-          delete (migratedData[p] as any).systemPrompt
+          delete (migratedData[p] as ProviderConfig & { systemPrompt?: string }).systemPrompt
         }
       }
 
@@ -399,17 +464,18 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
 
     // Case 2: Versioned structure
     const versioned = parsed as VersionedCookieData<Record<LLMProvider, ProviderConfig>>
-    let currentData = versioned.data
+    const currentData = versioned.data
     let version = versioned.version
 
     if (version === 1) {
       console.log('Migrating version 1 LLM configs to v2')
       let legacyPromptText = ''
       for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
-        if (currentData[p] && (currentData[p] as any).systemPrompt) {
-          legacyPromptText = (currentData[p] as any).systemPrompt
+        const config = currentData[p] as (ProviderConfig & { systemPrompt?: string }) | undefined
+        if (config && config.systemPrompt) {
+          legacyPromptText = config.systemPrompt
           // Clean up legacy prompt field
-          delete (currentData[p] as any).systemPrompt
+          delete config.systemPrompt
         }
       }
       if (legacyPromptText && legacyPromptText.trim()) {
@@ -642,7 +708,10 @@ export const useAppStore = create<AppState>((set) => {
     documents: initialDocs,
     activeDocumentId: initialActiveId,
     isSidebarOpen: loadSavedSidebarOpen(),
-    selectedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.selectedReferenceIds || [],
+    pinnedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.pinnedReferenceIds || [],
+    blockedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.blockedReferenceIds || [],
+    wholeBookMode: 'off',
+    setWholeBookMode: (mode) => set({ wholeBookMode: mode }),
     bookTitle: localStorage.getItem('web_canvas_book_title') || 'Untitled Book',
     setBookTitle: (title) => {
       localStorage.setItem('web_canvas_book_title', title)
@@ -653,9 +722,10 @@ export const useAppStore = create<AppState>((set) => {
       localStorage.setItem('web_canvas_active_document_id', id)
       set((state) => {
         const targetDoc = state.documents.find((d) => d.id === id)
-        return { 
+        return {
           activeDocumentId: id,
-          selectedReferenceIds: (targetDoc?.selectedReferenceIds || []).filter(refId => refId !== id)
+          pinnedReferenceIds: (targetDoc?.pinnedReferenceIds || []).filter(refId => refId !== id),
+          blockedReferenceIds: (targetDoc?.blockedReferenceIds || []).filter(refId => refId !== id)
         }
       })
 
@@ -686,7 +756,8 @@ export const useAppStore = create<AppState>((set) => {
         title,
         content,
         contentLoaded: true,
-        selectedReferenceIds: [],
+        pinnedReferenceIds: [],
+        blockedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
@@ -697,10 +768,11 @@ export const useAppStore = create<AppState>((set) => {
         saveDocumentsToIndexedDB(updatedDocs, true)
         localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         docId = newDoc.id
-        return { 
+        return {
           documents: updatedDocs,
           activeDocumentId: newDoc.id,
-          selectedReferenceIds: []
+          pinnedReferenceIds: [],
+          blockedReferenceIds: []
         }
       })
 
@@ -730,7 +802,8 @@ export const useAppStore = create<AppState>((set) => {
         title: doc.title || `Chapter ${idx + 1}`,
         content: doc.content || '<p></p>',
         contentLoaded: true,
-        selectedReferenceIds: [],
+        pinnedReferenceIds: [],
+        blockedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }))
@@ -741,7 +814,8 @@ export const useAppStore = create<AppState>((set) => {
         return {
           documents: formattedDocs,
           activeDocumentId: formattedDocs[0].id,
-          selectedReferenceIds: []
+          pinnedReferenceIds: [],
+          blockedReferenceIds: []
         }
       })
     },
@@ -783,7 +857,8 @@ export const useAppStore = create<AppState>((set) => {
             title: 'Chapter 1: Welcome',
             content: '<h1>Getting Started</h1><p>Start writing...</p>',
             contentLoaded: true,
-            selectedReferenceIds: [],
+            pinnedReferenceIds: [],
+            blockedReferenceIds: [],
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
@@ -797,8 +872,9 @@ export const useAppStore = create<AppState>((set) => {
         return {
           documents: filteredDocs,
           activeDocumentId: newActiveId,
-          // Remove from selected reference list if present
-          selectedReferenceIds: state.selectedReferenceIds.filter((refId) => refId !== id)
+          // Remove from manual reference lists if present
+          pinnedReferenceIds: state.pinnedReferenceIds.filter((refId) => refId !== id),
+          blockedReferenceIds: state.blockedReferenceIds.filter((refId) => refId !== id)
         }
       })
 
@@ -848,25 +924,65 @@ export const useAppStore = create<AppState>((set) => {
       })
     },
 
-    toggleReference: (id) => {
+    setDocumentSummary: (id, summary, contentHash) => {
+      // Deliberately does NOT bump updatedAt: a summary refresh is derived
+      // metadata, not a user edit — bumping would churn server sync status
+      // and re-mark the summary's own source content as newer than it.
       set((state) => {
-        const refs = state.selectedReferenceIds.includes(id)
-          ? state.selectedReferenceIds.filter((refId) => refId !== id)
-          : [...state.selectedReferenceIds, id]
+        const updatedDocs = state.documents.map((d) =>
+          d.id === id ? { ...d, summary, summaryContentHash: contentHash } : d
+        )
+        saveDocumentsToIndexedDB(updatedDocs, false)
+        return { documents: updatedDocs }
+      })
+
+      // Fire-and-forget server sync (optimistic-UI convention: local state is
+      // already updated; a failure just means the summary regenerates on the
+      // next device instead of syncing).
+      const state = useAppStore.getState()
+      if (state.user && state.activeBookId) {
+        fetch(`/api/books/${state.activeBookId}/documents/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': state.csrfToken || ''
+          },
+          body: JSON.stringify({ summary, summaryContentHash: contentHash })
+        }).catch(e => console.error('Failed to sync document summary to server', e))
+      }
+    },
+
+    cycleReferenceState: (id) => {
+      set((state) => {
+        // neutral → pinned → blocked → neutral. The UI's "auto" state is
+        // ephemeral (scorer output) and behaves as neutral here: clicking an
+        // auto tag promotes it to a sticky pin.
+        let pinned = state.pinnedReferenceIds
+        let blocked = state.blockedReferenceIds
+        if (pinned.includes(id)) {
+          pinned = pinned.filter((refId) => refId !== id)
+          blocked = [...blocked, id]
+        } else if (blocked.includes(id)) {
+          blocked = blocked.filter((refId) => refId !== id)
+        } else {
+          pinned = [...pinned, id]
+        }
 
         const updatedDocs = state.documents.map((d) => {
           if (d.id === state.activeDocumentId) {
             return {
               ...d,
-              selectedReferenceIds: refs,
+              pinnedReferenceIds: pinned,
+              blockedReferenceIds: blocked,
               updatedAt: new Date().toISOString(),
             }
           }
           return d
         })
         saveDocumentsToIndexedDB(updatedDocs, true)
-        return { 
-          selectedReferenceIds: refs,
+        return {
+          pinnedReferenceIds: pinned,
+          blockedReferenceIds: blocked,
           documents: updatedDocs
         }
       })
@@ -878,7 +994,8 @@ export const useAppStore = create<AppState>((set) => {
           if (d.id === state.activeDocumentId) {
             return {
               ...d,
-              selectedReferenceIds: [],
+              pinnedReferenceIds: [],
+              blockedReferenceIds: [],
               updatedAt: new Date().toISOString(),
             }
           }
@@ -886,7 +1003,8 @@ export const useAppStore = create<AppState>((set) => {
         })
         saveDocumentsToIndexedDB(updatedDocs, true)
         return {
-          selectedReferenceIds: [],
+          pinnedReferenceIds: [],
+          blockedReferenceIds: [],
           documents: updatedDocs
         }
       })
@@ -1006,6 +1124,11 @@ export const useAppStore = create<AppState>((set) => {
         return { providerConfigs: updatedConfigs }
       })
     },
+    agenticLookupEnabled: localStorage.getItem('web_canvas_agentic_lookup') !== 'false',
+    setAgenticLookupEnabled: (enabled) => {
+      localStorage.setItem('web_canvas_agentic_lookup', String(enabled))
+      set({ agenticLookupEnabled: enabled })
+    },
     debugMode: initialDebugMode,
     setDebugMode: (enabled) => {
       localStorage.setItem('web_canvas_debug_mode', String(enabled))
@@ -1044,7 +1167,7 @@ export const useAppStore = create<AppState>((set) => {
         name,
         content
       }
-      let promptId = newPrompt.id
+      const promptId = newPrompt.id
       set((state) => {
         const updated = [...state.customSystemPrompts, newPrompt]
         saveSystemPromptsToCookie(updated, state.activeSystemPromptId)
@@ -1122,8 +1245,11 @@ export const useAppStore = create<AppState>((set) => {
     sessionCacheHitTokens: 0,
     sessionCacheMissTokens: 0,
     addSessionTokens: (input, output, cacheHit = 0) => set((state) => {
-      const hit = cacheHit
-      const miss = input - hit
+      // Clamp defensively: providers report input/cached tokens in different
+      // shapes, and a mis-mapped extractor must never corrupt the counters
+      // with a negative miss.
+      const hit = Math.min(cacheHit, input)
+      const miss = Math.max(0, input - hit)
       return {
         sessionInputTokens: state.sessionInputTokens + input,
         sessionOutputTokens: state.sessionOutputTokens + output,
@@ -1302,20 +1428,25 @@ export const useAppStore = create<AppState>((set) => {
 
             // Build document list from server metadata (content not loaded yet)
             if (server.documents) {
-              const docs: CanvasDocument[] = server.documents.map((d: any) => ({
-                id: d.id,
-                title: d.title,
-                content: '', // Content will be lazy-loaded
-                contentLoaded: false,
-                createdAt: d.createdAt,
-                updatedAt: d.updatedAt,
-              }))
+              const docs: CanvasDocument[] = carryOverLocalSummaries(
+                server.documents.map((d: ServerDocumentMeta) => ({
+                  id: d.id,
+                  title: d.title,
+                  content: '', // Content will be lazy-loaded
+                  contentLoaded: false,
+                  createdAt: d.createdAt,
+                  updatedAt: d.updatedAt,
+                  summary: d.summary ?? undefined,
+                  summaryContentHash: d.summaryContentHash ?? undefined,
+                })),
+                state.documents
+              )
               updates.documents = docs
               saveDocumentsToIndexedDB(docs, true)
             }
             if (server.versions) {
               // Versions from new API don't include content (lazy-loaded)
-              updates.versions = server.versions.map((v: any) => ({
+              updates.versions = server.versions.map((v: ServerVersionMeta) => ({
                 id: v.id,
                 documentId: v.documentId,
                 title: v.title,
@@ -1507,7 +1638,9 @@ export const useAppStore = create<AppState>((set) => {
               },
               body: JSON.stringify({
                 title: d.title,
-                content: d.content
+                content: d.content,
+                summary: d.summary ?? null,
+                summaryContentHash: d.summaryContentHash ?? null
               })
             }).catch(e => {
               console.error(`Failed to sync document ${d.id}`, e)
@@ -1744,7 +1877,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
     let loadedDocs: CanvasDocument[] | null = null
     let loadedVersions: DocumentVersion[] | null = null
     try {
-      loadedDocs = await db.get<CanvasDocument[]>('web_canvas_documents')
+      loadedDocs = await loadDocumentsFromIndexedDB()
       loadedVersions = await db.get<DocumentVersion[]>('web_canvas_versions')
     } catch (dbErr) {
       console.error('[IndexedDB] Failed to load data:', dbErr)
@@ -1753,10 +1886,12 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
     const documentsToSet = (loadedDocs && loadedDocs.length > 0) ? loadedDocs : MOCK_DOCUMENTS
     const versionsToSet = loadedVersions || []
 
+    const activeLoadedDoc = documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)
     useAppStore.setState({
       documents: documentsToSet,
       versions: versionsToSet,
-      selectedReferenceIds: documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)?.selectedReferenceIds || []
+      pinnedReferenceIds: activeLoadedDoc?.pinnedReferenceIds || [],
+      blockedReferenceIds: activeLoadedDoc?.blockedReferenceIds || []
     })
 
     // Set isStoreInitialized immediately so the UI boots up instantly using offline/local cache
@@ -1767,12 +1902,11 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
   const performSync = async () => {
     // 2. Fetch current session status in the background
     let loggedInUser: string | null = null
-    let csrfToken: string | null = null
     try {
       const sessionRes = await fetch('/api/auth/session')
       if (sessionRes.ok) {
         const sessionData = await sessionRes.json()
-        csrfToken = sessionData.csrfToken || null
+        const csrfToken: string | null = sessionData.csrfToken || null
         useAppStore.setState({ csrfToken })
         if (sessionData.loggedIn) {
           loggedInUser = sessionData.username
@@ -1806,19 +1940,24 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
 
           // Build documents from metadata (without content — lazy-loaded)
           if (serverData.documents) {
-            const docs: CanvasDocument[] = serverData.documents.map((d: any) => ({
-              id: d.id,
-              title: d.title,
-              content: '', // Will be lazy-loaded for active doc
-              contentLoaded: false,
-              createdAt: d.createdAt,
-              updatedAt: d.updatedAt,
-            }))
+            const docs: CanvasDocument[] = carryOverLocalSummaries(
+              serverData.documents.map((d: ServerDocumentMeta) => ({
+                id: d.id,
+                title: d.title,
+                content: '', // Will be lazy-loaded for active doc
+                contentLoaded: false,
+                createdAt: d.createdAt,
+                updatedAt: d.updatedAt,
+                summary: d.summary ?? undefined,
+                summaryContentHash: d.summaryContentHash ?? undefined,
+              })),
+              useAppStore.getState().documents
+            )
             updates.documents = docs
             saveDocumentsToIndexedDB(docs, true)
           }
           if (serverData.versions) {
-            updates.versions = serverData.versions.map((v: any) => ({
+            updates.versions = serverData.versions.map((v: ServerVersionMeta) => ({
               id: v.id,
               documentId: v.documentId,
               title: v.title,

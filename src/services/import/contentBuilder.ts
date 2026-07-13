@@ -7,8 +7,11 @@ import type { ScrapedData, ChapterPlan, GeneratedChapter } from '../../types/imp
 /**
  * Determine if an error was caused by LLM safety guidelines / filters.
  */
-export const isSafetyError = (err: any): boolean => {
-  const msg = String(err.message || err).toLowerCase()
+export const isSafetyError = (err: unknown): boolean => {
+  const message = typeof err === 'object' && err !== null && 'message' in err
+    ? (err as { message?: unknown }).message
+    : undefined
+  const msg = String(message || err).toLowerCase()
   return (
     msg.includes('403') ||
     msg.includes('csam') ||
@@ -106,8 +109,7 @@ export const buildInterleavedContent = (data: ScrapedData): string => {
  */
 export const buildChapterInterleavedContent = (
   data: ScrapedData,
-  paragraphRange: [number, number],
-  _imageIndices: number[]
+  paragraphRange: [number, number]
 ): string => {
   const lines: string[] = []
   const imagesByPosition = new Map<number, typeof data.images>()

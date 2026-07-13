@@ -3,9 +3,22 @@ export interface CanvasDocument {
   title: string
   content: string
   contentLoaded?: boolean
+  /** @deprecated Legacy manual selection — migrated to pinnedReferenceIds (envelope v2). */
   selectedReferenceIds?: string[]
+  /** Chapters the user pinned as reference context; sticky across turns. */
+  pinnedReferenceIds?: string[]
+  /** Chapters the user excluded from auto-selection for this document. */
+  blockedReferenceIds?: string[]
   createdAt: string
   updatedAt: string
+  /**
+   * LLM-generated short summary (~120 words + key entities) used for the
+   * always-on chapter index and context auto-selection. Navigation metadata,
+   * not a source of truth — may lag behind `content` (see summaryContentHash).
+   */
+  summary?: string
+  /** Hash of `content` at the time `summary` was generated. Mismatch = stale. */
+  summaryContentHash?: string
 }
 
 export interface DocumentVersion {

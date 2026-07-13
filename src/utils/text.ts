@@ -84,6 +84,56 @@ export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
   }
 }
 
+/** Parsed agentic chapter-lookup request (see smart_context_selection.md §5). */
+export interface LookupRequest {
+  /** Requested chapter titles, as copied from the CHAPTER INDEX. */
+  titles: string[]
+  /** True when the model requested every chapter (chapters="*"). */
+  wantsAll: boolean
+  /** The model's stated reason (may be empty). */
+  reason: string
+}
+
+/**
+ * Parse a `<lookup chapters="A; B" reason="..."></lookup>` request from an
+ * LLM response. The protocol asks for the tag to be the ENTIRE response, but
+ * the parser tolerates a little surrounding prose. Returns null when:
+ * - there is no lookup tag;
+ * - the response also contains a real action tag (<canvas>/<edit>/
+ *   <selection_replace>) — a content response always wins over a lookup;
+ * - substantial prose surrounds the tag (it was likely commentary, and
+ *   treating the response as a lookup would discard a real answer).
+ */
+export function parseLookupRequest(text: string): LookupRequest | null {
+  const tagMatch = /<lookup\b([^>]*?)\/?>(?:\s*<\/lookup\s*>)?/i.exec(text)
+  if (!tagMatch) return null
+
+  if (/<canvas\b|<selection_replace\b|<edit\b|<{5,}\s*SEARCH/i.test(text.replace(tagMatch[0], ''))) {
+    return null
+  }
+
+  const surrounding = (text.substring(0, tagMatch.index) + text.substring(tagMatch.index + tagMatch[0].length)).trim()
+  if (surrounding.length > 400) return null
+
+  const attrs = tagMatch[1]
+  const chaptersMatch = /chapters\s*=\s*"([^"]*)"/i.exec(attrs) || /chapters\s*=\s*'([^']*)'/i.exec(attrs)
+  const reasonMatch = /reason\s*=\s*"([^"]*)"/i.exec(attrs) || /reason\s*=\s*'([^']*)'/i.exec(attrs)
+  const chaptersRaw = (chaptersMatch?.[1] ?? '').trim()
+  if (!chaptersRaw) return null
+
+  if (chaptersRaw === '*') {
+    return { titles: [], wantsAll: true, reason: reasonMatch?.[1]?.trim() ?? '' }
+  }
+
+  const titles = chaptersRaw
+    .split(/;|\n/)
+    .map(t => t.trim().replace(/^["']|["']$/g, ''))
+    .filter(Boolean)
+  if (titles.length === 0) return null
+
+  return { titles, wantsAll: false, reason: reasonMatch?.[1]?.trim() ?? '' }
+}
+
 /**
  * Detect explicit "elision" / lazy-omission markers in an LLM-produced document
  * replacement. When asked to re-emit a long document, models often abbreviate
@@ -195,6 +245,70 @@ export function parseEditBlocks(text: string): ParsedEdits {
     before: stripSugar(text.slice(0, firstStart)),
     after: stripSugar(text.slice(lastEnd))
   }
+}
+
+/**
+ * A completed LLM response classified into the action the client must take.
+ * Priority (mirrors the Canvas Markup Protocol): selection_replace >
+ * localized edits > full-document canvas > plain chat.
+ */
+export interface ParsedAssistantResponse {
+  kind: 'selection' | 'edits' | 'canvas' | 'chat'
+  /** Conversational text outside the action tags (before + after joined). */
+  chatText: string
+  /** kind === 'selection': replacement text for the user's selection. */
+  selectionText: string
+  /** kind === 'edits': the parsed SEARCH/REPLACE blocks. */
+  editBlocks: EditBlock[]
+  /** kind === 'canvas': the full replacement document HTML. */
+  canvasText: string
+  /** kind === 'canvas': whether the closing tag arrived (guards truncation). */
+  canvasClosed: boolean
+}
+
+/**
+ * Classify a COMPLETE streamed response into the action to perform. Pure —
+ * the caller decides how to apply the action (diffing, editor transactions,
+ * warnings).
+ */
+export function parseAssistantResponse(fullText: string): ParsedAssistantResponse {
+  const result: ParsedAssistantResponse = {
+    kind: 'chat',
+    chatText: fullText,
+    selectionText: '',
+    editBlocks: [],
+    canvasText: '',
+    canvasClosed: false
+  }
+
+  const joinAround = (before: string, after: string): string => {
+    let text = before.trim()
+    if (after.trim()) {
+      text += (text ? '\n\n' : '') + after.trim()
+    }
+    return text
+  }
+
+  const selectionBlock = extractTaggedBlock(fullText, 'selection_replace')
+  const parsedEdits = parseEditBlocks(fullText)
+  const canvasBlock = extractTaggedBlock(fullText, 'canvas')
+
+  if (selectionBlock.found) {
+    result.kind = 'selection'
+    result.selectionText = selectionBlock.inner
+    result.chatText = joinAround(selectionBlock.before, selectionBlock.after)
+  } else if (parsedEdits.blocks.length > 0) {
+    result.kind = 'edits'
+    result.editBlocks = parsedEdits.blocks
+    result.chatText = joinAround(parsedEdits.before, parsedEdits.after)
+  } else if (canvasBlock.found) {
+    result.kind = 'canvas'
+    result.canvasText = canvasBlock.inner
+    result.canvasClosed = canvasBlock.closed
+    result.chatText = joinAround(canvasBlock.before, canvasBlock.after)
+  }
+
+  return result
 }
 
 /** Result of applying a list of edit blocks to a document. */

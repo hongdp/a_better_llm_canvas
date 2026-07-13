@@ -94,14 +94,14 @@ async function fetchImageModels(
       const base = (baseUrl || 'https://generativelanguage.googleapis.com/v1beta').replace(/\/$/, '')
       const res = await fetch(`${base}/models?key=${apiKey}`)
       if (!res.ok) return fallback
-      const data = await res.json()
+      const data = await res.json() as { models?: Array<{ name: string; supportedGenerationMethods?: string[] }> }
       const models = (data.models || [])
-        .filter((m: any) =>
+        .filter(m =>
           (m.supportedGenerationMethods || []).some((method: string) =>
             method.toLowerCase().includes('generate') || method.toLowerCase().includes('predict')
           ) && IMAGE_MODEL_PATTERNS.gemini.test(m.name)
         )
-        .map((m: any) => m.name.startsWith('models/') ? m.name.slice(7) : m.name)
+        .map(m => m.name.startsWith('models/') ? m.name.slice(7) : m.name)
       return models.length ? models : fallback
     }
 
@@ -112,9 +112,9 @@ async function fetchImageModels(
         headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
       })
       if (!res.ok) return fallback
-      const data = await res.json()
-      const ids = (Array.isArray(data) ? data : [])
-        .map((e: any) => e.id as string)
+      const data: unknown = await res.json()
+      const ids = (Array.isArray(data) ? data as Array<{ id?: string }> : [])
+        .map(e => e.id as string)
         .filter(Boolean)
       return ids.length ? ids : fallback
     }
@@ -128,10 +128,10 @@ async function fetchImageModels(
       headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
     })
     if (!res.ok) return fallback
-    const data = await res.json()
+    const data = await res.json() as { data?: Array<{ id: string }> }
     const pattern = IMAGE_MODEL_PATTERNS[provider]
     const models = (data.data || [])
-      .map((m: any) => m.id as string)
+      .map(m => m.id)
       .filter((id: string) => pattern.test(id))
       .sort()
     return models.length ? models : fallback
@@ -241,8 +241,12 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
   const [isDiscovering, setIsDiscovering] = useState(false)
   const [discoverError, setDiscoverError] = useState<string | null>(null)
 
-  // Reset when modal opens
-  useEffect(() => {
+  // Reset when modal opens (or when the caller-provided prompt/context change
+  // while open). Implemented as the "adjust state during render" pattern to
+  // avoid cascading setState-in-effect renders.
+  const [prevResetKey, setPrevResetKey] = useState<{ isOpen: boolean; initialPrompt: string; documentContext: string }>({ isOpen: false, initialPrompt: '', documentContext: '' })
+  if (prevResetKey.isOpen !== isOpen || prevResetKey.initialPrompt !== initialPrompt || prevResetKey.documentContext !== documentContext) {
+    setPrevResetKey({ isOpen, initialPrompt, documentContext })
     if (isOpen) {
       setRawPrompt(initialPrompt || '')
       setContext(documentContext ? documentContext.slice(0, 800) : '')
@@ -253,12 +257,18 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
       setGenError(null)
       setInsertSuccess(false)
       setZoom(1)
+    }
+  }
+
+  // DOM/network side effects of opening/closing stay in an effect
+  useEffect(() => {
+    if (isOpen) {
       setTimeout(() => promptRef.current?.focus(), 100)
     } else {
       // Cancel any in-flight enhancement when modal closes
       enhanceAbortRef.current?.abort()
     }
-  }, [isOpen, initialPrompt, documentContext])
+  }, [isOpen])
 
   // Derived values needed by hooks below — must be computed before any early return
   const provider = imageGenConfig.provider
@@ -283,25 +293,31 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
       if (!models.includes(currentModel)) {
         updateImageGenConfig({ model: models[0] })
       }
-    } catch (err: any) {
-      setDiscoverError(err.message || 'Failed to fetch models.')
+    } catch (err) {
+      setDiscoverError(err instanceof Error && err.message ? err.message : 'Failed to fetch models.')
     } finally {
       setIsDiscovering(false)
     }
   }, [provider, effectiveApiKey, imageGenConfig.baseUrl, imageGenConfig.model, updateImageGenConfig])
 
-  // Auto-discover when the advanced panel opens (and key is available)
+  // Reset discovered models when the provider changes ("adjust state during
+  // render" pattern — avoids a cascading setState-in-effect render).
+  const [prevProvider, setPrevProvider] = useState(provider)
+  if (provider !== prevProvider) {
+    setPrevProvider(provider)
+    setDiscoveredModels(null)
+    setDiscoverError(null)
+  }
+
+  // Auto-discover when the advanced panel opens (and key is available).
   useEffect(() => {
     if (showAdvanced && effectiveApiKey && !discoveredModels && !isDiscovering) {
+      // Legitimate external-system sync (network fetch of the model list);
+      // the synchronous setState inside is just the isDiscovering guard flag.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       handleDiscoverModels()
     }
   }, [showAdvanced, effectiveApiKey, provider]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Reset discovered models when provider changes
-  useEffect(() => {
-    setDiscoveredModels(null)
-    setDiscoverError(null)
-  }, [provider])
 
   if (!isOpen) return null
 
@@ -344,9 +360,10 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
         abortController.signal
       )
       setEnhancedPrompt(result)
-    } catch (err: any) {
-      if (err.name === 'AbortError' || err.message?.includes('abort')) return
-      setEnhanceError(err.message || 'Failed to enhance prompt. Check your LLM settings.')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      if ((err instanceof Error && err.name === 'AbortError') || message.includes('abort')) return
+      setEnhanceError(message || 'Failed to enhance prompt. Check your LLM settings.')
     } finally {
       setIsEnhancing(false)
       enhanceAbortRef.current = null
@@ -384,8 +401,8 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
       })
       setGeneratedImage(result.dataUrl)
       if (result.revisedPrompt) setRevisedPrompt(result.revisedPrompt)
-    } catch (err: any) {
-      setGenError(err.message || 'Image generation failed. Please check your API key and try again.')
+    } catch (err) {
+      setGenError(err instanceof Error && err.message ? err.message : 'Image generation failed. Please check your API key and try again.')
     } finally {
       setIsGenerating(false)
     }

@@ -226,7 +226,7 @@ describe('Server response → client document mapping', () => {
       { id: 'doc-2', title: 'Chapter 2', createdAt: '2024-01-02', updatedAt: '2024-01-02' },
     ]
 
-    const clientDocs: CanvasDocument[] = serverDocs.map((d: any) => ({
+    const clientDocs: CanvasDocument[] = serverDocs.map(d => ({
       id: d.id,
       title: d.title,
       content: '',

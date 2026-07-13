@@ -1,7 +1,9 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
+import { enqueueSummaryRefresh } from '../services/chapterSummaries'
+import { isSummaryStale, MIN_CHARS_FOR_SUMMARY } from '../utils/chapterIndex'
 import { ImportUrlModal } from './ImportUrlModal'
 import { useTranslation } from '../i18n'
 
@@ -33,6 +35,14 @@ export const ChaptersSidebar: React.FC = () => {
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
   const [pendingChapters, setPendingChapters] = useState<{ title: string; content: string }[]>([])
   const [localBookTitle, setLocalBookTitle] = useState(bookTitle)
+  // Keep the local editing buffer in sync with global store changes (e.g. if
+  // updated via storage) using the "adjust state during render" pattern from
+  // the React docs, which avoids a cascading setState-in-effect.
+  const [prevBookTitle, setPrevBookTitle] = useState(bookTitle)
+  if (bookTitle !== prevBookTitle) {
+    setPrevBookTitle(bookTitle)
+    setLocalBookTitle(bookTitle)
+  }
 
   const [showBookManager, setShowBookManager] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -67,11 +77,6 @@ export const ChaptersSidebar: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const replaceFileInputRef = useRef<HTMLInputElement>(null)
-
-  // Keep local state in sync with global store changes (e.g. if updated via storage)
-  React.useEffect(() => {
-    setLocalBookTitle(bookTitle)
-  }, [bookTitle])
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index)
@@ -150,7 +155,7 @@ export const ChaptersSidebar: React.FC = () => {
       const text = event.target?.result as string
       if (typeof text !== 'string') return
 
-      let htmlContent = ''
+      let htmlContent: string
       const extension = file.name.split('.').pop()?.toLowerCase() || ''
       const filenameWithoutExt = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
 
@@ -196,7 +201,7 @@ export const ChaptersSidebar: React.FC = () => {
       const text = event.target?.result as string
       if (typeof text !== 'string') return
 
-      let parsedChapters: { title: string; content: string }[] = []
+      let parsedChapters: { title: string; content: string }[]
       const extension = file.name.split('.').pop()?.toLowerCase() || ''
       const filenameWithoutExt = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
 
@@ -210,7 +215,7 @@ export const ChaptersSidebar: React.FC = () => {
 
       // Fallback: if splitting resulted in 0 chapters, treat whole file as a single chapter
       if (parsedChapters.length === 0) {
-        let htmlContent = ''
+        let htmlContent: string
         if (['md', 'markdown'].includes(extension)) {
           htmlContent = markdownToHtml(text)
         } else if (['html', 'htm'].includes(extension)) {
@@ -246,15 +251,29 @@ export const ChaptersSidebar: React.FC = () => {
           <BookOpen size={16} style={{ color: 'var(--text-secondary)' }} />
           <h2>Chapters</h2>
         </div>
-        <button 
-          onClick={toggleSidebar} 
-          className="btn-icon" 
-          title={t.sidebar.collapse}
-          type="button"
-          style={{ padding: '0.25rem' }}
-        >
-          <ChevronLeft size={16} />
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
+          {documents.length > 1 && (
+            <button
+              onClick={() => documents.forEach(d => enqueueSummaryRefresh(d.id))}
+              disabled={isStreaming}
+              className="btn-icon"
+              title={t.sidebar.summarizeAll}
+              type="button"
+              style={{ padding: '0.25rem' }}
+            >
+              <Sparkles size={15} />
+            </button>
+          )}
+          <button
+            onClick={toggleSidebar}
+            className="btn-icon"
+            title={t.sidebar.collapse}
+            type="button"
+            style={{ padding: '0.25rem' }}
+          >
+            <ChevronLeft size={16} />
+          </button>
+        </div>
       </div>
 
       <div style={{ padding: '0.6rem 1rem', borderBottom: '1px solid var(--border-color)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -345,11 +364,23 @@ export const ChaptersSidebar: React.FC = () => {
 
               <span className="chapter-title">{doc.title || 'Untitled Chapter'}</span>
               
-              <div 
-                className="chapter-actions" 
+              <div
+                className="chapter-actions"
                 onClick={(e) => e.stopPropagation()}
                 onDragStart={(e) => e.stopPropagation()}
               >
+                {doc.contentLoaded !== false && doc.content.length >= MIN_CHARS_FOR_SUMMARY && (
+                  <button
+                    onClick={() => enqueueSummaryRefresh(doc.id, true)}
+                    disabled={isStreaming}
+                    className="btn-icon chapter-action-btn"
+                    title={isSummaryStale(doc) ? t.sidebar.refreshSummaryStale : t.sidebar.refreshSummary}
+                    type="button"
+                    style={{ padding: '0.15rem' }}
+                  >
+                    <Sparkles size={13} style={isSummaryStale(doc) ? { color: 'var(--accent)' } : undefined} />
+                  </button>
+                )}
                 <button
                   onClick={() => handleMoveUp(idx)}
                   disabled={idx === 0 || isStreaming}

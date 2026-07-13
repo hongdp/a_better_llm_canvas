@@ -228,7 +228,7 @@ export function useRoleplayLLM({
     try {
       await streamLLM(
         apiMessages,
-        { ...s.providerConfigs[s.activeProvider], provider: s.activeProvider, debug: s.debugMode, signal },
+        { ...s.providerConfigs[s.activeProvider], provider: s.activeProvider, debug: s.debugMode, signal, conversationId: s.activeBookId },
         {
           onChunk: (chunk: string) => {
             accumulatedTextRef.current += chunk
@@ -374,7 +374,8 @@ export function useRoleplayLLM({
         id,
         title: '🎮 Game State',
         content: '<p>Initializing game state...</p>',
-        selectedReferenceIds: [] as string[],
+        pinnedReferenceIds: [] as string[],
+        blockedReferenceIds: [] as string[],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }

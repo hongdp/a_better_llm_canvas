@@ -3,10 +3,14 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { initializeStoreFromServer } from './store/useAppStore'
+import { initChapterSummarizer } from './services/chapterSummaries'
 
 // Trigger store local hydration and remote synchronization asynchronously,
 // without blocking the initial render of the application shell.
 initializeStoreFromServer()
+
+// Watch for chapter edits/switches to keep chapter summaries lazily fresh.
+initChapterSummarizer()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

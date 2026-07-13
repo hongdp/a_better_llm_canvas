@@ -21,9 +21,9 @@ describe('exportDocument', () => {
     } as unknown as HTMLAnchorElement
 
     vi.spyOn(document, 'createElement').mockReturnValue(mockAnchor)
-    vi.spyOn(document.body, 'appendChild').mockImplementation(mockAppendChild as any)
-    vi.spyOn(document.body, 'removeChild').mockImplementation(mockRemoveChild as any)
-    globalThis.URL.createObjectURL = mockCreateObjectURL as any
+    vi.spyOn(document.body, 'appendChild').mockImplementation(mockAppendChild as unknown as typeof document.body.appendChild)
+    vi.spyOn(document.body, 'removeChild').mockImplementation(mockRemoveChild as unknown as typeof document.body.removeChild)
+    globalThis.URL.createObjectURL = mockCreateObjectURL as unknown as typeof URL.createObjectURL
   })
 
   afterEach(() => {

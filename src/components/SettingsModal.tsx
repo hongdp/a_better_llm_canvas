@@ -25,6 +25,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     setActiveSystemPromptId,
     debugMode,
     setDebugMode,
+    agenticLookupEnabled,
+    setAgenticLookupEnabled,
     imageAnalysisPrompt,
     setImageAnalysisPrompt
   } = useAppStore()
@@ -37,19 +39,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
   useModelFetcher(isOpen, setErrorMsg, setIsLoadingModels)
 
-  // Set the default tab to the active provider when the modal opens
-  React.useEffect(() => {
+  // Set the default tab to the active provider when the modal opens (and keep
+  // it following external active-provider changes while open). Implemented as
+  // the "adjust state during render" pattern to avoid setState-in-effect.
+  const [prevTabSync, setPrevTabSync] = React.useState<{ isOpen: boolean; provider: LLMProvider }>({ isOpen: false, provider: activeProvider })
+  if (prevTabSync.isOpen !== isOpen || prevTabSync.provider !== activeProvider) {
+    setPrevTabSync({ isOpen, provider: activeProvider })
     if (isOpen) {
       setActiveTab(activeProvider)
     }
-  }, [isOpen, activeProvider])
+  }
 
   if (!isOpen) return null
 
   const currentConfig = providerConfigs[activeTab] || providerConfigs.gemini
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model', value: string | number) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model' | 'summaryModel', value: string | number) => {
     updateProviderConfig(activeTab, { [field]: value })
   }
 
@@ -224,6 +230,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 />
               </div>
 
+              {/* Summary Utility Model Input */}
+              <div className="form-group">
+                <label htmlFor="summary-model-input">Summary Model (optional — cheap model for background chapter summaries; empty = chat model)</label>
+                <input
+                  id="summary-model-input"
+                  type="text"
+                  value={currentConfig.summaryModel || ''}
+                  onChange={(e) => handleConfigChange('summaryModel', e.target.value)}
+                  placeholder={
+                    activeTab === 'gemini' ? 'e.g. gemini-2.5-flash' :
+                    activeTab === 'openai' ? 'e.g. gpt-4o-mini' :
+                    activeTab === 'anthropic' ? 'e.g. claude-haiku-4-5-20251001' :
+                    activeTab === 'grok' ? 'e.g. grok-3' :
+                    'e.g. llama3'
+                  }
+                  className="form-input"
+                />
+              </div>
+
               {/* Max Output Tokens Input */}
               <div className="form-group">
                 <label htmlFor="max-tokens-input">Max Output Tokens (up to 65536)</label>
@@ -265,6 +290,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   }}
                 >
                   Enable Debug Mode (logs request/response in console)
+                </label>
+              </div>
+
+              {/* Agentic Chapter Lookup Checkbox */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
+                <input
+                  id="agentic-lookup-checkbox"
+                  type="checkbox"
+                  checked={agenticLookupEnabled}
+                  onChange={(e) => setAgenticLookupEnabled(e.target.checked)}
+                  style={{
+                    width: '16px',
+                    height: '16px',
+                    accentColor: 'var(--accent)',
+                    cursor: 'pointer'
+                  }}
+                />
+                <label
+                  htmlFor="agentic-lookup-checkbox"
+                  style={{
+                    fontSize: '0.85rem',
+                    fontWeight: 600,
+                    color: 'var(--text-secondary)',
+                    cursor: 'pointer',
+                    userSelect: 'none'
+                  }}
+                >
+                  Agentic chapter lookup (the assistant may fetch other chapters mid-request)
                 </label>
               </div>
 
