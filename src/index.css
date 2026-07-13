@@ -602,6 +602,16 @@ body {
   flex-shrink: 0;
 }
 
+.canvas-footer .footer-stats {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  /* Single row by design: the footer's height is fixed, so wrapped rows
+     would be clipped invisibly. Narrow layouts scroll horizontally. */
+  white-space: nowrap;
+  min-width: 0;
+}
+
 /* Dropdowns & Modals */
 .select-styled {
   background-color: var(--bg-tertiary);
@@ -1430,6 +1440,13 @@ del.diff-deletion:hover {
   font-size: 0.7rem;
   overflow-x: auto;
   white-space: nowrap;
+}
+
+/* Phones: keep the word count and token stats; drop secondary items
+   (storage, active chapter — the chapter is already shown in the header). */
+.layout-portrait .footer-secondary,
+.layout-landscape .footer-secondary {
+  display: none;
 }
 
 .layout-portrait .chat-input-container {

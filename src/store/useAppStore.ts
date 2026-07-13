@@ -1245,8 +1245,11 @@ export const useAppStore = create<AppState>((set) => {
     sessionCacheHitTokens: 0,
     sessionCacheMissTokens: 0,
     addSessionTokens: (input, output, cacheHit = 0) => set((state) => {
-      const hit = cacheHit
-      const miss = input - hit
+      // Clamp defensively: providers report input/cached tokens in different
+      // shapes, and a mis-mapped extractor must never corrupt the counters
+      // with a negative miss.
+      const hit = Math.min(cacheHit, input)
+      const miss = Math.max(0, input - hit)
       return {
         sessionInputTokens: state.sessionInputTokens + input,
         sessionOutputTokens: state.sessionOutputTokens + output,

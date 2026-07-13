@@ -514,15 +514,26 @@ async function readSSEStream(
         }
       }
       
-      // Parse Anthropic usage
+      // Parse Anthropic usage.
+      // Problem: session cache stats showed near-zero hits and negative
+      //   misses on Anthropic.
+      // Root cause: Anthropic's `input_tokens` EXCLUDES cached tokens —
+      //   cache_read/cache_creation are separate fields — so using it as the
+      //   total undercounted input, and `miss = input - hit` went negative
+      //   whenever the cache worked. Also `message_delta.usage.output_tokens`
+      //   is CUMULATIVE, so `+=` double-counted output.
+      // Fix: total input = input_tokens + cache_creation + cache_read;
+      //   treat message_delta's output as the authoritative running total.
       if (parsed.type === 'message_start' && parsed.message?.usage) {
         const u = parsed.message.usage
-        anthropicInputTokens = u.input_tokens || 0
-        anthropicOutputTokens += u.output_tokens || 0
+        anthropicInputTokens =
+          (u.input_tokens || 0) +
+          (u.cache_creation_input_tokens || 0) +
+          (u.cache_read_input_tokens || 0)
+        anthropicOutputTokens = u.output_tokens || 0
         anthropicCachedPromptTokens = u.cache_read_input_tokens || 0
-      } else if (parsed.type === 'message_delta' && parsed.usage) {
-        const u = parsed.usage
-        anthropicOutputTokens += u.output_tokens || 0
+      } else if (parsed.type === 'message_delta' && parsed.usage?.output_tokens) {
+        anthropicOutputTokens = parsed.usage.output_tokens
       }
     } catch {
       // Not all data payloads are standard delta jsons

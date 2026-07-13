@@ -893,20 +893,24 @@ function App() {
 
 
               <footer className="canvas-footer">
-                <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
-                  <span>Words: {countWords(activeDoc.content)}</span>
-                  <span style={{ opacity: 0.3 }}>|</span>
-                  <span>
-                    Session Tokens: In: {sessionInputTokens.toLocaleString()} 
+                {/* No flex-wrap: the footer is a fixed-height single row.
+                    Wrapped rows would be clipped vertically (this hid the
+                    word count on phones); narrow screens scroll instead and
+                    secondary stats are hidden via CSS. */}
+                <div className="footer-stats">
+                  <span className="footer-words">Words: {countWords(activeDoc.content)}</span>
+                  <span className="footer-sep" style={{ opacity: 0.3 }}>|</span>
+                  <span className="footer-tokens">
+                    Session Tokens: In: {sessionInputTokens.toLocaleString()}
                     <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
                       (Hit: {sessionCacheHitTokens.toLocaleString()} / Miss: {sessionCacheMissTokens.toLocaleString()})
-                    </span> 
+                    </span>
                     / Out: {sessionOutputTokens.toLocaleString()}
                   </span>
-                  <span style={{ opacity: 0.3 }}>|</span>
-                  <span>Storage: {storageSize}</span>
+                  <span className="footer-sep footer-secondary" style={{ opacity: 0.3 }}>|</span>
+                  <span className="footer-storage footer-secondary">Storage: {storageSize}</span>
                 </div>
-                <div>Active Chapter: {activeDoc.title}</div>
+                <div className="footer-chapter footer-secondary">Active Chapter: {activeDoc.title}</div>
               </footer>
             </div>
 
