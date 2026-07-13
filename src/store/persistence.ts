@@ -103,7 +103,7 @@ export const db = {
   }
 }
 
-export const safeIndexedDBSet = (key: string, value: any): void => {
+export const safeIndexedDBSet = (key: string, value: unknown): void => {
   db.set(key, value).catch(err => {
     console.error(`[IndexedDB] safeIndexedDBSet failed for key "${key}":`, err)
   })

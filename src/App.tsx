@@ -189,7 +189,7 @@ function App() {
         if (res.ok) {
           const books = await res.json()
           
-          const currentBook = books.find((b: any) => b.id === state.activeBookId)
+          const currentBook = (books as Array<{ id: string; updatedAt?: string }>).find(b => b.id === state.activeBookId)
           if (currentBook) {
             const serverUpdatedAt = currentBook.updatedAt
             const localLastSyncedAt = state.lastSyncedAt

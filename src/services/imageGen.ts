@@ -127,7 +127,7 @@ async function generateWithOpenAI(prompt: string, config: ImageGenConfig): Promi
   const sizeKey = `${w}x${h}`
   const size = sizeMap[sizeKey] || '1024x1024'
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model,
     prompt,
     n: 1,
@@ -171,7 +171,7 @@ async function generateWithGrok(prompt: string, config: ImageGenConfig): Promise
   const model = config.model || 'grok-2-image'
   const baseUrl = config.baseUrl || 'https://api.x.ai/v1'
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model,
     prompt,
     n: 1,
@@ -232,7 +232,7 @@ async function generateWithGemini(prompt: string, config: ImageGenConfig): Promi
   const model = config.model || 'imagen-3.0-generate-001'
   const baseUrl = config.baseUrl || 'https://generativelanguage.googleapis.com/v1beta'
 
-  const body: Record<string, any> = {
+  const body: { instances: Array<{ prompt: string }>; parameters: { sampleCount: number; aspectRatio?: string } } = {
     instances: [{ prompt }],
     parameters: { sampleCount: 1 },
   }

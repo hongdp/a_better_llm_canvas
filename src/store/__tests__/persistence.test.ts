@@ -81,7 +81,7 @@ describe('localStorage wrapper', () => {
 
     // Temporarily patch setItem on the polyfill to throw QuotaExceededError
     const originalSetItem = window.localStorage.setItem
-    window.localStorage.setItem = (_key: string, _value: string) => {
+    window.localStorage.setItem = () => {
       const err = new DOMException('QuotaExceededError')
       Object.defineProperty(err, 'name', { value: 'QuotaExceededError' })
       Object.defineProperty(err, 'code', { value: 22 })

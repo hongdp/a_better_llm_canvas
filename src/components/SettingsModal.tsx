@@ -39,12 +39,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
   useModelFetcher(isOpen, setErrorMsg, setIsLoadingModels)
 
-  // Set the default tab to the active provider when the modal opens
-  React.useEffect(() => {
+  // Set the default tab to the active provider when the modal opens (and keep
+  // it following external active-provider changes while open). Implemented as
+  // the "adjust state during render" pattern to avoid setState-in-effect.
+  const [prevTabSync, setPrevTabSync] = React.useState<{ isOpen: boolean; provider: LLMProvider }>({ isOpen: false, provider: activeProvider })
+  if (prevTabSync.isOpen !== isOpen || prevTabSync.provider !== activeProvider) {
+    setPrevTabSync({ isOpen, provider: activeProvider })
     if (isOpen) {
       setActiveTab(activeProvider)
     }
-  }, [isOpen, activeProvider])
+  }
 
   if (!isOpen) return null
 

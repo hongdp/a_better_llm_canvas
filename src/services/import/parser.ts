@@ -127,7 +127,7 @@ export const parseHtmlToScrapedData = async (htmlText: string, filename: string)
           } else if (!src.startsWith('data:') && !src.startsWith('http://') && !src.startsWith('https://') && baseHref) {
             try {
               resolvedSrc = new URL(src, baseHref).toString()
-            } catch (e) { }
+            } catch { /* keep the original src if URL resolution fails */ }
           }
           tempImages.push({
             alt,

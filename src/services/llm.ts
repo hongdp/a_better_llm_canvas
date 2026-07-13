@@ -7,7 +7,7 @@ export type { LLMMessage, StreamCallbacks }
 /**
  * Mask sensitive credentials inside requests for safe debug logging.
  */
-function maskRequestDetails(url: string, headers: Record<string, string>, body: any) {
+function maskRequestDetails(url: string, headers: Record<string, string>, body: unknown) {
   const maskedHeaders = { ...headers }
   if (maskedHeaders['Authorization']) {
     maskedHeaders['Authorization'] = 'Bearer ***'
@@ -68,8 +68,8 @@ export async function streamLLM(
     } else {
       throw new Error(`Unsupported LLM provider: ${provider}`)
     }
-  } catch (error: any) {
-    callbacks.onError(error instanceof Error ? error : new Error(error.message || 'Unknown network error'))
+  } catch (error) {
+    callbacks.onError(error instanceof Error ? error : new Error(String(error) || 'Unknown network error'))
   }
 }
 
@@ -92,7 +92,9 @@ async function streamOpenAI(
   const url = `${config.baseUrl}/chat/completions`
   const openAIMessages = messages.map(m => {
     if (m.images && m.images.length > 0) {
-      const contentParts: any[] = [
+      const contentParts: Array<
+        { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
+      > = [
         {
           type: 'text',
           text: m.content
@@ -121,7 +123,7 @@ async function streamOpenAI(
     }
   })
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model: config.model,
     messages: openAIMessages,
     stream: true,
@@ -179,7 +181,7 @@ async function streamGemini(
   const contents = messages
     .filter((m) => m.role !== 'system')
     .map((m) => {
-      const parts: any[] = [{ text: m.content }]
+      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: m.content }]
       if (m.images && m.images.length > 0) {
         m.images.forEach((img, idx) => {
           const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
@@ -200,7 +202,7 @@ async function streamGemini(
       }
     })
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     contents,
   }
 
@@ -344,17 +346,24 @@ async function streamGemini(
 /**
  * Anthropic Claude stream handler
  */
+interface AnthropicContentPart {
+  type: string
+  text?: string
+  source?: { type: string; media_type: string; data: string }
+  cache_control?: { type: string }
+}
+
 async function streamAnthropic(
   messages: LLMMessage[],
   config: ProviderConfig & { debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
-  const anthropicMessages = messages
+  const anthropicMessages: Array<{ role: string; content: string | AnthropicContentPart[] }> = messages
     .filter((m) => m.role !== 'system')
     .map(m => {
       if (m.images && m.images.length > 0) {
-        const content: any[] = [
+        const content: AnthropicContentPart[] = [
           {
             type: 'text',
             text: m.content
@@ -388,7 +397,7 @@ async function streamAnthropic(
       }
     })
 
-  const body: Record<string, any> = {
+  const body: Record<string, unknown> = {
     model: config.model,
     messages: anthropicMessages,
     // Respect the user's configured limit as-is: modern Claude models accept
@@ -462,7 +471,7 @@ async function streamAnthropic(
       } else if (json.type === 'message_delta' && json.delta?.text) {
         callbacks.onChunk(json.delta.text)
       }
-    } catch (e) {
+    } catch {
       // Ignore parse errors on structural messages
     }
   }, callbacks, config.signal)
@@ -515,7 +524,7 @@ async function readSSEStream(
         const u = parsed.usage
         anthropicOutputTokens += u.output_tokens || 0
       }
-    } catch (e) {
+    } catch {
       // Not all data payloads are standard delta jsons
     }
   }

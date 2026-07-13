@@ -9,6 +9,7 @@ export type { DocumentVersion, CanvasDocument } from '../types/document'
 import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../types/llm'
 import type { ChatMessage, RoleplayConfig } from '../types/chat'
 import type { DocumentVersion, CanvasDocument } from '../types/document'
+import type { Editor } from '@tiptap/react'
 
 
 import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave, loadDocumentsFromIndexedDB } from './persistence'
@@ -140,8 +141,8 @@ interface AppState {
   // Selection & editor integration for inline diff review
   selectedText: string
   setSelectedText: (text: string) => void
-  activeEditor: any
-  setActiveEditor: (editor: any) => void
+  activeEditor: Editor | null
+  setActiveEditor: (editor: Editor | null) => void
 
   // Session stats & local storage tracking
   sessionInputTokens: number
@@ -315,14 +316,36 @@ const saveSystemPromptsToCookie = (prompts: SystemPromptTemplate[], activePrompt
   }
 }
 
-const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
-  let parsed: any = null
+interface SavedPromptsEnvelope {
+  version?: number
+  prompts?: SystemPromptTemplate[]
+  activePromptId?: string
+}
 
+// Minimal shapes of the document/version metadata returned by the books API
+// (content is omitted server-side and lazy-loaded on demand).
+interface ServerDocumentMeta {
+  id: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  summary?: string | null
+  summaryContentHash?: string | null
+}
+
+interface ServerVersionMeta {
+  id: string
+  documentId: string
+  title: string
+  timestamp: string
+}
+
+const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; activePromptId: string } => {
   // 1. Try loading from localStorage backup first (prioritized)
   const backup = localStorage.getItem('web_canvas_system_prompts_backup')
   if (backup) {
     try {
-      parsed = JSON.parse(backup)
+      const parsed = JSON.parse(backup) as SavedPromptsEnvelope
       if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
         return {
           prompts: parsed.prompts || DEFAULT_SYSTEM_PROMPTS,
@@ -338,7 +361,7 @@ const loadSavedSystemPromptsData = (): { prompts: SystemPromptTemplate[]; active
   const saved = getCookie('__Secure-web_canvas_system_prompts')
   if (saved) {
     try {
-      parsed = JSON.parse(saved)
+      const parsed = JSON.parse(saved) as SavedPromptsEnvelope
       // Clean up the cookie since we've migrated
       setCookie('__Secure-web_canvas_system_prompts', '', -1)
       if (parsed && typeof parsed === 'object' && parsed.version === CURRENT_PROMPTS_VERSION) {
@@ -407,19 +430,20 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
     if (!parsed || typeof parsed !== 'object' || !('version' in parsed)) {
       console.log('Migrating legacy (v0) LLM configs to v2')
       const migratedData = { ...DEFAULT_CONFIGS }
-      const rawData = parsed as any
+      const rawData = parsed as Partial<Record<LLMProvider, ProviderConfig & { systemPrompt?: string }>> | null
       let legacyPromptText = ''
       for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
-        if (rawData && rawData[p]) {
+        const rawConfig = rawData?.[p]
+        if (rawConfig) {
           migratedData[p] = {
             ...DEFAULT_CONFIGS[p],
-            ...rawData[p],
+            ...rawConfig,
           }
-          if (rawData[p].systemPrompt && !legacyPromptText) {
-            legacyPromptText = rawData[p].systemPrompt
+          if (rawConfig.systemPrompt && !legacyPromptText) {
+            legacyPromptText = rawConfig.systemPrompt
           }
           // Clean up legacy prompt field
-          delete (migratedData[p] as any).systemPrompt
+          delete (migratedData[p] as ProviderConfig & { systemPrompt?: string }).systemPrompt
         }
       }
 
@@ -440,17 +464,18 @@ const migrateProvidersConfig = (savedString: string): Record<LLMProvider, Provid
 
     // Case 2: Versioned structure
     const versioned = parsed as VersionedCookieData<Record<LLMProvider, ProviderConfig>>
-    let currentData = versioned.data
+    const currentData = versioned.data
     let version = versioned.version
 
     if (version === 1) {
       console.log('Migrating version 1 LLM configs to v2')
       let legacyPromptText = ''
       for (const p of Object.keys(DEFAULT_CONFIGS) as LLMProvider[]) {
-        if (currentData[p] && (currentData[p] as any).systemPrompt) {
-          legacyPromptText = (currentData[p] as any).systemPrompt
+        const config = currentData[p] as (ProviderConfig & { systemPrompt?: string }) | undefined
+        if (config && config.systemPrompt) {
+          legacyPromptText = config.systemPrompt
           // Clean up legacy prompt field
-          delete (currentData[p] as any).systemPrompt
+          delete config.systemPrompt
         }
       }
       if (legacyPromptText && legacyPromptText.trim()) {
@@ -1142,7 +1167,7 @@ export const useAppStore = create<AppState>((set) => {
         name,
         content
       }
-      let promptId = newPrompt.id
+      const promptId = newPrompt.id
       set((state) => {
         const updated = [...state.customSystemPrompts, newPrompt]
         saveSystemPromptsToCookie(updated, state.activeSystemPromptId)
@@ -1401,7 +1426,7 @@ export const useAppStore = create<AppState>((set) => {
             // Build document list from server metadata (content not loaded yet)
             if (server.documents) {
               const docs: CanvasDocument[] = carryOverLocalSummaries(
-                server.documents.map((d: any) => ({
+                server.documents.map((d: ServerDocumentMeta) => ({
                   id: d.id,
                   title: d.title,
                   content: '', // Content will be lazy-loaded
@@ -1418,7 +1443,7 @@ export const useAppStore = create<AppState>((set) => {
             }
             if (server.versions) {
               // Versions from new API don't include content (lazy-loaded)
-              updates.versions = server.versions.map((v: any) => ({
+              updates.versions = server.versions.map((v: ServerVersionMeta) => ({
                 id: v.id,
                 documentId: v.documentId,
                 title: v.title,
@@ -1874,12 +1899,11 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
   const performSync = async () => {
     // 2. Fetch current session status in the background
     let loggedInUser: string | null = null
-    let csrfToken: string | null = null
     try {
       const sessionRes = await fetch('/api/auth/session')
       if (sessionRes.ok) {
         const sessionData = await sessionRes.json()
-        csrfToken = sessionData.csrfToken || null
+        const csrfToken: string | null = sessionData.csrfToken || null
         useAppStore.setState({ csrfToken })
         if (sessionData.loggedIn) {
           loggedInUser = sessionData.username
@@ -1914,7 +1938,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
           // Build documents from metadata (without content — lazy-loaded)
           if (serverData.documents) {
             const docs: CanvasDocument[] = carryOverLocalSummaries(
-              serverData.documents.map((d: any) => ({
+              serverData.documents.map((d: ServerDocumentMeta) => ({
                 id: d.id,
                 title: d.title,
                 content: '', // Will be lazy-loaded for active doc
@@ -1930,7 +1954,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
             saveDocumentsToIndexedDB(docs, true)
           }
           if (serverData.versions) {
-            updates.versions = serverData.versions.map((v: any) => ({
+            updates.versions = serverData.versions.map((v: ServerVersionMeta) => ({
               id: v.id,
               documentId: v.documentId,
               title: v.title,

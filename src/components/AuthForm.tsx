@@ -66,8 +66,8 @@ export const AuthForm: React.FC = () => {
         setIsLogin(true)
         setPassword('')
       }
-    } catch (e: any) {
-      setErrorMsg(e.message || 'An error occurred during authentication.')
+    } catch (e) {
+      setErrorMsg(e instanceof Error && e.message ? e.message : 'An error occurred during authentication.')
     } finally {
       setSubmitting(false)
     }

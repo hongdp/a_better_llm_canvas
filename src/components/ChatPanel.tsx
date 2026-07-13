@@ -154,7 +154,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   // Scroll to bottom of chat
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [messages])
+  }, [messages, chatEndRef])
 
 
   return (

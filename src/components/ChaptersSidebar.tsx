@@ -35,6 +35,14 @@ export const ChaptersSidebar: React.FC = () => {
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
   const [pendingChapters, setPendingChapters] = useState<{ title: string; content: string }[]>([])
   const [localBookTitle, setLocalBookTitle] = useState(bookTitle)
+  // Keep the local editing buffer in sync with global store changes (e.g. if
+  // updated via storage) using the "adjust state during render" pattern from
+  // the React docs, which avoids a cascading setState-in-effect.
+  const [prevBookTitle, setPrevBookTitle] = useState(bookTitle)
+  if (bookTitle !== prevBookTitle) {
+    setPrevBookTitle(bookTitle)
+    setLocalBookTitle(bookTitle)
+  }
 
   const [showBookManager, setShowBookManager] = useState(false)
   const [showCreateForm, setShowCreateForm] = useState(false)
@@ -69,11 +77,6 @@ export const ChaptersSidebar: React.FC = () => {
 
   const fileInputRef = useRef<HTMLInputElement>(null)
   const replaceFileInputRef = useRef<HTMLInputElement>(null)
-
-  // Keep local state in sync with global store changes (e.g. if updated via storage)
-  React.useEffect(() => {
-    setLocalBookTitle(bookTitle)
-  }, [bookTitle])
 
   const handleDragStart = (e: React.DragEvent, index: number) => {
     setDraggedIndex(index)
@@ -152,7 +155,7 @@ export const ChaptersSidebar: React.FC = () => {
       const text = event.target?.result as string
       if (typeof text !== 'string') return
 
-      let htmlContent = ''
+      let htmlContent: string
       const extension = file.name.split('.').pop()?.toLowerCase() || ''
       const filenameWithoutExt = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
 
@@ -198,7 +201,7 @@ export const ChaptersSidebar: React.FC = () => {
       const text = event.target?.result as string
       if (typeof text !== 'string') return
 
-      let parsedChapters: { title: string; content: string }[] = []
+      let parsedChapters: { title: string; content: string }[]
       const extension = file.name.split('.').pop()?.toLowerCase() || ''
       const filenameWithoutExt = file.name.substring(0, file.name.lastIndexOf('.')) || file.name
 
@@ -212,7 +215,7 @@ export const ChaptersSidebar: React.FC = () => {
 
       // Fallback: if splitting resulted in 0 chapters, treat whole file as a single chapter
       if (parsedChapters.length === 0) {
-        let htmlContent = ''
+        let htmlContent: string
         if (['md', 'markdown'].includes(extension)) {
           htmlContent = markdownToHtml(text)
         } else if (['html', 'htm'].includes(extension)) {

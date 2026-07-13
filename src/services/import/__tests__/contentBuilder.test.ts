@@ -217,7 +217,7 @@ describe('buildChapterInterleavedContent', () => {
 
   it('only includes paragraphs within the specified range', () => {
     const data = makeData(5)
-    const result = buildChapterInterleavedContent(data, [2, 3], [])
+    const result = buildChapterInterleavedContent(data, [2, 3])
     expect(result).not.toContain('[P1]')
     expect(result).toContain('[P2]')
     expect(result).toContain('[P3]')
@@ -229,7 +229,7 @@ describe('buildChapterInterleavedContent', () => {
       3,
       [{ index: 0, alt: 'cover', position: 0, base64: 'data:image/png;base64,abc' }]
     )
-    const result = buildChapterInterleavedContent(data, [1, 2], [])
+    const result = buildChapterInterleavedContent(data, [1, 2])
     expect(result).toContain('IMG-0')
   })
 
@@ -238,13 +238,13 @@ describe('buildChapterInterleavedContent', () => {
       3,
       [{ index: 0, alt: 'cover', position: 0, base64: 'data:image/png;base64,abc' }]
     )
-    const result = buildChapterInterleavedContent(data, [2, 3], [])
+    const result = buildChapterInterleavedContent(data, [2, 3])
     expect(result).not.toContain('IMG-0')
   })
 
   it('returns empty string for an empty paragraph list', () => {
     const data = makeData(0)
-    expect(buildChapterInterleavedContent(data, [1, 5], [])).toBe('')
+    expect(buildChapterInterleavedContent(data, [1, 5])).toBe('')
   })
 })
 
