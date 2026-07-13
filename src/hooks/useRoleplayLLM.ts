@@ -228,7 +228,7 @@ export function useRoleplayLLM({
     try {
       await streamLLM(
         apiMessages,
-        { ...s.providerConfigs[s.activeProvider], provider: s.activeProvider, debug: s.debugMode, signal },
+        { ...s.providerConfigs[s.activeProvider], provider: s.activeProvider, debug: s.debugMode, signal, conversationId: s.activeBookId },
         {
           onChunk: (chunk: string) => {
             accumulatedTextRef.current += chunk

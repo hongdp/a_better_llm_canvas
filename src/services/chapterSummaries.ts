@@ -97,7 +97,7 @@ const summarizeDocument = async (docId: string): Promise<void> => {
   await new Promise<void>((resolve) => {
     streamLLM(
       messages,
-      { ...config, provider: s.activeProvider, debug: s.debugMode },
+      { ...config, provider: s.activeProvider, debug: s.debugMode, conversationId: s.activeBookId },
       {
         onChunk: () => {},
         onDone: (fullText) => {

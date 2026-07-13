@@ -28,7 +28,7 @@ function maskRequestDetails(url: string, headers: Record<string, string>, body: 
  */
 export async function streamLLM(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string; debug?: boolean; signal?: AbortSignal },
+  config: ProviderConfig & { provider: string; debug?: boolean; signal?: AbortSignal; conversationId?: string },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const { provider, apiKey, debug } = config
@@ -78,7 +78,7 @@ export async function streamLLM(
  */
 async function streamOpenAI(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider?: string; debug?: boolean; signal?: AbortSignal },
+  config: ProviderConfig & { provider?: string; debug?: boolean; signal?: AbortSignal; conversationId?: string },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const headers: Record<string, string> = {
@@ -87,6 +87,12 @@ async function streamOpenAI(
 
   if (config.apiKey && config.apiKey !== 'ollama-no-key') {
     headers['Authorization'] = `Bearer ${config.apiKey}`
+  }
+
+  // xAI routes requests with the same conversation id to the same cache
+  // shard, which maximizes automatic prompt-cache hits across turns.
+  if (config.provider === 'grok' && config.conversationId) {
+    headers['x-grok-conv-id'] = config.conversationId
   }
 
   const url = `${config.baseUrl}/chat/completions`
