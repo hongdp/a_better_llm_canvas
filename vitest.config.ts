@@ -9,7 +9,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      include: ['src/utils/**', 'src/services/import/**', 'src/store/persistence.ts']
+      include: ['src/utils/**', 'src/services/import/**', 'src/store/persistence.ts', 'src/store/contentLoader.ts']
     }
   }
 })

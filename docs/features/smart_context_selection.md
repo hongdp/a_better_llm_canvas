@@ -419,6 +419,15 @@ The v1 deviations originally listed here have been closed:
 - **Sidebar summary controls**: per-chapter regenerate (✨, amber when
   stale; force-bypasses the staleness check) and a header "summarize all
   stale chapters" action.
+- **Lazy-loaded (server) chapters attach correctly.** Server books load
+  chapter metadata only (`contentLoaded: false`); the scorer's `attachable()`
+  drops empty docs, which originally made pinning an unopened chapter a
+  silent no-op — and whole-book / Layer 2 lookup silently skipped unopened
+  chapters too. The store's `ensureDocumentContents(ids)` (backed by
+  `store/contentLoader.ts`, tested: dedup of concurrent fetches, tolerant of
+  failures) now fetches missing content eagerly on pin, before Layer 1
+  selection at send time, before whole-book planning, and per lookup round —
+  fulfilling the "Layer 2 can fetch them later" degrade path.
 
 Remaining known limitations:
 

@@ -13,6 +13,7 @@ import type { Editor } from '@tiptap/react'
 
 
 import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave, loadDocumentsFromIndexedDB } from './persistence'
+import { idsNeedingContent, loadDocumentContents } from './contentLoader'
 
 if (typeof window !== 'undefined') {
   window.addEventListener('beforeunload', () => {
@@ -84,6 +85,14 @@ interface AppState {
   /** Cycle a chapter's manual reference state: neutral → pinned → blocked → neutral. */
   cycleReferenceState: (id: string) => void
   clearReferences: () => void
+  /**
+   * Ensure the given documents' content is loaded (server books lazy-load
+   * metadata-only chapters). Resolves once every needed fetch settles; a
+   * failed doc stays unloaded and degrades to its index line. Callers that
+   * attach chapter content (pins, whole-book, Layer 2 lookup) MUST await this
+   * first, or unopened chapters are silently dropped by the selector.
+   */
+  ensureDocumentContents: (ids: string[]) => Promise<void>
   toggleSidebar: () => void
 
   // Version history state
@@ -730,24 +739,25 @@ export const useAppStore = create<AppState>((set) => {
       })
 
       // Lazy-load document content from server if not yet loaded
+      void useAppStore.getState().ensureDocumentContents([id])
+    },
+
+    ensureDocumentContents: async (ids) => {
       const state = useAppStore.getState()
-      const doc = state.documents.find((d) => d.id === id)
-      if (doc && !doc.contentLoaded && state.user && state.activeBookId) {
-        fetch(`/api/books/${state.activeBookId}/documents/${id}`)
-          .then(res => res.ok ? res.json() : null)
-          .then(data => {
-            if (data && data.content !== undefined) {
-              useAppStore.setState((s) => ({
-                documents: s.documents.map(d =>
-                  d.id === id ? { ...d, content: data.content, contentLoaded: true } : d
-                )
-              }))
-              // Update local cache
-              saveDocumentsToIndexedDB(useAppStore.getState().documents, true)
-            }
-          })
-          .catch(e => console.error('Failed to lazy-load document content', e))
-      }
+      if (!state.user || !state.activeBookId) return
+      const needed = idsNeedingContent(ids, state.documents)
+      if (needed.length === 0) return
+      await loadDocumentContents(state.activeBookId, needed, {
+        onLoaded: (id, content) => {
+          useAppStore.setState((s) => ({
+            documents: s.documents.map(d =>
+              d.id === id ? { ...d, content, contentLoaded: true } : d
+            )
+          }))
+          // Update local cache
+          saveDocumentsToIndexedDB(useAppStore.getState().documents, true)
+        }
+      })
     },
 
     addDocument: (title = 'New Chapter', content = '<p>Start writing...</p>') => {
@@ -986,6 +996,12 @@ export const useAppStore = create<AppState>((set) => {
           documents: updatedDocs
         }
       })
+      // Eagerly load a newly pinned chapter that only has server metadata so
+      // the tag-bar preview/budget is accurate and send time doesn't wait.
+      const after = useAppStore.getState()
+      if (after.pinnedReferenceIds.includes(id)) {
+        void after.ensureDocumentContents([id])
+      }
     },
 
     clearReferences: () => {
