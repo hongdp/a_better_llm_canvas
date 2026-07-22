@@ -115,7 +115,10 @@ const docCost = (doc: SelectableDoc, perDocChars: number): number =>
  * - Blocked docs never auto-attach.
  * - Docs whose content isn't loaded yet (server lazy-loading) or is empty
  *   are never attached — there is nothing to send; their index line still
- *   gives the model awareness and Layer 2 can fetch them later.
+ *   gives the model awareness. Callers that need a doc's content attached
+ *   (pins at send time, whole-book, Layer 2 lookup) must await the store's
+ *   ensureDocumentContents() BEFORE calling this, or the doc is silently
+ *   dropped here (this scorer is sync and cannot fetch).
  * - A wrong selection degrades to the chapter's index line, never to nothing.
  */
 export function selectReferenceChapters(

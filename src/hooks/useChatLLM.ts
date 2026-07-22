@@ -7,6 +7,7 @@ import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCa
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
+import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 
@@ -120,7 +121,7 @@ export function useChatLLM({
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
   const selectionEndRef = useRef<number | null>(null)
   const originalSelectedTextRef = useRef<string>('')
-  const imagePlaceholdersRef = useRef<{ placeholder: string; tag: string }[]>([])
+  const imagePlaceholdersRef = useRef<ImagePlaceholderEntry[]>([])
   // Chapters attached on the previous turn — feeds the scorer's continuity
   // signal so a chapter under discussion isn't dropped mid-conversation.
   const previousAttachedIdsRef = useRef<string[]>([])
@@ -136,31 +137,15 @@ export function useChatLLM({
   // intermediate previews is safe.
   const lastSelectionPreviewRef = useRef(0)
 
-  // Simple image preservation during LLM streaming
+  // Image preservation during LLM streaming: swap base64 <img> tags for
+  // small tokens before sending, restore them (tolerantly) on the way back.
+  // Pure logic lives in utils/imagePreservation; the registry is per-request.
   const preserveImagesWithPlaceholders = useCallback((html: string) => {
-    let replacedHtml = html
-    const imgRegex = /<img[^>]+>/g
-    const matches = html.match(imgRegex)
-    if (matches) {
-      matches.forEach((match) => {
-        let existing = imagePlaceholdersRef.current.find(item => item.tag === match)
-        if (!existing) {
-          const placeholder = `{{IMAGE_PLACEHOLDER_${imagePlaceholdersRef.current.length}}}`
-          existing = { placeholder, tag: match }
-          imagePlaceholdersRef.current.push(existing)
-        }
-        replacedHtml = replacedHtml.replace(match, existing.placeholder)
-      })
-    }
-    return replacedHtml
+    return replaceImagesWithPlaceholders(html, imagePlaceholdersRef.current)
   }, [])
 
   const restoreImagesFromPlaceholders = useCallback((html: string) => {
-    let restored = html
-    imagePlaceholdersRef.current.forEach(item => {
-      restored = restored.replace(new RegExp(item.placeholder, 'g'), item.tag)
-    })
-    return restored
+    return restoreImagePlaceholders(html, imagePlaceholdersRef.current)
   }, [])
 
   // Build the system prompt: a static instruction block (kept stable so
@@ -201,6 +186,7 @@ CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
 8. Any text outside of the tags will be displayed as a normal chat message to the user.
 9. Do NOT use markdown inside any tag. Use ONLY HTML.
 10. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, prefer <edit> for targeted changes, and <canvas> for full rewrites.
+11. IMAGE TOKENS: The document content may contain tokens like {{IMAGE_PLACEHOLDER_0}} — each one stands for an image embedded in the document. When rewriting with <canvas> (or in <edit>/<selection_replace> output that covers one), you MUST copy every image token EXACTLY as-is, keeping it at its position in the text. Never drop, renumber, reformat, or convert these tokens into <img> tags. Only omit a token if the user explicitly asks to remove that image.
 
 EXAMPLES:
 
@@ -548,71 +534,79 @@ ${cleanActiveContent}
             if (lookupCtx) {
               const lookup = parseLookupRequest(fullText)
               if (lookup) {
-                const sNow = useAppStore.getState()
-                const requestedIds = lookup.wantsAll
-                  ? sNow.documents.filter(d => d.id !== sNow.activeDocumentId).map(d => d.id)
-                  : resolveLookupTitles(lookup.titles, sNow.documents, sNow.activeDocumentId)
-                const newIds = requestedIds
-                  .filter(id => !lookupCtx.attachedIds.includes(id))
-                  .filter(id => {
-                    const d = sNow.documents.find(doc => doc.id === id)
-                    return d !== undefined && d.contentLoaded !== false && d.content.length > 0
-                  })
-                  .slice(0, MAX_LOOKUP_CHAPTERS_PER_ROUND)
+                // Async continuation: requested chapters may exist only as
+                // server metadata (lazy loading) — fetch their content first,
+                // THIS is the "Layer 2 can fetch them later" the selector's
+                // degrade path relies on. ensureDocumentContents never throws.
+                void (async () => {
+                  const sPre = useAppStore.getState()
+                  const requestedIds = lookup.wantsAll
+                    ? sPre.documents.filter(d => d.id !== sPre.activeDocumentId).map(d => d.id)
+                    : resolveLookupTitles(lookup.titles, sPre.documents, sPre.activeDocumentId)
+                  await sPre.ensureDocumentContents(requestedIds)
+                  const sNow = useAppStore.getState()
+                  const newIds = requestedIds
+                    .filter(id => !lookupCtx.attachedIds.includes(id))
+                    .filter(id => {
+                      const d = sNow.documents.find(doc => doc.id === id)
+                      return d !== undefined && d.contentLoaded !== false && d.content.length > 0
+                    })
+                    .slice(0, MAX_LOOKUP_CHAPTERS_PER_ROUND)
 
-                const canContinue = lookupCtx.round < MAX_LOOKUP_ROUNDS && newIds.length > 0
-                const combinedIds = canContinue ? [...lookupCtx.attachedIds, ...newIds] : lookupCtx.attachedIds
-                const newAutoIds = canContinue ? [...lookupCtx.autoIds, ...newIds] : lookupCtx.autoIds
+                  const canContinue = lookupCtx.round < MAX_LOOKUP_ROUNDS && newIds.length > 0
+                  const combinedIds = canContinue ? [...lookupCtx.attachedIds, ...newIds] : lookupCtx.attachedIds
+                  const newAutoIds = canContinue ? [...lookupCtx.autoIds, ...newIds] : lookupCtx.autoIds
 
-                // Status bubble (UI-only; stripChatDisplayArtifacts removes
-                // the 📖 line if an abort strands it in history).
-                const lookedUpTitles = newIds
-                  .map(id => sNow.documents.find(d => d.id === id)?.title)
-                  .filter(Boolean)
-                  .join(', ')
-                const statusText = canContinue
-                  ? `📖 Reading ${lookedUpTitles}…`
-                  : '📖 Retrying with the already-available context…'
-                s.setMessages(useAppStore.getState().messages.map(m =>
-                  m.id === assistantMsgId ? { ...m, content: statusText } : m
-                ))
+                  // Status bubble (UI-only; stripChatDisplayArtifacts removes
+                  // the 📖 line if an abort strands it in history).
+                  const lookedUpTitles = newIds
+                    .map(id => sNow.documents.find(d => d.id === id)?.title)
+                    .filter(Boolean)
+                    .join(', ')
+                  const statusText = canContinue
+                    ? `📖 Reading ${lookedUpTitles}…`
+                    : '📖 Retrying with the already-available context…'
+                  s.setMessages(useAppStore.getState().messages.map(m =>
+                    m.id === assistantMsgId ? { ...m, content: statusText } : m
+                  ))
 
-                if (sNow.debugMode) {
-                  console.log('[AgenticLookup]', {
-                    round: lookupCtx.round,
-                    requested: lookup.wantsAll ? '*' : lookup.titles,
-                    reason: lookup.reason,
-                    attached: newIds,
+                  if (sNow.debugMode) {
+                    console.log('[AgenticLookup]', {
+                      round: lookupCtx.round,
+                      requested: lookup.wantsAll ? '*' : lookup.titles,
+                      reason: lookup.reason,
+                      attached: newIds,
+                      canContinue
+                    })
+                  }
+
+                  accumulatedTextRef.current = ''
+                  const dynamicContext = buildDynamicContext(combinedIds)
+                  // Loop breaker: when nothing new can be attached (or rounds are
+                  // exhausted), retry once WITHOUT lookupCtx and tell the model
+                  // to answer with what it has — a further <lookup> just renders
+                  // as text instead of looping.
+                  const loopBreakNote = canContinue
+                    ? ''
+                    : '\n\n(Note: every chapter that can be provided is already included above. Answer with the available context. Do NOT emit <lookup> again.)'
+                  const finalUserMessage: LLMMessage = {
+                    role: 'user',
+                    content: `${dynamicContext}\n\nUSER REQUEST:\n${lookupCtx.promptText}${loopBreakNote}`,
+                    images: lookupCtx.images
+                  }
+                  const nextMessages = [...lookupCtx.prefixMessages, finalUserMessage]
+                  previousAttachedIdsRef.current = combinedIds
+                  void startLLMStreamingRef.current?.(
+                    nextMessages,
+                    assistantMsgId,
+                    originalDocContent,
+                    buildAttachmentsLabel(combinedIds, sNow.documents, newAutoIds),
+                    Math.ceil(JSON.stringify(nextMessages).length / 4),
                     canContinue
-                  })
-                }
-
-                accumulatedTextRef.current = ''
-                const dynamicContext = buildDynamicContext(combinedIds)
-                // Loop breaker: when nothing new can be attached (or rounds are
-                // exhausted), retry once WITHOUT lookupCtx and tell the model
-                // to answer with what it has — a further <lookup> just renders
-                // as text instead of looping.
-                const loopBreakNote = canContinue
-                  ? ''
-                  : '\n\n(Note: every chapter that can be provided is already included above. Answer with the available context. Do NOT emit <lookup> again.)'
-                const finalUserMessage: LLMMessage = {
-                  role: 'user',
-                  content: `${dynamicContext}\n\nUSER REQUEST:\n${lookupCtx.promptText}${loopBreakNote}`,
-                  images: lookupCtx.images
-                }
-                const nextMessages = [...lookupCtx.prefixMessages, finalUserMessage]
-                previousAttachedIdsRef.current = combinedIds
-                void startLLMStreamingRef.current?.(
-                  nextMessages,
-                  assistantMsgId,
-                  originalDocContent,
-                  buildAttachmentsLabel(combinedIds, sNow.documents, newAutoIds),
-                  Math.ceil(JSON.stringify(nextMessages).length / 4),
-                  canContinue
-                    ? { ...lookupCtx, attachedIds: combinedIds, autoIds: newAutoIds, round: lookupCtx.round + 1 }
-                    : undefined
-                )
+                      ? { ...lookupCtx, attachedIds: combinedIds, autoIds: newAutoIds, round: lookupCtx.round + 1 }
+                      : undefined
+                  )
+                })()
                 return
               }
             }
@@ -652,10 +646,20 @@ ${cleanActiveContent}
             // was cut off (no closing tag) or abbreviates unchanged regions
             // with placeholders, applying the diff would silently delete
             // content. Skip it, keep the original, and tell the user.
+            // Valid replacements then pass the image safety net: any image the
+            // rewrite dropped (the model lost its placeholder token) is
+            // re-inserted near its original position instead of vanishing.
             let canvasIssue: 'truncated' | 'elided' | null = null
+            let canvasDoc: string | null = null
+            let reinsertedImages = 0
             if (parsed.kind === 'canvas' && parsed.canvasText.trim()) {
               const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(parsed.canvasText))
               canvasIssue = validateCanvasReplacement(candidate, parsed.canvasClosed)
+              if (!canvasIssue) {
+                const result = reinsertMissingImages(candidate, originalDocContent)
+                canvasDoc = result.html
+                reinsertedImages = result.reinserted
+              }
             }
 
             let warningNote = canvasIssue === 'truncated'
@@ -665,6 +669,9 @@ ${cleanActiveContent}
               : ''
             if (editFailedCount > 0) {
               warningNote += `\n\n⚠️ ${editFailedCount} suggested change${editFailedCount > 1 ? 's' : ''} could not be located in the current document and ${editFailedCount > 1 ? 'were' : 'was'} skipped. The text to change may have moved or differ from what was matched.`
+            }
+            if (reinsertedImages > 0) {
+              warningNote += `\n\nℹ️ ${reinsertedImages} image${reinsertedImages > 1 ? 's' : ''} missing from the rewrite ${reinsertedImages > 1 ? 'were' : 'was'} restored near ${reinsertedImages > 1 ? 'their' : 'its'} original position. Delete ${reinsertedImages > 1 ? 'them' : 'it'} manually if the removal was intended.`
             }
 
             const displayChatText = (attachmentsText
@@ -703,9 +710,8 @@ ${cleanActiveContent}
               // Apply the locally-rebuilt diff, or leave the document untouched
               // if no edit could be located.
               s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
-            } else if (parsed.kind === 'canvas' && parsed.canvasText.trim() && !canvasIssue) {
-              const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(parsed.canvasText))
-              const diffed = diffHtml(originalDocContent, restoredText)
+            } else if (parsed.kind === 'canvas' && canvasDoc !== null) {
+              const diffed = diffHtml(originalDocContent, canvasDoc)
               s.updateActiveDocument({ content: diffed })
             } else if (canvasIssue) {
               // Ensure the document is left exactly as it was before streaming.
@@ -769,8 +775,15 @@ ${cleanActiveContent}
       return null
     }
 
-    const docs = s.documents.filter(d =>
-      d.id !== s.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
+    // Whole-book explicitly asks for every chapter — fetch any content the
+    // server hasn't lazily sent yet, otherwise chapters the user never opened
+    // would be silently missing from "the whole book".
+    await s.ensureDocumentContents(
+      s.documents.filter(d => d.id !== s.activeDocumentId).map(d => d.id)
+    )
+    const loaded = useAppStore.getState()
+    const docs = loaded.documents.filter(d =>
+      d.id !== loaded.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
     )
     const totalChars = docs.reduce((sum, d) => sum + d.content.length, 0)
     const budgetChars = WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000
@@ -825,8 +838,17 @@ ${cleanActiveContent}
     estimatedInputTokens: number
     lookupCtx?: LookupLoopContext
   } | null> => {
-    const s = useAppStore.getState()
     const { promptText, images, historySource, assistantMsgId, wholeBookPlan } = opts
+
+    // Pinned chapters are an explicit user choice — make sure their content
+    // is loaded (server books lazy-load metadata-only chapters) BEFORE Layer 1
+    // selection, otherwise attachable() silently drops them and the pin is a
+    // no-op. Usually instant: pinning already triggered the eager load.
+    const pinnedAtSend = useAppStore.getState().pinnedReferenceIds
+    if (pinnedAtSend.length > 0) {
+      await useAppStore.getState().ensureDocumentContents(pinnedAtSend)
+    }
+    const s = useAppStore.getState()
 
     // Layer 1 auto-selection: pinned chapters always attach; the scorer adds
     // relevant ones (title mentions, adjacency, keyword overlap, continuity)
