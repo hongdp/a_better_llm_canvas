@@ -777,9 +777,13 @@ async def get_book(request: Request, book_id: str):
         if not book:
             return {}
 
-        # Get document list (metadata only, no content)
+        # Get document list (metadata only, no content). Every column read in
+        # the response below must be listed here — sqlite3.Row raises
+        # IndexError for an unselected column, which 500s the whole endpoint
+        # (this is how `summary`/`summary_content_hash` broke book switching).
         docs = conn.execute(
-            "SELECT id, title, sort_order, created_at, updated_at FROM documents WHERE username = ? AND book_id = ? ORDER BY sort_order",
+            "SELECT id, title, sort_order, created_at, updated_at, summary, summary_content_hash "
+            "FROM documents WHERE username = ? AND book_id = ? ORDER BY sort_order",
             (username, safe_book_id)
         ).fetchall()
 

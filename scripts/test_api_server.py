@@ -122,3 +122,65 @@ def test_init_db_migrates_summary_columns(tmp_path):
 
         # Idempotent: running init_db again must not fail on existing columns.
         api_server.init_db()
+
+
+def test_get_book_returns_document_metadata_with_summaries(tmp_path, monkeypatch):
+    """GET /api/books/{id} must not 500 on the document metadata SELECT.
+
+    Regression: the response reads d["summary"] / d["summary_content_hash"],
+    but the SELECT listed only id/title/sort_order/created_at/updated_at.
+    sqlite3.Row raises IndexError for an unselected column, so every book
+    switch returned 500 and the UI silently refused to change books.
+    """
+    import asyncio
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    from starlette.requests import Request
+
+    monkeypatch.setattr(api_server, "DB_PATH", str(tmp_path / "metadata.db"))
+    monkeypatch.setattr(api_server, "SESSIONS_FILE", str(tmp_path / "sessions.json"))
+    api_server.init_db()
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn = api_server.get_db()
+    try:
+        conn.execute(
+            "INSERT INTO books (id, username, title, active_document_id, created_at, updated_at)"
+            " VALUES ('book-1', 'alice', 'My Book', 'doc-1', ?, ?)",
+            (now, now),
+        )
+        conn.execute(
+            "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at,"
+            " summary, summary_content_hash)"
+            " VALUES ('doc-1', 'alice', 'book-1', 'Chapter 1', 0, ?, ?, 'A short summary.', 'hash-1')",
+            (now, now),
+        )
+        # A chapter that was never summarized must still come back (NULL columns).
+        conn.execute(
+            "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at)"
+            " VALUES ('doc-2', 'alice', 'book-1', 'Chapter 2', 1, ?, ?)",
+            (now, now),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    with open(api_server.SESSIONS_FILE, "w", encoding="utf-8") as f:
+        _json.dump({"sess-1": {"username": "alice", "expiresAt": expires}}, f)
+
+    request = Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/api/books/book-1",
+        "headers": [(b"cookie", b"web_canvas_session=sess-1")],
+        "query_string": b"",
+    })
+
+    result = asyncio.run(api_server.get_book(request, "book-1"))
+
+    assert result["bookTitle"] == "My Book"
+    assert [d["id"] for d in result["documents"]] == ["doc-1", "doc-2"]
+    assert result["documents"][0]["summary"] == "A short summary."
+    assert result["documents"][0]["summaryContentHash"] == "hash-1"
+    assert result["documents"][1]["summary"] is None
