@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -517,5 +517,105 @@ describe('looksLikeUnfulfilledDocumentUpdate', () => {
   it('does not flag an empty response', () => {
     expect(looksLikeUnfulfilledDocumentUpdate('')).toBe(false)
     expect(looksLikeUnfulfilledDocumentUpdate('   \n ')).toBe(false)
+  })
+})
+
+describe('trimIncompleteHtmlTail', () => {
+  it('drops a partially streamed tag', () => {
+    expect(trimIncompleteHtmlTail('<p>done</p><h')).toBe('<p>done</p>')
+    expect(trimIncompleteHtmlTail('<p>done</p><h2 class="x')).toBe('<p>done</p>')
+  })
+
+  it('drops a partially streamed entity', () => {
+    expect(trimIncompleteHtmlTail('<p>a&nbs')).toBe('<p>a')
+    expect(trimIncompleteHtmlTail('<p>a&amp;b')).toBe('<p>a&amp;b')
+  })
+
+  it('keeps complete markup, including unclosed elements', () => {
+    // Unclosed <p> is fine — the DOM parser closes it; only partial tokens hurt.
+    expect(trimIncompleteHtmlTail('<p>half a sentence')).toBe('<p>half a sentence')
+    expect(trimIncompleteHtmlTail('<h1>T</h1><p>x</p>')).toBe('<h1>T</h1><p>x</p>')
+  })
+
+  it('leaves a lone & in prose alone when it is far from the end', () => {
+    expect(trimIncompleteHtmlTail('<p>Tom & Jerry went to the park today</p>'))
+      .toBe('<p>Tom & Jerry went to the park today</p>')
+  })
+
+  it('handles empty input', () => {
+    expect(trimIncompleteHtmlTail('')).toBe('')
+  })
+})
+
+describe('parseEditBlocks — terminators models actually emit', () => {
+  // Verbatim shape from a real grok-4.5 reply (2026-07-26): no ">>>>>>> REPLACE",
+  // the block just ends at </edit>. This used to parse as zero blocks, so the
+  // whole response was displayed as chat and the document never changed.
+  it('accepts </edit> as the block terminator', () => {
+    const text = [
+      '已在大纲补上「用词须台湾口语」。',
+      '<edit>',
+      '<<<<<<< SEARCH',
+      '<p>语气口语、私密。',
+      '=======',
+      '<p>语气口语、私密，大量使用台湾语助词。',
+      '</edit>'
+    ].join('\n')
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toHaveLength(1)
+    expect(r.blocks[0].search).toContain('语气口语、私密。')
+    expect(r.blocks[0].replace).toContain('台湾语助词')
+    expect(r.blocks[0].replace).not.toContain('</edit>')
+    expect(r.before).toBe('已在大纲补上「用词须台湾口语」。')
+  })
+
+  it('parses consecutive </edit>-terminated blocks', () => {
+    const block = (a: string, b: string) =>
+      `<edit>\n<<<<<<< SEARCH\n${a}\n=======\n${b}\n</edit>`
+    const r = parseEditBlocks(`${block('<p>one</p>', '<p>ONE</p>')}\n${block('<p>two</p>', '<p>TWO</p>')}`)
+    expect(r.blocks).toHaveLength(2)
+    expect(r.blocks[1].replace).toContain('<p>TWO</p>')
+  })
+
+  it('still parses the canonical >>>>>>> REPLACE form', () => {
+    const text = '<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE'
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toEqual([{ search: '<p>a</p>', replace: '<p>b</p>' }])
+  })
+
+  it('ends a terminator-less block where the next SEARCH marker begins', () => {
+    const text = [
+      '<<<<<<< SEARCH', '<p>one</p>', '=======', '<p>ONE</p>',
+      '<<<<<<< SEARCH', '<p>two</p>', '=======', '<p>TWO</p>', '>>>>>>> REPLACE'
+    ].join('\n')
+    const r = parseEditBlocks(text)
+    expect(r.blocks).toHaveLength(2)
+    expect(r.blocks[0].replace.trim()).toBe('<p>ONE</p>')
+    expect(r.blocks[1].replace.trim()).toBe('<p>TWO</p>')
+  })
+
+  it('drops a block cut off mid-REPLACE rather than applying half of it', () => {
+    const text = '<<<<<<< SEARCH\n<p>whole paragraph</p>\n=======\n<p>replacement that never fin'
+    expect(parseEditBlocks(text).blocks).toHaveLength(0)
+  })
+
+  it('keeps chat text on both sides of the edit region', () => {
+    const text = 'Here you go.\n<edit>\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n</edit>\nAnything else?'
+    const r = parseEditBlocks(text)
+    expect(r.before).toBe('Here you go.')
+    expect(r.after).toBe('Anything else?')
+  })
+})
+
+describe('looksLikeUnfulfilledDocumentUpdate — unparsed edit markup', () => {
+  it('flags a long reply that carries edit markers nothing could parse', () => {
+    const text = '已在大纲补上要求。\n<edit>\n<<<<<<< SEARCH\n<p>原句</p>\n' + '补充说明。'.repeat(60)
+    expect(text.length).toBeGreaterThan(200)   // would pass the "short reply" gate
+    expect(looksLikeUnfulfilledDocumentUpdate(text)).toBe(true)
+  })
+
+  it('still ignores prose that merely mentions editing', () => {
+    const text = '我建议你把第二章的对话改得更口语一些，' .repeat(15)
+    expect(looksLikeUnfulfilledDocumentUpdate(text)).toBe(false)
   })
 })
