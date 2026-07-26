@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION } from '../persistence'
+import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, loadWholeBookMode, saveWholeBookMode } from '../persistence'
 import type { CanvasDocument } from '../../types/document'
 
 // ── getCookie ─────────────────────────────────────────────────────────────────
@@ -172,5 +172,36 @@ describe('migrateDocumentsPayload', () => {
     const v2Doc: CanvasDocument = { ...legacyDoc, pinnedReferenceIds: ['a'], blockedReferenceIds: ['b'] }
     const result = migrateDocumentsPayload({ version: DOCUMENTS_ENVELOPE_VERSION, data: [v2Doc] })
     expect(result).toEqual([v2Doc])
+  })
+})
+
+// ── whole-book mode ───────────────────────────────────────────────────────────
+describe('whole-book mode persistence', () => {
+  beforeEach(() => {
+    ls.removeItem('web_canvas_whole_book_mode')
+  })
+
+  it('restores sticky — a standing choice survives a reload', () => {
+    saveWholeBookMode('sticky')
+    expect(ls.getItem('web_canvas_whole_book_mode')).toBe('sticky')
+    expect(loadWholeBookMode()).toBe('sticky')
+  })
+
+  it('never restores once — it is consumed by the next send', () => {
+    saveWholeBookMode('once')
+    expect(loadWholeBookMode()).toBe('off')
+  })
+
+  it('clears the stored preference when switched off', () => {
+    saveWholeBookMode('sticky')
+    saveWholeBookMode('off')
+    expect(ls.getItem('web_canvas_whole_book_mode')).toBeNull()
+    expect(loadWholeBookMode()).toBe('off')
+  })
+
+  it('defaults to off with nothing (or junk) stored', () => {
+    expect(loadWholeBookMode()).toBe('off')
+    ls.setItem('web_canvas_whole_book_mode', 'STICKY')
+    expect(loadWholeBookMode()).toBe('off')
   })
 })

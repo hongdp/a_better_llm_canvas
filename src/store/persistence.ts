@@ -237,3 +237,28 @@ export const clearCookie = (name: string) => {
     document.cookie = `${name}=; path=/; max-age=0`
   }
 }
+
+// ── Whole-book mode ───────────────────────────────────────────────────────────
+/** Whole-book context mode: off, one-shot, or sticky across turns. */
+export type WholeBookMode = 'off' | 'once' | 'sticky'
+
+const WHOLE_BOOK_MODE_KEY = 'web_canvas_whole_book_mode'
+
+/**
+ * Restore the whole-book mode chosen in a previous session.
+ *
+ * Only `sticky` survives a reload: it is an explicit standing choice ("keep
+ * sending the whole book"), whereas `once` is consumed by the very next send
+ * and would be a surprise if it came back. Anything unrecognized reads as off.
+ */
+export const loadWholeBookMode = (): WholeBookMode =>
+  localStorage.getItem(WHOLE_BOOK_MODE_KEY) === 'sticky' ? 'sticky' : 'off'
+
+/** Persist `sticky`; any other mode clears the stored preference. */
+export const saveWholeBookMode = (mode: WholeBookMode) => {
+  if (mode === 'sticky') {
+    localStorage.setItem(WHOLE_BOOK_MODE_KEY, 'sticky')
+  } else {
+    localStorage.removeItem(WHOLE_BOOK_MODE_KEY)
+  }
+}
