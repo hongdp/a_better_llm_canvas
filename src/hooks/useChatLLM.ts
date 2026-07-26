@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
@@ -25,10 +25,13 @@ const MAX_REFERENCE_DOC_CHARS = 20_000
 // user request may trigger, and how many chapters each round may attach.
 const MAX_LOOKUP_ROUNDS = 2
 const MAX_LOOKUP_CHAPTERS_PER_ROUND = 3
-// One recovery round per turn when the model answers a write request without
-// any action tag (nothing reaches the document). Bounded at 1: a second retry
-// mostly repeats the first, and every round costs a full request.
-const MAX_NO_ACTION_RETRIES = 1
+// Recovery rounds per turn when the model answers a write request without any
+// action tag (nothing reaches the document). Measured against grok-4.5 on a
+// real chapter-rewrite request (n=8, 2026-07-25): 0 retries → 2/8 turns
+// produced content, 1 → 4/8, 2 → 7/8, 3 → 8/8. Failures are independent
+// re-rolls, not a stuck state, and a failed round costs ~25 output tokens, so
+// three is the point where the curve flattens.
+const MAX_NO_ACTION_RETRIES = 3
 const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <canvas>, <edit> or <selection_replace> tag, so NOTHING was written to the document — the user saw only your message.
 
 Redo this turn:
@@ -146,6 +149,29 @@ export function useChatLLM({
   // paragraphs. onDone always applies the final result, so coalescing the
   // intermediate previews is safe.
   const lastSelectionPreviewRef = useRef(0)
+  // Live <canvas> preview: streamed document text is rendered into the editor
+  // as it arrives (measured: ~17s to first token, then ~70s of generation for
+  // a chapter rewrite — without this the user watches a frozen document for
+  // the whole minute). Throttled harder than the selection preview because
+  // each tick re-parses the WHOLE growing document, not a small slice.
+  const CANVAS_PREVIEW_THROTTLE_MS = 250
+  const lastCanvasPreviewRef = useRef(0)
+  // True once a live preview has written to the editor: every terminal path
+  // (done / truncated / error / abort / retry) MUST then converge the editor
+  // explicitly. The store may still hold the pre-stream HTML, in which case
+  // Editor.tsx's content-prop effect sees no change and would leave the
+  // half-streamed draft on screen.
+  const canvasPreviewActiveRef = useRef(false)
+
+  /** Force the editor back to `html` after a live preview, without polluting undo. */
+  const settleCanvasPreview = useCallback((html: string) => {
+    if (!canvasPreviewActiveRef.current) return
+    canvasPreviewActiveRef.current = false
+    lastCanvasPreviewRef.current = 0
+    if (activeEditor && activeEditor.getHTML() !== html) {
+      activeEditor.chain().setMeta('addToHistory', false).setContent(html, { emitUpdate: false }).run()
+    }
+  }, [activeEditor])
 
   // Image preservation during LLM streaming: swap base64 <img> tags for
   // small tokens before sending, restore them (tolerantly) on the way back.
@@ -461,6 +487,20 @@ ${cleanActiveContent}
               }
             } else if (canvasText.trim()) {
               setSaveStatus('unsaved')
+              // Stream the document into the editor. The store is deliberately
+              // NOT updated here: it would churn persistence every tick and
+              // fight Editor.tsx's content-prop sync. onDone/onError own the
+              // final state (see settleCanvasPreview).
+              const now = Date.now()
+              if (activeEditor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
+                lastCanvasPreviewRef.current = now
+                canvasPreviewActiveRef.current = true
+                const partial = restoreImagesFromPlaceholders(trimIncompleteHtmlTail(canvasText))
+                activeEditor.chain()
+                  .setMeta('addToHistory', false)
+                  .setContent(partial, { emitUpdate: false })
+                  .run()
+              }
             }
           },
           onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
@@ -531,6 +571,7 @@ ${cleanActiveContent}
                   }
 
                   accumulatedTextRef.current = ''
+                  settleCanvasPreview(originalDocContent)
                   const dynamicContext = buildDynamicContext(combinedIds)
                   // Loop breaker: when nothing new can be attached (or rounds are
                   // exhausted), retry once WITHOUT lookupCtx and tell the model
@@ -577,9 +618,10 @@ ${cleanActiveContent}
               parsed.kind === 'chat' &&
               looksLikeUnfulfilledDocumentUpdate(fullText)
             ) {
+              settleCanvasPreview(originalDocContent)
               s.setMessages(useAppStore.getState().messages.map(m =>
                 m.id === assistantMsgId
-                  ? { ...m, content: '🔁 That reply contained no document update — retrying…' }
+                  ? { ...m, content: `🔁 That reply contained no document update — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
                   : m
               ))
               accumulatedTextRef.current = ''
@@ -661,7 +703,7 @@ ${cleanActiveContent}
               parsed.kind === 'chat' &&
               looksLikeUnfulfilledDocumentUpdate(fullText)
             ) {
-              warningNote += '\n\n⚠️ The model answered without producing any document content (retried once), so your document is unchanged. Ask again — naming the chapter or section usually helps.'
+              warningNote += `\n\n⚠️ The model answered without producing any document content (retried ${MAX_NO_ACTION_RETRIES} times), so your document is unchanged. Ask again — naming the chapter or section usually helps.`
             }
             if (reinsertedImages > 0) {
               warningNote += `\n\nℹ️ ${reinsertedImages} image${reinsertedImages > 1 ? 's' : ''} missing from the rewrite ${reinsertedImages > 1 ? 'were' : 'was'} restored near ${reinsertedImages > 1 ? 'their' : 'its'} original position. Delete ${reinsertedImages > 1 ? 'them' : 'it'} manually if the removal was intended.`
@@ -710,6 +752,15 @@ ${cleanActiveContent}
               // Ensure the document is left exactly as it was before streaming.
               s.updateActiveDocument({ content: originalDocContent })
             }
+
+            // Converge the editor with whatever the store ended up holding.
+            // Required after a live preview: on the paths that keep the
+            // original HTML (truncated, elided, tag-free reply) the store value
+            // never changes, so nothing else would clear the streamed draft.
+            const settledState = useAppStore.getState()
+            settleCanvasPreview(
+              settledState.documents.find(d => d.id === settledState.activeDocumentId)?.content ?? originalDocContent
+            )
             forceSave()
           },
           onError: (err: Error) => {
@@ -717,6 +768,9 @@ ${cleanActiveContent}
             
             const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
             if (isAbort) {
+              // Stopping mid-stream discards the partial draft — the store was
+              // never updated, so the editor must be rolled back explicitly.
+              settleCanvasPreview(originalDocContent)
               forceSave()
               return
             }
@@ -737,6 +791,7 @@ ${cleanActiveContent}
               })
             )
 
+            settleCanvasPreview(originalDocContent)
             s.updateActiveDocument({ content: originalDocContent })
             forceSave()
           }
@@ -747,7 +802,7 @@ ${cleanActiveContent}
       s.setStreaming(false)
       setErrorMsg(err.message || 'Failed to initialize LLM stream.')
     }
-  }, [activeEditor, selectedText, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext])
+  }, [activeEditor, selectedText, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview])
 
   // Keep the self-reference current for lookup-loop continuation rounds.
   useEffect(() => {
