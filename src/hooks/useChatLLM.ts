@@ -3,12 +3,13 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
+import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 
 // Approximate character budget for chat history sent to the LLM. History is
@@ -24,6 +25,15 @@ const MAX_REFERENCE_DOC_CHARS = 20_000
 // user request may trigger, and how many chapters each round may attach.
 const MAX_LOOKUP_ROUNDS = 2
 const MAX_LOOKUP_CHAPTERS_PER_ROUND = 3
+// One recovery round per turn when the model answers a write request without
+// any action tag (nothing reaches the document). Bounded at 1: a second retry
+// mostly repeats the first, and every round costs a full request.
+const MAX_NO_ACTION_RETRIES = 1
+const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <canvas>, <edit> or <selection_replace> tag, so NOTHING was written to the document — the user saw only your message.
+
+Redo this turn:
+- If the request needs a document change, emit it now inside the tags, with the full content (no summaries, no "as above").
+- If it genuinely needs no document change, answer normally and say what you need from the user.`
 
 // State threaded through the agentic lookup loop so a continuation round can
 // rebuild the SAME request with more chapters attached. `prefixMessages`
@@ -128,7 +138,7 @@ export function useChatLLM({
   // Self-reference for the lookup loop: onDone re-invokes the streaming
   // engine, which can't reference its own useCallback binding directly.
   const startLLMStreamingRef = useRef<
-    ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext) => Promise<void>) | null
+    ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext, noActionRetriesLeft?: number) => Promise<void>) | null
   >(null)
   // Throttles the live selection-edit preview: re-parsing + replacing the whole
   // (growing) replacement on every streamed token is O(n²) and re-renders
@@ -151,78 +161,17 @@ export function useChatLLM({
   // Build the system prompt: a static instruction block (kept stable so
   // provider-side prompt caching works) plus the user's selected system
   // prompt preset, which only changes when they pick a different preset.
+  // Layering (protocol → lookup → preset → format reminder) lives in
+  // utils/systemPrompt so it can be tested.
   const buildSystemPrompt = useCallback((): LLMMessage => {
     const s = useAppStore.getState()
     const preset = s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)
-    const customInstructions = preset?.content?.trim()
     return {
       role: 'system',
-      content: `You are an elite creative writing assistant and document editor. You help authors write, format, rewrite, and structure their books/documents.
-
-CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
-1. ALWAYS communicate with the user normally in the chat interface. You are a helpful assistant.
-2. If the user asks you to modify the current document, you MUST apply the changes using <edit>, <selection_replace>, or <canvas> tags (chosen per the rules below).
-3. Use <selection_replace>...</selection_replace> if the user has selected specific text in the editor and wants you to rewrite, expand, or fix it. Only put the new text for the selection inside the tag. Do NOT include the surrounding text.
-4. PREFER <edit> blocks for targeted changes to specific parts of an existing document (rewriting a sentence/paragraph, fixing wording, inserting or removing a section). Emit ONLY the changed regions — never the whole document. Each change is one block in this EXACT format:
-   <edit>
-   <<<<<<< SEARCH
-   (exact HTML copied verbatim from the CURRENT ACTIVE DOCUMENT CONTENT)
-   =======
-   (the new HTML that replaces it)
-   >>>>>>> REPLACE
-   </edit>
-   - The SEARCH text MUST be copied EXACTLY, character-for-character, from the CURRENT ACTIVE DOCUMENT CONTENT: same tags (including inline tags like <strong>/<em> and their attributes), same HTML entities (&nbsp;, &amp;, ...), same punctuation and quote characters. Do NOT paraphrase, re-wrap, or "clean up" the copied HTML — any difference prevents the edit from being located.
-   - Prefer starting SEARCH at a block boundary (e.g. from the opening <p> or <h2> tag) and spanning whole blocks. Include enough surrounding context to make it unique.
-   - Emit multiple <edit> blocks for multiple separate changes.
-   - To delete content, leave the REPLACE section empty. To insert, SEARCH for an existing nearby element and REPLACE it with itself plus the new content.
-5. Use <canvas>...</canvas> ONLY for brand-new documents, full rewrites, or heavy restructuring where most of the document changes. When using <canvas>, output the ENTIRE updated document content inside the tags — never abbreviate or use placeholders like "<!-- unchanged -->".
-6. You MUST return beautifully formatted HTML inside all tags.
-   - Use <h1>, <h2>, <h3> for headings.
-   - Use <p> for paragraphs.
-   - Use <blockquote> for quotes.
-   - Use <strong>, <em> for emphasis.
-   - Use <ul>, <ol>, <li> for lists.
-7. The user will provide you with the "CURRENT ACTIVE DOCUMENT CONTENT". This is the HTML of the document they are currently working on. You must preserve existing formatting unless asked to change it.
-8. Any text outside of the tags will be displayed as a normal chat message to the user.
-9. Do NOT use markdown inside any tag. Use ONLY HTML.
-10. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, prefer <edit> for targeted changes, and <canvas> for full rewrites.
-11. IMAGE TOKENS: The document content may contain tokens like {{IMAGE_PLACEHOLDER_0}} — each one stands for an image embedded in the document. When rewriting with <canvas> (or in <edit>/<selection_replace> output that covers one), you MUST copy every image token EXACTLY as-is, keeping it at its position in the text. Never drop, renumber, reformat, or convert these tokens into <img> tags. Only omit a token if the user explicitly asks to remove that image.
-
-EXAMPLES:
-
-User: "Write a short paragraph about a cat." (empty document)
-Assistant: Sure! Here is a paragraph about a cat.
-<canvas>
-<h1>The Cat</h1>
-<p>The cat is a small, furry mammal...</p>
-</canvas>
-
-User: "Make the second paragraph more vivid." (document already has content)
-Assistant: I've made that paragraph more vivid.
-<edit>
-<<<<<<< SEARCH
-<p>The cat sat on the mat.</p>
-=======
-<p>The sleek tabby stretched lazily across the sun-warmed mat.</p>
->>>>>>> REPLACE
-</edit>
-
-User (with selection "The cat"): "Make this more descriptive."
-Assistant: I have made the description more vivid.
-<selection_replace>
-The fluffy orange tabby cat
-</selection_replace>${s.agenticLookupEnabled && s.documents.length > 1 ? `
-
-CHAPTER LOOKUP:
-The user message may include a CHAPTER INDEX listing every chapter of the book with a one-line summary. If answering well requires the FULL TEXT of chapters that are NOT included in your context, respond with ONLY this tag and nothing else:
-<lookup chapters="Chapter 3: Ashfall; Chapter 7: Return" reason="need the betrayal details for continuity"></lookup>
-- Copy chapter titles EXACTLY as they appear in CHAPTER INDEX, separated by semicolons.
-- The requested chapters will be attached and your request retried automatically.
-- Never guess or invent the content of a chapter you have not been shown; look it up instead.
-- Do NOT use <lookup> for chapters already provided in your context.` : ''}${customInstructions ? `
-
-USER'S CUSTOM WRITING INSTRUCTIONS (apply these to all content you write):
-${customInstructions}` : ''}`
+      content: buildChatSystemPrompt({
+        customInstructions: preset?.content,
+        includeChapterLookup: s.agenticLookupEnabled && s.documents.length > 1
+      })
     }
   }, [])
 
@@ -378,7 +327,8 @@ ${cleanActiveContent}
     originalDocContent: string,
     attachmentsText: string,
     estimatedInputTokens: number,
-    lookupCtx?: LookupLoopContext
+    lookupCtx?: LookupLoopContext,
+    noActionRetriesLeft: number = MAX_NO_ACTION_RETRIES
   ) => {
     const s = useAppStore.getState()
     
@@ -611,12 +561,46 @@ ${cleanActiveContent}
               }
             }
 
-            s.setStreaming(false)
-
             // Classify the completed response (pure, tested in utils/text).
             // Priority: selection_replace > localized edits > full-doc canvas.
             const parsed = parseAssistantResponse(fullText)
             const finalChatText = parsed.chatText
+
+            // Tag compliance is probabilistic (see
+            // looksLikeUnfulfilledDocumentUpdate): the model sometimes answers
+            // a write request with a one-line "done" and no tags, which used to
+            // surface as a success message over an unchanged document. Retry
+            // the turn once with the failed reply quoted back, then give up
+            // loudly rather than silently.
+            if (
+              noActionRetriesLeft > 0 &&
+              parsed.kind === 'chat' &&
+              looksLikeUnfulfilledDocumentUpdate(fullText)
+            ) {
+              s.setMessages(useAppStore.getState().messages.map(m =>
+                m.id === assistantMsgId
+                  ? { ...m, content: '🔁 That reply contained no document update — retrying…' }
+                  : m
+              ))
+              accumulatedTextRef.current = ''
+              const retryMessages: LLMMessage[] = [
+                ...apiMessages,
+                { role: 'assistant', content: fullText },
+                { role: 'user', content: NO_ACTION_RETRY_INSTRUCTION }
+              ]
+              void startLLMStreamingRef.current?.(
+                retryMessages,
+                assistantMsgId,
+                originalDocContent,
+                attachmentsText,
+                Math.ceil(JSON.stringify(retryMessages).length / 4),
+                undefined,
+                noActionRetriesLeft - 1
+              )
+              return
+            }
+
+            s.setStreaming(false)
 
             // Apply localized search/replace edits by rebuilding the full
             // document locally, then reuse the existing diff machinery.
@@ -669,6 +653,15 @@ ${cleanActiveContent}
               : ''
             if (editFailedCount > 0) {
               warningNote += `\n\n⚠️ ${editFailedCount} suggested change${editFailedCount > 1 ? 's' : ''} could not be located in the current document and ${editFailedCount > 1 ? 'were' : 'was'} skipped. The text to change may have moved or differ from what was matched.`
+            }
+            // The recovery round also came back without tags: say so instead
+            // of letting "已改好" stand over an unchanged document.
+            if (
+              noActionRetriesLeft === 0 &&
+              parsed.kind === 'chat' &&
+              looksLikeUnfulfilledDocumentUpdate(fullText)
+            ) {
+              warningNote += '\n\n⚠️ The model answered without producing any document content (retried once), so your document is unchanged. Ask again — naming the chapter or section usually helps.'
             }
             if (reinsertedImages > 0) {
               warningNote += `\n\nℹ️ ${reinsertedImages} image${reinsertedImages > 1 ? 's' : ''} missing from the rewrite ${reinsertedImages > 1 ? 'were' : 'was'} restored near ${reinsertedImages > 1 ? 'their' : 'its'} original position. Delete ${reinsertedImages > 1 ? 'them' : 'it'} manually if the removal was intended.`

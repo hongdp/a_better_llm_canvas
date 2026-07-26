@@ -92,22 +92,22 @@ export function trimHistoryForContext(
  * back to the LLM as history:
  * - Leading "[Attached Context: <title>]" lines the UI prepends to replies.
  * - Trailing "⚠️ …" status notes the client appends (canvas truncated/elided,
- *   unmatched <edit> blocks, stream errors). These are the app talking to the
+ *   unmatched <edit> blocks, stream errors, the no-document-content notice). These are the app talking to the
  *   user, not something the model said — feeding them back teaches the model
  *   to imitate them or apologize for failures it didn't emit.
- * - "📖 …" / "📚 …" status bubbles left behind when an agentic lookup or a
- *   whole-book batch pass was aborted mid-round — pure UI state, never
- *   something the model said.
+ * - "📖 …" / "📚 …" / "🔁 …" status bubbles left behind when an agentic lookup,
+ *   a whole-book batch pass, or a no-action retry was aborted mid-round — pure
+ *   UI state, never something the model said.
  * The result may be empty (e.g. a pure error message); callers rely on
  * `trimHistoryForContext` dropping empty messages.
  */
 export function stripChatDisplayArtifacts(content: string): string {
   let out = content.replace(/^(?:\[Attached Context: [^\]\n]*\]\n?)+\n*/, '')
   out = out.replace(
-    /(?:^|\n+)⚠️ (?:Error(?: during stream)?:|The response was cut off|The response abbreviated|\d+ suggested changes? could not be located)[\s\S]*$/,
+    /(?:^|\n+)⚠️ (?:Error(?: during stream)?:|The response was cut off|The response abbreviated|The model answered without|\d+ suggested changes? could not be located)[\s\S]*$/,
     ''
   )
-  out = out.replace(/^[📖📚] [^\n]*\n?/gmu, '')
+  out = out.replace(/^[📖📚🔁] [^\n]*\n?/gmu, '')
   return out.trim()
 }
 

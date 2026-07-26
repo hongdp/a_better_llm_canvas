@@ -584,3 +584,41 @@ export const convertGifToJpegIfNeeded = (dataUrl: string): Promise<string> => {
     img.src = dataUrl
   })
 }
+
+/**
+ * Detect a response that claims (or implies) a document change but produced
+ * none — the "chat says it wrote the chapter, the document is untouched"
+ * failure.
+ *
+ * Only meaningful when the response carried no action tags at all
+ * (`parseAssistantResponse(...).kind === 'chat'`); the caller checks that.
+ *
+ * Problem / Root Cause / Fix:
+ * - Problem: a write request comes back as a one-line acknowledgement with no
+ *   <canvas>/<edit>/<selection_replace> tags, so nothing reaches the editor
+ *   while the chat bubble reads like a success.
+ * - Root cause: tag compliance is probabilistic. Measured against grok-4.5
+ *   (2026-07-25, n=37 across conditions), the failure occurs with the system
+ *   prompt preset disabled and with no chat history, and the success rate for
+ *   an identical prompt drifted between 22% and 65% inside one hour — no
+ *   prompt wording moved it beyond the noise.
+ * - Fix: recover client-side instead of instructing harder. The caller retries
+ *   the turn once with a corrective instruction and, if that also comes back
+ *   empty-handed, warns the user rather than reporting success.
+ *
+ * Deliberately narrow, because a false positive costs an extra LLM call:
+ * a genuine chat answer is usually longer, and a clarifying question (the
+ * legitimate short reply) ends in a question mark.
+ */
+export function looksLikeUnfulfilledDocumentUpdate(fullText: string): boolean {
+  const text = fullText.trim()
+  if (!text) return false
+  // A short reply is the signature: real prose runs long, this failure mode
+  // is a single sentence of "done".
+  if (text.length > 200) return false
+  // A question is the model asking for direction — a valid short answer.
+  if (/[?？]\s*$/.test(text)) return false
+  // Bulleted/numbered clarification menus ("tell me: 1. genre 2. characters").
+  if (/^\s*(?:[-*•]|\d+[.)])\s/m.test(text)) return false
+  return true
+}

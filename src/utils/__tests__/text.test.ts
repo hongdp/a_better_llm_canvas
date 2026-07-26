@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -487,5 +487,35 @@ describe('parseAssistantResponse', () => {
     expect(parseAssistantResponse(both).kind).toBe('selection')
     const editsAndCanvas = '<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n<canvas><p>y</p></canvas>'
     expect(parseAssistantResponse(editsAndCanvas).kind).toBe('edits')
+  })
+})
+
+describe('looksLikeUnfulfilledDocumentUpdate', () => {
+  it('flags the bare acknowledgement that writes nothing', () => {
+    // Verbatim from the failing grok-4.5 responses (13 output tokens).
+    expect(looksLikeUnfulfilledDocumentUpdate('接上第二章的雨夜归途，第三章已写下。')).toBe(true)
+    expect(looksLikeUnfulfilledDocumentUpdate('已按大纲与第一章语气接上第二章，直接落笔。')).toBe(true)
+    expect(looksLikeUnfulfilledDocumentUpdate("I've rewritten that section for you.")).toBe(true)
+  })
+
+  it('does not flag a clarifying question', () => {
+    expect(looksLikeUnfulfilledDocumentUpdate('你想让第三章从哪里开始写？')).toBe(false)
+    expect(looksLikeUnfulfilledDocumentUpdate('Which chapter should I continue from?')).toBe(false)
+  })
+
+  it('does not flag a clarification menu', () => {
+    const menu = '先告诉我这些，我好直接开写：\n1. 题材方向\n2. 主要人物\n3. 篇幅'
+    expect(looksLikeUnfulfilledDocumentUpdate(menu)).toBe(false)
+  })
+
+  it('does not flag a substantive chat answer', () => {
+    const answer = '关于后续走向，我建议把冲突集中在三条线上。'.repeat(12)
+    expect(answer.length).toBeGreaterThan(200)
+    expect(looksLikeUnfulfilledDocumentUpdate(answer)).toBe(false)
+  })
+
+  it('does not flag an empty response', () => {
+    expect(looksLikeUnfulfilledDocumentUpdate('')).toBe(false)
+    expect(looksLikeUnfulfilledDocumentUpdate('   \n ')).toBe(false)
   })
 })

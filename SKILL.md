@@ -75,6 +75,17 @@ experience of the document over the chat experience.
   Chat history is trimmed to a character budget (most recent first), base64
   images are only re-sent for the last few messages, and read-only reference
   documents are truncated per-doc with an explicit notice (`src/utils/llmContext.ts`).
+- **Protocol compliance is probabilistic — recover, don't just instruct**: the
+  model sometimes replies with a bare acknowledgement ("已按大纲接上第二章",
+  ~13 output tokens) and no `<canvas>`/`<edit>` tags, so nothing reaches the
+  document while the chat claims success. Measured against grok-4.5
+  (2026-07-25): it happens with the preset disabled and with no chat history,
+  and the success rate for an identical prompt drifted between 22% and 65%
+  within the same hour — no prompt wording tested moved it beyond the noise
+  (history elision correlates: ~32% with stripped assistant turns vs ~71% with
+  none, but does not explain the failure). Treat tag compliance as a fallible
+  input: detect "no document action" client-side, retry once, and surface a ⚠️
+  rather than reporting success. Do not add prompt text on an n=1 result.
 - **History hygiene**: What the model sees as its own past turns must be what it
   actually said. UI-appended artifacts (`[Attached Context: …]` labels, `⚠️`
   truncation/edit-skip/stream-error notes) are stripped before messages re-enter
@@ -91,6 +102,14 @@ experience of the document over the chat experience.
   `LLMMessage.cacheHint` on the last history message). It also keeps the current
   document adjacent to the request, which improves `<edit>` SEARCH fidelity.
 - **Canvas Markup Protocol**: Restructure streaming data separating conversational response text from document updates using XML-like blocks. The LLM wraps document updates inside `<canvas>...</canvas>` blocks, which the frontend extracts to stream directly to the editor canvas while routing outer text to the chat.
+- **The format protocol is always last**: the chat system prompt is assembled in
+  a fixed order (`src/utils/systemPrompt.ts`) — protocol rules → chapter-lookup
+  protocol → the user's writing preset → `FORMAT_PROTOCOL_REMINDER`. Presets are
+  user-authored and routinely carry output-channel language ("output the prose
+  directly", "add no explanations", "avoid non-`<language>` text"); appended last
+  they outrank the protocol and the model answers in chat with no tags, which
+  silently leaves the document untouched. Anything appended after the preset must
+  keep the reminder in final position — recency is the whole mechanism.
 - **Dynamic Model Discovery**: Fetch available models dynamically via Google's ListModels API or provider configuration endpoints when the API key is set, falling back to static offline model lists if configuration is missing.
 - **Safety Self-Healing & Prompt Editor UI**: When an LLM request fails due to a safety threshold or guideline violation (e.g. 403 Safety/CSAM blocks), the app automatically triggers a self-healing retry by applying local sensitive word censorship to the user prompts. If this auto-retry fails, the system transitions to an interactive Prompt Editor UI (`status === 'prompt_edit'`), allowing users to inspect/edit the raw system/user prompts, retry manually, or save progress and exit.
 
