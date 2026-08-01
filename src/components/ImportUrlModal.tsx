@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react'
-import { Globe, X, RefreshCw, Sparkles, CheckCircle, AlertCircle, FileText } from 'lucide-react'
+import { Globe, X, RefreshCw, Sparkles, CheckCircle, AlertCircle } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM } from '../services/llm'
 import type { LLMMessage } from '../types/llm'
@@ -9,30 +9,32 @@ import { parseHtmlToScrapedData } from '../services/import/parser'
 import {
   isSafetyError,
   censorSensitiveText,
-  extractJson,
   buildInterleavedContent,
   buildChapterInterleavedContent,
   getPreviousChapterEnding,
   buildOutlineAndChapterDocs
 } from '../services/import/contentBuilder'
-
-type ImportStatus = 'idle' | 'fetching' | 'preview' | 'analyzing' | 'generating' | 'done' | 'error' | 'prompt_edit'
-
-// Error enriched with the prompt context that produced it, so the safety
-// prompt-editor UI can surface the failing prompts for a manual retry.
-interface EnrichedImportError extends Error {
-  isSafetyPromptContext?: boolean
-  phase?: number
-  chapterIndex?: number
-  systemPrompt?: LLMMessage
-  userPrompt?: LLMMessage
-}
-
-// Extract a human-readable message from an unknown caught value.
-const errorMessage = (err: unknown): string =>
-  err instanceof Error ? err.message : String(err)
-
-
+import { errorMessage } from '../services/import/errors'
+import type { EnrichedImportError } from '../services/import/errors'
+import { fetchScrapedDataFromUrl, uploadScrapedHtmlFile, readFileAsText } from '../services/import/scraper'
+import {
+  buildPhase1Prompts,
+  buildNextChapterOutline,
+  buildPhase2ChapterPrompts,
+  buildImageAnalysisPrompts
+} from '../services/import/prompts'
+import {
+  parseChapterPlanResponse,
+  parseGeneratedChapterResponse,
+  parseImageDescriptionsResponse
+} from '../services/import/responseParsers'
+import { flagUnsupportedVisionImages } from '../services/import/visionFilter'
+import type { ImportStatus } from './import/types'
+import { ImportSourceInput } from './import/ImportSourceInput'
+import { ScrapePreviewPanel } from './import/ScrapePreviewPanel'
+import { ChapterPlanPanel } from './import/ChapterPlanPanel'
+import { PromptEditorPanel } from './import/PromptEditorPanel'
+import { ImportModalFooter } from './import/ImportModalFooter'
 
 interface ImportUrlModalProps {
   isOpen: boolean
@@ -142,18 +144,6 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
     onClose()
   }
 
-  // Get CSRF token from cookie
-  const getCsrfToken = (): string => {
-    const nameEQ = 'csrf_token='
-    const ca = document.cookie.split(';')
-    for (let i = 0; i < ca.length; i++) {
-      let c = ca[i]
-      while (c.charAt(0) === ' ') c = c.substring(1, c.length)
-      if (c.indexOf(nameEQ) === 0) return decodeURIComponent(c.substring(nameEQ.length, c.length))
-    }
-    return ''
-  }
-
   // Step 1: Fetch URL content from backend
   const handleFetch = async () => {
     if (!url.trim()) return
@@ -163,36 +153,7 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
     setErrorMsg('')
 
     try {
-      const csrfToken = getCsrfToken()
-      const resp = await fetch('/api/import-url', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-csrf-token': csrfToken
-        },
-        body: JSON.stringify({ url: url.trim() })
-      })
-
-      if (!resp.ok) {
-        let errData: { detail?: string; error?: string }
-        try {
-          errData = await resp.json()
-        } catch {
-          if (resp.status === 502) {
-            errData = { detail: '后端 API 服务未启动或无法连接。请确保 Python 后端已正常运行在 3000 端口。' }
-          } else {
-            errData = { detail: resp.statusText || `HTTP ${resp.status}` }
-          }
-        }
-        throw new Error(errData.detail || errData.error || `HTTP ${resp.status}`)
-      }
-
-      let data: ScrapedData
-      try {
-        data = await resp.json()
-      } catch (e) {
-        throw new Error(`解析服务器返回的数据失败：${errorMessage(e)}`, { cause: e })
-      }
+      const data = await fetchScrapedDataFromUrl(url.trim())
 
       if (data.totalParagraphs === 0) {
         throw new Error('未能从该页面提取到任何文字内容。')
@@ -223,45 +184,11 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       // If file is large (>= 5MB), upload to backend parser to prevent browser tab crash/OOM
       if (file.size >= 5 * 1024 * 1024) {
         setProgress(`文件较大 (${(file.size / (1024 * 1024)).toFixed(1)}MB)，正在上传至服务器解析...`)
-
-        const csrfToken = getCsrfToken()
-        const resp = await fetch('/api/import-file', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'text/html',
-            'x-csrf-token': csrfToken
-          },
-          body: file // Upload the raw file directly as the request body
-        })
-
-        if (!resp.ok) {
-          let errData: { detail?: string; error?: string }
-          try {
-            errData = await resp.json()
-          } catch {
-            if (resp.status === 502) {
-              errData = { detail: '后端 API 服务未启动或无法连接。请确保 Python 后端已正常运行在 3000 端口。' }
-            } else {
-              errData = { detail: resp.statusText || `HTTP ${resp.status}` }
-            }
-          }
-          throw new Error(errData.detail || errData.error || `HTTP ${resp.status}`)
-        }
-
-        try {
-          data = await resp.json()
-        } catch (err) {
-          throw new Error(`解析服务器返回的数据失败：${errorMessage(err)}`, { cause: err })
-        }
+        data = await uploadScrapedHtmlFile(file)
       } else {
         // For small files (< 5MB), parse client-side to save bandwidth
         setProgress('正在读取本地网页文件...')
-        const text = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = (evt) => resolve(evt.target?.result as string)
-          reader.onerror = (err) => reject(err)
-          reader.readAsText(file)
-        })
+        const text = await readFileAsText(file)
 
         setProgress('正在解析网页结构...')
         data = await parseHtmlToScrapedData(text, file.name)
@@ -323,55 +250,12 @@ export const ImportUrlModal: React.FC<ImportUrlModalProps> = ({ isOpen, onClose 
       const interleavedContent = buildInterleavedContent(processedData)
       const userCustomPrompt = getUserCustomPrompt()
 
-      const systemPrompt: LLMMessage = {
-        role: 'system',
-        content: `你是一位专业的文学编辑和小说策划师。你的任务是分析提供的网页原始内容，理解其中的故事情节、人物、场景和情感线索，然后将其规划为一部小说的章节结构。
-
-${userCustomPrompt ? `用户自定义写作指导：\n${userCustomPrompt}\n\n` : ''}注意：原文中的 [📷 图片描述 IMG-N] 标记表示该位置有一张配图，描述了图片的内容。请在规划章节时考虑这些图片的位置 and 内容。
-
-任务要求：
-1. 仔细阅读全部原文内容（包括图片描述）
-2. 识别故事的主要情节线、场景转换、情感变化
-3. 将内容划分为合适的章节（1-10章均可，章节数量应当根据原文长度和丰富度灵活决定。确保规划的每个章节包含足够的原始素材，以支撑后续生成和扩写到5000字左右的篇幅）
-4. 为每个章节设计一个引人入胜的标题
-5. 标注每个章节应该包含哪些原文段落（用段落编号范围标记）
-6. 标注每个章节应该配哪些图片（用图片编号标记）
-
-输出要求：
-- 只输出一个合法的 JSON 对象，不要有任何其他文字
-- JSON 结构严格按照下面的格式
-- 注意：paragraphRange 必须是包含纯数字的数组（例如 [11, 35]），绝对不要带 'P' 前缀（绝对不要写成 [P11, P35]）
-- 注意：imageIndices 必须是包含纯数字的数组（例如 [0, 1]），绝对不要带 'IMG-' 前缀（绝对不要写成 [IMG-0, IMG-1]）`
-      }
-
-      const userPrompt: LLMMessage = {
-        role: 'user',
-        content: `请分析以下网页内容并制定小说章节规划。
-
-原始页面标题: ${data.title}
-
-原文内容（段落与配图按原始顺序排列，共${data.totalParagraphs}段文字、${data.totalImages}张配图）:${censored ? '\n（注意：部分敏感词已被安全处理打码）' : ''}
----
-${interleavedContent}
----
-
-请输出以下 JSON 格式的章节规划：
-{
-  "bookTitle": "小说总标题",
-  "summary": "全文故事概述（1-2句话）",
-  "chapters": [
-    {
-      "chapterNumber": 1,
-      "title": "第一章: 章节标题",
-      "description": "本章内容概述",
-      "paragraphRange": [1, 5],
-      "imageIndices": [0, 1],
-      "mood": "章节情感基调"
-    }
-  ]
-}
-特别注意：paragraphRange 与 imageIndices 数组中的元素必须是纯数字，绝对不可带有 'P' 或 'IMG-' 等非数字前缀字符！`
-      }
+      const { systemPrompt, userPrompt } = buildPhase1Prompts({
+        data,
+        interleavedContent,
+        userCustomPrompt,
+        censored
+      })
 
       const config = getActiveConfig()
 
@@ -385,40 +269,11 @@ ${interleavedContent}
             onChunk: () => { /* progress is only reported once the full plan arrives */ },
             onDone: (fullText: string) => {
               try {
-                let jsonStr = extractJson(fullText)
-
-                // 1. Fix unquoted prefixes in arrays (e.g. [P11, P35] -> [11, 35], [IMG-0, IMG-1] -> [0, 1])
-                // to prevent JSON.parse syntax errors.
-                jsonStr = jsonStr.replace(/\[\s*([\s\S]*?)\s*\]/g, (arrayMatch) => {
-                  return arrayMatch.replace(/[A-Za-z]+-?(\d+)/g, '$1')
-                })
-
-                const plan = JSON.parse(jsonStr) as ChapterPlan
-
-                // 2. Post-parse normalization to convert any stringified or prefixed indices to pure numbers
-                if (plan.chapters && Array.isArray(plan.chapters)) {
-                  plan.chapters.forEach(ch => {
-                    if (ch.paragraphRange) {
-                      ch.paragraphRange = [
-                        parseInt(String(ch.paragraphRange[0]).replace(/\D/g, ''), 10) || 0,
-                        parseInt(String(ch.paragraphRange[1]).replace(/\D/g, ''), 10) || 0
-                      ]
-                    }
-                    if (ch.imageIndices) {
-                      ch.imageIndices = ch.imageIndices
-                        .map(idx => parseInt(String(idx).replace(/\D/g, ''), 10))
-                        .filter(idx => !isNaN(idx))
-                    }
-                  })
-                }
-
-                if (!plan.chapters || !Array.isArray(plan.chapters) || plan.chapters.length === 0) {
-                  throw new Error('LLM 返回的章节规划格式无效')
-                }
+                const plan = parseChapterPlanResponse(fullText)
                 setChapterPlan(plan)
                 resolve(plan)
               } catch (e) {
-                reject(new Error(`解析章节规划失败: ${errorMessage(e)}. LLM输出: ${fullText.substring(0, 200)}...`, { cause: e }))
+                reject(e)
               }
             },
             onError: (err: Error) => {
@@ -475,9 +330,7 @@ ${interleavedContent}
     for (let i = startIndex; i < plan.chapters.length; i++) {
       const chPlan = plan.chapters[i]
       const nextChPlan = plan.chapters[i + 1]
-      const nextChapterOutline = nextChPlan
-        ? `下章标题: ${nextChPlan.title}\n下章内容概述: ${nextChPlan.description}\n下章段落范围: P${nextChPlan.paragraphRange[0]} 至 P${nextChPlan.paragraphRange[1]}`
-        : '（已是最后一章，无后续章节）'
+      const nextChapterOutline = buildNextChapterOutline(nextChPlan)
       setProgress(`Phase 2: 正在生成第 ${i + 1}/${plan.chapters.length} 章节 (${chPlan.title})...`)
 
       const prevEnding = getPreviousChapterEnding(generated[i - 1])
@@ -527,80 +380,18 @@ ${interleavedContent}
             currentInterleavedContent = buildChapterInterleavedContent(censoredData, chPlan.paragraphRange)
           }
 
-          // Generate dynamic examples based on the actual images in this chapter
-          const hasImages = chPlan.imageIndices && chPlan.imageIndices.length > 0;
-          const exampleIndex = hasImages ? chPlan.imageIndices[0] : 2;
-          const exampleTag = `{{IMG-${exampleIndex}}}`;
-          const exampleList = hasImages ? chPlan.imageIndices.map(i => `{{IMG-${i}}}`).join(' 和 ') : '{{IMG-2}} 等';
-
-          systemPrompt = {
-            role: 'system',
-            content: `你是一位才华横溢的小说家。你的任务是根据提供的小说大纲、前文结尾、下一章大纲规划、当前章节规划和原始素材，创作当前章节的精彩小说内容。
-
-${userCustomPrompt ? `用户自定义写作指导：\n${userCustomPrompt}\n\n` : ''}注意：原文中的 [📷 图片描述 IMG-XXX] 标记表示该位置有一张配图。请在改写时：
-- 将图片描述的内容自然融入叙事（描写图片中展现的场景、环境氛围等）。
-- 在图片应该出现的位置，严格使用纯数字的占位标记，例如 ${exampleTag}，前端会自动替换为实际图片。请注意占位符内的数字必须是对应图片的真实编号，绝对不能包含英文字母！
-
-写作要求：
-1. **严格限制写作范围**：当前章节**只允许**对本章对应的段落范围进行创作，绝对不能超出范围，严禁提前编写属于后续章节的情节，确保每个章节边界清晰。
-2. 保持原文的核心情节和信息不变。
-3. 用优美的文学语言改写，增加丰富的细节描写、心理活动 and 生动的对话。
-4. **前后衔接有序**：
-   - **开头衔接**：请仔细阅读提供的“前文结尾”，保证本章的开头能与其无缝、流畅地衔接。**强烈强调：输出的文字绝对不要与“前文结尾”的内容有任何重复，必须紧接着前文的情节继续往后写。**
-   - **结尾衔接**：请仔细阅读提供的“下章大纲规划”，保证本章的结尾能够自然地向下一章过渡，建立有序的承接关系。
-5. **文章篇幅控制**：确保整章写作的字数达到5000字左右。你应该通过补充生动的对话、丰富的环境细节描写、细致的角色动作以及深刻的内心独白来进行文学扩写，使篇幅显著充实，严禁敷衍或字数不足，同时也要避免无意义的重复注水。
-6. 使用与原文相同的语言。
-
-输出格式要求：
-- 只输出一个合法的 JSON 对象，不要有任何其他文字。
-- 使用 HTML 格式（p, em, strong 等标签），并以 <h1>当前章节标题</h1> 作为开头。
-- 在图片应该出现的位置，严格使用带有具体数字的占位标记，例如 ${exampleTag}。绝对不能使用非数字字符。
-
-JSON格式：
-{
-  "chapterNumber": ${chPlan.chapterNumber},
-  "title": "${chPlan.title.replace(/"/g, '\\"')}",
-  "content": "<h1>${chPlan.title.replace(/"/g, '\\"')}</h1><p>正文第一段...</p><p>${exampleTag}</p><p>正文第二段...</p>"
-}`
-          }
-
-          userPrompt = {
-            role: 'user',
-            content: `请为我创作小说的第 ${chPlan.chapterNumber} 章。
-
-【小说基本信息】
-小说总标题: ${plan.bookTitle}
-全文故事概述: ${plan.summary}
-
-【前文结尾承接】
-以下是前一章的结尾内容（请保证本章开头能够与之无缝衔接）：
----
-${prevEnding}
----
-
-【下章大纲规划】
-以下是下一章的规划内容（请保证本章结尾能够自然向其过渡,但不要超越章节边界写出下一章的内容）：
----
-${nextChapterOutline}
----
-
-【本章写作规划】
-本章标题: ${chPlan.title}
-本章情感基调: ${chPlan.mood}
-本章段落范围: P${chPlan.paragraphRange[0]} 至 P${chPlan.paragraphRange[1]} （特别提示：本章只能且必须只改写该段落范围内的原始素材，绝对不可写到超出该范围的后续情节！）
-本章包含的配图编号: ${chPlan.imageIndices.length > 0 ? chPlan.imageIndices.map(index => `IMG-${index}`).join(', ') : '无'}
-
-【本章相关配图描述】
-${currentImageDescriptions}
-
-【本章对应的原始素材（段落与配图）】
----
-${currentInterleavedContent}
----
-
-请根据本章规划和素材，创作本章的完整小说正文（目标字数在5000字左右），输出合法的 JSON 格式。并在合适的位置插入对应的图片占位符（数字必须完全匹配，请使用类似 ${exampleList} 的格式）。`,
-            images: currentImages.map(img => img.base64)
-          }
+          const prompts = buildPhase2ChapterPrompts({
+            plan,
+            chPlan,
+            userCustomPrompt,
+            prevEnding,
+            nextChapterOutline,
+            imageDescriptions: currentImageDescriptions,
+            interleavedContent: currentInterleavedContent,
+            imageBase64s: currentImages.map(img => img.base64)
+          })
+          systemPrompt = prompts.systemPrompt
+          userPrompt = prompts.userPrompt
 
           chapterResult = await new Promise<GeneratedChapter>((resolve, reject) => {
             abortControllerRef.current = new AbortController()
@@ -616,14 +407,9 @@ ${currentInterleavedContent}
                 },
                 onDone: (fullText: string) => {
                   try {
-                    const jsonStr = extractJson(fullText)
-                    const chObj = JSON.parse(jsonStr) as GeneratedChapter
-                    if (!chObj.content || !chObj.title) {
-                      throw new Error('JSON 中缺少 title 或 content 字段')
-                    }
-                    resolve(chObj)
+                    resolve(parseGeneratedChapterResponse(fullText, chPlan.chapterNumber))
                   } catch (e) {
-                    reject(new Error(`解析第 ${chPlan.chapterNumber} 章失败: ${errorMessage(e)}. LLM 输出: ${fullText.substring(0, 200)}`, { cause: e }))
+                    reject(e)
                   }
                 },
                 onError: (err: Error) => {
@@ -681,29 +467,8 @@ ${currentInterleavedContent}
 
   // Phase 0: Use LLM vision to analyze and describe images
   const analyzeImages = async (data: ScrapedData): Promise<ScrapedData> => {
-    // Filter images suitable for vision API
-    const VISION_SAFE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/jpg']
-
-    const updatedImages = [...data.images]
-
     // 1. Initial quick MIME and length filter, and flag unsuitable ones immediately
-    for (let i = 0; i < updatedImages.length; i++) {
-      const img = updatedImages[i]
-      const mimeMatch = img.base64.match(/^data:([^;]+);/i)
-      const mimeType = mimeMatch ? mimeMatch[1].toLowerCase() : ''
-      const isSafeType = VISION_SAFE_TYPES.includes(mimeType)
-      const isLargeEnough = img.base64.length >= 1000
-
-      if (!isSafeType || !isLargeEnough) {
-        updatedImages[i] = {
-          ...img,
-          alt: !isSafeType
-            ? '（配图格式不支持，已忽略分析）'
-            : '（配图数据过小，已忽略分析）',
-          failedAnalysis: true
-        }
-      }
-    }
+    const updatedImages = flagUnsupportedVisionImages(data.images)
 
     const candidateImages = updatedImages.filter(img => !img.failedAnalysis)
 
@@ -770,16 +535,7 @@ ${currentInterleavedContent}
 
     // Worker function for each image
     const processImage = async (img: typeof validImages[0]) => {
-      const systemPrompt: LLMMessage = {
-        role: 'system',
-        content: imageAnalysisPrompt.replace('{{index}}', String(img.index))
-      }
-
-      const userPrompt: LLMMessage = {
-        role: 'user',
-        content: `请描述这张图片。图片编号为: IMG-${img.index}`,
-        images: [img.base64]
-      }
+      const { systemPrompt, userPrompt } = buildImageAnalysisPrompts(img, imageAnalysisPrompt)
 
       const config = getActiveConfig()
 
@@ -792,32 +548,9 @@ ${currentInterleavedContent}
               onChunk: () => { /* descriptions are only parsed once the full response arrives */ },
               onDone: (fullText: string) => {
                 try {
-                  const jsonStr = extractJson(fullText)
-                  const result = JSON.parse(jsonStr)
-                  const descs = result.descriptions || result
-                  if (Array.isArray(descs)) {
-                    resolve(descs)
-                  } else {
-                    reject(new Error('LLM 返回的图片描述格式不正确。'))
-                  }
-                } catch {
-                  console.warn('[Image Analysis] Failed to parse JSON, using fallback parser')
-                  const fallbackDescs: { index: number | string; description: string }[] = []
-                  const lines = fullText.split('\n')
-                  for (const line of lines) {
-                    const match = line.match(/(?:IMG-)?(\d+)\s*[:：\-—\s]\s*(.+)/i)
-                    if (match) {
-                      fallbackDescs.push({
-                        index: parseInt(match[1], 10),
-                        description: match[2].trim()
-                      })
-                    }
-                  }
-                  if (fallbackDescs.length > 0) {
-                    resolve(fallbackDescs)
-                  } else {
-                    reject(new Error('无法解析 LLM 的图片分析输出。'))
-                  }
+                  resolve(parseImageDescriptionsResponse(fullText))
+                } catch (e) {
+                  reject(e)
                 }
               },
               onError: (err: Error) => {
@@ -1053,33 +786,11 @@ ${currentInterleavedContent}
               onChunk: () => { /* progress is only reported once the full plan arrives */ },
               onDone: (fullText: string) => {
                 try {
-                  let jsonStr = extractJson(fullText)
-                  jsonStr = jsonStr.replace(/\[\s*([\s\S]*?)\s*\]/g, (arrayMatch) => {
-                    return arrayMatch.replace(/[A-Za-z]+-?(\d+)/g, '$1')
-                  })
-                  const parsedPlan = JSON.parse(jsonStr) as ChapterPlan
-                  if (parsedPlan.chapters && Array.isArray(parsedPlan.chapters)) {
-                    parsedPlan.chapters.forEach(ch => {
-                      if (ch.paragraphRange) {
-                        ch.paragraphRange = [
-                          parseInt(String(ch.paragraphRange[0]).replace(/\D/g, ''), 10) || 0,
-                          parseInt(String(ch.paragraphRange[1]).replace(/\D/g, ''), 10) || 0
-                        ]
-                      }
-                      if (ch.imageIndices) {
-                        ch.imageIndices = ch.imageIndices
-                          .map(idx => parseInt(String(idx).replace(/\D/g, ''), 10))
-                          .filter(idx => !isNaN(idx))
-                      }
-                    })
-                  }
-                  if (!parsedPlan.chapters || !Array.isArray(parsedPlan.chapters) || parsedPlan.chapters.length === 0) {
-                    throw new Error('LLM 返回的章节规划格式无效')
-                  }
+                  const parsedPlan = parseChapterPlanResponse(fullText)
                   setChapterPlan(parsedPlan)
                   resolve(parsedPlan)
                 } catch (e) {
-                  reject(new Error(`解析章节规划失败: ${errorMessage(e)}. LLM输出: ${fullText.substring(0, 200)}...`, { cause: e }))
+                  reject(e)
                 }
               },
               onError: (err: Error) => {
@@ -1114,14 +825,9 @@ ${currentInterleavedContent}
               },
               onDone: (fullText: string) => {
                 try {
-                  const jsonStr = extractJson(fullText)
-                  const chObj = JSON.parse(jsonStr) as GeneratedChapter
-                  if (!chObj.content || !chObj.title) {
-                    throw new Error('JSON 中缺少 title 或 content 字段')
-                  }
-                  resolve(chObj)
+                  resolve(parseGeneratedChapterResponse(fullText, failedChapterPlan.chapterNumber))
                 } catch (e) {
-                  reject(new Error(`解析第 ${failedChapterPlan.chapterNumber} 章失败: ${errorMessage(e)}. LLM 输出: ${fullText.substring(0, 200)}`, { cause: e }))
+                  reject(e)
                 }
               },
               onError: (err: Error) => {
@@ -1190,10 +896,6 @@ ${currentInterleavedContent}
 
   if (!isOpen) return null
 
-  const previewText = scrapedData
-    ? scrapedData.paragraphs.slice(0, 5).map(p => p.text).join('\n').substring(0, 500)
-    : ''
-
   return (
     <div className="modal-overlay" onClick={handleClose}>
       <div
@@ -1236,79 +938,14 @@ ${currentInterleavedContent}
 
           {/* URL Input / File Upload - Always visible except when done/editing prompt */}
           {status !== 'done' && status !== 'prompt_edit' && (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-              <div style={{ display: 'flex', gap: '0.5rem' }}>
-                <input
-                  type="url"
-                  placeholder="粘贴网页URL..."
-                  value={url}
-                  onChange={e => setUrl(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter' && (status === 'idle' || status === 'error')) handleFetch()
-                  }}
-                  disabled={status !== 'idle' && status !== 'error'}
-                  className="form-input"
-                  style={{
-                    flex: 1,
-                    padding: '0.6rem 0.8rem',
-                    fontSize: '0.9rem',
-                    backgroundColor: 'var(--bg-primary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '8px',
-                    color: 'var(--text-primary)',
-                    outline: 'none'
-                  }}
-                />
-                {(status === 'idle' || status === 'error') && (
-                  <button
-                    onClick={handleFetch}
-                    disabled={!url.trim()}
-                    className="btn-primary"
-                    type="button"
-                    style={{
-                      padding: '0.6rem 1rem',
-                      fontSize: '0.85rem',
-                      whiteSpace: 'nowrap',
-                      opacity: url.trim() ? 1 : 0.5
-                    }}
-                  >
-                    抓取网页
-                  </button>
-                )}
-              </div>
-
-              {(status === 'idle' || status === 'error') && (
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    gap: '0.5rem',
-                    padding: '1rem',
-                    border: '1px dashed var(--border-color)',
-                    borderRadius: '8px',
-                    backgroundColor: 'rgba(255, 255, 255, 0.02)',
-                    cursor: 'pointer',
-                    transition: 'border-color 0.2s',
-                  }}
-                  onClick={() => localFileInputRef.current?.click()}
-                  onMouseEnter={e => e.currentTarget.style.borderColor = 'var(--accent)'}
-                  onMouseLeave={e => e.currentTarget.style.borderColor = 'var(--border-color)'}
-                >
-                  <FileText size={18} style={{ color: 'var(--accent)' }} />
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-secondary)' }}>
-                    或者：上传本地网页文件 (.html, .htm) 进行解析与创作
-                  </span>
-                  <input
-                    type="file"
-                    ref={localFileInputRef}
-                    onChange={handleLocalFileChange}
-                    accept=".html,.htm"
-                    style={{ display: 'none' }}
-                  />
-                </div>
-              )}
-            </div>
+            <ImportSourceInput
+              url={url}
+              onUrlChange={setUrl}
+              status={status}
+              onFetch={handleFetch}
+              onLocalFileChange={handleLocalFileChange}
+              localFileInputRef={localFileInputRef}
+            />
           )}
 
           {/* Fetching spinner */}
@@ -1328,167 +965,21 @@ ${currentInterleavedContent}
 
           {/* Preview */}
           {(status === 'preview' || status === 'analyzing' || status === 'generating') && scrapedData && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '0.75rem',
-              padding: '1rem',
-              backgroundColor: 'var(--bg-primary)',
-              borderRadius: '8px',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                <FileText size={16} style={{ color: 'var(--accent)', flexShrink: 0 }} />
-                <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>{scrapedData.title}</span>
-              </div>
-
-              <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'flex', gap: '1rem' }}>
-                <span>📄 {scrapedData.totalParagraphs} 段文字</span>
-                <span>🖼️ {scrapedData.totalImages} 张配图</span>
-              </div>
-
-              {/* Text preview */}
-              <div style={{
-                fontSize: '0.8rem',
-                color: 'var(--text-secondary)',
-                lineHeight: 1.5,
-                maxHeight: '100px',
-                overflowY: 'auto',
-                padding: '0.5rem',
-                backgroundColor: 'var(--bg-tertiary)',
-                borderRadius: '6px',
-                whiteSpace: 'pre-wrap'
-              }}>
-                {previewText}{previewText.length >= 500 ? '...' : ''}
-              </div>
-
-              {/* Image thumbnails with descriptions */}
-              {scrapedData.images.length > 0 && (
-                <div style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  gap: '6px',
-                  maxHeight: '150px',
-                  overflowY: 'auto',
-                  padding: '0.5rem',
-                  backgroundColor: 'var(--bg-tertiary)',
-                  borderRadius: '6px'
-                }}>
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '4px' }}>
-                    <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                      📷 选择保留的配图 (将在生成中被AI使用):
-                    </div>
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <button 
-                        onClick={() => setSelectedImageIndices(scrapedData.images.map(img => img.index))}
-                        style={{ fontSize: '0.7rem', color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                      >全选</button>
-                      <button 
-                        onClick={() => setSelectedImageIndices([])}
-                        style={{ fontSize: '0.7rem', color: 'var(--text-muted)', background: 'none', border: 'none', cursor: 'pointer', padding: 0 }}
-                      >全不选</button>
-                    </div>
-                  </div>
-                  {(() => {
-                    const sortedImages = [
-                      ...analyzedIndices
-                        .map(idx => scrapedData.images.find(img => img.index === idx))
-                        .filter((img): img is NonNullable<typeof img> => !!img),
-                      ...scrapedData.images.filter(img => !analyzedIndices.includes(img.index))
-                    ]
-                    return sortedImages.map((img, idx) => (
-                      <div key={idx} style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '12px',
-                        fontSize: '0.75rem',
-                        opacity: selectedImageIndices.includes(img.index) ? 1 : 0.5,
-                        padding: '4px 0'
-                      }}>
-                        <input
-                          type="checkbox"
-                          checked={selectedImageIndices.includes(img.index)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setSelectedImageIndices(prev => [...prev, img.index])
-                            } else {
-                              setSelectedImageIndices(prev => prev.filter(id => id !== img.index))
-                            }
-                          }}
-                          disabled={status !== 'preview'}
-                          style={{ cursor: status === 'preview' ? 'pointer' : 'default' }}
-                        />
-                        <img
-                          src={img.base64}
-                          alt={img.alt || `Image ${idx}`}
-                          style={{
-                            width: '72px',
-                            height: '72px',
-                            objectFit: 'cover',
-                            borderRadius: '4px',
-                            border: '1px solid var(--border-color)',
-                            flexShrink: 0
-                          }}
-                        />
-                        <span style={{ color: 'var(--accent)', fontWeight: 600, flexShrink: 0 }}>
-                          IMG-{img.index}
-                        </span>
-                        <span style={{
-                          color: 'var(--text-secondary)',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap'
-                        }}>
-                          {img.alt || '（无文字描述）'}
-                        </span>
-                      </div>
-                    ))
-                  })()}
-                </div>
-              )}
-            </div>
+            <ScrapePreviewPanel
+              scrapedData={scrapedData}
+              status={status}
+              selectedImageIndices={selectedImageIndices}
+              setSelectedImageIndices={setSelectedImageIndices}
+              analyzedIndices={analyzedIndices}
+            />
           )}
 
           {/* Chapter Plan Preview */}
           {chapterPlan && (status === 'analyzing' || status === 'generating' || status === 'done') && (
-            <div style={{
-              padding: '0.75rem',
-              backgroundColor: 'var(--bg-primary)',
-              borderRadius: '8px',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{
-                fontSize: '0.85rem',
-                fontWeight: 600,
-                marginBottom: '0.5rem',
-                color: 'var(--accent)'
-              }}>
-                📋 章节规划: {chapterPlan.bookTitle}
-              </div>
-              <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem' }}>
-                {chapterPlan.summary}
-              </div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                {chapterPlan.chapters.map((ch, idx) => (
-                  <div key={idx} style={{
-                    fontSize: '0.8rem',
-                    color: 'var(--text-secondary)',
-                    padding: '0.25rem 0',
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: '0.5rem'
-                  }}>
-                    <span style={{ color: 'var(--accent)', fontWeight: 500 }}>
-                      {generatedChapters.find(g => g.chapterNumber === ch.chapterNumber) ? '✅' : '📖'}
-                    </span>
-                    <span>{ch.title}</span>
-                    <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
-                      ({ch.mood})
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ChapterPlanPanel
+              chapterPlan={chapterPlan}
+              generatedChapters={generatedChapters}
+            />
           )}
 
           {/* Progress during LLM calls */}
@@ -1544,190 +1035,37 @@ ${currentInterleavedContent}
 
           {/* Prompt Editor UI when status is 'prompt_edit' */}
           {status === 'prompt_edit' && (
-            <div style={{
-              display: 'flex',
-              flexDirection: 'column',
-              gap: '1rem',
-              padding: '1rem',
-              backgroundColor: 'var(--bg-primary)',
-              borderRadius: '8px',
-              border: '1px solid var(--border-color)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#f59e0b' }}>
-                <AlertCircle size={18} style={{ flexShrink: 0 }} />
-                <span style={{ fontWeight: 600, fontSize: '0.95rem' }}>内容合规安全拦截编辑</span>
-              </div>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', margin: 0, lineHeight: 1.4 }}>
-                当前拦截阶段为：<strong>{failedPromptContext?.phase === 1 ? 'Phase 1: 章节大纲划分' : `Phase 2: 第 ${(failedPromptContext?.chapterIndex ?? 0) + 1} 章小说创作`}</strong>。
-                LLM 检测到当前 Prompt 中可能包含敏感、违规或不合规的词汇，因此拦截了该请求。
-                请您在下方修改 Prompt 模板（例如剔除敏感字眼、降低尺度或重写引导语），然后点击手动重试。
-              </p>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                  System Prompt (系统提示词):
-                </label>
-                <textarea
-                  value={editableSystemPrompt}
-                  onChange={e => setEditableSystemPrompt(e.target.value)}
-                  style={{
-                    width: '100%',
-                    height: '100px',
-                    fontSize: '0.8rem',
-                    fontFamily: 'monospace',
-                    padding: '0.5rem',
-                    backgroundColor: 'var(--bg-tertiary)',
-                    color: 'var(--text-primary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    resize: 'vertical'
-                  }}
-                />
-              </div>
-
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                <label style={{ fontSize: '0.8rem', fontWeight: 600, color: 'var(--text-muted)' }}>
-                  User Prompt (用户输入内容):
-                </label>
-                <textarea
-                  value={editableUserPrompt}
-                  onChange={e => setEditableUserPrompt(e.target.value)}
-                  style={{
-                    width: '100%',
-                    height: '180px',
-                    fontSize: '0.8rem',
-                    fontFamily: 'monospace',
-                    padding: '0.5rem',
-                    backgroundColor: 'var(--bg-tertiary)',
-                    color: 'var(--text-primary)',
-                    border: '1px solid var(--border-color)',
-                    borderRadius: '6px',
-                    resize: 'vertical'
-                  }}
-                />
-              </div>
-            </div>
+            <PromptEditorPanel
+              failedPromptContext={failedPromptContext}
+              editableSystemPrompt={editableSystemPrompt}
+              onSystemPromptChange={setEditableSystemPrompt}
+              editableUserPrompt={editableUserPrompt}
+              onUserPromptChange={setEditableUserPrompt}
+            />
           )}
         </div>
 
         {/* Footer buttons */}
-        <div style={{
-          display: 'flex',
-          justifyContent: 'flex-end',
-          gap: '0.75rem',
-          paddingTop: '1rem',
-          borderTop: '1px solid var(--border-color)',
-          marginTop: '1rem'
-        }}>
-          {status === 'preview' && (
-            <>
-              <button
-                onClick={() => {
-                  setStatus('idle')
-                  setScrapedData(null)
-                  setChapterPlan(null)
-                }}
-                className="btn-secondary"
-                type="button"
-                style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
-              >
-                重新输入
-              </button>
-              <button
-                onClick={handleStartGeneration}
-                className="btn-primary"
-                type="button"
-                style={{
-                  padding: '0.5rem 1.5rem',
-                  fontSize: '0.85rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem'
-                }}
-              >
-                <Sparkles size={14} />
-                开始生成小说
-              </button>
-            </>
-          )}
-
-          {(status === 'analyzing' || status === 'generating') && (
-            <button
-              onClick={() => {
-                if (abortControllerRef.current) {
-                  abortControllerRef.current.abort()
-                }
-                setStatus('preview')
-                setProgress('已取消')
-              }}
-              className="btn-secondary"
-              type="button"
-              style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', color: '#ef4444' }}
-            >
-              取消生成
-            </button>
-          )}
-
-          {status === 'done' && (
-            <button
-              onClick={handleClose}
-              className="btn-primary"
-              type="button"
-              style={{ padding: '0.5rem 1.5rem', fontSize: '0.85rem' }}
-            >
-              完成
-            </button>
-          )}
-
-          {(status === 'idle' || status === 'error') && (
-            <button
-              onClick={handleClose}
-              className="btn-secondary"
-              type="button"
-              style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
-            >
-              取消
-            </button>
-          )}
-
-          {status === 'prompt_edit' && (
-            <>
-              {generatedChapters.length > 0 && (
-                <button
-                  onClick={handleSaveAndExit}
-                  className="btn-secondary"
-                  type="button"
-                  style={{ padding: '0.5rem 1rem', fontSize: '0.85rem', color: '#10b981', borderColor: '#10b981' }}
-                >
-                  保留已生成并退出
-                </button>
-              )}
-              <button
-                onClick={handleClose}
-                className="btn-secondary"
-                type="button"
-                style={{ padding: '0.5rem 1rem', fontSize: '0.85rem' }}
-              >
-                取消
-              </button>
-              <button
-                onClick={handleManualRetry}
-                className="btn-primary"
-                type="button"
-                style={{
-                  padding: '0.5rem 1.5rem',
-                  fontSize: '0.85rem',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '0.5rem'
-                }}
-              >
-                <Sparkles size={14} />
-                手动重试
-              </button>
-            </>
-          )}
-        </div>
+        <ImportModalFooter
+          status={status}
+          hasGeneratedChapters={generatedChapters.length > 0}
+          onReset={() => {
+            setStatus('idle')
+            setScrapedData(null)
+            setChapterPlan(null)
+          }}
+          onStartGeneration={handleStartGeneration}
+          onCancelGeneration={() => {
+            if (abortControllerRef.current) {
+              abortControllerRef.current.abort()
+            }
+            setStatus('preview')
+            setProgress('已取消')
+          }}
+          onClose={handleClose}
+          onSaveAndExit={handleSaveAndExit}
+          onManualRetry={handleManualRetry}
+        />
       </div>
     </div>
   )

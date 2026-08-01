@@ -5,12 +5,27 @@ import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
-import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
-import { buildChapterIndex, buildWholeBookDigest, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
+import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
+import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
+import { MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
+import {
+  planWholeBook as planWholeBookFlow,
+  runWholeBookBatches as runWholeBookBatchesFlow,
+  buildStickyBookPrefix,
+  type WholeBookDoc,
+  type WholeBookPlan,
+  type WholeBookConsentRequest,
+  type WholeBookConsentChoice
+} from './chat/wholeBook'
+
+// Consent types are re-exported so consumers (ChatPanel) keep importing them
+// from the hook module after the split into hooks/chat/.
+export type { WholeBookConsentRequest, WholeBookConsentChoice }
 
 // Approximate character budget for chat history sent to the LLM. History is
 // windowed (most recent first) so long sessions don't grow the prompt without
@@ -19,67 +34,10 @@ const MAX_HISTORY_CHARS = 80_000
 // Base64 images are only re-sent for the most recent messages — older ones
 // dominate token cost while rarely being referenced again.
 const KEEP_IMAGES_IN_LAST_MESSAGES = 4
-// Per-document cap for read-only reference documents attached as context.
-const MAX_REFERENCE_DOC_CHARS = 20_000
 // Agentic lookup loop guards: how many <lookup> continuation rounds a single
 // user request may trigger, and how many chapters each round may attach.
 const MAX_LOOKUP_ROUNDS = 2
 const MAX_LOOKUP_CHAPTERS_PER_ROUND = 3
-// Recovery rounds per turn when the model answers a write request without any
-// action tag (nothing reaches the document). Measured against grok-4.5 on a
-// real chapter-rewrite request (n=8, 2026-07-25): 0 retries → 2/8 turns
-// produced content, 1 → 4/8, 2 → 7/8, 3 → 8/8. Failures are independent
-// re-rolls, not a stuck state, and a failed round costs ~25 output tokens, so
-// three is the point where the curve flattens.
-const MAX_NO_ACTION_RETRIES = 3
-const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <canvas>, <edit> or <selection_replace> tag, so NOTHING was written to the document — the user saw only your message.
-
-Redo this turn:
-- If the request needs a document change, emit it now inside the tags, with the full content (no summaries, no "as above").
-- If it genuinely needs no document change, answer normally and say what you need from the user.`
-
-// State threaded through the agentic lookup loop so a continuation round can
-// rebuild the SAME request with more chapters attached. `prefixMessages`
-// (system + windowed history) is reused verbatim — the retry only changes the
-// final user message, keeping the provider prompt-cache prefix intact.
-interface LookupLoopContext {
-  promptText: string
-  images?: string[]
-  prefixMessages: LLMMessage[]
-  attachedIds: string[]
-  autoIds: string[]
-  round: number
-}
-
-// A consented whole-book execution plan (spec §6), produced by planWholeBook
-// BEFORE anything enters the chat and executed by assembleChatRequest.
-interface WholeBookPlan {
-  mode: 'full' | 'fast' | 'batched'
-  /** Sticky layout: book text in the stable prompt prefix (cacheable). */
-  sticky: boolean
-  docs: { id: string; title: string; content: string }[]
-  batches: { id: string; title: string; content: string }[][]
-  budgetChars: number
-}
-
-/** Minimal chat-message shape needed to build history for the LLM. */
-interface HistorySourceMessage {
-  id: string
-  role: 'user' | 'assistant'
-  content: string
-  images?: string[]
-}
-
-// Whole-book cost consent (spec §6): rendered as an inline 3-option panel in
-// ChatPanel; handleSendMessage awaits the user's choice BEFORE anything
-// enters the chat, so cancelling has zero side effects.
-export interface WholeBookConsentRequest {
-  approxTokensK: number
-  chapterCount: number
-  /** Total LLM calls for the batched (Rung 2) path; absent for Rung 1. */
-  batchCount?: number
-}
-export type WholeBookConsentChoice = 'proceed' | 'fast' | 'cancel'
 
 interface UseChatLLMProps {
   activeEditor: Editor | null
@@ -201,147 +159,29 @@ export function useChatLLM({
     }
   }, [])
 
-  // Build the volatile document context (reference docs + active doc).
-  // Returned as a string that is merged into the FINAL user message: keeping
-  // it after the (stable) chat history preserves provider prompt-cache
-  // prefixes across turns, and keeps the document close to the request so
-  // <edit> SEARCH blocks are copied from nearby, current content.
-  // Whole-book options: `perDocChars` lifts the per-doc cap for Rung 1
-  // attach-all; `includeWholeBookDigest` swaps the compact index for the full
-  // structural digest (fast mode); `notesBlock` carries Rung 2 batch notes.
+  // Volatile document context (reference docs + active doc). Assembly is pure
+  // and lives in chat/dynamicContext (see there for the prompt-layout
+  // rationale); this wrapper binds the current selection and the per-request
+  // image-placeholder registry.
   const buildDynamicContext = useCallback((
     finalReferenceIds: string[],
-    opts?: { perDocChars?: number; includeWholeBookDigest?: boolean; notesBlock?: string }
+    opts?: DynamicContextOptions
   ): string => {
-    const s = useAppStore.getState()
-
-    // Layer 0: compact index of every chapter (title + summary digest) so the
-    // model always has whole-book awareness even for unattached chapters.
-    // Empty for single-document books.
-    const chapterIndex = opts?.includeWholeBookDigest
-      ? buildWholeBookDigest(s.documents, s.activeDocumentId)
-      : buildChapterIndex(s.documents, s.activeDocumentId)
-    let chapterIndexBlock = chapterIndex ? `${chapterIndex}\n\n` : ''
-    if (opts?.notesBlock) {
-      chapterIndexBlock += `BOOK ANALYSIS NOTES (compiled by reading every chapter of this book in batches for this request — treat them as your own reading of the full text):\n${opts.notesBlock}\n\n`
-    }
-
-    // Build context string for explicitly selected secondary documents
-    const perDocCap = opts?.perDocChars ?? MAX_REFERENCE_DOC_CHARS
-    const referenceDocsContext = finalReferenceIds
-      .map(id => {
-        const doc = s.documents.find(d => d.id === id)
-        if (!doc) return ''
-        const textContent = truncateWithNotice(htmlToPlainText(doc.content), perDocCap)
-        return `--- DOCUMENT: ${doc.title} ---\n${textContent}\n`
-      })
-      .filter(Boolean)
-      .join('\n')
-
-    const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
-    const cleanActiveContent = preserveImagesWithPlaceholders(activeDoc?.content || '')
-
-    if (selectedText) {
-      const cleanSelectedText = preserveImagesWithPlaceholders(selectedText)
-      return `I have selected the following text in the document. I want you to focus your action on this specific text.
-${chapterIndexBlock}${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
-CURRENT SELECTED TEXT:
-"""
-${cleanSelectedText}
-"""
-
-CURRENT ACTIVE DOCUMENT CONTENT (For context):
-"""
-${cleanActiveContent}
-"""`
-    } else {
-      return `Here is the current state of my document.
-${chapterIndexBlock}${referenceDocsContext ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${referenceDocsContext}` : ''}
-
-CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
-"""
-${cleanActiveContent}
-"""`
-    }
+    return assembleDynamicContext(finalReferenceIds, selectedText, preserveImagesWithPlaceholders, opts)
   }, [selectedText, preserveImagesWithPlaceholders])
 
-  // Whole-book Rung 2: client-orchestrated map-reduce. Reads the book in
-  // book-order batches, carrying a running-notes scratchpad between rounds;
-  // the caller feeds the final notes into a normal request. Rounds are
-  // transient (only the status bubble is visible; nothing enters history).
-  // Returns the notes, or null when aborted/failed.
+  // Whole-book Rung 2 batched read (implementation in chat/wholeBook). The
+  // hook owns the abort controller so Stop cancels the batch loop exactly
+  // like it cancels a stream.
   const runWholeBookBatches = useCallback(async (
     promptText: string,
-    batches: { id: string; title: string; content: string }[][],
+    batches: WholeBookDoc[][],
     assistantMsgId: string,
     perBatchChars: number
   ): Promise<string | null> => {
-    const s = useAppStore.getState()
     if (abortControllerRef.current) abortControllerRef.current.abort()
     abortControllerRef.current = new AbortController()
-    const signal = abortControllerRef.current.signal
-
-    const setStatus = (text: string) => {
-      useAppStore.setState((state) => ({
-        messages: state.messages.map(m => m.id === assistantMsgId ? { ...m, content: text } : m)
-      }))
-    }
-
-    let notes = ''
-    for (let i = 0; i < batches.length; i++) {
-      if (signal.aborted) return null
-      const batch = batches[i]
-      const label = batch.length === 1
-        ? `"${batch[0].title}"`
-        : `"${batch[0].title}" – "${batch[batch.length - 1].title}"`
-      setStatus(`📚 Reading ${label} (batch ${i + 1}/${batches.length})…`)
-
-      const batchText = batch
-        .map(doc => `--- DOCUMENT: ${doc.title} ---\n${truncateWithNotice(htmlToPlainText(doc.content), perBatchChars)}`)
-        .join('\n\n')
-      const messages: LLMMessage[] = [
-        {
-          role: 'system',
-          content: 'You are analyzing a book chapter-by-chapter in batches to complete the user\'s task. Each round you receive your running notes and a new batch of chapters. Update and extend the notes with everything from this batch that matters for the task (structure, plot, entities, facts, quotes). Output ONLY the updated complete notes as plain text. Do NOT produce the final answer yet.'
-        },
-        {
-          role: 'user',
-          content: `TASK (do not answer yet — only update notes):\n${promptText}\n\nRUNNING NOTES (from previous batches):\n${notes || '(none yet — this is the first batch)'}\n\nNEW CHAPTERS (batch ${i + 1} of ${batches.length}):\n${batchText}`
-        }
-      ]
-
-      const batchResult = await new Promise<string | null>((resolve) => {
-        streamLLM(
-          messages,
-          { ...s.providerConfigs[s.activeProvider], provider: s.activeProvider, debug: s.debugMode, signal, conversationId: s.activeBookId },
-          {
-            onChunk: () => {},
-            onDone: (fullText, usage) => {
-              useAppStore.getState().addSessionTokens(
-                usage?.promptTokens ?? Math.ceil(JSON.stringify(messages).length / 4),
-                usage?.completionTokens ?? Math.ceil(fullText.length / 4),
-                usage?.cachedPromptTokens ?? 0
-              )
-              resolve(fullText.trim() || null)
-            },
-            onError: (err) => {
-              const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
-              if (!isAbort) {
-                console.error(`[WholeBook] batch ${i + 1}/${batches.length} failed:`, err.message)
-              }
-              resolve(null)
-            }
-          }
-        )
-      })
-
-      if (batchResult === null) {
-        // Abort or failure: bail out; the caller reports to the user.
-        return null
-      }
-      notes = batchResult
-    }
-    return notes
+    return runWholeBookBatchesFlow(promptText, batches, assistantMsgId, perBatchChars, abortControllerRef.current.signal)
   }, [])
 
   // Shared LLM Streaming engine. `lookupCtx` (when set) arms the agentic
@@ -391,49 +231,9 @@ ${cleanActiveContent}
             accumulatedTextRef.current += chunk
             const raw = accumulatedTextRef.current
 
-            let chatText: string
-            let canvasText = ''
-            let selectionReplaceText = ''
-            let isSelectionEdit = false
-
-            const canvasStart = '<canvas>'
-            const canvasEnd = '</canvas>'
-            const selectionStart = '<selection_replace>'
-            const selectionEndTag = '</selection_replace>'
-
-            const canvasIdx = raw.indexOf(canvasStart)
-            const selectionIdx = raw.indexOf(selectionStart)
-            // First sign of an <edit> block (open tag or a SEARCH conflict marker).
-            const editMatchIdx = raw.search(/<edit\b|<{5,}\s*SEARCH/i)
-
-            if (selectionIdx !== -1) {
-              isSelectionEdit = true
-              chatText = raw.substring(0, selectionIdx).trim()
-              const rest = raw.substring(selectionIdx + selectionStart.length)
-              const endIdx = rest.indexOf(selectionEndTag)
-              if (endIdx !== -1) {
-                selectionReplaceText = rest.substring(0, endIdx)
-                chatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
-              } else {
-                selectionReplaceText = rest
-              }
-            } else if (editMatchIdx !== -1 && (canvasIdx === -1 || editMatchIdx < canvasIdx)) {
-              // Edit blocks are applied on completion; during streaming just hide
-              // the noisy SEARCH/REPLACE markup and show the surrounding chat.
-              chatText = raw.substring(0, editMatchIdx).trim()
-            } else if (canvasIdx !== -1) {
-              chatText = raw.substring(0, canvasIdx).trim()
-              const rest = raw.substring(canvasIdx + canvasStart.length)
-              const endIdx = rest.indexOf(canvasEnd)
-              if (endIdx !== -1) {
-                canvasText = rest.substring(0, endIdx)
-                chatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
-              } else {
-                canvasText = rest
-              }
-            } else {
-              chatText = raw
-            }
+            // Incremental tag split (pure; chat/streamHandlers): routes
+            // document markup away from the chat bubble as it streams.
+            const { chatText, canvasText, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
 
             // Prepend visual attachment details to conversational text. A
             // streaming <lookup> request is protocol chatter, not an answer —
@@ -688,26 +488,17 @@ ${cleanActiveContent}
               }
             }
 
-            let warningNote = canvasIssue === 'truncated'
-              ? '\n\n⚠️ The response was cut off before the document update finished, so no changes were applied (your document is unchanged). Please retry — for long documents, try editing a smaller selection at a time.'
-              : canvasIssue === 'elided'
-              ? '\n\n⚠️ The response abbreviated unchanged parts of the document, so applying it would have deleted content. No changes were applied. Please retry — for long documents, try editing a smaller selection at a time.'
-              : ''
-            if (editFailedCount > 0) {
-              warningNote += `\n\n⚠️ ${editFailedCount} suggested change${editFailedCount > 1 ? 's' : ''} could not be located in the current document and ${editFailedCount > 1 ? 'were' : 'was'} skipped. The text to change may have moved or differ from what was matched.`
-            }
-            // The recovery round also came back without tags: say so instead
-            // of letting "已改好" stand over an unchanged document.
-            if (
-              noActionRetriesLeft === 0 &&
-              parsed.kind === 'chat' &&
-              looksLikeUnfulfilledDocumentUpdate(fullText)
-            ) {
-              warningNote += `\n\n⚠️ The model answered without producing any document content (retried ${MAX_NO_ACTION_RETRIES} times), so your document is unchanged. Ask again — naming the chapter or section usually helps.`
-            }
-            if (reinsertedImages > 0) {
-              warningNote += `\n\nℹ️ ${reinsertedImages} image${reinsertedImages > 1 ? 's' : ''} missing from the rewrite ${reinsertedImages > 1 ? 'were' : 'was'} restored near ${reinsertedImages > 1 ? 'their' : 'its'} original position. Delete ${reinsertedImages > 1 ? 'them' : 'it'} manually if the removal was intended.`
-            }
+            // Message text lives in chat/streamHandlers; only the exhausted-
+            // retries condition needs hook-local state to compute.
+            const warningNote = buildCompletionWarnings({
+              canvasIssue,
+              editFailedCount,
+              exhaustedNoActionRetries:
+                noActionRetriesLeft === 0 &&
+                parsed.kind === 'chat' &&
+                looksLikeUnfulfilledDocumentUpdate(fullText),
+              reinsertedImages
+            })
 
             const displayChatText = (attachmentsText
               ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
@@ -809,61 +600,11 @@ ${cleanActiveContent}
     startLLMStreamingRef.current = startLLMStreaming
   }, [startLLMStreaming])
 
-  // ── Whole-book planning (escalation ladder, spec §6) ────────────────────
-  // Plan + consent happen BEFORE anything enters the chat so 'cancelled' has
-  // zero side effects. 'once' resets after the send; 'sticky' persists and
-  // consents only on its first send.
-  const planWholeBook = useCallback(async (): Promise<WholeBookPlan | null | 'cancelled'> => {
-    const s = useAppStore.getState()
-    const wholeBookMode = s.documents.length > 1 ? s.wholeBookMode : 'off'
-    if (s.wholeBookMode === 'once') s.setWholeBookMode('off')
-
-    if (wholeBookMode === 'off') {
-      stickyConsentGivenRef.current = false
-      return null
-    }
-
-    // Whole-book explicitly asks for every chapter — fetch any content the
-    // server hasn't lazily sent yet, otherwise chapters the user never opened
-    // would be silently missing from "the whole book".
-    await s.ensureDocumentContents(
-      s.documents.filter(d => d.id !== s.activeDocumentId).map(d => d.id)
-    )
-    const loaded = useAppStore.getState()
-    const docs = loaded.documents.filter(d =>
-      d.id !== loaded.activeDocumentId && d.contentLoaded !== false && d.content.length > 0
-    )
-    const totalChars = docs.reduce((sum, d) => sum + d.content.length, 0)
-    const budgetChars = WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000
-    const approxTokensK = Math.max(1, Math.round(totalChars / 4000))
-    // Rung 1 confirms above ~50k tokens; Rung 2 (multi-call) always confirms.
-    const CONFIRM_THRESHOLD_CHARS = 200_000
-    // Sticky only changes the layout when the book fits in one call —
-    // re-running a batched pass every turn would multiply cost, so an
-    // over-budget book behaves like 'once' even when sticky.
-    const sticky = wholeBookMode === 'sticky' && totalChars <= budgetChars
-
-    if (totalChars <= budgetChars) {
-      let mode: 'full' | 'fast' = 'full'
-      const needsConsent = totalChars > CONFIRM_THRESHOLD_CHARS &&
-        !(sticky && stickyConsentGivenRef.current)
-      if (needsConsent) {
-        const choice = await requestWholeBookConsent({ approxTokensK, chapterCount: docs.length })
-        if (choice === 'cancel') return 'cancelled'
-        mode = choice === 'proceed' ? 'full' : 'fast'
-        if (sticky && choice === 'proceed') stickyConsentGivenRef.current = true
-      }
-      return { mode, sticky, docs, batches: [], budgetChars }
-    }
-
-    const batches = packChaptersIntoBatches(docs, budgetChars)
-    const choice = await requestWholeBookConsent({
-      approxTokensK,
-      chapterCount: docs.length,
-      batchCount: batches.length + 1
-    })
-    if (choice === 'cancel') return 'cancelled'
-    return { mode: choice === 'proceed' ? 'batched' : 'fast', sticky: false, docs, batches, budgetChars }
+  // Whole-book planning (escalation ladder, spec §6 — implementation in
+  // chat/wholeBook): plan + consent happen BEFORE anything enters the chat so
+  // 'cancelled' has zero side effects.
+  const planWholeBook = useCallback((): Promise<WholeBookPlan | null | 'cancelled'> => {
+    return planWholeBookFlow(requestWholeBookConsent, stickyConsentGivenRef)
   }, [requestWholeBookConsent])
 
   // ── Shared request assembly ─────────────────────────────────────────────
@@ -941,10 +682,8 @@ ${cleanActiveContent}
     let dynamicContext: string
     let attachmentsText: string
     let allowLookup = true
-    // Sticky whole-book: the (unchanging) book text moves into the stable
-    // prompt prefix — right after the system prompt, before history — with
-    // its own cache breakpoint, so turns 2+ read it at cache prices. The
-    // volatile tail (index + active doc) stays in the final user message.
+    // Sticky whole-book: the book text joins the stable prompt prefix (see
+    // buildStickyBookPrefix in chat/wholeBook for the caching layout).
     let bookPrefixMessages: LLMMessage[] = []
 
     if (wholeBookPlan) {
@@ -953,19 +692,7 @@ ${cleanActiveContent}
       autoIds = []
 
       if (mode === 'full' && sticky) {
-        const bookText = docs
-          .map(d => `--- DOCUMENT: ${d.title} ---\n${htmlToPlainText(d.content)}`)
-          .join('\n\n')
-        bookPrefixMessages = [
-          {
-            role: 'user',
-            content: `REFERENCED BOOK CONTENT (read-only; every chapter except the active document — use it for details and consistency):\n\n${bookText}`,
-            cacheHint: true
-          },
-          // Providers require alternating roles; the ack keeps history's
-          // leading user turn valid after the injected user message.
-          { role: 'assistant', content: 'Understood. I have read the full book content and will use it as reference.' }
-        ]
+        bookPrefixMessages = buildStickyBookPrefix(docs)
         attachedIds = docs.map(d => d.id)
         dynamicContext = buildDynamicContext([])
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, sticky)]`

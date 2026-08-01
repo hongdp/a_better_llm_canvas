@@ -1,0 +1,88 @@
+/* Chat Message Edit UI */
+.chat-message-edit-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  width: 100%;
+  margin: 0.25rem 0;
+}
+
+.chat-message-edit-textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 0.6rem 0.8rem;
+  font-size: 0.92rem;
+  line-height: 1.5;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  resize: vertical;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.chat-message-edit-textarea:focus {
+  border-color: var(--accent-border);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.chat-message-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.chat-message-edit-actions button {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.8rem;
+  border-radius: 6px;
+}
+
+/* Style horizontal scrollable editor toolbar */
+.editor-toolbar {
+  scrollbar-width: none; /* Firefox */
+  -ms-overflow-style: none; /* IE 10+ */
+}
+.editor-toolbar::-webkit-scrollbar {
+  display: none; /* Chrome, Safari, Opera */
+}
+.editor-toolbar > * {
+  flex-shrink: 0 !important;
+}
+
+/* Labeled Multimodal Upload Previews */
+.chat-upload-previews {
+  transition: all var(--transition-fast) ease-in-out;
+}
+.chat-upload-preview-img {
+  width: 48px;
+  height: 48px;
+  border-radius: 4px;
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+  transition: transform var(--transition-fast);
+}
+.chat-upload-preview-img:hover {
+  transform: scale(1.05);
+}
+
+.layout-portrait .chat-upload-preview-img {
+  width: 36px;
+  height: 36px;
+}
+.layout-portrait .chat-upload-previews {
+  padding: 6px 10px !important;
+  gap: 6px !important;
+}
+
+/* Chat bubble images styling */
+.chat-message-images img {
+  cursor: zoom-in;
+  transition: transform var(--transition-fast), opacity var(--transition-fast);
+}
+.chat-message-images img:hover {
+  opacity: 0.9;
+  transform: scale(1.02);
+}

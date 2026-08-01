@@ -1,0 +1,470 @@
+/* ============================================================
+   ROLEPLAY GAME MODE STYLES
+   ============================================================ */
+
+/* --- Roleplay Banner (in-chat game status strip) --- */
+.rp-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0;
+  background: linear-gradient(135deg, rgba(128, 128, 128, 0.15), rgba(128, 128, 128, 0.1));
+  border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+  font-size: 0.78rem;
+  min-height: 36px;
+}
+
+.rp-banner-info {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.rp-banner-character {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.rp-banner-name {
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.rp-banner-genre {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 4px;
+  background: rgba(128, 128, 128, 0.12);
+  border: 1px solid rgba(128, 128, 128, 0.2);
+}
+
+.rp-banner-stats {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.rp-stat {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+
+.rp-stat svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.rp-banner-end-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.2rem 0.5rem;
+  border-radius: 5px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.1);
+  color: #f87171;
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.rp-banner-end-btn:hover {
+  background: rgba(239, 68, 68, 0.25);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+/* --- Roleplay Narration Message Styling --- */
+.chat-message.assistant.rp-narration .chat-message-bubble {
+  background: linear-gradient(135deg, rgba(128, 128, 128, 0.08), rgba(30, 27, 46, 0.5));
+  border: 1px solid rgba(128, 128, 128, 0.15);
+  border-left: 3px solid var(--accent);
+  font-family: var(--font-editor);
+  font-size: 0.92rem;
+  line-height: 1.65;
+  color: var(--text-primary);
+  position: relative;
+}
+
+[data-theme="light"] .chat-message.assistant.rp-narration .chat-message-bubble {
+  background: linear-gradient(135deg, rgba(128, 128, 128, 0.06), rgba(248, 250, 252, 0.8));
+  border-color: rgba(128, 128, 128, 0.12);
+}
+
+/* --- Roleplay User Action Styling --- */
+.chat-message.user.rp-action .chat-message-bubble {
+  background: linear-gradient(135deg, rgba(128, 128, 128, 0.12), rgba(128, 128, 128, 0.05));
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-left: 3px solid var(--accent);
+}
+
+.rp-action-prefix {
+  color: var(--accent);
+  font-weight: 700;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 0.15rem;
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+/* --- Roleplay System Event Message --- */
+.chat-message.rp-system-event .chat-message-bubble {
+  background: rgba(128, 128, 128, 0.06);
+  border: 1px dashed rgba(128, 128, 128, 0.2);
+  color: var(--text-secondary);
+  text-align: center;
+  font-style: italic;
+  font-size: 0.82rem;
+  padding: 0.4rem 0.75rem;
+}
+
+/* --- Roleplay Choice Buttons --- */
+.rp-choices-container {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.75rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(128, 128, 128, 0.12);
+}
+
+.rp-choices-label {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.1rem;
+}
+
+.rp-choice-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  background: rgba(128, 128, 128, 0.06);
+  color: var(--text-primary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: left;
+  font-family: var(--font-ui);
+  line-height: 1.35;
+}
+
+.rp-choice-btn:hover {
+  background: rgba(128, 128, 128, 0.15);
+  border-color: rgba(128, 128, 128, 0.4);
+  transform: translateX(4px);
+  box-shadow: 0 2px 8px rgba(128, 128, 128, 0.15);
+}
+
+.rp-choice-btn:active {
+  transform: translateX(2px);
+}
+
+.rp-choice-number {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.2);
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+/* --- Roleplay Setup Modal --- */
+.rp-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: rp-fade-in 0.2s ease-out;
+}
+
+.rp-modal {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  width: 90%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg), 0 0 60px rgba(128, 128, 128, 0.1);
+  animation: rp-slide-up 0.25s ease-out;
+}
+
+.rp-modal-header {
+  padding: 1.25rem 1.5rem;
+  background: linear-gradient(135deg, rgba(128, 128, 128, 0.15), rgba(128, 128, 128, 0.08));
+  border-bottom: 1px solid var(--border-color);
+  border-radius: 16px 16px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rp-modal-header h2 {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.rp-modal-body {
+  padding: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.rp-field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.rp-field-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rp-text-input {
+  padding: 0.55rem 0.75rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  font-family: var(--font-ui);
+  outline: none;
+  transition: border-color var(--transition-fast);
+}
+
+.rp-text-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(128, 128, 128, 0.15);
+}
+
+.rp-text-input::placeholder {
+  color: var(--text-muted);
+}
+
+.rp-textarea {
+  resize: vertical;
+  min-height: 70px;
+  max-height: 160px;
+}
+
+/* Difficulty selector toggle buttons */
+.rp-difficulty-options {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.rp-difficulty-btn {
+  flex: 1;
+  padding: 0.5rem 0.4rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  text-align: center;
+  font-family: var(--font-ui);
+}
+
+.rp-difficulty-btn:hover {
+  border-color: rgba(128, 128, 128, 0.3);
+  background: rgba(128, 128, 128, 0.06);
+}
+
+.rp-difficulty-btn.active {
+  border-color: var(--accent);
+  background: rgba(128, 128, 128, 0.15);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(128, 128, 128, 0.2);
+}
+
+.rp-difficulty-desc {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
+  margin-top: 0.15rem;
+}
+
+/* Modal footer with actions */
+.rp-modal-footer {
+  padding: 1rem 1.5rem;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.rp-start-btn {
+  padding: 0.6rem 1.5rem;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent);
+  color: white;
+  font-size: 0.9rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-ui);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  box-shadow: 0 4px 12px rgba(128, 128, 128, 0.3);
+}
+
+.rp-start-btn:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px rgba(128, 128, 128, 0.4);
+}
+
+.rp-start-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.rp-cancel-btn {
+  padding: 0.6rem 1.2rem;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-ui);
+}
+
+.rp-cancel-btn:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* --- Roleplay Mode Toggle Button --- */
+.rp-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  font-family: var(--font-ui);
+}
+
+.rp-toggle-btn:hover {
+  border-color: rgba(128, 128, 128, 0.4);
+  background: rgba(128, 128, 128, 0.06);
+  color: var(--accent);
+}
+
+.rp-toggle-btn.active {
+  border-color: var(--accent);
+  background: rgba(128, 128, 128, 0.12);
+  color: var(--accent);
+  box-shadow: 0 0 8px rgba(128, 128, 128, 0.15);
+}
+
+/* --- Animations --- */
+@keyframes rp-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes rp-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* --- Roleplay chat input placeholder override --- */
+.chat-panel.rp-active .chat-textarea::after {
+  content: 'What do you do?';
+}
+
+/* Ensure RP narration text has good readability */
+.chat-message.assistant.rp-narration .chat-message-bubble div {
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+}
+
+/* Light theme adjustments for RP */
+[data-theme="light"] .rp-banner {
+  background: linear-gradient(135deg, rgba(128, 128, 128, 0.08), rgba(128, 128, 128, 0.06));
+}
+
+[data-theme="light"] .rp-choice-btn {
+  background: rgba(128, 128, 128, 0.04);
+}
+
+[data-theme="light"] .rp-choice-btn:hover {
+  background: rgba(128, 128, 128, 0.1);
+}
+
+[data-theme="light"] .rp-banner-name {
+  color: var(--accent);
+}
+
+[data-theme="light"] .rp-toggle-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(128, 128, 128, 0.08);
+}
+

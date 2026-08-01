@@ -35,37 +35,54 @@ below).
 
 ```
 src/
-  App.tsx                 # Root component: layout, header, panels, responsive modes
+  App.tsx                 # Root component: layout modes, resizing, editor loop (~520 lines)
   main.tsx                # Entry point
-  index.css               # Global styles + theming CSS variables
+  index.css               # CSS entry: ordered @imports of src/styles/* (order is load-bearing)
+  styles/                 # Section stylesheets (tokens, base, editor, chat, responsive, ...)
   types/                  # Shared TypeScript types (barrel: types/index.ts)
     document.ts  llm.ts  chat.ts  import.ts  auth.ts
   store/
-    useAppStore.ts        # Zustand store — the single source of truth (~2000 lines)
-    persistence.ts        # localStorage / IndexedDB / cookie wrappers
+    useAppStore.ts        # Slice assembly + auto-save subscription + public re-exports
+    types.ts              # AppState = intersection of slice interfaces
+    slices/               # documentsSlice, booksSlice, settingsSlice, authSlice,
+                          #   versionsSlice, chatSlice, uiSlice
+    defaults.ts           # Mock documents, default provider configs/prompts
+    settingsPersistence.ts# Versioned cookie/localStorage settings + migrations
+    serverSync.ts         # initializeStoreFromServer / performSync
+    syncRuntime.ts        # Module-level isInitialized/saveTimeout (single owner)
+    persistence.ts        # localStorage / IndexedDB wrappers + documents envelope
     __tests__/            # persistence + storage API tests
-  components/             # React UI components (each ~prefixed export)
-    Editor.tsx            # TipTap editor + inline diff extensions (DiffAddition/Deletion, CustomImage)
+  components/             # React UI components
+    Editor.tsx            # TipTap editor host (fragile editor↔store sync — see SKILL.md)
+    editorExtensions.ts   # TipTap extensions (DiffAddition/Deletion, CustomImage, ...)
+    AppHeader.tsx  CanvasHeader.tsx  CanvasFooter.tsx  VersionHistorySidebar.tsx
     ChatPanel.tsx  ChaptersSidebar.tsx  SettingsModal.tsx  AuthForm.tsx
-    ImportUrlModal.tsx    # URL/HTML import + LLM image analysis prompt (~line 1041)
-    ImageGenerationModal.tsx  RoleplaySetupModal.tsx  RoleplayBanner.tsx
+    ImportUrlModal.tsx    # Import state machine (Phase 0/1/2); steps in import/
+    import/               # Import modal step components
+    ImageGenerationModal.tsx  imageGen/   # Image-gen modal + step components
+    RoleplaySetupModal.tsx  RoleplayBanner.tsx
   hooks/
-    useChatLLM.ts         # Core chat → LLM streaming orchestration
+    useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core)
+    chat/                 # Extracted chat-flow modules: wholeBook, streamHandlers,
+                          #   dynamicContext, types
     useRoleplayLLM.ts     # Roleplay game-master mode streaming
-    useDiffHandlers.ts    # Accept/reject inline diffs
-    useModelFetcher.ts    # Dynamic model discovery (Gemini/Grok ListModels)
-    useImageUpload.ts     # Image paste/upload + GIF→JPEG conversion
+    useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
-    imageGen.ts           # Image generation providers (DALL·E/Imagen/Stability/Grok)
-    import/               # URL/HTML import pipeline (parser, contentBuilder, imageProcessor)
+    chapterSummaries.ts   # Background chapter summarizer (lazy queue)
+    imageGen.ts  imageGenModels.ts
+    import/               # Import pipeline: parser, contentBuilder, imageProcessor,
+                          #   scraper, prompts, responseParsers, visionFilter, errors
   utils/
-    convert.ts  diff.ts  text.ts  export.ts   # pure helpers (well tested)
+    convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
+    llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
   i18n/                   # en.ts / zh.ts translation bundles + index.ts hook
 scripts/
   start-server.js         # Orchestrator: spawns Python API + Vite (npm run dev)
-  api_server.py           # FastAPI backend (auth, storage, books, scraping)
-  test_api_server.py  test_image_logic.ts
+  api_server.py           # FastAPI app entry: books/documents/versions routes
+  server_config.py  server_db.py  server_content.py   # Backend helper modules
+  server_auth.py  server_scrape.py  server_migration.py
+  test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
 docs/
   design.md               # Architecture + Decision Log (register new design docs here)
   features/               # Per-feature design specs
@@ -107,8 +124,11 @@ stack dies — see SKILL.md §5.6 for the kill-before-restart procedure.
 ## Architecture Notes (read before editing)
 
 ### State: Zustand single source of truth
-`src/store/useAppStore.ts` holds documents, chat messages, LLM/provider
-configs, versions, auth, multi-book state, and sync status. Key rules:
+The store is assembled in `src/store/useAppStore.ts` from slice creators
+under `src/store/slices/` (documents, books, settings, auth, versions, chat,
+ui) and holds documents, chat messages, LLM/provider configs, versions, auth,
+multi-book state, and sync status. The public API is re-exported from
+`useAppStore.ts` — import from there, not from slice files. Key rules:
 
 - **Stale closures**: async stream callbacks must read fresh state via
   `useAppStore.getState()` rather than closing over snapshots.

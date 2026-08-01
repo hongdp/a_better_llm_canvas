@@ -1,0 +1,314 @@
+/* Mobile responsive elements */
+.mobile-tabs-bar {
+  display: flex;
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-color);
+  height: 44px;
+  flex-shrink: 0;
+  width: 100%;
+}
+
+.mobile-tab-btn {
+  flex: 1;
+  background: transparent;
+  border: none;
+  font-family: var(--font-ui);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  border-bottom: 2px solid transparent;
+}
+
+.mobile-tab-btn.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background-color: var(--bg-tertiary);
+}
+
+/* Sidebar Backdrop Overlay styling for mobile dismissal */
+.sidebar-backdrop {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 30;
+  animation: fadeIn 0.2s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* Base Canvas Panel position boundary adjustment */
+.canvas-panel {
+  position: relative; /* Context boundary for absolute positioned history sidebar drawer */
+}
+
+/* ========================================== */
+/* MILTON 7 - CROSS-DEVICE LAYOUT OVERRIDES */
+/* ========================================== */
+
+/* ------------------------------------------ */
+/* PORTRAIT LAYOUT: bottom tabs, overlay drawers, larger tap targets */
+/* ------------------------------------------ */
+.layout-portrait .app-main {
+  flex-direction: column-reverse;
+  position: relative;
+}
+
+.layout-portrait .chat-panel {
+  width: 100% !important;
+  height: auto; /* Allow dynamic growth for upload previews */
+  min-height: 72px; /* Collapsed state minimum height */
+  flex-shrink: 0;
+  transition: height var(--transition-md);
+  border-top: 1px solid var(--border-color);
+  border-left: none;
+  border-right: none;
+  overflow: hidden;
+}
+
+.layout-portrait .chat-panel.expanded {
+  height: 50%; /* Expanded height takes 50% of parent .app-main */
+}
+
+/* Hide chat panel components when collapsed */
+.layout-portrait .chat-panel:not(.expanded) .chat-header,
+.layout-portrait .chat-panel:not(.expanded) .chat-messages,
+.layout-portrait .chat-panel:not(.expanded) .reference-selector-bar {
+  display: none !important;
+}
+
+.layout-portrait .canvas-panel {
+  width: 100%;
+  flex: 1; /* Occupy remaining space dynamically */
+}
+
+.layout-portrait .resize-handle {
+  display: none !important;
+}
+
+/* Enlarge button/select touch targets for portrait screens */
+.layout-portrait .app-header {
+  padding: 0 0.5rem;
+  gap: 0.5rem;
+}
+
+.layout-portrait .app-logo {
+  font-size: 1.1rem;
+}
+
+.layout-portrait .app-header-right {
+  gap: 0.35rem;
+}
+
+.layout-portrait .app-header-right > div > span {
+  display: none !important; /* Hide labels "Provider/Model/Prompt" to prevent wrapping */
+}
+
+.layout-portrait .select-styled {
+  padding: 0.35rem 0.5rem;
+  font-size: 0.8rem;
+  max-width: 85px;
+}
+
+.layout-portrait .btn-icon {
+  padding: 0.65rem; /* Larger hit target */
+}
+
+.layout-portrait .canvas-header {
+  padding: 0 0.75rem;
+}
+
+.layout-portrait .canvas-title-input {
+  max-width: 130px;
+  font-size: 0.95rem;
+}
+
+.layout-portrait .ProseMirror {
+  padding: 1rem 1rem 8rem 1rem;
+  font-size: 1.05rem;
+}
+
+.layout-portrait .canvas-footer {
+  padding: 0 0.75rem;
+  font-size: 0.7rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* Phones: keep the word count and token stats; drop secondary items
+   (storage, active chapter — the chapter is already shown in the header). */
+.layout-portrait .footer-secondary,
+.layout-landscape .footer-secondary {
+  display: none;
+}
+
+.layout-portrait .chat-input-container {
+  padding: 0.55rem 0.75rem;
+  border-top: none; /* remove top border since chat-panel border-top is present */
+}
+
+.layout-portrait .chat-input-wrapper {
+  padding: 0.45rem 0.75rem;
+  align-items: center; /* keep buttons and inputs vertically centered in collapsed mode */
+}
+
+/* ------------------------------------------ */
+/* LANDSCAPE LAYOUT: side-by-side, compact headers, hidden labels */
+/* ------------------------------------------ */
+.layout-landscape .app-main {
+  flex-direction: row;
+  position: relative;
+  height: calc(100% - 44px);
+}
+
+.layout-landscape .app-header {
+  height: 44px; /* Shorter header to maximize screen height */
+  padding: 0 1rem;
+}
+
+.layout-landscape .chat-header,
+.layout-landscape .canvas-header,
+.layout-landscape .sidebar-header,
+.layout-landscape .history-header {
+  height: 44px;
+  padding: 0 1rem;
+}
+
+.layout-landscape .chat-panel {
+  width: 40% !important;
+  height: 100%;
+}
+
+.layout-landscape .canvas-panel {
+  width: 60% !important;
+  height: 100%;
+}
+
+.layout-landscape .resize-handle {
+  display: none !important;
+}
+
+.layout-landscape .ProseMirror {
+  padding: 1rem 2rem 6rem 2rem;
+  font-size: 1.1rem;
+}
+
+.layout-landscape .editor-toolbar {
+  padding: 4px 12px;
+}
+
+.layout-landscape .chat-messages {
+  padding: 1rem;
+  gap: 0.75rem;
+}
+
+.layout-landscape .chat-message-bubble {
+  padding: 0.5rem 0.75rem;
+  font-size: 0.9rem;
+}
+
+.layout-landscape .canvas-footer {
+  height: 30px;
+  padding: 0 1rem;
+}
+
+/* Hide labels in landscape too to avoid crowding */
+.layout-landscape .app-header-right > div > span {
+  display: none !important;
+}
+
+.layout-landscape .select-styled {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.8rem;
+  max-width: 90px;
+}
+
+/* ------------------------------------------ */
+/* TABLET / SQUARE ASPECT RATIO: wide split, overlay drawers */
+/* ------------------------------------------ */
+.layout-tablet-square .app-main {
+  flex-direction: row;
+  position: relative;
+}
+
+.layout-tablet-square .chat-panel {
+  width: 45% !important;
+  height: 100%;
+}
+
+.layout-tablet-square .canvas-panel {
+  width: 55% !important;
+  height: 100%;
+}
+
+.layout-tablet-square .resize-handle {
+  display: none !important;
+}
+
+/* ------------------------------------------ */
+/* DRAWER TRANSITIONS (PORTRAIT, LANDSCAPE, TABLET-SQUARE) */
+/* ------------------------------------------ */
+.layout-portrait .chapters-sidebar,
+.layout-landscape .chapters-sidebar,
+.layout-tablet-square .chapters-sidebar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 280px;
+  height: 100%;
+  z-index: 40;
+  background-color: var(--bg-secondary);
+  box-shadow: var(--shadow-lg);
+  border-right: 1px solid var(--border-color);
+  opacity: 1;
+  transform: translateX(0);
+  transition: transform var(--transition-md), opacity var(--transition-md);
+}
+
+.layout-portrait .chapters-sidebar.collapsed,
+.layout-landscape .chapters-sidebar.collapsed,
+.layout-tablet-square .chapters-sidebar.collapsed {
+  transform: translateX(-100%);
+  opacity: 0;
+  width: 280px; /* Keep constant width so text list doesn't squeeze */
+  border-right: none;
+  box-shadow: none;
+}
+
+.layout-portrait .history-sidebar,
+.layout-landscape .history-sidebar,
+.layout-tablet-square .history-sidebar {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 280px;
+  height: 100%;
+  z-index: 40;
+  background-color: var(--bg-secondary);
+  box-shadow: var(--shadow-lg);
+  border-left: 1px solid var(--border-color);
+  opacity: 1;
+  transform: translateX(0);
+  transition: transform var(--transition-md), opacity var(--transition-md);
+}
+
+.layout-portrait .history-sidebar.collapsed,
+.layout-landscape .history-sidebar.collapsed,
+.layout-tablet-square .history-sidebar.collapsed {
+  transform: translateX(100%);
+  opacity: 0;
+  width: 280px; /* Keep constant width so text list doesn't squeeze */
+  border-left: none;
+  box-shadow: none;
+}
