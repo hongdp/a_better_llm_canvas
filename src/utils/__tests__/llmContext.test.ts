@@ -249,3 +249,15 @@ describe('resolveLookupTitles', () => {
     expect(resolveLookupTitles(['Ashfall', 'Origins'], docs, 'b')).toEqual(['c', 'a'])
   })
 })
+
+describe('stripChatDisplayArtifacts — no-action retry artifacts', () => {
+  it('strips the 🔁 retry status bubble left by an aborted recovery round', () => {
+    expect(stripChatDisplayArtifacts('🔁 That reply contained no document update — retrying…')).toBe('')
+    expect(stripChatDisplayArtifacts('🔁 Retrying…\nHere is the chapter.')).toBe('Here is the chapter.')
+  })
+
+  it('strips the "no document content" warning the client appends', () => {
+    const content = '接上第二章往下写了第三章。\n\n⚠️ The model answered without producing any document content (retried once), so your document is unchanged. Ask again — naming the chapter or section usually helps.'
+    expect(stripChatDisplayArtifacts(content)).toBe('接上第二章往下写了第三章。')
+  })
+})

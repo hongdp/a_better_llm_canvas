@@ -184,6 +184,13 @@ endpoint reorders JSON keys so `bookTitle`/`updatedAt` stay within that window.
   the code; name them `<module>.test.ts`.
 - Priority: pure logic (transformations, parsing, diffing, serialization,
   migrations) → store actions → persistence/migrations → component behavior.
+- **Hook flow tests**: `useChatLLM` has re-entrant paths (lookup continuation,
+  no-action retry, normal completion) that share one assistant bubble and can
+  only be covered end-to-end. `src/hooks/__tests__/useChatLLM.test.ts` drives
+  the real hook against a scripted `streamLLM` mock and asserts on the store,
+  using a ~20-line `createRoot` + `act` harness — there is no
+  `@testing-library/react` dependency, and adding one is not required. Keep
+  such tests in `.ts` (no JSX) so the runner's `include` pattern picks them up.
 - Tests must be deterministic and isolated; reset store/mocks/storage in
   `beforeEach`/`afterEach`; mock only at boundaries (`fetch`, LLM calls, timers).
 - Coverage is collected over `src/utils/**`, `src/services/import/**`, and

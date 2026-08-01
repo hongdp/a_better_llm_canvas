@@ -139,7 +139,7 @@ export const WHOLE_BOOK_CONTEXT_CHARS: Record<string, number> = {
   gemini: 2_400_000, // 1M-token window
   anthropic: 480_000, // 200k-token window
   openai: 300_000, // 128k-token window
-  grok: 300_000,
+  grok: 500_000, // large window; covers all but the biggest books in one call
   ollama: 80_000 // local models: assume small windows
 }
 

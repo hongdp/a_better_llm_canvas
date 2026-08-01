@@ -202,37 +202,63 @@ export interface ParsedEdits {
   after: string
 }
 
-// Matches one Aider-style conflict block:
-//   <<<<<<< SEARCH
-//   ...search...
-//   =======
-//   ...replace...
-//   >>>>>>> REPLACE
-// Marker lengths and trailing label whitespace are tolerated.
-const EDIT_BLOCK_RE = /<{5,}\s*SEARCH[^\n]*\n([\s\S]*?)\n={3,}[^\n]*\n([\s\S]*?)\n>{5,}\s*REPLACE/gi
+// Opening marker of one Aider-style conflict block.
+const EDIT_SEARCH_RE = /<{5,}\s*SEARCH[^\n]*\n/gi
+// Divider between the SEARCH and REPLACE halves.
+const EDIT_DIVIDER_RE = /\n={3,}[^\n]*\n/
+// Anything that legitimately ends a REPLACE half. Models finish a block in
+// several ways: the canonical marker, a closing </edit> tag, or by starting
+// the next block. Accepting only the canonical one meant a whole edit response
+// was reclassified as plain chat — raw markup dumped into the chat while the
+// document stayed untouched, with no warning (the reply was too long to look
+// like an empty acknowledgement).
+const EDIT_TERMINATOR_RE = /\n?>{5,}\s*REPLACE[^\n]*|\n?<\/edits?\s*>|\n<{5,}\s*SEARCH/i
 
 /**
  * Parse localized edit blocks from an LLM response.
  *
  * This is the parser for Method A (search/replace edits): rather than re-emit
  * the whole document, the model emits only the changed regions as
- * SEARCH/REPLACE pairs. Parsing is lenient — the conflict markers are matched
- * globally whether or not they are wrapped in `<edit>` tags, and the surrounding
- * `<edit>`/`<edits>` sugar is stripped from the returned chat text.
+ * SEARCH/REPLACE pairs. Parsing is lenient — conflict markers are matched
+ * whether or not they are wrapped in `<edit>` tags, the block may end at
+ * `>>>>>>> REPLACE`, at `</edit>`, or where the next block begins, and the
+ * surrounding `<edit>`/`<edits>` sugar is stripped from the returned chat text.
+ *
+ * A block whose REPLACE half runs to the end of the response with NO
+ * terminator is dropped: that is a cut-off stream, and applying half a
+ * replacement would silently truncate the document.
  */
 export function parseEditBlocks(text: string): ParsedEdits {
   const blocks: EditBlock[] = []
   let firstStart = -1
   let lastEnd = -1
 
-  EDIT_BLOCK_RE.lastIndex = 0
+  EDIT_SEARCH_RE.lastIndex = 0
   let m: RegExpExecArray | null
-  while ((m = EDIT_BLOCK_RE.exec(text)) !== null) {
-    if (m[1].trim()) {
-      blocks.push({ search: m[1], replace: m[2] })
+  while ((m = EDIT_SEARCH_RE.exec(text)) !== null) {
+    const searchStart = m.index + m[0].length
+    const rest = text.slice(searchStart)
+
+    const divider = EDIT_DIVIDER_RE.exec(rest)
+    if (!divider) continue
+
+    const search = rest.slice(0, divider.index)
+    const afterDividerStart = divider.index + divider[0].length
+    const afterDivider = rest.slice(afterDividerStart)
+
+    const terminator = EDIT_TERMINATOR_RE.exec(afterDivider)
+    if (!terminator) continue
+
+    if (search.trim()) {
+      blocks.push({ search, replace: afterDivider.slice(0, terminator.index) })
     }
     if (firstStart === -1) firstStart = m.index
-    lastEnd = EDIT_BLOCK_RE.lastIndex
+    // When the terminator IS the next block's SEARCH marker, stop short of it
+    // so the following iteration still sees it.
+    const startsNextBlock = /SEARCH/i.test(terminator[0])
+    lastEnd = searchStart + afterDividerStart +
+      (startsNextBlock ? terminator.index : terminator.index + terminator[0].length)
+    EDIT_SEARCH_RE.lastIndex = lastEnd
   }
 
   if (blocks.length === 0) {
@@ -583,4 +609,70 @@ export const convertGifToJpegIfNeeded = (dataUrl: string): Promise<string> => {
     }
     img.src = dataUrl
   })
+}
+
+/**
+ * Detect a response that claims (or implies) a document change but produced
+ * none — the "chat says it wrote the chapter, the document is untouched"
+ * failure.
+ *
+ * Only meaningful when the response carried no action tags at all
+ * (`parseAssistantResponse(...).kind === 'chat'`); the caller checks that.
+ *
+ * Problem / Root Cause / Fix:
+ * - Problem: a write request comes back as a one-line acknowledgement with no
+ *   <canvas>/<edit>/<selection_replace> tags, so nothing reaches the editor
+ *   while the chat bubble reads like a success.
+ * - Root cause: tag compliance is probabilistic. Measured against grok-4.5
+ *   (2026-07-25, n=37 across conditions), the failure occurs with the system
+ *   prompt preset disabled and with no chat history, and the success rate for
+ *   an identical prompt drifted between 22% and 65% inside one hour — no
+ *   prompt wording moved it beyond the noise.
+ * - Fix: recover client-side instead of instructing harder. The caller retries
+ *   the turn once with a corrective instruction and, if that also comes back
+ *   empty-handed, warns the user rather than reporting success.
+ *
+ * Deliberately narrow, because a false positive costs an extra LLM call:
+ * a genuine chat answer is usually longer, and a clarifying question (the
+ * legitimate short reply) ends in a question mark.
+ */
+export function looksLikeUnfulfilledDocumentUpdate(fullText: string): boolean {
+  const text = fullText.trim()
+  if (!text) return false
+  // Edit markup that did not parse. The caller only asks about responses that
+  // produced no document action, so reaching here with conflict markers means
+  // the model tried to edit in a shape parseEditBlocks rejected — a real
+  // failure, whatever its length, and the raw markers would otherwise be
+  // dumped into the chat as if they were prose.
+  if (/<edits?\b|<{5,}\s*SEARCH/i.test(text)) return true
+  // A short reply is the signature: real prose runs long, this failure mode
+  // is a single sentence of "done".
+  if (text.length > 200) return false
+  // A question is the model asking for direction — a valid short answer.
+  if (/[?？]\s*$/.test(text)) return false
+  // Bulleted/numbered clarification menus ("tell me: 1. genre 2. characters").
+  if (/^\s*(?:[-*•]|\d+[.)])\s/m.test(text)) return false
+  return true
+}
+
+/**
+ * Drop a trailing partial HTML tag or entity from a mid-stream fragment.
+ *
+ * Streamed `<canvas>` content is rendered into the editor as it arrives, so
+ * the tail is routinely cut mid-token (`<p>The sleek ta`, `<h`, `&nbs`).
+ * Feeding that to the DOM parser makes the last element flicker between
+ * garbage states; trimming to the last complete construct keeps the live
+ * preview stable. Unclosed *elements* are fine — the parser closes them.
+ */
+export function trimIncompleteHtmlTail(html: string): string {
+  let out = html
+  const lastLt = out.lastIndexOf('<')
+  if (lastLt !== -1 && out.indexOf('>', lastLt) === -1) {
+    out = out.slice(0, lastLt)
+  }
+  const lastAmp = out.lastIndexOf('&')
+  if (lastAmp !== -1 && out.indexOf(';', lastAmp) === -1 && out.length - lastAmp <= 10) {
+    out = out.slice(0, lastAmp)
+  }
+  return out
 }

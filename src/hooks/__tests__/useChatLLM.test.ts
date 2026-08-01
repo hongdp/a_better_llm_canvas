@@ -1,0 +1,401 @@
+/**
+ * Flow tests for the chat orchestration hook.
+ *
+ * `startLLMStreaming` has three re-entrant paths that all drive the SAME
+ * assistant bubble: the agentic <lookup> continuation, the no-action retry,
+ * and normal completion. Each re-issues the request through a ref, so a
+ * mistake shows up as a duplicated bubble, a lost document update, or an
+ * unbounded loop — none of which the pure unit tests can see. These tests
+ * drive the real hook against a scripted `streamLLM` and assert on the store.
+ */
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { createElement, act } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
+import type { LLMMessage } from '../../types/llm'
+
+// ── Scripted LLM ──────────────────────────────────────────────────────────────
+// Each entry is one complete response; calls record what the hook sent.
+type ScriptedResponse = string | { chunks: string[]; error?: string }
+const responses: ScriptedResponse[] = []
+const calls: LLMMessage[][] = []
+
+vi.mock('../../services/llm', () => ({
+  streamLLM: async (
+    messages: LLMMessage[],
+    _config: unknown,
+    callbacks: {
+      onChunk: (c: string) => void
+      onDone: (t: string, u?: { promptTokens: number; completionTokens: number }) => void
+      onError: (e: Error) => void
+    }
+  ) => {
+    calls.push(messages)
+    const scripted = responses.shift()
+    if (scripted === undefined) {
+      callbacks.onError(new Error('scripted responses exhausted'))
+      return
+    }
+    if (typeof scripted === 'string') {
+      callbacks.onChunk(scripted)
+      callbacks.onDone(scripted, { promptTokens: 10, completionTokens: 20 })
+      return
+    }
+    let full = ''
+    for (const chunk of scripted.chunks) {
+      full += chunk
+      callbacks.onChunk(chunk)
+      // The preview is time-throttled; let each chunk land in its own window.
+      vi.setSystemTime(Date.now() + 300)
+    }
+    if (scripted.error) {
+      callbacks.onError(new Error(scripted.error))
+      return
+    }
+    callbacks.onDone(full, { promptTokens: 10, completionTokens: 20 })
+  }
+}))
+
+// Background summarization is fire-and-forget and irrelevant here.
+vi.mock('../../services/chapterSummaries', () => ({
+  enqueueStaleSummaryRefreshes: vi.fn()
+}))
+
+import { useChatLLM } from '../useChatLLM'
+import { useAppStore } from '../../store/useAppStore'
+
+// ── Minimal hook harness (no @testing-library dependency) ────────────────────
+interface Harness {
+  current: ReturnType<typeof useChatLLM>
+  unmount: () => void
+}
+
+function renderChatHook(editor: unknown = null): Harness {
+  const harness = { current: null as unknown as ReturnType<typeof useChatLLM> } as Harness
+  const Probe = () => {
+    harness.current = useChatLLM({
+      activeEditor: editor as never,
+      selectedText: '',
+      uploadedImages: [],
+      setUploadedImages: vi.fn(),
+      layoutMode: 'landscape',
+      setIsChatExpanded: vi.fn(),
+      forceSave: vi.fn(),
+      setSaveStatus: vi.fn()
+    })
+    return null
+  }
+  const container = document.createElement('div')
+  let root: Root
+  act(() => {
+    root = createRoot(container)
+    root.render(createElement(Probe))
+  })
+  harness.unmount = () => act(() => root.unmount())
+  return harness
+}
+
+/**
+ * Minimal stand-in for the TipTap editor: records every chained
+ * setMeta/setContent the live <canvas> preview performs, and reports the last
+ * HTML written back as getHTML() (which is what the hook compares against).
+ */
+function stubEditor() {
+  const writes: string[] = []
+  const meta: unknown[] = []
+  let html = '<p>old text</p>'
+  const chain = {
+    setMeta: (_k: string, v: unknown) => { meta.push(v); return chain },
+    setContent: (c: string) => { writes.push(c); html = c; return chain },
+    run: () => true
+  }
+  return {
+    writes,
+    meta,
+    editor: {
+      chain: () => chain,
+      getHTML: () => html,
+      commands: { setContent: (c: string) => { writes.push(c); html = c } },
+      state: { selection: { from: 0, to: 0 } }
+    }
+  }
+}
+
+const doc = (id: string, title: string, content: string) => ({
+  id,
+  title,
+  content,
+  contentLoaded: true,
+  createdAt: '2026-07-01T00:00:00.000Z',
+  updatedAt: '2026-07-01T00:00:00.000Z'
+})
+
+const activeContent = () => {
+  const s = useAppStore.getState()
+  return s.documents.find(d => d.id === s.activeDocumentId)?.content ?? ''
+}
+
+const assistantBubble = () => {
+  const msgs = useAppStore.getState().messages
+  return msgs.filter(m => m.role === 'assistant').map(m => m.content)
+}
+
+/** The final user message of a recorded request — where the volatile context sits. */
+const finalUserContent = (callIndex: number) => {
+  const msgs = calls[callIndex]
+  return msgs[msgs.length - 1].content
+}
+
+const send = async (harness: Harness, prompt: string) => {
+  await act(async () => {
+    await harness.current.handleSendMessage(undefined, prompt)
+  })
+  // The lookup / retry continuations are dispatched with `void` inside onDone;
+  // let those microtasks (and the scripted stream they drive) settle.
+  await act(async () => { await Promise.resolve() })
+  await act(async () => { await Promise.resolve() })
+}
+
+beforeEach(() => {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] })
+  responses.length = 0
+  calls.length = 0
+  // jsdom has no IndexedDB; the store's debounced save logs and moves on.
+  vi.spyOn(console, 'error').mockImplementation(() => {})
+  useAppStore.setState({
+    documents: [doc('doc-1', 'Chapter 1', '<p>old text</p>')],
+    activeDocumentId: 'doc-1',
+    messages: [],
+    versions: [],
+    isStreaming: false,
+    user: null,
+    activeBookId: 'book-test',
+    agenticLookupEnabled: false,
+    wholeBookMode: 'off',
+    pinnedReferenceIds: [],
+    blockedReferenceIds: [],
+    debugMode: false,
+    activeSystemPromptId: 'prompt-none',
+    customSystemPrompts: [{ id: 'prompt-none', name: 'None', content: '' }]
+  })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+  vi.restoreAllMocks()
+})
+
+describe('useChatLLM — normal completion', () => {
+  it('applies a <canvas> rewrite to the active document and shows the chat text', async () => {
+    responses.push('Done.\n<canvas><h1>New</h1><p>fresh text</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '重写这一章')
+
+    expect(calls).toHaveLength(1)
+    // The update lands as a reviewable diff, not a raw replacement.
+    expect(activeContent()).toContain('New')
+    expect(activeContent()).toContain('fresh')
+    expect(activeContent()).toContain('diff-addition')
+    expect(activeContent()).toContain('<del class="diff-deletion"')
+    expect(assistantBubble()).toEqual(['Done.'])
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    harness.unmount()
+  })
+
+  it('sends the active document and the user request in the final user message', async () => {
+    responses.push('<canvas><p>x</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '继续写')
+
+    expect(finalUserContent(0)).toContain('<p>old text</p>')
+    expect(finalUserContent(0)).toContain('USER REQUEST:\n继续写')
+    harness.unmount()
+  })
+})
+
+describe('useChatLLM — no-action retry', () => {
+  it('retries once with a corrective instruction and applies the recovered update', async () => {
+    responses.push('已按大纲接上第二章，直接落笔。')            // tag-free: writes nothing
+    responses.push('好了。\n<canvas><h1>Ch3</h1><p>正文</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '继续写第三章')
+
+    expect(calls).toHaveLength(2)
+    // The failed reply is quoted back, then corrected.
+    const retryMessages = calls[1]
+    expect(retryMessages[retryMessages.length - 2]).toMatchObject({
+      role: 'assistant',
+      content: '已按大纲接上第二章，直接落笔。'
+    })
+    expect(finalUserContent(1)).toContain('no <canvas>, <edit> or <selection_replace> tag')
+    // The recovery replaces the same bubble — no second assistant message.
+    expect(assistantBubble()).toEqual(['好了。'])
+    expect(activeContent()).toContain('Ch3')
+    harness.unmount()
+  })
+
+  it('recovers on a later retry, not just the first', async () => {
+    responses.push('已写好第三章。')          // attempt 1: nothing
+    responses.push('第三章已经写完了。')       // retry 1: nothing
+    responses.push('好了。\n<canvas><p>RECOVERED_LATE</p></canvas>')  // retry 2: content
+    const harness = renderChatHook()
+
+    await send(harness, '继续写第三章')
+
+    expect(calls).toHaveLength(3)
+    expect(assistantBubble()).toEqual(['好了。'])
+    expect(activeContent()).toContain('RECOVERED_LATE')
+    harness.unmount()
+  })
+
+  it('stops after the bounded retries and warns instead of reporting success', async () => {
+    for (let i = 0; i < 6; i++) responses.push(`已写好第三章。(${i})`)
+    const harness = renderChatHook()
+
+    await send(harness, '继续写第三章')
+
+    expect(calls).toHaveLength(4) // first attempt + MAX_NO_ACTION_RETRIES (3)
+    expect(assistantBubble()).toHaveLength(1)
+    expect(assistantBubble()[0]).toContain('⚠️ The model answered without producing any document content')
+    expect(activeContent()).toBe('<p>old text</p>') // untouched
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    harness.unmount()
+  })
+
+  it('does not retry a clarifying question', async () => {
+    responses.push('你想让第三章从哪里开始写？')
+    const harness = renderChatHook()
+
+    await send(harness, '写啊')
+
+    expect(calls).toHaveLength(1)
+    expect(assistantBubble()).toEqual(['你想让第三章从哪里开始写？'])
+    expect(activeContent()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+
+  it('does not retry a substantive chat answer that made no document change', async () => {
+    const answer = '关于后续走向，我建议把冲突集中在三条线上，'.repeat(12)
+    responses.push(answer)
+    const harness = renderChatHook()
+
+    await send(harness, '你觉得后面该怎么写')
+
+    expect(calls).toHaveLength(1)
+    expect(activeContent()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+})
+
+describe('useChatLLM — agentic lookup continuation', () => {
+  beforeEach(() => {
+    // doc-2 is blocked so Layer 1 cannot auto-attach it: whatever reaches the
+    // model in round 2 got there through <lookup>, which ignores the block.
+    // Its summary keeps the always-on chapter index from leaking the body.
+    useAppStore.setState({
+      documents: [
+        doc('doc-1', 'Chapter 1', '<p>old text</p>'),
+        {
+          ...doc('doc-2', 'Chapter 2', '<p>BETRAYAL_DETAIL_MARKER</p>'),
+          summary: 'A journey chapter.',
+          summaryContentHash: 'hash'
+        }
+      ],
+      activeDocumentId: 'doc-1',
+      blockedReferenceIds: ['doc-2'],
+      agenticLookupEnabled: true
+    })
+  })
+
+  it('attaches the requested chapter and re-issues the request into the same bubble', async () => {
+    responses.push('<lookup chapters="Chapter 2" reason="need the betrayal details"></lookup>')
+    responses.push('接上了。\n<canvas><p>continued</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '继续写')
+
+    expect(calls).toHaveLength(2)
+    expect(finalUserContent(0)).not.toContain('BETRAYAL_DETAIL_MARKER')
+    expect(finalUserContent(1)).toContain('BETRAYAL_DETAIL_MARKER')
+    expect(assistantBubble()).toHaveLength(1)
+    expect(assistantBubble()[0]).toContain('接上了。')
+    expect(activeContent()).toContain('continued')
+    harness.unmount()
+  })
+
+  it('breaks the loop when the model keeps asking for chapters it already has', async () => {
+    responses.push('<lookup chapters="Chapter 2" reason="need it"></lookup>')
+    responses.push('<lookup chapters="Chapter 2" reason="need it again"></lookup>')
+    responses.push('好的。\n<canvas><p>ANSWERED_ANYWAY</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '继续写')
+
+    // Round 2 has nothing new to attach, so it retries once with a loop-break
+    // note and no lookup context — three calls total, never more.
+    expect(calls).toHaveLength(3)
+    expect(finalUserContent(2)).toContain('Do NOT emit <lookup> again')
+    expect(activeContent()).toContain('ANSWERED_ANYWAY')
+    harness.unmount()
+  })
+})
+
+describe('useChatLLM — live <canvas> streaming into the editor', () => {
+  // The stream arrives in pieces; the scripted mock delivers them as chunks so
+  // the throttled preview can run more than once.
+  const streamCanvasInChunks = (chunks: string[]) => {
+    responses.push({ chunks })
+  }
+
+  it('renders partial document HTML into the editor while streaming', async () => {
+    const { editor, writes, meta } = stubEditor()
+    streamCanvasInChunks([
+      '写好了。\n<canvas><h1>Ch3</h1>',
+      '<p>第一段</p><h',              // cut mid-tag: must never reach the editor
+      '2>小节</h2><p>第二段还没写完',
+      '</p></canvas>'
+    ])
+    const harness = renderChatHook(editor)
+
+    await send(harness, '继续写第三章')
+
+    // Something was shown before the stream finished…
+    expect(writes.length).toBeGreaterThan(1)
+    expect(writes.some(w => w.includes('Ch3') && !w.includes('第二段'))).toBe(true)
+    // …never with a half-streamed tag…
+    expect(writes.every(w => !/<[^>]*$/.test(w))).toBe(true)
+    // …and never added to the undo stack.
+    expect(meta.every(v => v === false)).toBe(true)
+    // The final editor state is the diffed document, not the raw stream.
+    expect(editor.getHTML()).toContain('diff-addition')
+    harness.unmount()
+  })
+
+  it('rolls the editor back when the response turns out to be truncated', async () => {
+    const { editor } = stubEditor()
+    // Opening tag, content, no closing tag: validateCanvasReplacement refuses it.
+    streamCanvasInChunks(['<canvas><h1>Ch3</h1>', '<p>cut off mid-sentence'])
+    const harness = renderChatHook(editor)
+
+    await send(harness, '继续写第三章')
+
+    expect(assistantBubble()[0]).toContain('⚠️ The response was cut off')
+    expect(activeContent()).toBe('<p>old text</p>')
+    // The half-streamed draft must not survive on screen.
+    expect(editor.getHTML()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+
+  it('rolls the editor back when the stream errors', async () => {
+    const { editor } = stubEditor()
+    responses.push({ chunks: ['<canvas><h1>Ch3</h1><p>partial'], error: 'network died' })
+    const harness = renderChatHook(editor)
+
+    await send(harness, '继续写第三章')
+
+    expect(editor.getHTML()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+})

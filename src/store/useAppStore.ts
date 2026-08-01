@@ -12,7 +12,7 @@ import type { DocumentVersion, CanvasDocument } from '../types/document'
 import type { Editor } from '@tiptap/react'
 
 
-import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave, loadDocumentsFromIndexedDB } from './persistence'
+import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, flushPendingDocumentSave, loadDocumentsFromIndexedDB, loadWholeBookMode, saveWholeBookMode } from './persistence'
 import { idsNeedingContent, loadDocumentContents } from './contentLoader'
 
 if (typeof window !== 'undefined') {
@@ -719,8 +719,13 @@ export const useAppStore = create<AppState>((set) => {
     isSidebarOpen: loadSavedSidebarOpen(),
     pinnedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.pinnedReferenceIds || [],
     blockedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.blockedReferenceIds || [],
-    wholeBookMode: 'off',
-    setWholeBookMode: (mode) => set({ wholeBookMode: mode }),
+    // Sticky is a standing choice and survives reloads; 'once' is consumed by
+    // the next send, so it is never restored (see persistence.loadWholeBookMode).
+    wholeBookMode: loadWholeBookMode(),
+    setWholeBookMode: (mode) => {
+      saveWholeBookMode(mode)
+      set({ wholeBookMode: mode })
+    },
     bookTitle: localStorage.getItem('web_canvas_book_title') || 'Untitled Book',
     setBookTitle: (title) => {
       localStorage.setItem('web_canvas_book_title', title)
