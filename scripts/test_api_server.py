@@ -3,10 +3,16 @@ from unittest.mock import patch, MagicMock
 import sys
 import os
 
-# Add scripts directory to path to import api_server
+# Add scripts directory to path to import api_server and its sibling modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 import api_server
-from api_server import _parse_html_to_scraped_data
+import server_auth
+import server_db
+from server_scrape import _parse_html_to_scraped_data
+
+# NOTE: patches must target the module that OWNS the state the executing code
+# reads (server_scrape.http_requests, server_db.DB_PATH, server_auth.SESSIONS_FILE).
+# Patching a name re-exported on api_server would not affect those code paths.
 
 def test_extract_various_image_attributes():
     html_content = """
@@ -26,7 +32,7 @@ def test_extract_various_image_attributes():
     </html>
     """
     
-    with patch("api_server.http_requests.get") as mock_get:
+    with patch("server_scrape.http_requests.get") as mock_get:
         mock_resp = MagicMock()
         mock_resp.status_code = 200
         mock_resp.headers = {"Content-Type": "image/jpeg"}
@@ -54,7 +60,7 @@ def test_extract_inline_base64_image():
         </body>
     </html>
     """
-    with patch("api_server.http_requests.get") as mock_get:
+    with patch("server_scrape.http_requests.get") as mock_get:
         result = _parse_html_to_scraped_data(html_content, "https://example.com/")
         
         assert result["totalImages"] == 1
@@ -96,10 +102,10 @@ def test_init_db_migrates_summary_columns(tmp_path):
     conn.commit()
     conn.close()
 
-    with patch.object(api_server, "DB_PATH", str(db_file)):
-        api_server.init_db()
+    with patch.object(server_db, "DB_PATH", str(db_file)):
+        server_db.init_db()
 
-        conn = api_server.get_db()
+        conn = server_db.get_db()
         try:
             cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
             assert "summary" in cols
@@ -121,7 +127,7 @@ def test_init_db_migrates_summary_columns(tmp_path):
             conn.close()
 
         # Idempotent: running init_db again must not fail on existing columns.
-        api_server.init_db()
+        server_db.init_db()
 
 
 def test_get_book_returns_document_metadata_with_summaries(tmp_path, monkeypatch):
@@ -137,12 +143,12 @@ def test_get_book_returns_document_metadata_with_summaries(tmp_path, monkeypatch
     from datetime import datetime, timedelta, timezone
     from starlette.requests import Request
 
-    monkeypatch.setattr(api_server, "DB_PATH", str(tmp_path / "metadata.db"))
-    monkeypatch.setattr(api_server, "SESSIONS_FILE", str(tmp_path / "sessions.json"))
-    api_server.init_db()
+    monkeypatch.setattr(server_db, "DB_PATH", str(tmp_path / "metadata.db"))
+    monkeypatch.setattr(server_auth, "SESSIONS_FILE", str(tmp_path / "sessions.json"))
+    server_db.init_db()
 
     now = datetime.now(timezone.utc).isoformat()
-    conn = api_server.get_db()
+    conn = server_db.get_db()
     try:
         conn.execute(
             "INSERT INTO books (id, username, title, active_document_id, created_at, updated_at)"
@@ -166,7 +172,7 @@ def test_get_book_returns_document_metadata_with_summaries(tmp_path, monkeypatch
         conn.close()
 
     expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
-    with open(api_server.SESSIONS_FILE, "w", encoding="utf-8") as f:
+    with open(server_auth.SESSIONS_FILE, "w", encoding="utf-8") as f:
         _json.dump({"sess-1": {"username": "alice", "expiresAt": expires}}, f)
 
     request = Request({
