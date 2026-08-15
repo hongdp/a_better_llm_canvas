@@ -122,3 +122,28 @@ describe('loadDocumentContents', () => {
     consoleError.mockRestore()
   })
 })
+
+// ── paragraph normalization on ingestion ──────────────────────────────────────
+describe('loadDocumentContents paragraph normalization', () => {
+  const fetchOk = (content: string) =>
+    vi.fn().mockResolvedValue({ ok: true, json: async () => ({ content }) }) as unknown as typeof fetch
+
+  it('splits <br> walls into paragraphs before the content reaches the store', async () => {
+    const seen: string[] = []
+    await loadDocumentContents('book-1', ['d1'], {
+      fetchFn: fetchOk('<p>一<br>二<br>三</p>'),
+      onLoaded: (_id, content) => seen.push(content)
+    })
+    expect(seen).toEqual(['<p>一</p><p>二</p><p>三</p>'])
+  })
+
+  it('passes already-clean content through untouched', async () => {
+    const html = '<h1>T</h1><p>a</p><p>b</p>'
+    const seen: string[] = []
+    await loadDocumentContents('book-2', ['d2'], {
+      fetchFn: fetchOk(html),
+      onLoaded: (_id, content) => seen.push(content)
+    })
+    expect(seen).toEqual([html])
+  })
+})
