@@ -1,6 +1,6 @@
 # Feature Specification — Server-Side Resumable Generation
 
-Status: **In implementation**
+Status: **Implemented** — see §8 for what shipped and the known gaps.
 
 ## 1. Why
 
@@ -153,3 +153,35 @@ user's session must 404, not leak.
   falls back to the direct path; abort calls the endpoint.
 - **End-to-end**: a stub provider served locally, driven through the real
   backend, verifying that killing and re-attaching a reader loses nothing.
+
+## 8. Implementation notes
+
+Shipped as specified, with these deliberate decisions and known gaps:
+
+- **The `done` event doubles as the abort terminal.** An aborted job ends
+  with `{"type":"done","status":"aborted",…}` rather than an error, so the
+  partial text is delivered through the normal completion path instead of
+  being reported as a failure.
+- **Rejoin re-attaches at offset 0, not the persisted offset.** The render
+  path parses the response as a whole — a `<canvas>` tag opened before the
+  offset must be seen — and a reload destroys the accumulated raw text.
+  Replay is safe because each chunk re-renders the bubble from the
+  accumulator rather than appending. The persisted offset still decides
+  whether a job is worth rejoining, and the transport supports arbitrary
+  offsets.
+- **Rejoin waits for the assistant message to exist.** Chat history is
+  restored by the background server sync *after* mount, so the rejoin polls
+  (bounded, 15 s) for `meta.assistantMessageId` before streaming into it.
+- **Only the START of a remote job falls back to the direct transport.**
+  Once a job exists, failures are reported through `onError`; falling back
+  later would run the same generation twice.
+- **One SSE parser.** The line-splitting loop was lifted out of
+  `readSSEStream` into `readSSEDataLines`, shared by the direct and remote
+  paths.
+- **Buffer cap counts CHARACTERS**, matching the character offsets in the
+  event contract; a byte cap would make the offset semantics ambiguous.
+- **Gap — roleplay cannot rejoin.** Its stop button now aborts the
+  server-side job, but roleplay sends no `remoteMeta`, so a roleplay
+  generation that outlives its tab completes on the server without the UI
+  re-attaching. Its render path differs enough to warrant its own pass.
+- **Gap — a server restart drops in-flight jobs** (§4), by design for v1.
