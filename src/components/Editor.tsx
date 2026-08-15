@@ -4,6 +4,7 @@ import { DOMSerializer } from '@tiptap/pm/model'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
+import { normalizeBrParagraphs } from '../utils/convert'
 import { 
   Bold, 
   Italic, 
@@ -110,7 +111,12 @@ export const Editor: React.FC<EditorProps> = ({
         spellcheck: 'false',
         autocorrect: 'off',
         autocapitalize: 'off'
-      }
+      },
+      // Content copied out of a web page usually arrives as one block full of
+      // <br> line breaks. Split it into real paragraphs on the way in — a
+      // single giant node makes every later edit rebuild the whole chapter,
+      // and defeats paragraph-level diffing and LLM context.
+      transformPastedHTML: (html) => normalizeBrParagraphs(html)
     },
     content,
     onUpdate: ({ editor }) => {

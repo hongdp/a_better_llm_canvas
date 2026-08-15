@@ -322,6 +322,82 @@ export function sanitizeHtml(html: string): string {
     })
   })
   
+  // Imported HTML gets the same paragraph normalization as pasted HTML: web
+  // pages routinely ship a chapter as one block of <br>-separated lines.
+  return normalizeBrParagraphs(doc.body.innerHTML)
+}
+
+/**
+ * Blocks holding at least this many direct-child <br> elements are treated as
+ * a "wall of lines" (typical of content copied out of a web page) and split
+ * into real paragraphs. A single isolated <br> is left alone: there it is
+ * usually a deliberate soft break (address, verse, Shift+Enter).
+ */
+const MIN_BRS_TO_SPLIT = 2
+
+/**
+ * Turn `<br>`-separated pseudo-paragraphs into real <p> blocks.
+ *
+ * Pasting from a web page often yields ONE block element containing hundreds
+ * of <br> line breaks. That shape is bad for everything downstream: the whole
+ * chapter becomes a single ProseMirror node (so any edit rebuilds all of it),
+ * diffs cannot align on paragraphs, and the LLM sees one giant run-on block.
+ *
+ * Only <br> elements that are DIRECT children of a block are split on, so
+ * inline formatting is never torn apart (`<strong>a<br>b</strong>` is left
+ * intact). Runs of consecutive <br> collapse into a single paragraph break,
+ * and empty groups never produce empty paragraphs.
+ *
+ * Parsing happens in the inert document produced by DOMParser, which has no
+ * browsing context — embedded <img> elements are therefore never loaded or
+ * decoded (see the performance note in App.tsx).
+ */
+export function normalizeBrParagraphs(html: string): string {
+  if (!/<br/i.test(html)) return html
+
+  const doc = new DOMParser().parseFromString(html, 'text/html')
+  const blocks = Array.from(doc.body.querySelectorAll('p, div'))
+
+  for (const block of blocks) {
+    const children = Array.from(block.childNodes)
+    const directBrs = children.filter(
+      (n) => n.nodeType === 1 && (n as Element).tagName === 'BR'
+    ).length
+    if (directBrs < MIN_BRS_TO_SPLIT) continue
+
+    // Group the block's children into runs separated by direct-child <br>.
+    const groups: Node[][] = [[]]
+    for (const node of children) {
+      if (node.nodeType === 1 && (node as Element).tagName === 'BR') {
+        if (groups[groups.length - 1].length > 0) groups.push([])
+      } else {
+        groups[groups.length - 1].push(node)
+      }
+    }
+
+    // A group is worth keeping when it carries text OR embedded media. The
+    // media check must include the node ITSELF (querySelector only looks at
+    // descendants) — otherwise an image on its own line would be dropped.
+    const MEDIA = 'img,video,iframe'
+    const usable = groups.filter((g) =>
+      g.some((n) => {
+        if ((n.textContent || '').trim().length > 0) return true
+        if (n.nodeType !== 1) return false
+        const el = n as Element
+        return el.matches(MEDIA) || el.querySelector(MEDIA) !== null
+      })
+    )
+    if (usable.length < 2) continue
+
+    const frag = doc.createDocumentFragment()
+    for (const group of usable) {
+      const p = doc.createElement('p')
+      group.forEach((n) => p.appendChild(n))
+      frag.appendChild(p)
+    }
+    block.replaceWith(frag)
+  }
+
   return doc.body.innerHTML
 }
 
