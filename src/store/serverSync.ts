@@ -194,7 +194,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
             localStorage.setItem('web_canvas_debug_mode', String(serverData.debugMode))
           }
 
-          useAppStore.setState({ ...updates, serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+          useAppStore.setState({ ...updates, serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString(), lastSeenServerUpdatedAt: serverData.updatedAt || null })
 
           // Lazy-load the active document's content
           const activeDocId = updates.activeDocumentId || serverData.activeDocumentId

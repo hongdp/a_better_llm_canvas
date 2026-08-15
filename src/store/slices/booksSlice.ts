@@ -28,6 +28,16 @@ export interface BooksSlice {
   setServerSaveStatus: (status: 'saved' | 'saving' | 'failed' | 'local-only') => void
   syncToServer: () => Promise<void>
   lastSyncedAt: string | null
+  /**
+   * The book's `updatedAt` as the SERVER last reported it — either when we
+   * loaded the book or as returned by our own successful save. Focus-time
+   * change detection compares server value to server value; comparing a
+   * server timestamp against the device clock is unreliable (phones drift
+   * from the host by minutes) and a false positive forces a full book
+   * reload, which resets the editor to the top of the chapter.
+   */
+  lastSeenServerUpdatedAt: string | null
+  setLastSeenServerUpdatedAt: (value: string | null) => void
 
   // Multi-book state
   activeBookId: string
@@ -291,7 +301,7 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
             }
           }
         }
-        set({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+        set({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString(), lastSeenServerUpdatedAt: server.updatedAt || null })
       } else {
         set({ serverSaveStatus: 'failed' })
         if (res.status === 401) {
@@ -340,6 +350,8 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
   serverSaveStatus: 'local-only',
   setServerSaveStatus: (status) => set({ serverSaveStatus: status }),
   lastSyncedAt: null,
+  lastSeenServerUpdatedAt: null,
+  setLastSeenServerUpdatedAt: (value) => set({ lastSeenServerUpdatedAt: value }),
   syncToServer: async () => {
     const state = useAppStore.getState()
     if (!state.user) return
@@ -470,7 +482,18 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
       }
 
       if (metaRes.ok) {
-        set({ serverSaveStatus: 'saved', lastSyncedAt: new Date().toISOString() })
+        // Record the server's own timestamp for OUR write, so the focus-time
+        // check does not mistake it for another device's change.
+        let ourServerUpdatedAt: string | null = null
+        try {
+          const body = await metaRes.clone().json()
+          if (body && typeof body.updatedAt === 'string') ourServerUpdatedAt = body.updatedAt
+        } catch { /* older server: no updatedAt in the response */ }
+        set({
+          serverSaveStatus: 'saved',
+          lastSyncedAt: new Date().toISOString(),
+          ...(ourServerUpdatedAt ? { lastSeenServerUpdatedAt: ourServerUpdatedAt } : {})
+        })
       } else {
         set({ serverSaveStatus: 'failed' })
       }

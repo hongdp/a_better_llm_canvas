@@ -396,7 +396,11 @@ async def update_book(request: Request, book_id: str):
                 )
 
         conn.commit()
-        return {"success": True}
+        # Return the server-side timestamp so the client can tell ITS OWN write
+        # apart from another device's. Comparing a server timestamp against
+        # the client clock is unreliable — devices drift by minutes — and a
+        # false "someone else changed this" verdict forces a full reload.
+        return {"success": True, "updatedAt": now}
     finally:
         conn.close()
 

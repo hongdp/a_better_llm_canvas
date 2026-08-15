@@ -5,6 +5,7 @@ import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { normalizeBrParagraphs } from '../utils/convert'
+import { saveScrollPosition, loadScrollPosition } from '../utils/scrollMemory'
 import { 
   Bold, 
   Italic, 
@@ -37,10 +38,13 @@ interface EditorProps {
   onChange: (html: string) => void
   placeholder?: string
   isActive?: boolean
+  /** Chapter id — keys the per-chapter scroll memory. */
+  documentId?: string
 }
 
 export const Editor: React.FC<EditorProps> = ({ 
-  content, 
+  content,
+  documentId, 
   onChange, 
   placeholder = 'Start writing your document here or let the assistant draft it...',
   isActive = true
@@ -191,6 +195,60 @@ export const Editor: React.FC<EditorProps> = ({
       editor.setEditable(!isStreaming)
     }
   }, [editor, isStreaming])
+
+  // ── Per-chapter scroll memory ────────────────────────────────────────────
+  // Mobile Firefox discards a backgrounded tab and reloads it on return, so
+  // the reading position has to survive a full remount, not just a re-render.
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const restoredForRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !documentId) return
+    let timer: number | null = null
+    const onScroll = () => {
+      if (timer !== null) return
+      // Trailing throttle: scrolling fires continuously, persisting must not.
+      timer = window.setTimeout(() => {
+        timer = null
+        saveScrollPosition(documentId, el.scrollTop)
+      }, 400)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => {
+      if (timer !== null) window.clearTimeout(timer)
+      el.removeEventListener('scroll', onScroll)
+      // Capture the final position the throttle may have skipped.
+      saveScrollPosition(documentId, el.scrollTop)
+    }
+  }, [documentId])
+
+  useEffect(() => {
+    const el = scrollRef.current
+    if (!el || !documentId || !content) return
+    if (restoredForRef.current === documentId) return
+    const target = loadScrollPosition(documentId)
+    if (target <= 0) {
+      restoredForRef.current = documentId
+      return
+    }
+    // The editor lays content out asynchronously; wait two frames so the
+    // scroll height exists before jumping, and give up rather than clamp to
+    // the bottom if the chapter got shorter.
+    let raf2 = 0
+    const raf1 = requestAnimationFrame(() => {
+      raf2 = requestAnimationFrame(() => {
+        if (el.scrollHeight > target) {
+          el.scrollTop = target
+          restoredForRef.current = documentId
+        }
+      })
+    })
+    return () => {
+      cancelAnimationFrame(raf1)
+      if (raf2) cancelAnimationFrame(raf2)
+    }
+  }, [documentId, content])
 
   // Cancel a pending selection publish on unmount.
   useEffect(() => {
@@ -649,7 +707,7 @@ export const Editor: React.FC<EditorProps> = ({
       )}
 
       {/* Editor Content Area */}
-      <div className="editor-content-scroll" style={{ flex: 1, overflowY: 'auto', outline: 'none' }}>
+      <div ref={scrollRef} className="editor-content-scroll" style={{ flex: 1, overflowY: 'auto', outline: 'none' }}>
         <EditorContent editor={editor} />
       </div>
     </div>

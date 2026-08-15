@@ -158,15 +158,30 @@ function App() {
         const res = await fetch('/api/books')
         if (res.ok) {
           const books = await res.json()
-          
+
           const currentBook = (books as Array<{ id: string; updatedAt?: string }>).find(b => b.id === state.activeBookId)
           if (currentBook) {
             const serverUpdatedAt = currentBook.updatedAt
-            const localLastSyncedAt = state.lastSyncedAt
+            const lastSeen = state.lastSeenServerUpdatedAt
 
-            if (serverUpdatedAt && (!localLastSyncedAt || new Date(serverUpdatedAt) > new Date(localLastSyncedAt))) {
+            // Compare SERVER value to SERVER value.
+            // Problem: this used to compare the server's timestamp against the
+            //   client clock (`lastSyncedAt`), and treated "never synced this
+            //   session" as "changed". Devices drift — the phone here ran ~2.5
+            //   minutes ahead of the host — so returning to the tab reloaded
+            //   the whole book almost every time, which re-sets the editor
+            //   content and throws the reader back to the top of the chapter.
+            // Fix: remember the server's own `updatedAt` (from the book load
+            //   and from our own save's response) and reload only when the
+            //   server reports a value we have not seen — i.e. another device
+            //   really did write.
+            if (serverUpdatedAt && lastSeen && serverUpdatedAt !== lastSeen) {
               console.log('Server changes detected. Syncing active book from server:', state.activeBookId)
               await state.switchBook(state.activeBookId)
+            } else if (serverUpdatedAt && !lastSeen) {
+              // First observation this session: adopt it as the baseline
+              // instead of treating the unknown as a change.
+              state.setLastSeenServerUpdatedAt(serverUpdatedAt)
             }
           }
         }
@@ -175,16 +190,23 @@ function App() {
       }
     }
 
+    // `focus` and `visibilitychange` both fire when a tab comes back, which
+    // ran the check (and its book reload) twice. Collapse them.
+    let checkTimer: number | null = null
     const handleFocusOrVisible = () => {
-      if (document.visibilityState === 'visible') {
-        checkServerUpdates()
-      }
+      if (document.visibilityState !== 'visible') return
+      if (checkTimer !== null) window.clearTimeout(checkTimer)
+      checkTimer = window.setTimeout(() => {
+        checkTimer = null
+        void checkServerUpdates()
+      }, 150)
     }
 
     window.addEventListener('focus', handleFocusOrVisible)
     document.addEventListener('visibilitychange', handleFocusOrVisible)
 
     return () => {
+      if (checkTimer !== null) window.clearTimeout(checkTimer)
       window.removeEventListener('focus', handleFocusOrVisible)
       document.removeEventListener('visibilitychange', handleFocusOrVisible)
     }
@@ -488,6 +510,7 @@ function App() {
                     >
                       <Editor 
                         isActive={true}
+                        documentId={doc.id}
                         content={doc.content} 
                         onChange={(html) => handleEditorChangeFor(doc.id, html)}
                       />
