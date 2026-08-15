@@ -4,6 +4,7 @@ import { DOMSerializer } from '@tiptap/pm/model'
 import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
+import { normalizeBrParagraphs } from '../utils/convert'
 import { 
   Bold, 
   Italic, 
@@ -53,6 +54,19 @@ export const Editor: React.FC<EditorProps> = ({
   // causes a race condition where slightly-stale store HTML overwrites the live editor.
   const contentFromEditorRef = useRef<string | null>(null)
 
+  // Trailing debounce for publishing the selection to the store.
+  // Problem: dragging a selection fired onSelectionUpdate on every mousemove
+  //   tick, and each tick serialized the selected slice to HTML (O(selection))
+  //   and wrote it to the store — which re-renders every store-connected
+  //   component (the chapters sidebar re-hashed chapter contents, the footer
+  //   recounted words). Selecting ~50 lines of a large chapter froze the UI.
+  // Fix: collapse the ticks — serialize and publish ONCE after the selection
+  //   settles, and skip no-op writes. Consumers (chat selection context,
+  //   quick actions) only need the settled selection, never the mid-drag ones.
+  const SELECTION_SETTLE_MS = 200
+  const selectionTimerRef = useRef<number | null>(null)
+  const lastPublishedSelectionRef = useRef('')
+
   const handleQuickAction = (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
     let prompt = ''
     switch (action) {
@@ -86,6 +100,24 @@ export const Editor: React.FC<EditorProps> = ({
       IndentExtension,
       CustomImage,
     ],
+    // Problem: mobile Firefox froze for seconds after edits (worst on bulk
+    //   deletes) in large chapters. Native spellcheck/autocorrect re-scan
+    //   large contenteditable regions after every mutation — a known
+    //   multi-second stall on Android for document-sized editors.
+    // Fix: disable the native text services on the editing host; they are of
+    //   little value for long-form drafting and cost O(document) per edit.
+    editorProps: {
+      attributes: {
+        spellcheck: 'false',
+        autocorrect: 'off',
+        autocapitalize: 'off'
+      },
+      // Content copied out of a web page usually arrives as one block full of
+      // <br> line breaks. Split it into real paragraphs on the way in — a
+      // single giant node makes every later edit rebuild the whole chapter,
+      // and defeats paragraph-level diffing and LLM context.
+      transformPastedHTML: (html) => normalizeBrParagraphs(html)
+    },
     content,
     onUpdate: ({ editor }) => {
       const html = editor.getHTML()
@@ -94,17 +126,43 @@ export const Editor: React.FC<EditorProps> = ({
       onChange(html)
     },
     onSelectionUpdate: ({ editor }) => {
-      const { from, to, empty } = editor.state.selection
-      if (empty) {
-        setSelectedText('')
-      } else {
+      if (selectionTimerRef.current !== null) {
+        window.clearTimeout(selectionTimerRef.current)
+        selectionTimerRef.current = null
+      }
+
+      if (editor.state.selection.empty) {
+        // Collapsing is cheap and should feel instant (hides quick actions).
+        if (lastPublishedSelectionRef.current !== '') {
+          lastPublishedSelectionRef.current = ''
+          setSelectedText('')
+        }
+        return
+      }
+
+      selectionTimerRef.current = window.setTimeout(() => {
+        selectionTimerRef.current = null
+        if (editor.isDestroyed) return
+        const { from, to, empty } = editor.state.selection
+        if (empty) return
         const slice = editor.state.doc.slice(from, to)
         const serializer = DOMSerializer.fromSchema(editor.state.schema)
-        const frag = serializer.serializeFragment(slice.content)
-        const div = document.createElement('div')
+        // Serialize into an INERT document: elements created there have no
+        // browsing context, so <img src="data:..."> nodes are never loaded
+        // or decoded. Building them in the live document instead made every
+        // settled selection re-decode each embedded image (a 50-line
+        // selection in an import-heavy chapter can hold dozens), which is a
+        // main-thread + shared-memory spike big enough to get the tab killed
+        // on mobile Firefox. See the matching note in App.tsx.
+        const inertDoc = document.implementation.createHTMLDocument('')
+        const frag = serializer.serializeFragment(slice.content, { document: inertDoc })
+        const div = inertDoc.createElement('div')
         div.appendChild(frag)
-        setSelectedText(div.innerHTML)
-      }
+        if (div.innerHTML !== lastPublishedSelectionRef.current) {
+          lastPublishedSelectionRef.current = div.innerHTML
+          setSelectedText(div.innerHTML)
+        }
+      }, SELECTION_SETTLE_MS)
     }
   })
 
@@ -132,6 +190,15 @@ export const Editor: React.FC<EditorProps> = ({
       editor.setEditable(!isStreaming)
     }
   }, [editor, isStreaming])
+
+  // Cancel a pending selection publish on unmount.
+  useEffect(() => {
+    return () => {
+      if (selectionTimerRef.current !== null) {
+        window.clearTimeout(selectionTimerRef.current)
+      }
+    }
+  }, [])
 
   // Sync editor reference globally for bulk actions
   useEffect(() => {

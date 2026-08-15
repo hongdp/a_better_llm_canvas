@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import type { CanvasDocument } from '../store/useAppStore'
 import { countWords } from '../utils/text'
@@ -22,6 +22,10 @@ export function CanvasFooter({ activeDoc }: CanvasFooterProps) {
 
   const [storageSize] = useState('0 B')
 
+  // The footer re-renders on every store change (selection ticks included);
+  // recount words only when the document text actually changes.
+  const wordCount = useMemo(() => countWords(activeDoc.content), [activeDoc.content])
+
   return (
     <footer className="canvas-footer">
       {/* No flex-wrap: the footer is a fixed-height single row.
@@ -29,7 +33,7 @@ export function CanvasFooter({ activeDoc }: CanvasFooterProps) {
           word count on phones); narrow screens scroll instead and
           secondary stats are hidden via CSS. */}
       <div className="footer-stats">
-        <span className="footer-words">Words: {countWords(activeDoc.content)}</span>
+        <span className="footer-words">Words: {wordCount}</span>
         <span className="footer-sep" style={{ opacity: 0.3 }}>|</span>
         <span className="footer-tokens">
           Session Tokens: In: {sessionInputTokens.toLocaleString()}

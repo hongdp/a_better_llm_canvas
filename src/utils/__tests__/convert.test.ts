@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {
+  normalizeBrParagraphs,
   htmlToMarkdown,
   htmlToPlainText,
   markdownToHtml,
@@ -329,5 +330,49 @@ describe('splitTxtToChapters', () => {
     chapters.forEach(ch => {
       expect(ch.content.trim()).toBe('')
     })
+  })
+})
+
+// ── normalizeBrParagraphs ─────────────────────────────────────────────────────
+describe('normalizeBrParagraphs', () => {
+  it('splits a wall of <br> lines into real paragraphs', () => {
+    const out = normalizeBrParagraphs('<p>第一行<br>第二行<br>第三行</p>')
+    expect(out).toBe('<p>第一行</p><p>第二行</p><p>第三行</p>')
+  })
+
+  it('leaves a single isolated <br> alone (deliberate soft break)', () => {
+    const html = '<p>地址第一行<br>地址第二行</p>'
+    expect(normalizeBrParagraphs(html)).toBe(html)
+  })
+
+  it('collapses consecutive <br> runs without creating empty paragraphs', () => {
+    const out = normalizeBrParagraphs('<p>a<br><br><br>b<br>c</p>')
+    expect(out).toBe('<p>a</p><p>b</p><p>c</p>')
+  })
+
+  it('never splits a <br> nested inside inline formatting', () => {
+    const html = '<p><strong>a<br>b<br>c</strong></p>'
+    expect(normalizeBrParagraphs(html)).toBe(html)
+  })
+
+  it('converts <br>-separated divs into paragraphs and keeps inline markup', () => {
+    const out = normalizeBrParagraphs('<div>x <em>em</em><br>y<br>z</div>')
+    expect(out).toBe('<p>x <em>em</em></p><p>y</p><p>z</p>')
+  })
+
+  it('keeps media-only groups as their own paragraph', () => {
+    const out = normalizeBrParagraphs('<p>text<br><img src="data:image/png;base64,AAA"><br>tail</p>')
+    expect(out).toContain('<img src="data:image/png;base64,AAA">')
+    expect(out.match(/<p>/g)?.length).toBe(3)
+  })
+
+  it('returns HTML without <br> untouched', () => {
+    const html = '<h1>T</h1><p>one</p><p>two</p>'
+    expect(normalizeBrParagraphs(html)).toBe(html)
+  })
+
+  it('leaves trailing/leading breaks from producing blank paragraphs', () => {
+    const out = normalizeBrParagraphs('<p><br>a<br>b<br></p>')
+    expect(out).toBe('<p>a</p><p>b</p>')
   })
 })

@@ -6,6 +6,12 @@ import { localStorage, safeIndexedDBSet, saveDocumentsToIndexedDB } from '../per
 import { loadSavedConfigs, mergeProviderConfigs, saveConfigsToCookie, saveSystemPromptsToCookie } from '../settingsPersistence'
 import { clearPendingSave, getIsInitialized, setIsInitialized } from '../syncRuntime'
 import { carryOverLocalSummaries } from '../serverSync'
+
+// Fields of each document as last successfully PUT to the server, keyed by
+// doc id. Lets syncToServer skip unchanged chapters (see the comment at the
+// sync site). Keyed by doc id, so switching books naturally misses and
+// re-pushes; stale entries are harmless (worst case one redundant PUT).
+const lastPushedDocsById = new Map<string, Pick<CanvasDocument, 'title' | 'content' | 'summary' | 'summaryContentHash'>>()
 // Benign import cycle: this module only references useAppStore inside action
 // bodies, which run long after both modules have finished evaluating.
 import { useAppStore } from '../useAppStore'
@@ -395,9 +401,21 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
         return
       }
 
-      // 2. Sync each loaded document's content + title individually
-      const docSyncPromises = state.documents
+      // 2. Sync each loaded document's content + title individually.
+      // Problem: every debounced save PUT the FULL content of every loaded
+      //   chapter — a single edit re-serialized and re-uploaded the whole
+      //   book (base64 images included), which stalled phones for seconds.
+      // Fix: skip documents whose synced fields are reference-identical to
+      //   what the last successful PUT sent (the store replaces a document
+      //   object whenever it changes, so reference checks are sufficient).
+      const docsToSync = state.documents
         .filter(d => d.contentLoaded !== false)
+        .filter(d => {
+          const prev = lastPushedDocsById.get(d.id)
+          return !prev || prev.title !== d.title || prev.content !== d.content ||
+            prev.summary !== d.summary || prev.summaryContentHash !== d.summaryContentHash
+        })
+      const docSyncPromises = docsToSync
         .map(d =>
           fetch(`/api/books/${bookId}/documents/${d.id}`, {
             method: 'PUT',
@@ -411,6 +429,14 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
               summary: d.summary ?? null,
               summaryContentHash: d.summaryContentHash ?? null
             })
+          }).then(res => {
+            if (res.ok) {
+              lastPushedDocsById.set(d.id, {
+                title: d.title, content: d.content,
+                summary: d.summary, summaryContentHash: d.summaryContentHash
+              })
+            }
+            return res
           }).catch(e => {
             console.error(`Failed to sync document ${d.id}`, e)
             return null
@@ -423,7 +449,7 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
       for (let i = 0; i < docResults.length; i++) {
         const res = docResults[i]
         if (res && res.status === 404) {
-          const doc = state.documents.filter(d => d.contentLoaded !== false)[i]
+          const doc = docsToSync[i]
           if (doc) {
             await fetch(`/api/books/${bookId}/documents`, {
               method: 'POST',
