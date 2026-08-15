@@ -53,6 +53,19 @@ export const Editor: React.FC<EditorProps> = ({
   // causes a race condition where slightly-stale store HTML overwrites the live editor.
   const contentFromEditorRef = useRef<string | null>(null)
 
+  // Trailing debounce for publishing the selection to the store.
+  // Problem: dragging a selection fired onSelectionUpdate on every mousemove
+  //   tick, and each tick serialized the selected slice to HTML (O(selection))
+  //   and wrote it to the store — which re-renders every store-connected
+  //   component (the chapters sidebar re-hashed chapter contents, the footer
+  //   recounted words). Selecting ~50 lines of a large chapter froze the UI.
+  // Fix: collapse the ticks — serialize and publish ONCE after the selection
+  //   settles, and skip no-op writes. Consumers (chat selection context,
+  //   quick actions) only need the settled selection, never the mid-drag ones.
+  const SELECTION_SETTLE_MS = 200
+  const selectionTimerRef = useRef<number | null>(null)
+  const lastPublishedSelectionRef = useRef('')
+
   const handleQuickAction = (action: 'rewrite' | 'shorten' | 'expand' | 'grammar') => {
     let prompt = ''
     switch (action) {
@@ -94,17 +107,35 @@ export const Editor: React.FC<EditorProps> = ({
       onChange(html)
     },
     onSelectionUpdate: ({ editor }) => {
-      const { from, to, empty } = editor.state.selection
-      if (empty) {
-        setSelectedText('')
-      } else {
+      if (selectionTimerRef.current !== null) {
+        window.clearTimeout(selectionTimerRef.current)
+        selectionTimerRef.current = null
+      }
+
+      if (editor.state.selection.empty) {
+        // Collapsing is cheap and should feel instant (hides quick actions).
+        if (lastPublishedSelectionRef.current !== '') {
+          lastPublishedSelectionRef.current = ''
+          setSelectedText('')
+        }
+        return
+      }
+
+      selectionTimerRef.current = window.setTimeout(() => {
+        selectionTimerRef.current = null
+        if (editor.isDestroyed) return
+        const { from, to, empty } = editor.state.selection
+        if (empty) return
         const slice = editor.state.doc.slice(from, to)
         const serializer = DOMSerializer.fromSchema(editor.state.schema)
         const frag = serializer.serializeFragment(slice.content)
         const div = document.createElement('div')
         div.appendChild(frag)
-        setSelectedText(div.innerHTML)
-      }
+        if (div.innerHTML !== lastPublishedSelectionRef.current) {
+          lastPublishedSelectionRef.current = div.innerHTML
+          setSelectedText(div.innerHTML)
+        }
+      }, SELECTION_SETTLE_MS)
     }
   })
 
@@ -132,6 +163,15 @@ export const Editor: React.FC<EditorProps> = ({
       editor.setEditable(!isStreaming)
     }
   }, [editor, isStreaming])
+
+  // Cancel a pending selection publish on unmount.
+  useEffect(() => {
+    return () => {
+      if (selectionTimerRef.current !== null) {
+        window.clearTimeout(selectionTimerRef.current)
+      }
+    }
+  }, [])
 
   // Sync editor reference globally for bulk actions
   useEffect(() => {

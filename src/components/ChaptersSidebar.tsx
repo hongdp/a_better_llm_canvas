@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
@@ -31,6 +31,19 @@ export const ChaptersSidebar: React.FC = () => {
     deleteBook,
     isStreaming
   } = useAppStore()
+
+  // Summary staleness per chapter, recomputed only when the documents array
+  // changes. Problem: calling isSummaryStale(doc) inline in the row JSX
+  //   hashed each chapter's FULL content twice per render — and this
+  //   component re-renders on every store change (each selection tick,
+  //   keystroke, ...), which froze the UI on large books.
+  // Fix: memoize on the documents identity; renders triggered by unrelated
+  //   store changes reuse the cached map.
+  const summaryStaleById = useMemo(() => {
+    const stale = new Map<string, boolean>()
+    for (const doc of documents) stale.set(doc.id, isSummaryStale(doc))
+    return stale
+  }, [documents])
 
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
   const [pendingChapters, setPendingChapters] = useState<{ title: string; content: string }[]>([])
@@ -374,11 +387,11 @@ export const ChaptersSidebar: React.FC = () => {
                     onClick={() => enqueueSummaryRefresh(doc.id, true)}
                     disabled={isStreaming}
                     className="btn-icon chapter-action-btn"
-                    title={isSummaryStale(doc) ? t.sidebar.refreshSummaryStale : t.sidebar.refreshSummary}
+                    title={summaryStaleById.get(doc.id) ? t.sidebar.refreshSummaryStale : t.sidebar.refreshSummary}
                     type="button"
                     style={{ padding: '0.15rem' }}
                   >
-                    <Sparkles size={13} style={isSummaryStale(doc) ? { color: 'var(--accent)' } : undefined} />
+                    <Sparkles size={13} style={summaryStaleById.get(doc.id) ? { color: 'var(--accent)' } : undefined} />
                   </button>
                 )}
                 <button
