@@ -123,11 +123,6 @@ export interface DocumentsEnvelope {
   data: CanvasDocument[]
 }
 
-const wrapDocumentsEnvelope = (documents: CanvasDocument[]): DocumentsEnvelope => ({
-  version: DOCUMENTS_ENVELOPE_VERSION,
-  data: documents
-})
-
 /** v1 → v2: the old manual selection becomes sticky pins. */
 const migrateDocsV1toV2 = (docs: CanvasDocument[]): CanvasDocument[] =>
   docs.map(doc => {
@@ -171,19 +166,83 @@ export const migrateDocumentsPayload = (raw: unknown): CanvasDocument[] | null =
   return docs
 }
 
+// ── v3: per-document records ──────────────────────────────────────────────────
+// Problem: v0–v2 stored the WHOLE documents array as one IndexedDB value, so
+//   every debounced save structured-cloned the entire book (base64 images
+//   included) on the main thread. Desktops absorbed it; on phones a single
+//   edit in a large book froze the UI for seconds (worst in mobile Firefox).
+// Fix: v3 stores one record per document (`web_canvas_doc:<id>`) plus a
+//   small index, and the writer diffs against the last-written snapshot by
+//   reference so a save touches ONLY the documents that actually changed.
+const DOC_KEY_PREFIX = 'web_canvas_doc:'
+
+interface DocumentsIndexV3 {
+  version: 3
+  ids: string[]
+}
+
+const isV3Index = (raw: unknown): raw is DocumentsIndexV3 =>
+  typeof raw === 'object' && raw !== null &&
+  (raw as DocumentsIndexV3).version === 3 &&
+  Array.isArray((raw as DocumentsIndexV3).ids)
+
+/** Last-written snapshot, by doc id. Reference equality is enough: the store
+ * replaces a document object whenever it changes. */
+let lastWrittenById: Map<string, CanvasDocument> | null = null
+
+/** Pure diff of what a save must write/remove; exported for tests. */
+export const diffDocumentsForWrite = (
+  prev: ReadonlyMap<string, CanvasDocument> | null,
+  documents: CanvasDocument[]
+): { changed: CanvasDocument[]; removedIds: string[]; indexChanged: boolean } => {
+  if (!prev) {
+    return { changed: [...documents], removedIds: [], indexChanged: true }
+  }
+  const changed = documents.filter(d => prev.get(d.id) !== d)
+  const ids = new Set(documents.map(d => d.id))
+  const prevIds = [...prev.keys()]
+  const removedIds = prevIds.filter(id => !ids.has(id))
+  const indexChanged =
+    removedIds.length > 0 ||
+    documents.length !== prev.size ||
+    documents.some((d, i) => prevIds[i] !== d.id)
+  return { changed, removedIds, indexChanged }
+}
+
+const writeDocuments = (documents: CanvasDocument[]) => {
+  const { changed, removedIds, indexChanged } = diffDocumentsForWrite(lastWrittenById, documents)
+  for (const doc of changed) {
+    safeIndexedDBSet(DOC_KEY_PREFIX + doc.id, doc)
+  }
+  for (const id of removedIds) {
+    void db.remove(DOC_KEY_PREFIX + id)
+  }
+  if (indexChanged || lastWrittenById === null) {
+    safeIndexedDBSet('web_canvas_documents', { version: 3, ids: documents.map(d => d.id) } satisfies DocumentsIndexV3)
+  }
+  lastWrittenById = new Map(documents.map(d => [d.id, d]))
+}
+
 /**
- * Load documents from IndexedDB, migrating legacy payloads to the current
- * envelope version. Migrated payloads are rewritten back to storage.
+ * Load documents from IndexedDB, migrating legacy payloads (v0–v2 whole-array
+ * shapes) to the per-document v3 layout. Migrated payloads are rewritten back
+ * to storage; the legacy monolithic value is replaced by the v3 index.
  */
 export const loadDocumentsFromIndexedDB = async (): Promise<CanvasDocument[] | null> => {
   const raw = await db.get<unknown>('web_canvas_documents')
+
+  if (isV3Index(raw)) {
+    const docs = await Promise.all(raw.ids.map(id => db.get<CanvasDocument>(DOC_KEY_PREFIX + id)))
+    const documents = docs.filter((d): d is CanvasDocument => d !== null)
+    lastWrittenById = new Map(documents.map(d => [d.id, d]))
+    return documents.length > 0 ? documents : null
+  }
+
   const documents = migrateDocumentsPayload(raw)
-  const isCurrent = !Array.isArray(raw) &&
-    typeof raw === 'object' && raw !== null &&
-    (raw as DocumentsEnvelope).version === DOCUMENTS_ENVELOPE_VERSION
-  if (documents && !isCurrent) {
-    // Persist the upgraded envelope so legacy shapes disappear after one load.
-    safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
+  if (documents) {
+    // One-time upgrade: write per-doc records + index over the legacy value.
+    lastWrittenById = null
+    writeDocuments(documents)
   }
   return documents
 }
@@ -197,11 +256,11 @@ export const saveDocumentsToIndexedDB = (documents: CanvasDocument[], immediate 
       clearTimeout(saveDocsTimeout)
       saveDocsTimeout = null
     }
-    safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
+    writeDocuments(documents)
   } else {
     if (saveDocsTimeout) clearTimeout(saveDocsTimeout)
     saveDocsTimeout = setTimeout(() => {
-      safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
+      writeDocuments(documents)
       saveDocsTimeout = null
     }, 1000)
   }
@@ -215,7 +274,7 @@ export const flushPendingDocumentSave = (documents: CanvasDocument[]) => {
   if (saveDocsTimeout) {
     clearTimeout(saveDocsTimeout)
     saveDocsTimeout = null
-    safeIndexedDBSet('web_canvas_documents', wrapDocumentsEnvelope(documents))
+    writeDocuments(documents)
   }
 }
 

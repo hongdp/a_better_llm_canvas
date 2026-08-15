@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, loadWholeBookMode, saveWholeBookMode } from '../persistence'
+import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, loadWholeBookMode, saveWholeBookMode, diffDocumentsForWrite } from '../persistence'
 import type { CanvasDocument } from '../../types/document'
 
 // ── getCookie ─────────────────────────────────────────────────────────────────
@@ -203,5 +203,57 @@ describe('whole-book mode persistence', () => {
     expect(loadWholeBookMode()).toBe('off')
     ls.setItem('web_canvas_whole_book_mode', 'STICKY')
     expect(loadWholeBookMode()).toBe('off')
+  })
+})
+
+// ── diffDocumentsForWrite (v3 per-document persistence) ───────────────────────
+describe('diffDocumentsForWrite', () => {
+  const doc = (id: string, content = 'x'): CanvasDocument => ({
+    id, title: id, content, createdAt: 't', updatedAt: 't'
+  })
+
+  it('first write (no snapshot) writes everything and the index', () => {
+    const d = diffDocumentsForWrite(null, [doc('a'), doc('b')])
+    expect(d.changed.map(x => x.id)).toEqual(['a', 'b'])
+    expect(d.removedIds).toEqual([])
+    expect(d.indexChanged).toBe(true)
+  })
+
+  it('writes only reference-changed documents on subsequent saves', () => {
+    const a = doc('a'), b = doc('b')
+    const prev = new Map([['a', a], ['b', b]])
+    const b2 = { ...b, content: 'edited' }
+    const d = diffDocumentsForWrite(prev, [a, b2])
+    expect(d.changed.map(x => x.id)).toEqual(['b'])
+    expect(d.removedIds).toEqual([])
+    expect(d.indexChanged).toBe(false)
+  })
+
+  it('nothing changed → nothing written', () => {
+    const a = doc('a')
+    const d = diffDocumentsForWrite(new Map([['a', a]]), [a])
+    expect(d.changed).toEqual([])
+    expect(d.indexChanged).toBe(false)
+  })
+
+  it('detects removals and index membership changes', () => {
+    const a = doc('a'), b = doc('b')
+    const d = diffDocumentsForWrite(new Map([['a', a], ['b', b]]), [a])
+    expect(d.removedIds).toEqual(['b'])
+    expect(d.indexChanged).toBe(true)
+  })
+
+  it('detects pure reorders as index changes without doc writes', () => {
+    const a = doc('a'), b = doc('b')
+    const d = diffDocumentsForWrite(new Map([['a', a], ['b', b]]), [b, a])
+    expect(d.changed).toEqual([])
+    expect(d.indexChanged).toBe(true)
+  })
+
+  it('additions write the new doc and the index', () => {
+    const a = doc('a'), c = doc('c')
+    const d = diffDocumentsForWrite(new Map([['a', a]]), [a, c])
+    expect(d.changed.map(x => x.id)).toEqual(['c'])
+    expect(d.indexChanged).toBe(true)
   })
 })
