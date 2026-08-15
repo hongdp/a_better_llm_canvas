@@ -141,8 +141,16 @@ export const Editor: React.FC<EditorProps> = ({
         if (empty) return
         const slice = editor.state.doc.slice(from, to)
         const serializer = DOMSerializer.fromSchema(editor.state.schema)
-        const frag = serializer.serializeFragment(slice.content)
-        const div = document.createElement('div')
+        // Serialize into an INERT document: elements created there have no
+        // browsing context, so <img src="data:..."> nodes are never loaded
+        // or decoded. Building them in the live document instead made every
+        // settled selection re-decode each embedded image (a 50-line
+        // selection in an import-heavy chapter can hold dozens), which is a
+        // main-thread + shared-memory spike big enough to get the tab killed
+        // on mobile Firefox. See the matching note in App.tsx.
+        const inertDoc = document.implementation.createHTMLDocument('')
+        const frag = serializer.serializeFragment(slice.content, { document: inertDoc })
+        const div = inertDoc.createElement('div')
         div.appendChild(frag)
         if (div.innerHTML !== lastPublishedSelectionRef.current) {
           lastPublishedSelectionRef.current = div.innerHTML
