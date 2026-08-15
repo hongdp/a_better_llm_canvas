@@ -99,6 +99,19 @@ export const Editor: React.FC<EditorProps> = ({
       IndentExtension,
       CustomImage,
     ],
+    // Problem: mobile Firefox froze for seconds after edits (worst on bulk
+    //   deletes) in large chapters. Native spellcheck/autocorrect re-scan
+    //   large contenteditable regions after every mutation — a known
+    //   multi-second stall on Android for document-sized editors.
+    // Fix: disable the native text services on the editing host; they are of
+    //   little value for long-form drafting and cost O(document) per edit.
+    editorProps: {
+      attributes: {
+        spellcheck: 'false',
+        autocorrect: 'off',
+        autocapitalize: 'off'
+      }
+    },
     content,
     onUpdate: ({ editor }) => {
       const html = editor.getHTML()
