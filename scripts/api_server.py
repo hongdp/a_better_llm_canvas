@@ -9,6 +9,7 @@ plain sibling imports work — the pytest flow does the same via sys.path.append
 - server_content   — document/version content-file save/load/delete
 - server_auth      — sessions, CSRF middleware, /api/auth/* endpoints
 - server_scrape    — URL/HTML scraping pipeline, /api/import-url, /api/import-file
+- server_generation — resumable LLM generation jobs, /api/generate/*
 - server_migration — one-time legacy state_*.json migration
 
 Note for tests: patch state on the module that OWNS it (server_db.DB_PATH,
@@ -27,6 +28,7 @@ import server_config
 import server_auth
 import server_db
 import server_scrape
+import server_generation
 from server_config import sanitize_id
 from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID
 from server_auth import get_authenticated_username
@@ -61,6 +63,8 @@ migrate_legacy_files()
 app.middleware("http")(server_auth.csrf_middleware)
 app.include_router(server_auth.router)
 app.include_router(server_scrape.router)
+# Resumable server-side generation jobs (/api/generate/*)
+app.include_router(server_generation.router)
 
 
 # ============================================================

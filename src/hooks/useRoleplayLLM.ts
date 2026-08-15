@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
+import { abortRemoteGeneration } from '../services/remoteGeneration'
 import { getTimestampId } from '../utils/text'
 import { trimHistoryForContext, stripChatDisplayArtifacts, truncateWithNotice, htmlToPlainText } from '../utils/llmContext'
 import type { ChatMessage, RoleplayConfig } from '../types/chat'
@@ -201,6 +202,10 @@ export function useRoleplayLLM({
       abortControllerRef.current.abort()
       abortControllerRef.current = null
     }
+    // Generation runs server-side now, so dropping the local reader is not
+    // enough — the job would keep producing (and billing) until it finished.
+    // No-op on the direct transport.
+    void abortRemoteGeneration()
     useAppStore.getState().setStreaming(false)
   }, [])
 
