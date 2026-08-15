@@ -328,25 +328,103 @@ export function sanitizeHtml(html: string): string {
 }
 
 /**
- * Blocks holding at least this many direct-child <br> elements are treated as
- * a "wall of lines" (typical of content copied out of a web page) and split
- * into real paragraphs. A single isolated <br> is left alone: there it is
- * usually a deliberate soft break (address, verse, Shift+Enter).
+ * Blocks holding at least this many <br> line breaks are treated as a "wall of
+ * lines" (typical of content copied out of a web page) and split into real
+ * paragraphs. A single isolated <br> is left alone: there it is usually a
+ * deliberate soft break (address, verse, Shift+Enter).
  */
 const MIN_BRS_TO_SPLIT = 2
+
+/** Tags that may sit between a block and a <br> without ending the line flow. */
+const INLINE_TAGS = new Set([
+  'SPAN', 'STRONG', 'B', 'EM', 'I', 'U', 'S', 'A', 'FONT', 'SMALL', 'MARK',
+  'SUB', 'SUP', 'CODE', 'ABBR', 'LABEL', 'Q', 'CITE', 'TIME', 'VAR', 'SAMP',
+  'KBD', 'INS', 'DEL', 'BDI', 'BDO'
+])
+
+/** Anything that starts its own block box — a container holding one of these
+ * is not a leaf and is left to its children to normalize. */
+const BLOCK_SELECTOR =
+  'p,div,blockquote,section,article,aside,main,header,footer,ul,ol,li,table,tr,td,th,h1,h2,h3,h4,h5,h6,pre,figure,figcaption'
+
+/** Leaf blocks worth splitting. Headings and list items keep their <br>. */
+const SPLITTABLE_SELECTOR = 'p,div,blockquote,section,article,td'
+
+const MEDIA_SELECTOR = 'img,video,iframe,audio'
+
+/** A node worth keeping as its own paragraph: it carries text or media. */
+function carriesContent(node: Node): boolean {
+  if ((node.textContent || '').trim().length > 0) return true
+  if (node.nodeType === 1) {
+    const el = node as Element
+    // matches() must be checked too — querySelector only sees descendants, so
+    // an image alone on a line would otherwise be dropped.
+    return el.matches(MEDIA_SELECTOR) || el.querySelector(MEDIA_SELECTOR) !== null
+  }
+  if (node.nodeType === 11) {
+    return (node as DocumentFragment).querySelector(MEDIA_SELECTOR) !== null
+  }
+  return false
+}
+
+/** The <br>s that end a line *of this container* — i.e. every element between
+ * the <br> and the container is inline, so no nested block owns it. */
+function lineBreaksOf(container: Element): Element[] {
+  return Array.from(container.querySelectorAll('br')).filter((br) => {
+    let e = br.parentElement
+    while (e && e !== container && INLINE_TAGS.has(e.tagName)) e = e.parentElement
+    return e === container
+  })
+}
+
+/**
+ * Cut a container into paragraphs at its line breaks, emptying it.
+ *
+ * Uses Range.extractContents, which clones any partially-selected inline
+ * ancestors — that is what makes `<span>a<br>b</span>` become
+ * `<p><span>a</span></p><p><span>b</span></p>` instead of losing the span or
+ * being skipped entirely.
+ */
+function cutIntoParagraphs(doc: Document, container: Element): HTMLParagraphElement[] {
+  const paragraphs: HTMLParagraphElement[] = []
+  const wrap = (frag: DocumentFragment) => {
+    const p = doc.createElement('p')
+    p.appendChild(frag)
+    return p
+  }
+
+  for (let guard = 0; guard < 10000; guard++) {
+    const br = lineBreaksOf(container)[0]
+    if (!br) break
+    const range = doc.createRange()
+    range.setStart(container, 0)
+    range.setEndBefore(br)
+    const frag = range.extractContents()
+    br.remove()
+    if (carriesContent(frag)) paragraphs.push(wrap(frag))
+  }
+
+  const rest = doc.createDocumentFragment()
+  while (container.firstChild) rest.appendChild(container.firstChild)
+  if (carriesContent(rest)) paragraphs.push(wrap(rest))
+
+  return paragraphs
+}
 
 /**
  * Turn `<br>`-separated pseudo-paragraphs into real <p> blocks.
  *
- * Pasting from a web page often yields ONE block element containing hundreds
- * of <br> line breaks. That shape is bad for everything downstream: the whole
- * chapter becomes a single ProseMirror node (so any edit rebuilds all of it),
- * diffs cannot align on paragraphs, and the LLM sees one giant run-on block.
+ * Pasting from a web page yields a wall of <br> line breaks — sometimes inside
+ * one block, sometimes wrapped in <span>s, sometimes as a bare fragment with no
+ * block at all. That shape is bad for everything downstream: the chapter
+ * becomes a single ProseMirror node (so any edit rebuilds all of it), diffs
+ * cannot align on paragraphs, and the LLM sees one run-on block.
  *
- * Only <br> elements that are DIRECT children of a block are split on, so
- * inline formatting is never torn apart (`<strong>a<br>b</strong>` is left
- * intact). Runs of consecutive <br> collapse into a single paragraph break,
- * and empty groups never produce empty paragraphs.
+ * Handled shapes: `<p>a<br>b</p>`, `<div><span>a<br>b</span></div>`, and bare
+ * `a<br>b` with no wrapper. Runs of consecutive <br> collapse into one break,
+ * empty groups never become empty paragraphs, and a lone <br> stays a soft
+ * break. Nested blocks are left to their own pass, and headings/list items keep
+ * their <br> (a break there is usually deliberate).
  *
  * Parsing happens in the inert document produced by DOMParser, which has no
  * browsing context — embedded <img> elements are therefore never loaded or
@@ -356,46 +434,54 @@ export function normalizeBrParagraphs(html: string): string {
   if (!/<br/i.test(html)) return html
 
   const doc = new DOMParser().parseFromString(html, 'text/html')
-  const blocks = Array.from(doc.body.querySelectorAll('p, div'))
 
-  for (const block of blocks) {
-    const children = Array.from(block.childNodes)
-    const directBrs = children.filter(
-      (n) => n.nodeType === 1 && (n as Element).tagName === 'BR'
-    ).length
-    if (directBrs < MIN_BRS_TO_SPLIT) continue
+  // 1. Leaf blocks: split in place.
+  for (const block of Array.from(doc.body.querySelectorAll(SPLITTABLE_SELECTOR))) {
+    if (block.querySelector(BLOCK_SELECTOR)) continue // not a leaf; its children get their own pass
+    if (lineBreaksOf(block).length < MIN_BRS_TO_SPLIT) continue
 
-    // Group the block's children into runs separated by direct-child <br>.
+    const paragraphs = cutIntoParagraphs(doc, block)
+    if (paragraphs.length < 2) {
+      // Nothing gained — put the content back exactly where it was.
+      paragraphs.forEach((p) => {
+        while (p.firstChild) block.appendChild(p.firstChild)
+      })
+      continue
+    }
+    const frag = doc.createDocumentFragment()
+    paragraphs.forEach((p) => frag.appendChild(p))
+    block.replaceWith(frag)
+  }
+
+  // 2. Bare top-level runs: content pasted without any block wrapper. Existing
+  //    block children pass through untouched; only inline runs are wrapped.
+  const topBrs = Array.from(doc.body.childNodes).filter(
+    (n) => n.nodeType === 1 && (n as Element).tagName === 'BR'
+  )
+  if (topBrs.length >= MIN_BRS_TO_SPLIT) {
     const groups: Node[][] = [[]]
-    for (const node of children) {
+    for (const node of Array.from(doc.body.childNodes)) {
       if (node.nodeType === 1 && (node as Element).tagName === 'BR') {
         if (groups[groups.length - 1].length > 0) groups.push([])
       } else {
         groups[groups.length - 1].push(node)
       }
     }
-
-    // A group is worth keeping when it carries text OR embedded media. The
-    // media check must include the node ITSELF (querySelector only looks at
-    // descendants) — otherwise an image on its own line would be dropped.
-    const MEDIA = 'img,video,iframe'
-    const usable = groups.filter((g) =>
-      g.some((n) => {
-        if ((n.textContent || '').trim().length > 0) return true
-        if (n.nodeType !== 1) return false
-        const el = n as Element
-        return el.matches(MEDIA) || el.querySelector(MEDIA) !== null
-      })
-    )
-    if (usable.length < 2) continue
-
-    const frag = doc.createDocumentFragment()
-    for (const group of usable) {
-      const p = doc.createElement('p')
-      group.forEach((n) => p.appendChild(n))
-      frag.appendChild(p)
+    const rebuilt = doc.createDocumentFragment()
+    for (const group of groups) {
+      if (!group.some(carriesContent)) continue
+      const isBlockRun = group.some(
+        (n) => n.nodeType === 1 && (n as Element).matches(BLOCK_SELECTOR)
+      )
+      if (isBlockRun) {
+        group.forEach((n) => rebuilt.appendChild(n))
+      } else {
+        const p = doc.createElement('p')
+        group.forEach((n) => p.appendChild(n))
+        rebuilt.appendChild(p)
+      }
     }
-    block.replaceWith(frag)
+    doc.body.replaceChildren(rebuilt)
   }
 
   return doc.body.innerHTML

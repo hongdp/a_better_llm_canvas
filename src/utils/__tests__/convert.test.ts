@@ -350,9 +350,32 @@ describe('normalizeBrParagraphs', () => {
     expect(out).toBe('<p>a</p><p>b</p><p>c</p>')
   })
 
-  it('never splits a <br> nested inside inline formatting', () => {
-    const html = '<p><strong>a<br>b<br>c</strong></p>'
-    expect(normalizeBrParagraphs(html)).toBe(html)
+  it('splits through inline wrappers, cloning the formatting into each paragraph', () => {
+    // Web copy usually wraps lines in <span>/<strong>; the break still ends a
+    // line, so it must split — with the formatting preserved on both sides.
+    expect(normalizeBrParagraphs('<p><strong>a<br>b<br>c</strong></p>'))
+      .toBe('<p><strong>a</strong></p><p><strong>b</strong></p><p><strong>c</strong></p>')
+    expect(normalizeBrParagraphs('<div><span>一<br>二<br>三</span></div>'))
+      .toBe('<p><span>一</span></p><p><span>二</span></p><p><span>三</span></p>')
+  })
+
+  it('splits a bare top-level run with no block wrapper', () => {
+    expect(normalizeBrParagraphs('一<br>二<br>三')).toBe('<p>一</p><p>二</p><p>三</p>')
+  })
+
+  it('leaves <br> inside headings and list items alone', () => {
+    const h = '<h2>标题<br>副标题<br>第三行</h2>'
+    expect(normalizeBrParagraphs(h)).toBe(h)
+    const li = '<ul><li>a<br>b<br>c</li></ul>'
+    expect(normalizeBrParagraphs(li)).toBe(li)
+  })
+
+  it('splits leaf blocks inside a wrapper without disturbing the wrapper', () => {
+    expect(normalizeBrParagraphs('<div><p>a<br>b<br>c</p><p>d</p></div>'))
+      .toBe('<div><p>a</p><p>b</p><p>c</p><p>d</p></div>')
+    // A lone <br> in the inner block stays a soft break.
+    expect(normalizeBrParagraphs('<div><p>a<br>b</p><p>c</p></div>'))
+      .toBe('<div><p>a<br>b</p><p>c</p></div>')
   })
 
   it('converts <br>-separated divs into paragraphs and keeps inline markup', () => {
