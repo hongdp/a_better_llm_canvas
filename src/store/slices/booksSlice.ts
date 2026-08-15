@@ -6,6 +6,7 @@ import { localStorage, safeIndexedDBSet, saveDocumentsToIndexedDB } from '../per
 import { loadSavedConfigs, mergeProviderConfigs, saveConfigsToCookie, saveSystemPromptsToCookie } from '../settingsPersistence'
 import { clearPendingSave, getIsInitialized, setIsInitialized } from '../syncRuntime'
 import { carryOverLocalSummaries } from '../serverSync'
+import { normalizeBrParagraphs } from '../../utils/convert'
 
 // Fields of each document as last successfully PUT to the server, keyed by
 // doc id. Lets syncToServer skip unchanged chapters (see the comment at the
@@ -275,9 +276,12 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
               const docRes = await fetch(`/api/books/${id}/documents/${activeDocId}`)
               if (docRes.ok) {
                 const docData = await docRes.json()
+                // Normalize on ingestion (see contentLoader): a chapter stored
+                // as a <br> wall heals itself the first time it loads.
+                const loadedContent = normalizeBrParagraphs(docData.content || '')
                 useAppStore.setState((s) => ({
                   documents: s.documents.map(d =>
-                    d.id === activeDocId ? { ...d, content: docData.content, contentLoaded: true } : d
+                    d.id === activeDocId ? { ...d, content: loadedContent, contentLoaded: true } : d
                   )
                 }))
                 saveDocumentsToIndexedDB(useAppStore.getState().documents, true)

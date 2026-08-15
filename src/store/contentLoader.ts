@@ -9,6 +9,7 @@
  * `ensureDocumentContents` action wraps these helpers to close that hole.
  */
 import type { CanvasDocument } from '../types/document'
+import { normalizeBrParagraphs } from '../utils/convert'
 
 /** The subset of CanvasDocument the loader needs to inspect. */
 export type LoadableDoc = Pick<CanvasDocument, 'id' | 'contentLoaded'>
@@ -56,7 +57,11 @@ export async function loadDocumentContents(
         if (!res.ok) return
         const data = await res.json()
         if (data && typeof data.content === 'string') {
-          deps.onLoaded(id, data.content)
+          // Paragraph shape is normalized on the way IN, so a chapter stored
+          // as a <br> wall (older imports, other clients) heals itself the
+          // first time it loads. normalizeBrParagraphs early-returns on
+          // content without <br>, so the common path costs one regex test.
+          deps.onLoaded(id, normalizeBrParagraphs(data.content))
         }
       } catch (e) {
         console.error('[ContentLoader] Failed to load document content', id, e)

@@ -15,6 +15,7 @@ import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, loadDocum
 import { MOCK_DOCUMENTS } from './defaults'
 import { loadSavedConfigs, mergeProviderConfigs, saveConfigsToCookie, saveSystemPromptsToCookie } from './settingsPersistence'
 import { getIsInitialized, setIsInitialized } from './syncRuntime'
+import { normalizeBrParagraphs } from '../utils/convert'
 import { useAppStore } from './useAppStore'
 
 /**
@@ -202,9 +203,12 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
               const docRes = await fetch(`/api/books/${activeBookId}/documents/${activeDocId}`)
               if (docRes.ok) {
                 const docData = await docRes.json()
+                // Normalize on ingestion (see contentLoader): a chapter stored
+                // as a <br> wall heals itself the first time it loads.
+                const loadedContent = normalizeBrParagraphs(docData.content || '')
                 useAppStore.setState((s) => ({
                   documents: s.documents.map(d =>
-                    d.id === activeDocId ? { ...d, content: docData.content, contentLoaded: true } : d
+                    d.id === activeDocId ? { ...d, content: loadedContent, contentLoaded: true } : d
                   )
                 }))
                 saveDocumentsToIndexedDB(useAppStore.getState().documents, true)
