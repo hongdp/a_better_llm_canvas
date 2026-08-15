@@ -312,20 +312,3 @@
   border-left: none;
   box-shadow: none;
 }
-
-/* Firefox-only, mobile-only: skip layout of off-viewport blocks in large
- * documents. Problem: Firefox on Android froze for seconds when deleting a
- * large tail selection in a big chapter — native single-threaded reflow of
- * the whole contenteditable; Chrome (incremental layout) and desktop CPUs
- * don't show it, and JS-level probes measured the app work as cheap.
- * Fix: content-visibility lets Gecko lay out only near-viewport blocks.
- * contain-intrinsic-size keeps scrollbar/scroll-anchoring stable. Scoped to
- * Gecko via @supports and to phone/tablet layouts to minimize blast radius. */
-@supports (-moz-appearance: none) {
-  .layout-portrait .ProseMirror > *,
-  .layout-landscape .ProseMirror > *,
-  .layout-tablet-square .ProseMirror > * {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 2.2rem;
-  }
-}
