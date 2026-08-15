@@ -30,7 +30,7 @@ import {
 import { useAppStore } from '../store/useAppStore'
 // TipTap extension definitions live in editorExtensions.ts so this file only
 // exports components (react-refresh/only-export-components).
-import { IndentExtension, DiffAddition, DiffDeletion, CustomImage, BlurredSelection } from './editorExtensions'
+import { IndentExtension, DiffAddition, DiffDeletion, CustomImage, BlurredSelection, ParagraphsFromLineBreaks } from './editorExtensions'
 
 interface EditorProps {
   content: string
@@ -99,6 +99,7 @@ export const Editor: React.FC<EditorProps> = ({
       BlurredSelection,
       IndentExtension,
       CustomImage,
+      ParagraphsFromLineBreaks,
     ],
     // Problem: mobile Firefox froze for seconds after edits (worst on bulk
     //   deletes) in large chapters. Native spellcheck/autocorrect re-scan

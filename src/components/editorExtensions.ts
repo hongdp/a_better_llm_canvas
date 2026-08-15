@@ -196,3 +196,81 @@ export const BlurredSelection = Extension.create({
     ]
   }
 })
+
+/**
+ * A paragraph holding at least this many hard breaks is a pasted "wall of
+ * lines", not deliberate soft breaks. Mirrors MIN_BRS_TO_SPLIT in
+ * utils/convert so both layers agree on what counts as a wall.
+ */
+const MIN_BREAKS_TO_SPLIT = 2
+
+/**
+ * Split paragraphs that accumulate hard breaks into real paragraphs.
+ *
+ * Problem: normalizing `<br>` walls in transformPastedHTML only covers real
+ *   clipboard paste events. On Android, pasting through the keyboard/IME
+ *   arrives as `beforeinput` with inputType "insertText" and the newlines
+ *   inline in `data` — no paste event, no clipboardData — so ProseMirror
+ *   turned 150+ newlines into hard breaks inside ONE paragraph and the HTML
+ *   normalizer never ran. (Measured on-device: inputType "insertText",
+ *   data with 151 newlines, clipboardData null.)
+ * Fix: do it at the document level instead of the input level, where every
+ *   entry path converges — clipboard paste, IME commit, drag & drop and
+ *   programmatic inserts all end up as a transaction.
+ *
+ * Idempotent: after splitting, no paragraph holds enough breaks to qualify,
+ * so the appended transaction never re-triggers itself. A single break is
+ * left alone — there it is usually a deliberate soft break.
+ */
+export const ParagraphsFromLineBreaks = Extension.create({
+  name: 'paragraphsFromLineBreaks',
+
+  addProseMirrorPlugins() {
+    return [
+      new Plugin({
+        key: new PluginKey('paragraphsFromLineBreaks'),
+        appendTransaction: (transactions, _oldState, newState) => {
+          if (!transactions.some(tr => tr.docChanged)) return null
+
+          const paragraph = newState.schema.nodes.paragraph
+          const hardBreak = newState.schema.nodes.hardBreak
+          if (!paragraph || !hardBreak) return null
+
+          const targets: { pos: number; node: typeof newState.doc }[] = []
+          newState.doc.descendants((node, pos) => {
+            if (node.type !== paragraph) return true
+            let breaks = 0
+            node.forEach(child => { if (child.type === hardBreak) breaks++ })
+            if (breaks >= MIN_BREAKS_TO_SPLIT) targets.push({ pos, node })
+            return false // paragraphs hold inline content only
+          })
+          if (targets.length === 0) return null
+
+          const tr = newState.tr
+          // Rewrite from the end so earlier positions stay valid.
+          for (let i = targets.length - 1; i >= 0; i--) {
+            const { pos, node } = targets[i]
+            const paragraphs: typeof node[] = []
+            let run: typeof node[] = []
+            const flush = () => {
+              // Empty runs (consecutive breaks) never become empty paragraphs.
+              if (run.length > 0) {
+                paragraphs.push(paragraph.create(node.attrs, run))
+                run = []
+              }
+            }
+            node.forEach(child => {
+              if (child.type === hardBreak) flush()
+              else run.push(child)
+            })
+            flush()
+            if (paragraphs.length < 2) continue
+            tr.replaceWith(pos, pos + node.nodeSize, paragraphs)
+          }
+
+          return tr.docChanged ? tr : null
+        }
+      })
+    ]
+  }
+})
