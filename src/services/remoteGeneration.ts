@@ -151,7 +151,12 @@ async function attachToJob(
         return
       }
 
-      if (event.type === 'delta') {
+      if (event.type === 'attached') {
+        // The stream is live but the model has not spoken yet. Sent so the UI
+        // can tell "connected, waiting" from "nothing is happening" — see the
+        // header-flush note in server_generation._job_event_stream.
+        callbacks.onAttached?.()
+      } else if (event.type === 'delta') {
         const text = event.text || ''
         if (!text) return
         fullText += text
@@ -207,7 +212,7 @@ function clearActiveJob(jobId: string): void {
  */
 export async function startRemoteGeneration(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string },
+  config: ProviderConfig & { provider: string; conversationId?: string },
   meta: RemoteJobMeta,
   callbacks: StreamCallbacks,
   signal?: AbortSignal
@@ -224,7 +229,12 @@ export async function startRemoteGeneration(
           model: config.model,
           baseUrl: config.baseUrl,
           maxOutputTokens: config.maxOutputTokens,
-          geminiSafetySettings: config.geminiSafetySettings
+          geminiSafetySettings: config.geminiSafetySettings,
+          // Forwarded, not dropped: the backend turns this into xAI's
+          // x-grok-conv-id, which routes the turn to the same prompt-cache
+          // shard. Omitting it silently made every turn a full-price,
+          // full-latency prefill once generation moved server-side.
+          conversationId: config.conversationId
         },
         messages,
         meta
