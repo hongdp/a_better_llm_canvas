@@ -267,6 +267,95 @@ def _sse_payloads(chunks):
 
 # ── Registry lifecycle ────────────────────────────────────────────────────────
 
+class _FakeRequest:
+    """Minimal stand-in: the models endpoint only reads auth + the JSON body."""
+    def __init__(self, payload):
+        self._payload = payload
+
+    async def json(self):
+        return self._payload
+
+
+@pytest.fixture
+def _stub_models_auth(monkeypatch):
+    """Auth is covered by its own tests; these exercise the listing logic.
+    NOT autouse — patching it module-wide broke the cross-user 404 test."""
+    monkeypatch.setattr(server_generation, "get_authenticated_username", lambda request: "alice")
+
+
+def test_models_endpoint_normalizes_both_dialects(monkeypatch, _stub_models_auth):
+    """The browser cannot reach a plain-http local endpoint from an HTTPS page
+    (mixed content), so the backend lists models on its behalf."""
+    from contextlib import asynccontextmanager
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+        def raise_for_status(self):
+            pass
+        def json(self):
+            return self._payload
+
+    async def run(payload):
+        captured = {}
+
+        class _Client:
+            def __init__(self, **kw):
+                pass
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, *a):
+                return False
+            async def get(self, url):
+                captured["url"] = url
+                return _Resp(payload)
+
+        monkeypatch.setattr(server_generation.httpx, "AsyncClient", _Client)
+        request = _FakeRequest({"baseUrl": "http://127.0.0.1:8090/v1"})
+        result = await server_generation.list_provider_models(request)
+        return result, captured
+
+    # Ollama's own shape.
+    result, captured = asyncio.run(run({"models": [{"name": "qwen3.8-27b-uncensored"}]}))
+    assert result == {"models": ["qwen3.8-27b-uncensored"]}
+    assert captured["url"] == "http://127.0.0.1:8090/v1/models"
+
+    # OpenAI's shape.
+    result, _ = asyncio.run(run({"data": [{"id": "local-a"}, {"id": "local-b"}]}))
+    assert result == {"models": ["local-a", "local-b"]}
+
+
+def test_models_endpoint_refuses_non_local_hosts(_stub_models_auth):
+    """Without this the endpoint is an open SSRF proxy: the caller picks the URL."""
+    for base in ("http://evil.example.com/v1", "https://169.254.169.254/latest", "file:///etc/passwd"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(server_generation.list_provider_models(_FakeRequest({"baseUrl": base})))
+        assert exc.value.status_code == 400
+
+
+def test_models_endpoint_reports_an_unreachable_server_as_empty(_stub_models_auth):
+    """No local server running is the normal case, not an error."""
+    class _Boom:
+        def __init__(self, **kw):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def get(self, url):
+            raise OSError("connection refused")
+
+    original = server_generation.httpx.AsyncClient
+    server_generation.httpx.AsyncClient = _Boom
+    try:
+        result = asyncio.run(server_generation.list_provider_models(
+            _FakeRequest({"baseUrl": "http://127.0.0.1:9999/v1"})
+        ))
+    finally:
+        server_generation.httpx.AsyncClient = original
+    assert result == {"models": []}
+
+
 def test_generation_job_lifecycle_buffers_and_finishes():
     job = server_generation.registry.create("alice", {"kind": "chat"})
     assert job.status == "running"

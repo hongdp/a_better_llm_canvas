@@ -76,6 +76,24 @@ describe('useModelFetcher — local endpoint discovery', () => {
     unmount()
   })
 
+  // Regression: the backend normalizes to plain strings, and the client parser
+  // read `.name` off each entry — undefined for a string, so the list came back
+  // empty and the dropdown silently kept its hardcoded contents. Each side was
+  // tested against its own fixture; nothing covered the seam.
+  it("reads the backend's already-normalized {models:[string]}", async () => {
+    globalThis.fetch = vi.fn(async (url: RequestInfo | URL) =>
+      String(url).includes('/api/models')
+        ? ({ ok: true, json: async () => ({ models: ['qwen3.8-27b-uncensored'] }) } as Response)
+        : ({ ok: false, json: async () => ({}) } as Response)
+    ) as typeof fetch
+
+    const unmount = renderFetcher()
+    await flush()
+
+    expect(useAppStore.getState().availableOllamaModels).toEqual(['qwen3.8-27b-uncensored'])
+    unmount()
+  })
+
   it('replaces a configured model the endpoint does not serve', async () => {
     // Otherwise every send 404s against a name left over from another endpoint.
     globalThis.fetch = vi.fn(async () =>
