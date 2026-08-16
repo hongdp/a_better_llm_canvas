@@ -298,6 +298,8 @@ export interface ParsedAssistantResponse {
  * warnings).
  */
 export function parseAssistantResponse(fullText: string): ParsedAssistantResponse {
+  // The status trailer is protocol; it never reaches the bubble or the doc.
+  fullText = stripDocStatus(fullText)
   const result: ParsedAssistantResponse = {
     kind: 'chat',
     chatText: fullText,
@@ -636,23 +638,115 @@ export const convertGifToJpegIfNeeded = (dataUrl: string): Promise<string> => {
  * a genuine chat answer is usually longer, and a clarifying question (the
  * legitimate short reply) ends in a question mark.
  */
-export function looksLikeUnfulfilledDocumentUpdate(fullText: string): boolean {
-  const text = fullText.trim()
-  if (!text) return false
-  // Edit markup that did not parse. The caller only asks about responses that
-  // produced no document action, so reaching here with conflict markers means
-  // the model tried to edit in a shape parseEditBlocks rejected — a real
-  // failure, whatever its length, and the raw markers would otherwise be
-  // dumped into the chat as if they were prose.
-  if (/<edits?\b|<{5,}\s*SEARCH/i.test(text)) return true
-  // A short reply is the signature: real prose runs long, this failure mode
-  // is a single sentence of "done".
-  if (text.length > 200) return false
-  // A question is the model asking for direction — a valid short answer.
-  if (/[?？]\s*$/.test(text)) return false
-  // Bulleted/numbered clarification menus ("tell me: 1. genre 2. characters").
-  if (/^\s*(?:[-*•]|\d+[.)])\s/m.test(text)) return false
+/**
+ * Phrases where the model asserts it changed the document. Detecting the
+ * CLAIM is the point: whether an edit was warranted is the model's call, but
+ * "I updated it" with no markup is always a broken turn.
+ */
+/**
+ * The model's own declaration of what it did to the document.
+ *
+ * Every reply ends with `<doc_status>updated|unchanged</doc_status>` (see
+ * systemPrompt.ts). This is the ONLY reliable read on intent: the client
+ * cannot know whether a request warranted an edit, and matching prose in two
+ * languages only ever approximated it. A declaration that disagrees with the
+ * emitted markup is the failure we actually want to catch.
+ *
+ * Returns null when the model omitted the trailer, which older/smaller models
+ * do — callers fall back to the prose heuristic below.
+ */
+const DOC_STATUS_RE = /<doc_status>\s*(updated|unchanged)\s*<\/doc_status>/i
+
+export type DocStatusDeclaration = 'updated' | 'unchanged'
+
+export function parseDocStatus(fullText: string): DocStatusDeclaration | null {
+  const m = DOC_STATUS_RE.exec(fullText || '')
+  return m ? (m[1].toLowerCase() as DocStatusDeclaration) : null
+}
+
+/**
+ * Remove the declaration from text headed for the chat bubble — it is
+ * protocol, not something the user should read. Also swallows a trailer that
+ * is still arriving, so it does not flicker through the live bubble one
+ * character at a time.
+ */
+const TRAILER_OPEN = '<doc_status>'
+const TRAILER_CLOSE = '</doc_status>'
+
+/** Is this trailing fragment the beginning of a declaration and nothing else? */
+function isPartialTrailer(tail: string): boolean {
+  const t = tail.toLowerCase()
+  if (TRAILER_OPEN.startsWith(t)) return true
+  const m = /^<doc_status>\s*([a-z]*)(<\/?[a-z_]*)?$/.exec(t)
+  if (!m) return false
+  const [, word, close] = m
+  if (word && !'updated'.startsWith(word) && !'unchanged'.startsWith(word)) return false
+  if (close && !TRAILER_CLOSE.startsWith(close)) return false
   return true
+}
+
+export function stripDocStatus(text: string): string {
+  let out = (text || '').replace(DOC_STATUS_RE, '')
+  const lt = out.lastIndexOf('<')
+  // A lone '<' is indistinguishable from prose, so it is left alone; it is
+  // visible for at most one chunk.
+  if (lt !== -1 && lt < out.length - 1 && isPartialTrailer(out.slice(lt))) {
+    out = out.slice(0, lt)
+  }
+  return out.trimEnd()
+}
+
+const DOCUMENT_CLAIM_PATTERNS = [
+  // English
+  /\b(i(?:'ve| have)?\s+(?:just\s+)?(?:updated|rewritten|rewrote|revised|edited|expanded|shortened|added|inserted|removed|deleted|replaced|polished|translated|continued|drafted|restructured))\b/i,
+  /\b(updated|rewritten|revised|edited|added to|expanded|shortened)\s+(?:the\s+)?(document|chapter|section|paragraph|text|canvas)\b/i,
+  /\b(here(?:'s| is)\s+the\s+(?:updated|revised|rewritten|new)\b)/i,
+  /\b(done|all set)\b[^.!?]{0,20}\b(document|chapter|section|paragraph|edit|change)/i,
+  /\b(the (?:document|chapter|text) (?:is|has been) (?:now )?(?:updated|revised|rewritten|changed))\b/i,
+  // Chinese. One general rule: a completion marker (已/已经) followed, within
+  // the same clause, by a verb that only makes sense if the document changed.
+  // Models phrase this endlessly ("已按大纲接上第二章"), so matching whole
+  // canned sentences never held up.
+  /已(?:经)?[^。！？；\n]{0,10}?(?:更新|改写|重写|修改|润色|扩写|续写|写好|写完|写入|改好|改完|接上|补上|补全|补充|添加|加入|插入|删除|替换|翻译|调整|整理|落笔|完成)(?![^。！？\n]{0,6}[吗嘛？])/,
+  /(?:文档|章节|段落|正文|全文)(?:已|已经)/,
+  /(改好了|写好了|加上了|删掉了|替换好了)/
+]
+
+/**
+ * Did this reply FAIL to deliver a document update it should have delivered?
+ *
+ * Two failure modes, both about the model's own output rather than about what
+ * the user asked for:
+ *  - 'malformed' — edit markup that the parser rejected. The model tried to
+ *    edit and got the shape wrong.
+ *  - 'claimed'   — the model states it changed the document while emitting no
+ *    document markup at all.
+ *
+ * Deliberately NOT a guess at user intent. An earlier version retried any
+ * short reply, so ordinary conversation ("does this read well?") burned three
+ * extra generations and ended in a warning about a failure that never
+ * happened. Whether an edit is warranted is the model's call; what the client
+ * can judge is whether the model's own claim matches its own output.
+ *
+ * Callers pass the FULL response text and only ask when no document action
+ * was parsed out of it.
+ */
+export function detectFailedDocumentUpdate(fullText: string): 'malformed' | 'claimed' | null {
+  const text = (fullText || '').trim()
+  if (!text) return null
+  if (/<edits?\b|<{5,}\s*SEARCH/i.test(text)) return 'malformed'
+  // An unclosed action tag: the model started the markup and never finished.
+  if (/<(?:canvas|selection_replace)\b/i.test(text)) return 'malformed'
+
+  // The declaration outranks the prose heuristic in BOTH directions: it both
+  // catches claims the patterns would miss and silences false positives on a
+  // reply that deliberately changed nothing.
+  const declared = parseDocStatus(text)
+  if (declared === 'unchanged') return null
+  if (declared === 'updated') return 'claimed'
+
+  if (DOCUMENT_CLAIM_PATTERNS.some(re => re.test(text))) return 'claimed'
+  return null
 }
 
 /**

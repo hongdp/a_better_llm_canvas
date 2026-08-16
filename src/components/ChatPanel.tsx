@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import { 
-  Send, Trash2, AlertCircle, Paperclip, X, SquarePen, ChevronDown, ChevronUp, Image, Square, Clipboard, RefreshCw, Swords
+  Send, Trash2, AlertCircle, Paperclip, X, SquarePen, ChevronDown, ChevronUp, Image, Square, Clipboard, Swords
 } from 'lucide-react'
+import { StreamingStatus } from './StreamingStatus'
+import { ASSISTANT_PLACEHOLDER } from '../hooks/chat/streamHandlers'
 import { useAppStore } from '../store/useAppStore'
 import { convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from '../utils/text'
 import { selectReferenceChapters, type SelectionResult } from '../utils/contextSelection'
@@ -156,6 +158,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, chatEndRef])
 
+
+  // The model has produced nothing yet: the bubble still holds the placeholder.
+  // Worth distinguishing — the first token can be tens of seconds away.
+  const lastMessage = messages[messages.length - 1]
+  const waitingForFirstToken =
+    lastMessage?.role === 'assistant' && lastMessage.content === ASSISTANT_PLACEHOLDER
 
   return (
     <>
@@ -333,10 +341,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           )
         })}
         {isStreaming && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
-            <RefreshCw size={12} className="animate-spin" />
-            <span>{roleplayMode ? '🎲 Game Master is narrating...' : `${getProviderLabel(activeProvider)} ${t.app.streamingChanges}`}</span>
-          </div>
+          <StreamingStatus
+            waiting={waitingForFirstToken}
+            waitingLabel={roleplayMode
+              ? `🎲 ${t.app.waitingFirstToken}`
+              : `${getProviderLabel(activeProvider)} ${t.app.waitingFirstToken}`}
+            label={roleplayMode
+              ? '🎲 Game Master is narrating...'
+              : `${getProviderLabel(activeProvider)} ${t.app.streamingChanges}`}
+          />
         )}
         <div ref={chatEndRef} />
       </div>

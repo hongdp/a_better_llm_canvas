@@ -295,6 +295,25 @@ def test_generation_job_lifecycle_buffers_and_finishes():
     assert job.buffer == "Hello world"
 
 
+def test_generation_records_time_to_first_token_once():
+    """The one number that separates provider prefill from our own latency."""
+    job = server_generation.registry.create("alice", {})
+    assert job.first_delta_latency is None
+
+    job.append("first")
+    latency = job.first_delta_latency
+    assert latency is not None and latency >= 0
+
+    # Later deltas must not overwrite it — it is time to FIRST token.
+    job.append("second")
+    assert job.first_delta_latency == latency
+
+    # An empty delta is not a token.
+    fresh = server_generation.registry.create("alice", {})
+    fresh.append("")
+    assert fresh.first_delta_latency is None
+
+
 def test_generation_buffer_cap_marks_truncated_but_keeps_streaming():
     job = _new_job()
     cap = server_generation.MAX_BUFFER_CHARS
@@ -311,6 +330,22 @@ def test_generation_buffer_cap_marks_truncated_but_keeps_streaming():
 
 # ── Replay from an offset ─────────────────────────────────────────────────────
 
+def test_generation_stream_announces_itself_before_any_token():
+    """Headers flush with the first body chunk, so a slow model used to leave
+    the client with 15s of dead air (SSE_HEARTBEAT_SECONDS) and no way to tell
+    a live stream from a stalled one."""
+    async def scenario():
+        job = server_generation.registry.create("alice", {})
+        job.append("late text")
+        job.finish("done")
+        return [ev async for ev in server_generation._job_event_stream(job, 0)]
+
+    events = _sse_payloads(asyncio.run(scenario()))
+    assert events[0] == {"type": "attached", "offset": 0, "status": "done"}
+    # The announcement carries no text and advances no offset.
+    assert events[1] == {"type": "delta", "text": "late text", "offset": 9}
+
+
 def test_generation_stream_replay_has_no_duplicates_and_no_gaps():
     """A reader that dies mid-stream and re-attaches at its last offset sees
     every character exactly once."""
@@ -320,6 +355,7 @@ def test_generation_stream_replay_has_no_duplicates_and_no_gaps():
 
         first = server_generation._job_event_stream(job, 0)
         seen = []
+        seen.append(await anext(first))          # "attached" announcement
         seen.append(await anext(first))          # replay of "Hello "
         job.append("brave ")
         seen.append(await anext(first))          # live delta
@@ -339,6 +375,8 @@ def test_generation_stream_replay_has_no_duplicates_and_no_gaps():
 
     events = asyncio.run(scenario())
 
+    # Every attach announces itself first; the announcement carries no text.
+    assert [e["type"] for e in events if e["type"] == "attached"] == ["attached", "attached"]
     deltas = [e for e in events if e["type"] == "delta"]
     assert "".join(d["text"] for d in deltas) == "Hello brave world"
     # Offsets are monotonic and equal the buffer length after each event.
@@ -360,10 +398,11 @@ def test_generation_stream_attaching_to_finished_job_replays_everything():
         return [ev async for ev in server_generation._job_event_stream(job, 0)]
 
     events = _sse_payloads(asyncio.run(scenario()))
-    assert events[0] == {"type": "delta", "text": "done text", "offset": 9}
-    assert events[1]["type"] == "error"
-    assert events[1]["message"] == "boom"
-    assert events[1]["offset"] == 9
+    assert events[0]["type"] == "attached"
+    assert events[1] == {"type": "delta", "text": "done text", "offset": 9}
+    assert events[2]["type"] == "error"
+    assert events[2]["message"] == "boom"
+    assert events[2]["offset"] == 9
 
 
 def test_generation_stream_from_current_offset_replays_nothing():
@@ -374,7 +413,7 @@ def test_generation_stream_from_current_offset_replays_nothing():
         return [ev async for ev in server_generation._job_event_stream(job, 16)]
 
     events = _sse_payloads(asyncio.run(scenario()))
-    assert [e["type"] for e in events] == ["done"]
+    assert [e["type"] for e in events] == ["attached", "done"]
 
 
 # ── Abort ─────────────────────────────────────────────────────────────────────

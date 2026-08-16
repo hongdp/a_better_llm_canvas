@@ -276,6 +276,62 @@ describe('useChatLLM — no-action retry', () => {
     harness.unmount()
   })
 
+  it('retries when the model declares an update it did not emit', async () => {
+    // Neutral prose: only the model's own declaration exposes the broken turn.
+    responses.push('嗯。\n<doc_status>updated</doc_status>')
+    responses.push('好了。\n<canvas><p>DECLARED_FIX</p></canvas>\n<doc_status>updated</doc_status>')
+    const harness = renderChatHook()
+
+    await send(harness, '随便看看')
+
+    expect(calls).toHaveLength(2)
+    expect(activeContent()).toContain('DECLARED_FIX')
+    // The declaration is protocol — the user never sees it.
+    expect(assistantBubble()).toEqual(['好了。'])
+    harness.unmount()
+  })
+
+  it('trusts a declared non-edit over claim-shaped prose', async () => {
+    responses.push('你已经把这段改好了，读起来顺多了。\n<doc_status>unchanged</doc_status>')
+    const harness = renderChatHook()
+
+    await send(harness, '再改改这段')
+
+    expect(calls).toHaveLength(1)
+    expect(assistantBubble()).toEqual(['你已经把这段改好了，读起来顺多了。'])
+    expect(activeContent()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+
+  it('retries broken edit markup even when the request read like a question', async () => {
+    // The model's own output is the signal: it tried to edit and got the shape
+    // wrong, so the turn is broken no matter how the request was phrased.
+    responses.push('<edit>\n<<<<<<< SEARCH\n<p>old text</p>\n(mangled)')
+    responses.push('好了。\n<canvas><p>FIXED_MARKUP</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '你觉得这段怎么样')
+
+    expect(calls).toHaveLength(2)
+    expect(activeContent()).toContain('FIXED_MARKUP')
+    harness.unmount()
+  })
+
+  it('lets the model decline to edit — a tag-free reply with no claim stands', async () => {
+    // Deciding whether the document needs changing is the model's call. We do
+    // not re-read the request to second-guess it; this reply is self-consistent
+    // (it claims nothing), so it ships as chat even though the user said "改".
+    responses.push('流式测试正常，本次无需改文档。')
+    const harness = renderChatHook()
+
+    await send(harness, '改一下这段')
+
+    expect(calls).toHaveLength(1)
+    expect(assistantBubble()).toEqual(['流式测试正常，本次无需改文档。'])
+    expect(activeContent()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+
   it('does not retry a substantive chat answer that made no document change', async () => {
     const answer = '关于后续走向，我建议把冲突集中在三条线上，'.repeat(12)
     responses.push(answer)

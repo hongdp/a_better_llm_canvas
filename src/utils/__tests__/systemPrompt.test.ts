@@ -52,6 +52,34 @@ describe('buildChatSystemPrompt', () => {
     expect(FORMAT_PROTOCOL_REMINDER).toContain('<canvas>, <edit>, or <selection_replace>')
   })
 
+  // The system prompt is the wire protocol; writing guidance belongs to the
+  // user's preset and their message. Persona or style rules here compete with
+  // the user's own instructions, and the user always loses (theirs sit in the
+  // middle of the prompt, ours sit at both ends).
+  it('carries no persona, task, or style guidance', () => {
+    const prompt = buildChatSystemPrompt({ includeChapterLookup: true })
+    for (const forbidden of [
+      /elite/i,
+      /creative writing assistant/i,
+      /you help authors/i,
+      /beautifully/i,
+      /helpful assistant/i
+    ]) expect(prompt, String(forbidden)).not.toMatch(forbidden)
+  })
+
+  it('states the protocol-only boundary up front', () => {
+    const prompt = buildChatSystemPrompt({ includeChapterLookup: false })
+    expect(prompt).toContain('defines ONLY how to exchange data with it')
+  })
+
+  it('requires a status declaration on every reply', () => {
+    const prompt = buildChatSystemPrompt({ includeChapterLookup: false })
+    expect(prompt).toContain('<doc_status>updated</doc_status>')
+    expect(prompt).toContain('<doc_status>unchanged</doc_status>')
+    // The decision is the model's; the app only checks the declaration.
+    expect(prompt).toContain('the choice of whether to edit is yours')
+  })
+
   it('is deterministic — the prefix is stable for provider prompt caching', () => {
     const a = buildChatSystemPrompt({ customInstructions: 'Voice: terse.', includeChapterLookup: true })
     const b = buildChatSystemPrompt({ customInstructions: 'Voice: terse.', includeChapterLookup: true })

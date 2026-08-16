@@ -24,6 +24,7 @@ export const zh: TranslationDictionary = {
     expandChat: '展开对话',
     saveAndSubmit: '保存并提交',
     streamingChanges: '正在生成中...',
+    waitingFirstToken: '正在思考，等待首个回复...',
     referenceContext: '参考上下文 (可选):',
     referencePinnedHint: '已固定：总是附加。点击可屏蔽自动附加。',
     referenceBlockedHint: '已屏蔽：永不自动附加。点击可恢复。',

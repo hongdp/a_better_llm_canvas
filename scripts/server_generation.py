@@ -125,9 +125,16 @@ class GenerationJob:
         self.error: Optional[str] = None
         self.created_at = _now_iso()
         self.updated_at = self.created_at
+        # Time-to-first-token, measured from job creation. The only number that
+        # separates provider prefill (large contexts cost seconds before the
+        # first byte) from latency this app added; logged once per job.
+        self.created_monotonic = _monotonic()
+        self.first_delta_latency: Optional[float] = None
         self.finished_at: Optional[float] = None  # monotonic, drives retention
         self.abort_requested = False
         self.task: Optional[asyncio.Task] = None
+        #: Prompt size in characters, for reading the latency line in context.
+        self.input_chars = 0
         # One queue per attached SSE reader. Everything here runs on the single
         # event loop, so plain set mutation is safe without a lock.
         self.subscribers: set = set()
@@ -137,6 +144,12 @@ class GenerationJob:
         """Buffer a provider delta and wake every attached reader."""
         if not text or self.status != "running":
             return
+        if self.first_delta_latency is None:
+            self.first_delta_latency = _monotonic() - self.created_monotonic
+            logger.info(
+                "Job %s first token after %.2fs (%s chars of input)",
+                self.job_id, self.first_delta_latency, self.input_chars,
+            )
         self.length += len(text)
         remaining = MAX_BUFFER_CHARS - len(self.buffer)
         if remaining > 0:
@@ -742,6 +755,19 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
     terminal = job.terminal_event() if job.status != "running" else None
 
     try:
+        # Flush the response headers immediately.
+        #
+        # Problem: the client saw NOTHING for 15s after attaching — measured on
+        #   a real turn, twice, at exactly SSE_HEARTBEAT_SECONDS.
+        # Root cause: the HTTP response headers are written with the first body
+        #   chunk. On a job whose first token is slow (grok-4.6 took 40s+ on the
+        #   same turn) the generator produced no bytes until the keep-alive
+        #   fired, so the browser could not distinguish a live stream from a
+        #   stalled connection, and neither could the UI.
+        # Fix: one frame up front. It carries no text and advances no offset,
+        #   so replay stays exact; unknown types are ignored by older clients.
+        yield _sse({"type": "attached", "offset": from_offset, "status": job.status})
+
         sent_offset = from_offset
         start = max(0, min(from_offset, len(snapshot)))
         if start < len(snapshot):
@@ -806,6 +832,7 @@ async def start_generation(request: Request):
         )
 
     job = registry.create(username, meta if isinstance(meta, dict) else {})
+    job.input_chars = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
     job.task = asyncio.create_task(run_job(job, provider, config, messages))
     logger.info("Started generation job %s (provider=%s)", job.job_id, provider)
     return {"jobId": job.job_id, "createdAt": job.created_at}
