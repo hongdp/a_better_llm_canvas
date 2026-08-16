@@ -30,6 +30,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     updateProviderConfig,
     availableGeminiModels,
     availableGrokModels,
+    availableOllamaModels,
     customSystemPrompts,
     activeSystemPromptId,
     setActiveSystemPromptId,
@@ -54,6 +55,12 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     }
     if (activeProvider === 'grok') {
       return availableGrokModels
+    }
+    // Discovered from the configured endpoint. The shipped list can never
+    // contain a locally-served model, and this dropdown is the one people
+    // actually use to switch models — Settings is not the only place.
+    if (activeProvider === 'ollama' && availableOllamaModels.length > 0) {
+      return availableOllamaModels
     }
     return PROVIDER_MODELS[activeProvider] || []
   }
