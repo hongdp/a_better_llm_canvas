@@ -26,11 +26,13 @@ export const REASONING_TAIL_CHARS = 240
 export const REASONING_PAINT_MS = 250
 
 export const MAX_NO_ACTION_RETRIES = 3
-export const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <canvas>, <edit> or <selection_replace> tag, so NOTHING was written to the document — the user saw only your message.
+export const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply did not follow the output protocol, so NOTHING reached the document — the user saw only your message.
 
-Redo this turn:
-- If the request needs a document change, emit it now inside the tags, with the full content (no summaries, no "as above").
-- If it genuinely needs no document change, answer normally, say what you need from the user, and end with <doc_status>unchanged</doc_status>.`
+Redo this turn. Exactly one of these two shapes is acceptable:
+- You are changing the document: emit the change inside <canvas>, <edit> or <selection_replace>, with the full content (no summaries, no "as above"), and end with <doc_status>updated</doc_status>.
+- You are NOT changing the document: answer normally, say what you need from the user, and end with <doc_status>unchanged</doc_status>. This is a perfectly good answer — but you may not say or imply that you edited anything.
+
+The <doc_status> line is required either way, and it must match what you actually emitted.`
 
 /** How a partially-streamed response splits into chat text vs. document markup. */
 export interface StreamingSplit {
@@ -122,7 +124,7 @@ export function buildCompletionWarnings(params: {
   // The recovery round also came back without tags: say so instead
   // of letting "已改好" stand over an unchanged document.
   if (exhaustedNoActionRetries) {
-    warningNote += `\n\n⚠️ The model answered without producing any document content (retried ${MAX_NO_ACTION_RETRIES} times), so your document is unchanged. Ask again — naming the chapter or section usually helps.`
+    warningNote += `\n\n⚠️ The model never produced a valid document update or a clear "no change" declaration (retried ${MAX_NO_ACTION_RETRIES} times), so your document is unchanged. Ask again — naming the chapter or section usually helps.`
   }
   if (reinsertedImages > 0) {
     warningNote += `\n\nℹ️ ${reinsertedImages} image${reinsertedImages > 1 ? 's' : ''} missing from the rewrite ${reinsertedImages > 1 ? 'were' : 'was'} restored near ${reinsertedImages > 1 ? 'their' : 'its'} original position. Delete ${reinsertedImages > 1 ? 'them' : 'it'} manually if the removal was intended.`

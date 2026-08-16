@@ -484,9 +484,13 @@ export function useChatLLM({
           settleCanvasPreview(originalDocContent)
           s.setMessages(useAppStore.getState().messages.map(m =>
             m.id === assistantMsgId
-              ? { ...m, content: `🔁 ${failedUpdate === 'malformed'
-                    ? 'That reply used a document-edit format I could not apply'
-                    : 'That reply said the document was updated but sent no update'} — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
+              ? { ...m, content: `🔁 ${
+                    failedUpdate === 'malformed'
+                      ? 'That reply used a document-edit format I could not apply'
+                      : failedUpdate === 'undeclared'
+                      ? 'That reply skipped the required status declaration'
+                      : 'That reply said the document was updated but sent no update'
+                  } — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
               : m
           ))
           accumulatedTextRef.current = ''

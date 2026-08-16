@@ -123,7 +123,7 @@ Every instruction above, including the user's custom writing instructions, gover
 - Any text meant for the document MUST be inside <canvas>, <edit>, or <selection_replace> tags, as HTML. Text outside the tags is shown in chat and is NEVER written to the document.
 - Never paste document content into the chat instead of the tags, and never announce that you updated the document without emitting the tags.
 - The tags themselves are protocol markup, not prose: they are always allowed, whatever language the writing instructions require.
-- The <doc_status> line is required on every reply, including replies that change nothing, and it must agree with what you emitted.`
+- The <doc_status> line is required on every reply, including replies that change nothing, and it must agree with what you emitted. A reply without it is treated as a failed turn and re-sent to you — declining to edit is fine, declining to declare is not.`
 
 /**
  * Assemble the chat system prompt. See the module comment for the layering
