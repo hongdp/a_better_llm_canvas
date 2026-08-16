@@ -18,6 +18,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     updateProviderConfig,
     availableGeminiModels,
     availableGrokModels,
+    availableOllamaModels,
     customSystemPrompts,
     addSystemPrompt,
     updateSystemPrompt,
@@ -182,6 +183,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     ? availableGeminiModels
                     : activeTab === 'grok' && availableGrokModels && availableGrokModels.length > 0
                     ? availableGrokModels
+                    : activeTab === 'ollama' && availableOllamaModels && availableOllamaModels.length > 0
+                    ? availableOllamaModels
                     : (PROVIDER_MODELS[activeTab as LLMProvider] || [])
                   ).map(model => (
                     <option key={model} value={model}>

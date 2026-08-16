@@ -31,12 +31,16 @@ export function useModelFetcher(
     providerConfigs,
     setAvailableGeminiModels,
     setAvailableGrokModels,
+    setAvailableOllamaModels,
     updateProviderConfig
   } = useAppStore()
 
   const geminiConfig = providerConfigs.gemini
   const geminiApiKey = geminiConfig.apiKey
   const geminiBaseUrl = geminiConfig.baseUrl
+
+  const ollamaConfig = providerConfigs.ollama
+  const ollamaBaseUrl = ollamaConfig.baseUrl
 
   const grokConfig = providerConfigs.grok
   const grokApiKey = grokConfig.apiKey
@@ -145,4 +149,38 @@ export function useModelFetcher(
     }
     fetchGrokModels()
   }, [enabled, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
+
+  // Discover the models the local endpoint actually serves.
+  //
+  // The shipped list (llama3, mistral, …) can never contain what someone runs
+  // locally, and the model name is a fixed dropdown — so a local model that is
+  // not on that list is simply unselectable. Both shapes are accepted because
+  // "Ollama-compatible" covers two dialects: Ollama's own {models:[{name}]}
+  // and OpenAI's {data:[{id}]} (llama.cpp answers with both).
+  useEffect(() => {
+    if (!enabled) return
+
+    const fetchOllamaModels = async () => {
+      try {
+        const res = await fetch(`${ollamaBaseUrl.replace(/\/$/, '')}/models`)
+        if (!res.ok) return
+        const data = await res.json()
+        const list: string[] = Array.isArray(data?.data)
+          ? data.data.map((m: { id?: string }) => m.id).filter(Boolean)
+          : Array.isArray(data?.models)
+          ? data.models.map((m: { name?: string; model?: string }) => m.name || m.model).filter(Boolean)
+          : []
+        if (list.length === 0) return
+        setAvailableOllamaModels(list)
+        // A stale name from a previous endpoint would 404 on every send.
+        if (!list.includes(ollamaConfig.model)) {
+          updateProviderConfig('ollama', { model: list[0] })
+        }
+      } catch {
+        // No local server running is the normal case, not an error worth
+        // showing: the dropdown falls back to the shipped list.
+      }
+    }
+    fetchOllamaModels()
+  }, [enabled, ollamaBaseUrl, setAvailableOllamaModels, updateProviderConfig, ollamaConfig.model])
 }
