@@ -242,6 +242,13 @@ endpoint reorders JSON keys so `bookTitle`/`updatedAt` stay within that window.
 - Coverage is collected over `src/utils/**`, `src/services/import/**`, and
   `src/store/persistence.ts`. Extend the `include` list in `vitest.config.ts`
   when adding non-trivial pure-logic modules elsewhere.
+- **Timeouts**: `testTimeout` (5s) catches a test awaiting a promise that never
+  resolves. It does **not** catch a test that starves the event loop — an
+  effect/render cascade never yields, so the runner's timers never fire and the
+  suite wedges. The wall-clock bound in `.githooks/pre-push` is what covers
+  that; keep it. A hook under test must receive **stable callback identities**
+  (inline arrows in effect deps re-run the effect every render, which is exactly
+  how that wedge happens).
 - **New logic is not "done" until `npm test` passes and the logic is covered.**
 
 ## Git Workflow

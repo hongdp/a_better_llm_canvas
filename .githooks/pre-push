@@ -8,10 +8,25 @@
 #
 # To bypass in an emergency: `git push --no-verify` (discouraged).
 
-echo "[pre-push] Running unit tests (npm test)..."
+# Wall-clock bound, not per-test. A test that starves the event loop (an
+# effect/render cascade is the usual way) cannot be interrupted by vitest's own
+# timeout: its timers never get to run, so the suite wedges forever and takes
+# the push with it. The whole suite finishes in ~5s, so 300s is pure headroom.
+SUITE_TIMEOUT_SECONDS=300
 
-npm test
+echo "[pre-push] Running unit tests (npm test, ${SUITE_TIMEOUT_SECONDS}s limit)..."
+
+timeout "${SUITE_TIMEOUT_SECONDS}" npm test
 status=$?
+
+if [ $status -eq 124 ]; then
+  echo ""
+  echo "[pre-push] ⏱  Test suite exceeded ${SUITE_TIMEOUT_SECONDS}s and was killed."
+  echo "[pre-push] The usual cause is a wedged test, not a slow one: the suite"
+  echo "[pre-push] normally finishes in about 5 seconds. Look for a render or"
+  echo "[pre-push] effect loop — vitest cannot time those out by itself."
+  exit 1
+fi
 
 if [ $status -ne 0 ]; then
   echo ""
