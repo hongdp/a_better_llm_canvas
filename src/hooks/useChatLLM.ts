@@ -5,7 +5,7 @@ import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
 import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
@@ -143,7 +143,7 @@ export function useChatLLM({
   // Self-reference for the lookup loop: onDone re-invokes the streaming
   // engine, which can't reference its own useCallback binding directly.
   const startLLMStreamingRef = useRef<
-    ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext, noActionRetriesLeft?: number) => Promise<void>) | null
+    ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext, noActionRetriesLeft?: number, noActionRetryArmed?: boolean) => Promise<void>) | null
   >(null)
   // Throttles the live selection-edit preview: re-parsing + replacing the whole
   // (growing) replacement on every streamed token is O(n²) and re-renders
@@ -405,7 +405,9 @@ export function useChatLLM({
                 Math.ceil(JSON.stringify(nextMessages).length / 4),
                 canContinue
                   ? { ...lookupCtx, attachedIds: combinedIds, autoIds: newAutoIds, round: lookupCtx.round + 1 }
-                  : undefined
+                  : undefined,
+                MAX_NO_ACTION_RETRIES,
+                noActionRetryArmed
               )
             })()
             return
@@ -417,22 +419,26 @@ export function useChatLLM({
         const parsed = parseAssistantResponse(fullText)
         const finalChatText = parsed.chatText
 
-        // Tag compliance is probabilistic (see
-        // looksLikeUnfulfilledDocumentUpdate): the model sometimes answers
-        // a write request with a one-line "done" and no tags, which used to
-        // surface as a success message over an unchanged document. Retry
-        // the turn once with the failed reply quoted back, then give up
-        // loudly rather than silently.
+        // Whether the document needed changing is the MODEL's call, not ours —
+        // guessing intent from the prompt retried perfectly good conversation.
+        // What the client CAN judge is whether the reply is self-consistent, so
+        // only two real failures retry (see detectFailedDocumentUpdate): edit
+        // markup the parser rejected, and a stated document change that carried
+        // no markup at all. Both used to surface as a success message over an
+        // unchanged document. Retry with the failed reply quoted back, then
+        // give up loudly rather than silently.
+        const failedUpdate = parsed.kind === 'chat' ? detectFailedDocumentUpdate(fullText) : null
         if (
           noActionRetryArmed &&
           noActionRetriesLeft > 0 &&
-          parsed.kind === 'chat' &&
-          looksLikeUnfulfilledDocumentUpdate(fullText)
+          failedUpdate !== null
         ) {
           settleCanvasPreview(originalDocContent)
           s.setMessages(useAppStore.getState().messages.map(m =>
             m.id === assistantMsgId
-              ? { ...m, content: `🔁 That reply contained no document update — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
+              ? { ...m, content: `🔁 ${failedUpdate === 'malformed'
+                    ? 'That reply used a document-edit format I could not apply'
+                    : 'That reply said the document was updated but sent no update'} — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
               : m
           ))
           accumulatedTextRef.current = ''
@@ -448,7 +454,8 @@ export function useChatLLM({
             attachmentsText,
             Math.ceil(JSON.stringify(retryMessages).length / 4),
             undefined,
-            noActionRetriesLeft - 1
+            noActionRetriesLeft - 1,
+            noActionRetryArmed
           )
           return
         }
@@ -507,8 +514,7 @@ export function useChatLLM({
           exhaustedNoActionRetries:
             noActionRetryArmed &&
             noActionRetriesLeft === 0 &&
-            parsed.kind === 'chat' &&
-            looksLikeUnfulfilledDocumentUpdate(fullText),
+            failedUpdate !== null,
           reinsertedImages
         })
 
@@ -611,7 +617,10 @@ export function useChatLLM({
     attachmentsText: string,
     estimatedInputTokens: number,
     lookupCtx?: LookupLoopContext,
-    noActionRetriesLeft: number = MAX_NO_ACTION_RETRIES
+    noActionRetriesLeft: number = MAX_NO_ACTION_RETRIES,
+    // Armed for every real request. Disarmed only where there is no request to
+    // replay (the rejoin reader), since a retry would have nothing to re-send.
+    noActionRetryArmed: boolean = true
   ) => {
     const s = useAppStore.getState()
     
@@ -664,7 +673,8 @@ export function useChatLLM({
           attachmentsText,
           estimatedInputTokens,
           lookupCtx,
-          noActionRetriesLeft
+          noActionRetriesLeft,
+          noActionRetryArmed
         })
       )
     } catch (e) {

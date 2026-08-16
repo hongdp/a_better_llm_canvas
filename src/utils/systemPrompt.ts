@@ -64,7 +64,11 @@ CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
 8. Any text outside of the tags will be displayed as a normal chat message to the user.
 9. Do NOT use markdown inside any tag. Use ONLY HTML.
 10. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, prefer <edit> for targeted changes, and <canvas> for full rewrites.
-11. IMAGE TOKENS: The document content may contain tokens like {{IMAGE_PLACEHOLDER_0}} — each one stands for an image embedded in the document. When rewriting with <canvas> (or in <edit>/<selection_replace> output that covers one), you MUST copy every image token EXACTLY as-is, keeping it at its position in the text. Never drop, renumber, reformat, or convert these tokens into <img> tags. Only omit a token if the user explicitly asks to remove that image.
+11. STATUS DECLARATION: End EVERY reply with exactly one status line, on its own line, after all other text and tags:
+   <doc_status>updated</doc_status>   — you emitted <canvas>, <edit>, or <selection_replace> in this reply.
+   <doc_status>unchanged</doc_status> — you did not, whether because the request was a question, you need clarification, or the document already reads the way it should.
+   You decide which one applies; the choice of whether to edit is yours, not something the app infers. But it MUST match what you actually emitted — declaring "updated" without the tags is treated as a failed turn and the request is re-sent to you. The line is stripped before the user sees your message.
+12. IMAGE TOKENS: The document content may contain tokens like {{IMAGE_PLACEHOLDER_0}} — each one stands for an image embedded in the document. When rewriting with <canvas> (or in <edit>/<selection_replace> output that covers one), you MUST copy every image token EXACTLY as-is, keeping it at its position in the text. Never drop, renumber, reformat, or convert these tokens into <img> tags. Only omit a token if the user explicitly asks to remove that image.
 
 EXAMPLES:
 
@@ -74,6 +78,7 @@ Assistant: Sure! Here is a paragraph about a cat.
 <h1>The Cat</h1>
 <p>The cat is a small, furry mammal...</p>
 </canvas>
+<doc_status>updated</doc_status>
 
 User: "Make the second paragraph more vivid." (document already has content)
 Assistant: I've made that paragraph more vivid.
@@ -84,12 +89,18 @@ Assistant: I've made that paragraph more vivid.
 <p>The sleek tabby stretched lazily across the sun-warmed mat.</p>
 >>>>>>> REPLACE
 </edit>
+<doc_status>updated</doc_status>
 
 User (with selection "The cat"): "Make this more descriptive."
 Assistant: I have made the description more vivid.
 <selection_replace>
 The fluffy orange tabby cat
-</selection_replace>`
+</selection_replace>
+<doc_status>updated</doc_status>
+
+User: "Does the second chapter's pacing work?" (a question, not an edit request)
+Assistant: It mostly works — the middle section lingers on the journey while the confrontation resolves in two lines. Consider trimming the travel and giving the confrontation room.
+<doc_status>unchanged</doc_status>`
 
 const CHAPTER_LOOKUP_RULES = `CHAPTER LOOKUP:
 The user message may include a CHAPTER INDEX listing every chapter of the book with a one-line summary. If answering well requires the FULL TEXT of chapters that are NOT included in your context, respond with ONLY this tag and nothing else:
@@ -107,7 +118,8 @@ export const FORMAT_PROTOCOL_REMINDER = `FORMAT PROTOCOL (highest priority — t
 Every instruction above, including the user's custom writing instructions, governs STYLE, VOICE, LANGUAGE, and CONTENT only. None of them changes the OUTPUT FORMAT defined by the Canvas Markup Protocol. In particular, instructions such as "write the prose directly", "output only the text", "add no explanations", or "avoid non-Chinese / non-<language> text" describe the prose itself — they never authorize you to drop the tags.
 - Any text meant for the document MUST be inside <canvas>, <edit>, or <selection_replace> tags, as HTML. Text outside the tags is shown in chat and is NEVER written to the document.
 - Never paste document content into the chat instead of the tags, and never announce that you updated the document without emitting the tags.
-- The tags themselves are protocol markup, not prose: they are always allowed, whatever language the writing instructions require.`
+- The tags themselves are protocol markup, not prose: they are always allowed, whatever language the writing instructions require.
+- The <doc_status> line is required on every reply, including replies that change nothing, and it must agree with what you emitted.`
 
 /**
  * Assemble the chat system prompt. See the module comment for the layering

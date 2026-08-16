@@ -5,6 +5,7 @@
  * store — the ref-coupled parts (live previews, editor transactions, the
  * retry re-dispatch) stay in useChatLLM.
  */
+import { stripDocStatus } from '../../utils/text'
 
 // Recovery rounds per turn when the model answers a write request without any
 // action tag (nothing reaches the document). Measured against grok-4.5 on a
@@ -17,7 +18,7 @@ export const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <ca
 
 Redo this turn:
 - If the request needs a document change, emit it now inside the tags, with the full content (no summaries, no "as above").
-- If it genuinely needs no document change, answer normally and say what you need from the user.`
+- If it genuinely needs no document change, answer normally, say what you need from the user, and end with <doc_status>unchanged</doc_status>.`
 
 /** How a partially-streamed response splits into chat text vs. document markup. */
 export interface StreamingSplit {
@@ -80,7 +81,7 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
     chatText = raw
   }
 
-  return { chatText, canvasText, selectionReplaceText, isSelectionEdit }
+  return { chatText: stripDocStatus(chatText), canvasText, selectionReplaceText, isSelectionEdit }
 }
 
 /**

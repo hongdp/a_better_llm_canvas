@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -396,6 +396,51 @@ describe('applyEditBlocks', () => {
   })
 })
 
+// ── parseAssistantResponse ────────────────────────────────────────────────────
+describe('parseAssistantResponse', () => {
+  it('classifies a plain chat response', () => {
+    const r = parseAssistantResponse('Sure, here is my advice about pacing.')
+    expect(r.kind).toBe('chat')
+    expect(r.chatText).toBe('Sure, here is my advice about pacing.')
+  })
+
+  it('classifies a selection replacement with surrounding chat', () => {
+    const r = parseAssistantResponse('Done!\n<selection_replace>The fluffy cat</selection_replace>\nAnything else?')
+    expect(r.kind).toBe('selection')
+    expect(r.selectionText).toBe('The fluffy cat')
+    expect(r.chatText).toBe('Done!\n\nAnything else?')
+  })
+
+  it('classifies edit blocks and keeps surrounding chat', () => {
+    const text = 'I made the change.\n<edit>\n<<<<<<< SEARCH\n<p>old</p>\n=======\n<p>new</p>\n>>>>>>> REPLACE\n</edit>'
+    const r = parseAssistantResponse(text)
+    expect(r.kind).toBe('edits')
+    expect(r.editBlocks).toEqual([{ search: '<p>old</p>', replace: '<p>new</p>' }])
+    expect(r.chatText).toBe('I made the change.')
+  })
+
+  it('classifies a closed canvas rewrite', () => {
+    const r = parseAssistantResponse('Rewrote it.\n<canvas><h1>Doc</h1></canvas>')
+    expect(r.kind).toBe('canvas')
+    expect(r.canvasText).toBe('<h1>Doc</h1>')
+    expect(r.canvasClosed).toBe(true)
+    expect(r.chatText).toBe('Rewrote it.')
+  })
+
+  it('reports an unclosed canvas so truncation guards can refuse it', () => {
+    const r = parseAssistantResponse('<canvas><h1>Doc</h1><p>cut off')
+    expect(r.kind).toBe('canvas')
+    expect(r.canvasClosed).toBe(false)
+  })
+
+  it('prefers selection over edits over canvas when several appear', () => {
+    const both = '<selection_replace>x</selection_replace>\n<canvas><p>y</p></canvas>'
+    expect(parseAssistantResponse(both).kind).toBe('selection')
+    const editsAndCanvas = '<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n<canvas><p>y</p></canvas>'
+    expect(parseAssistantResponse(editsAndCanvas).kind).toBe('edits')
+  })
+})
+
 // ── parseLookupRequest ────────────────────────────────────────────────────────
 describe('parseLookupRequest', () => {
   it('parses a clean lookup tag with multiple titles', () => {
@@ -445,80 +490,6 @@ describe('parseLookupRequest', () => {
   })
 })
 
-// ── parseAssistantResponse ────────────────────────────────────────────────────
-describe('parseAssistantResponse', () => {
-  it('classifies a plain chat response', () => {
-    const r = parseAssistantResponse('Sure, here is my advice about pacing.')
-    expect(r.kind).toBe('chat')
-    expect(r.chatText).toBe('Sure, here is my advice about pacing.')
-  })
-
-  it('classifies a selection replacement with surrounding chat', () => {
-    const r = parseAssistantResponse('Done!\n<selection_replace>The fluffy cat</selection_replace>\nAnything else?')
-    expect(r.kind).toBe('selection')
-    expect(r.selectionText).toBe('The fluffy cat')
-    expect(r.chatText).toBe('Done!\n\nAnything else?')
-  })
-
-  it('classifies edit blocks and keeps surrounding chat', () => {
-    const text = 'I made the change.\n<edit>\n<<<<<<< SEARCH\n<p>old</p>\n=======\n<p>new</p>\n>>>>>>> REPLACE\n</edit>'
-    const r = parseAssistantResponse(text)
-    expect(r.kind).toBe('edits')
-    expect(r.editBlocks).toEqual([{ search: '<p>old</p>', replace: '<p>new</p>' }])
-    expect(r.chatText).toBe('I made the change.')
-  })
-
-  it('classifies a closed canvas rewrite', () => {
-    const r = parseAssistantResponse('Rewrote it.\n<canvas><h1>Doc</h1></canvas>')
-    expect(r.kind).toBe('canvas')
-    expect(r.canvasText).toBe('<h1>Doc</h1>')
-    expect(r.canvasClosed).toBe(true)
-    expect(r.chatText).toBe('Rewrote it.')
-  })
-
-  it('reports an unclosed canvas so truncation guards can refuse it', () => {
-    const r = parseAssistantResponse('<canvas><h1>Doc</h1><p>cut off')
-    expect(r.kind).toBe('canvas')
-    expect(r.canvasClosed).toBe(false)
-  })
-
-  it('prefers selection over edits over canvas when several appear', () => {
-    const both = '<selection_replace>x</selection_replace>\n<canvas><p>y</p></canvas>'
-    expect(parseAssistantResponse(both).kind).toBe('selection')
-    const editsAndCanvas = '<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n<canvas><p>y</p></canvas>'
-    expect(parseAssistantResponse(editsAndCanvas).kind).toBe('edits')
-  })
-})
-
-describe('looksLikeUnfulfilledDocumentUpdate', () => {
-  it('flags the bare acknowledgement that writes nothing', () => {
-    // Verbatim from the failing grok-4.5 responses (13 output tokens).
-    expect(looksLikeUnfulfilledDocumentUpdate('接上第二章的雨夜归途，第三章已写下。')).toBe(true)
-    expect(looksLikeUnfulfilledDocumentUpdate('已按大纲与第一章语气接上第二章，直接落笔。')).toBe(true)
-    expect(looksLikeUnfulfilledDocumentUpdate("I've rewritten that section for you.")).toBe(true)
-  })
-
-  it('does not flag a clarifying question', () => {
-    expect(looksLikeUnfulfilledDocumentUpdate('你想让第三章从哪里开始写？')).toBe(false)
-    expect(looksLikeUnfulfilledDocumentUpdate('Which chapter should I continue from?')).toBe(false)
-  })
-
-  it('does not flag a clarification menu', () => {
-    const menu = '先告诉我这些，我好直接开写：\n1. 题材方向\n2. 主要人物\n3. 篇幅'
-    expect(looksLikeUnfulfilledDocumentUpdate(menu)).toBe(false)
-  })
-
-  it('does not flag a substantive chat answer', () => {
-    const answer = '关于后续走向，我建议把冲突集中在三条线上。'.repeat(12)
-    expect(answer.length).toBeGreaterThan(200)
-    expect(looksLikeUnfulfilledDocumentUpdate(answer)).toBe(false)
-  })
-
-  it('does not flag an empty response', () => {
-    expect(looksLikeUnfulfilledDocumentUpdate('')).toBe(false)
-    expect(looksLikeUnfulfilledDocumentUpdate('   \n ')).toBe(false)
-  })
-})
 
 describe('trimIncompleteHtmlTail', () => {
   it('drops a partially streamed tag', () => {
@@ -607,15 +578,123 @@ describe('parseEditBlocks — terminators models actually emit', () => {
   })
 })
 
-describe('looksLikeUnfulfilledDocumentUpdate — unparsed edit markup', () => {
+describe('detectFailedDocumentUpdate — length is not the signal', () => {
   it('flags a long reply that carries edit markers nothing could parse', () => {
     const text = '已在大纲补上要求。\n<edit>\n<<<<<<< SEARCH\n<p>原句</p>\n' + '补充说明。'.repeat(60)
-    expect(text.length).toBeGreaterThan(200)   // would pass the "short reply" gate
-    expect(looksLikeUnfulfilledDocumentUpdate(text)).toBe(true)
+    expect(text.length).toBeGreaterThan(200)
+    expect(detectFailedDocumentUpdate(text)).toBe('malformed')
   })
 
   it('still ignores prose that merely mentions editing', () => {
-    const text = '我建议你把第二章的对话改得更口语一些，' .repeat(15)
-    expect(looksLikeUnfulfilledDocumentUpdate(text)).toBe(false)
+    const text = '我建议你把第二章的对话改得更口语一些，'.repeat(15)
+    expect(detectFailedDocumentUpdate(text)).toBeNull()
+  })
+})
+
+
+// ── detectFailedDocumentUpdate ───────────────────────────────────────────────
+// Whether an edit is warranted is the MODEL's call. The client only judges
+// whether the model's own output matches its own claim, which is why an
+// earlier intent-guessing version had to go: it retried ordinary chat three
+// times and warned about a failure that never happened.
+describe('detectFailedDocumentUpdate', () => {
+  it('flags edit markup the parser rejected', () => {
+    expect(detectFailedDocumentUpdate('<edit>\n<<<<<<< SEARCH\nmangled')).toBe('malformed')
+    expect(detectFailedDocumentUpdate('<<<<<<< SEARCH\n<p>a</p>\n=======')).toBe('malformed')
+  })
+
+  it('flags an action tag the model opened and never closed', () => {
+    expect(detectFailedDocumentUpdate('Sure! <canvas><h1>Draft')).toBe('malformed')
+    expect(detectFailedDocumentUpdate('<selection_replace>partial')).toBe('malformed')
+  })
+
+  it('flags a stated document change that produced no markup', () => {
+    for (const t of [
+      "I've updated the document as requested.",
+      'I have rewritten the second paragraph.',
+      "Here's the updated chapter.",
+      '已经帮你改好了',
+      '我已更新文档',
+      '文档已更新',
+      '已为你续写了这一段'
+    ]) expect(detectFailedDocumentUpdate(t), t).toBe('claimed')
+  })
+
+  it('leaves ordinary conversation alone — the cost of the old heuristic', () => {
+    for (const t of [
+      '流式测试正常，本次无需改文档。',
+      'stream test received — nothing to change here.',
+      '这段的节奏我觉得没问题。',
+      'The pacing reads well; I would not change it.',
+      '你要我做哪一件？',
+      'Which would you like me to do?',
+      '- 把选中正文写入文档\n- 续写 / 润色'
+    ]) expect(detectFailedDocumentUpdate(t), t).toBeNull()
+  })
+
+  it('returns null for empty input', () => {
+    expect(detectFailedDocumentUpdate('')).toBeNull()
+    expect(detectFailedDocumentUpdate('   ')).toBeNull()
+  })
+})
+
+// ── doc_status declaration ───────────────────────────────────────────────────
+// The model declares what it did; the client checks the declaration against
+// the markup. This replaces guessing intent from the user's prompt, and
+// outranks the prose heuristic in both directions.
+describe('parseDocStatus / stripDocStatus', () => {
+  it('reads the declaration the model appended', () => {
+    expect(parseDocStatus('Done.\n<canvas><p>x</p></canvas>\n<doc_status>updated</doc_status>')).toBe('updated')
+    expect(parseDocStatus('Reads fine to me.\n<doc_status>unchanged</doc_status>')).toBe('unchanged')
+    expect(parseDocStatus('<DOC_STATUS> Updated </DOC_STATUS>')).toBe('updated')
+  })
+
+  it('returns null when the model omitted it', () => {
+    expect(parseDocStatus('好了。')).toBeNull()
+    expect(parseDocStatus('')).toBeNull()
+  })
+
+  it('keeps the declaration out of the chat bubble', () => {
+    expect(stripDocStatus('好了。\n<doc_status>updated</doc_status>')).toBe('好了。')
+    expect(parseAssistantResponse('Done.\n<doc_status>updated</doc_status>').chatText).toBe('Done.')
+    const parsed = parseAssistantResponse('好了。\n<canvas><p>x</p></canvas>\n<doc_status>updated</doc_status>')
+    expect(parsed.kind).toBe('canvas')
+    expect(parsed.chatText).toBe('好了。')
+    expect(parsed.canvasText).toContain('<p>x</p>')
+  })
+
+  it('hides a declaration that is still arriving mid-stream', () => {
+    // A lone trailing '<' is left alone: nothing distinguishes it from prose,
+    // and it is visible for one chunk at most.
+    for (const partial of ['<d', '<doc', '<doc_status', '<doc_status>', '<doc_status>unch']) {
+      expect(stripDocStatus('好了。\n' + partial), partial).toBe('好了。')
+    }
+  })
+
+  it('leaves ordinary trailing text alone', () => {
+    expect(stripDocStatus('第三章写完了。')).toBe('第三章写完了。')
+    expect(stripDocStatus('a < b')).toBe('a < b')
+  })
+})
+
+describe('detectFailedDocumentUpdate — the declaration wins', () => {
+  it('flags a declared update that emitted nothing', () => {
+    // Neutral prose no pattern would ever catch — only the declaration reveals it.
+    expect(detectFailedDocumentUpdate('嗯。\n<doc_status>updated</doc_status>')).toBe('claimed')
+    expect(detectFailedDocumentUpdate('Ok.\n<doc_status>updated</doc_status>')).toBe('claimed')
+  })
+
+  it('trusts a declared non-edit over claim-shaped prose', () => {
+    // The model summarising what the USER already did must not trigger a retry.
+    expect(detectFailedDocumentUpdate('你已经把第二章改好了，这版读起来顺多了。\n<doc_status>unchanged</doc_status>')).toBeNull()
+  })
+
+  it('still flags broken markup regardless of the declaration', () => {
+    expect(detectFailedDocumentUpdate('<edit>\n<<<<<<< SEARCH\nx\n<doc_status>unchanged</doc_status>')).toBe('malformed')
+  })
+
+  it('falls back to prose when the model omits the declaration', () => {
+    expect(detectFailedDocumentUpdate('已经帮你改好了')).toBe('claimed')
+    expect(detectFailedDocumentUpdate('这段读起来没问题。')).toBeNull()
   })
 })
