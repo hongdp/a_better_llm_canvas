@@ -18,6 +18,59 @@ const FALLBACK_GROK_MODELS = [
   'grok-beta'
 ]
 
+
+/**
+ * Shapes a model listing into plain names.
+ *
+ * Three shapes reach this: OpenAI's `{data:[{id}]}`, Ollama's
+ * `{models:[{name}]}`, and our own backend's already-normalized
+ * `{models:["name"]}`. The last one is why the entry check is per-item rather
+ * than per-shape — reading `.name` off a string yields undefined and silently
+ * empties the list, which is exactly how this first shipped broken.
+ */
+function normalizeModelList(data: unknown): string[] {
+  const payload = (data ?? {}) as {
+    data?: Array<{ id?: string } | string>
+    models?: Array<{ name?: string; model?: string } | string>
+  }
+  const nameOf = (entry: { id?: string; name?: string; model?: string } | string): string | undefined =>
+    typeof entry === 'string' ? entry : entry?.id || entry?.name || entry?.model
+
+  for (const list of [payload.data, payload.models]) {
+    if (!Array.isArray(list)) continue
+    const names = list.map(nameOf).filter((v): v is string => !!v)
+    if (names.length > 0) return names
+  }
+  return []
+}
+
+async function listLocalModelsDirect(baseUrl: string): Promise<string[]> {
+  try {
+    const res = await fetch(`${baseUrl.replace(/\/$/, '')}/models`)
+    if (!res.ok) return []
+    return normalizeModelList(await res.json())
+  } catch {
+    return []
+  }
+}
+
+async function listLocalModelsViaBackend(baseUrl: string): Promise<string[]> {
+  try {
+    const res = await fetch('/api/models', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': useAppStore.getState().csrfToken || ''
+      },
+      body: JSON.stringify({ baseUrl })
+    })
+    if (!res.ok) return []
+    return normalizeModelList(await res.json())
+  } catch {
+    return []
+  }
+}
+
 export function useModelFetcher(
   // When true the hook fetches the live model lists. Passed `isSettingsOpen`
   // from the Settings modal (so it refreshes + surfaces errors there), and
@@ -162,14 +215,14 @@ export function useModelFetcher(
 
     const fetchOllamaModels = async () => {
       try {
-        const res = await fetch(`${ollamaBaseUrl.replace(/\/$/, '')}/models`)
-        if (!res.ok) return
-        const data = await res.json()
-        const list: string[] = Array.isArray(data?.data)
-          ? data.data.map((m: { id?: string }) => m.id).filter(Boolean)
-          : Array.isArray(data?.models)
-          ? data.models.map((m: { name?: string; model?: string }) => m.name || m.model).filter(Boolean)
-          : []
+        let list = await listLocalModelsDirect(ollamaBaseUrl)
+        if (list.length === 0) {
+          // The page is served over HTTPS in this setup, so the browser blocks
+          // every plain-http local endpoint as mixed content — the fetch above
+          // can never succeed there. The backend runs on the same host as the
+          // model server and is same-origin for the page, so it can answer.
+          list = await listLocalModelsViaBackend(ollamaBaseUrl)
+        }
         if (list.length === 0) return
         setAvailableOllamaModels(list)
         // A stale name from a previous endpoint would 404 on every send.

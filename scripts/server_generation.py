@@ -27,6 +27,7 @@ import asyncio
 import json
 import logging
 import re
+from urllib.parse import urlparse
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -65,6 +66,9 @@ HTTP_CONNECT_TIMEOUT = 30.0
 HTTP_READ_TIMEOUT = 600.0
 
 SUPPORTED_PROVIDERS = ("openai", "ollama", "grok", "gemini", "anthropic")
+
+#: Hosts /api/models will query. Local model servers only — see the endpoint.
+LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 
 _DATA_URL_RE = re.compile(r"^data:(image/[a-zA-Z+.-]+);base64,(.+)$")
 
@@ -975,6 +979,62 @@ async def start_generation(request: Request):
     job.task = asyncio.create_task(run_job(job, provider, config, messages))
     logger.info("Started generation job %s (provider=%s)", job.job_id, provider)
     return {"jobId": job.job_id, "createdAt": job.created_at}
+
+
+@router.post("/api/models")
+async def list_provider_models(request: Request):
+    """List the models a LOCAL endpoint serves, on the browser's behalf.
+
+    Problem: the model dropdown is populated by a fetch from the page, and the
+      dev server is served over HTTPS — so every plain-http local endpoint is
+      blocked as mixed content and a locally-served model can never be picked.
+      (Measured: 127.0.0.1:8090, 192.168.0.110:8090 and 127.0.0.1:11434 all
+      fail from the page with "Failed to fetch"; the same URLs answer fine from
+      this process, which is why generation works and discovery does not.)
+    Fix: ask the backend, which is same-origin for the page and on the same
+      host as the model server.
+
+    Deliberately restricted to loopback: this is for local model servers, and a
+    wide-open fetcher would turn this endpoint into an SSRF proxy.
+    """
+    get_authenticated_username(request)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+
+    base_url = str((body or {}).get("baseUrl") or "").rstrip("/")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="baseUrl is required.")
+
+    parsed = urlparse(base_url)
+    if parsed.scheme not in ("http", "https") or (parsed.hostname or "") not in LOCAL_HOSTNAMES:
+        raise HTTPException(
+            status_code=400,
+            detail="Only local endpoints (localhost / 127.0.0.1) can be queried this way.",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(f"{base_url}/models")
+            response.raise_for_status()
+            data = response.json()
+    except Exception as exc:  # noqa: BLE001 — an unreachable local server is normal
+        logger.info("Model listing failed for %s: %s", base_url, exc)
+        return {"models": []}
+
+    # "Ollama-compatible" covers two dialects: Ollama's own {models:[{name}]}
+    # and OpenAI's {data:[{id}]}. llama.cpp answers with both.
+    names: List[str] = []
+    if isinstance(data.get("data"), list):
+        names = [m.get("id") for m in data["data"] if isinstance(m, dict) and m.get("id")]
+    if not names and isinstance(data.get("models"), list):
+        names = [
+            m.get("name") or m.get("model")
+            for m in data["models"]
+            if isinstance(m, dict) and (m.get("name") or m.get("model"))
+        ]
+    return {"models": names}
 
 
 @router.get("/api/generate/active")
