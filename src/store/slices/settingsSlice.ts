@@ -33,6 +33,14 @@ export interface SettingsSlice {
   setAvailableGeminiModels: (models: string[]) => void
   availableGrokModels: string[]
   setAvailableGrokModels: (models: string[]) => void
+  /**
+   * Models reported by the configured Ollama-compatible endpoint. Discovered
+   * rather than hardcoded: the endpoint may be Ollama itself or any
+   * OpenAI-compatible local server (llama.cpp, vLLM), and whatever the user
+   * runs locally is never going to be in a list shipped with the app.
+   */
+  availableOllamaModels: string[]
+  setAvailableOllamaModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
   // Agentic chapter lookup: lets the model request full chapter text
@@ -85,6 +93,7 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     providerConfigs: loadSavedConfigs(),
     availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
     availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
+    availableOllamaModels: [],
     setProvider: (provider) => {
       localStorage.setItem('web_canvas_active_provider', provider)
       setCookie('__Secure-web_canvas_active_provider', provider)
@@ -95,6 +104,10 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     },
     setAvailableGrokModels: (models) => {
       set({ availableGrokModels: models })
+    },
+
+    setAvailableOllamaModels: (models) => {
+      set({ availableOllamaModels: models })
     },
     updateProviderConfig: (provider, newConfig) => {
       set((state) => {
