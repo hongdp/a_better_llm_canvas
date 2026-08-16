@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
-import { localStorage, db } from '../persistence'
+import { localStorage, clearWorkspaceCache, getCachedWorkspaceOwner, setCachedWorkspaceOwner } from '../persistence'
 import { setCookie } from '../settingsPersistence'
 import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, MOCK_DOCUMENTS } from '../defaults'
 import { clearPendingSave } from '../syncRuntime'
@@ -21,6 +21,13 @@ export interface AuthSlice {
   register: (username: string, password: string) => Promise<void>
   logout: () => Promise<void>
   checkSession: () => Promise<void>
+  /**
+   * Drop the browser-local workspace when the signed-in account changes.
+   * The document/version/chat caches belong to the BROWSER, so without this
+   * the next account inherits the previous one's workspace — and the
+   * auto-save writes that content into the new account.
+   */
+  resetWorkspaceForUser: (username: string | null) => Promise<void>
 }
 
 export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (set) => ({
@@ -28,6 +35,27 @@ export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (set) 
   user: null,
   csrfToken: null,
   setUser: (user) => set({ user }),
+
+  resetWorkspaceForUser: async (username) => {
+    if (getCachedWorkspaceOwner() === username) return // same account: keep the cache
+    clearPendingSave() // a queued save must not land in the new account
+    await clearWorkspaceCache()
+    set({
+      documents: MOCK_DOCUMENTS,
+      activeDocumentId: MOCK_DOCUMENTS[0].id,
+      versions: [],
+      messages: [],
+      bookTitle: 'Untitled Book',
+      activeBookId: 'default',
+      availableBooks: [],
+      pinnedReferenceIds: [],
+      blockedReferenceIds: [],
+      lastSyncedAt: null,
+      lastSeenServerUpdatedAt: null,
+      serverSaveStatus: 'saved'
+    })
+    setCachedWorkspaceOwner(username)
+  },
   setCsrfToken: (token) => set({ csrfToken: token }),
   login: async (username, password) => {
     const state = useAppStore.getState()
@@ -61,6 +89,11 @@ export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (set) 
     }
     const data = await res.json()
     set({ user: { username: data.username }, csrfToken: data.csrfToken || state.csrfToken })
+
+    // Before ANY sync: if this browser last held another account's workspace,
+    // drop it. Otherwise the in-memory documents (and the localStorage active
+    // book id) belong to the previous user and get written into this account.
+    await useAppStore.getState().resetWorkspaceForUser(data.username)
 
     // Perform sync verification for this logged in user
     await initializeStoreFromServer(true)
@@ -121,12 +154,12 @@ export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (set) 
     } catch (e) {
       console.error('Logout request failed', e)
     }
-    // Clear IndexedDB cache to be completely secure and avoid PII leaks
-    db.remove('web_canvas_documents')
-    db.remove('web_canvas_versions')
-    localStorage.removeItem('web_canvas_book_title')
-    localStorage.removeItem('web_canvas_active_document_id')
-    localStorage.removeItem('web_canvas_active_book_id')
+    // Clear the IndexedDB cache to avoid leaving PII behind.
+    // clearWorkspaceCache (not two db.remove calls) because documents are
+    // stored as one record PER CHAPTER since the v3 layout — removing only the
+    // index left every chapter's text sitting in IndexedDB after logout.
+    await clearWorkspaceCache()
+    setCachedWorkspaceOwner(null)
     localStorage.removeItem('web_canvas_system_prompts_backup')
     localStorage.removeItem('web_canvas_providers_backup')
     localStorage.removeItem('web_canvas_theme')
@@ -175,6 +208,10 @@ export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (set) 
         set({ csrfToken: data.csrfToken })
         if (data.loggedIn) {
           set({ user: { username: data.username } })
+          // A restored session can belong to a different account than the one
+          // whose workspace this browser has cached (another tab logged in, or
+          // the session outlived a logout).
+          await useAppStore.getState().resetWorkspaceForUser(data.username)
         } else {
           set({ user: null })
         }
