@@ -135,6 +135,11 @@ class GenerationJob:
         self.task: Optional[asyncio.Task] = None
         #: Prompt size in characters, for reading the latency line in context.
         self.input_chars = 0
+        #: Reasoning the model streamed before (or between) visible tokens.
+        #: Counted, never buffered — it is not document text and must not move
+        #: the replay offsets.
+        self.reasoning_chars = 0
+        self.first_reasoning_latency: Optional[float] = None
         # One queue per attached SSE reader. Everything here runs on the single
         # event loop, so plain set mutation is safe without a lock.
         self.subscribers: set = set()
@@ -161,6 +166,24 @@ class GenerationJob:
         self.updated_at = _now_iso()
         self._publish({"type": "delta", "text": text, "offset": self.length})
 
+    def note_reasoning(self, text: str) -> None:
+        """Record a reasoning delta and pass it on live.
+
+        A model can spend a minute reasoning before its first visible token
+        (grok-4.6, measured). Without this the server sees that as silence and
+        so does the user.
+        """
+        if not text or self.status != "running":
+            return
+        if self.first_reasoning_latency is None:
+            self.first_reasoning_latency = _monotonic() - self.created_monotonic
+            logger.info(
+                "Job %s started reasoning after %.2fs",
+                self.job_id, self.first_reasoning_latency,
+            )
+        self.reasoning_chars += len(text)
+        self._publish({"type": "reasoning", "text": text})
+
     def finish(
         self,
         status: str,
@@ -174,6 +197,15 @@ class GenerationJob:
         self.usage = usage
         self.error = error
         self.updated_at = _now_iso()
+        logger.info(
+            "Job %s %s: %s chars in, first token %s, reasoning %s chars, output %s chars",
+            self.job_id,
+            status,
+            self.input_chars,
+            f"{self.first_delta_latency:.2f}s" if self.first_delta_latency is not None else "never",
+            self.reasoning_chars,
+            self.length,
+        )
         self.finished_at = _monotonic()
         self._publish(self.terminal_event())
         return True
@@ -520,15 +552,23 @@ async def _stream_openai(
 
             choices = parsed.get("choices") or []
             if choices:
-                content = (choices[0].get("delta") or {}).get("content")
+                delta = choices[0].get("delta") or {}
+                content = delta.get("content")
                 if content:
                     job.append(content)
+                # Reasoning models emit their thinking on a separate key before
+                # any visible token. Dropping it made a minute of work look
+                # like a dead connection. Two spellings in the wild.
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if reasoning:
+                    job.note_reasoning(reasoning)
             if parsed.get("usage"):
                 u = parsed["usage"]
                 usage = {
                     "promptTokens": u.get("prompt_tokens") or 0,
                     "completionTokens": u.get("completion_tokens") or 0,
                     "cachedPromptTokens": (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0,
+                    "reasoningTokens": (u.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0,
                 }
     return usage
 

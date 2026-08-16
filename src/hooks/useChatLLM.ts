@@ -5,6 +5,7 @@ import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
 import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration, clearPersistedJob as clearPersistedGenerationJob } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
+import type { AppState } from '../store/types'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
@@ -13,7 +14,7 @@ import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -65,12 +66,12 @@ interface StreamRenderContext {
 }
 
 /**
- * Resolves once `messageId` exists in the store, or false once `timeoutMs`
+ * Resolves once the store satisfies `predicate`, or false once `timeoutMs`
  * passes. Used by the rejoin path: on a cold reload the chat history is only
  * restored when the background server sync completes.
  */
-function waitForMessage(messageId: string, timeoutMs = 15_000): Promise<boolean> {
-  if (useAppStore.getState().messages.some(m => m.id === messageId)) return Promise.resolve(true)
+function waitForStore(predicate: (state: AppState) => boolean, timeoutMs = 15_000): Promise<boolean> {
+  if (predicate(useAppStore.getState())) return Promise.resolve(true)
   return new Promise<boolean>(resolve => {
     let unsubscribe: (() => void) | null = null
     const timer = setTimeout(() => {
@@ -78,12 +79,36 @@ function waitForMessage(messageId: string, timeoutMs = 15_000): Promise<boolean>
       resolve(false)
     }, timeoutMs)
     unsubscribe = useAppStore.subscribe(state => {
-      if (!state.messages.some(m => m.id === messageId)) return
+      if (!predicate(state)) return
       clearTimeout(timer)
       unsubscribe?.()
       resolve(true)
     })
   })
+}
+
+const waitForMessage = (messageId: string, timeoutMs = 15_000) =>
+  waitForStore(state => state.messages.some(m => m.id === messageId), timeoutMs)
+
+/**
+ * A turn whose page died before the model answered leaves its bubble on the
+ * placeholder forever: the rejoin only revives bubbles whose job still exists,
+ * and every other path that clears it died with the tab. Rewrite them once,
+ * on load, so a dead turn cannot pass for one in progress.
+ */
+async function markInterruptedPlaceholders(): Promise<void> {
+  // The history arrives with the server sync, typically after this runs.
+  await waitForStore(state => state.messages.length > 0, 15_000)
+  const s = useAppStore.getState()
+  const staleIds = new Set(
+    s.messages.filter(m => m.role === 'assistant' && m.content === ASSISTANT_PLACEHOLDER).map(m => m.id)
+  )
+  if (staleIds.size === 0) return
+  s.setMessages(s.messages.map(m =>
+    staleIds.has(m.id)
+      ? { ...m, content: '⚠️ Interrupted before the model replied (the page reloaded). Send again to retry.' }
+      : m
+  ))
 }
 
 interface UseChatLLMProps {
@@ -145,6 +170,11 @@ export function useChatLLM({
   const previousAttachedIdsRef = useRef<string[]>([])
   // Self-reference for the lookup loop: onDone re-invokes the streaming
   // engine, which can't reference its own useCallback binding directly.
+  // Reasoning display state: a tail (thinking can run to thousands of chars)
+  // painted at most a few times a second (it arrives token by token).
+  const reasoningTailRef = useRef('')
+  const lastReasoningPaintRef = useRef(0)
+
   const startLLMStreamingRef = useRef<
     ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext, noActionRetriesLeft?: number, noActionRetryArmed?: boolean) => Promise<void>) | null
   >(null)
@@ -240,7 +270,22 @@ export function useChatLLM({
     const s = useAppStore.getState()
 
     return {
+      onReasoning: (text: string) => {
+        // Thinking, shown live so a minute of reasoning is not dead air.
+        // Throttled and tail-only: this fires per delta, and the store drives
+        // the whole chat panel's rendering.
+        reasoningTailRef.current = (reasoningTailRef.current + text).slice(-REASONING_TAIL_CHARS)
+        const now = Date.now()
+        if (now - lastReasoningPaintRef.current < REASONING_PAINT_MS) return
+        lastReasoningPaintRef.current = now
+        useAppStore.getState().setStreamingReasoning(reasoningTailRef.current)
+      },
       onChunk: (chunk: string) => {
+        // The first visible token ends the thinking display.
+        if (reasoningTailRef.current) {
+          reasoningTailRef.current = ''
+          useAppStore.getState().setStreamingReasoning('')
+        }
         accumulatedTextRef.current += chunk
         const raw = accumulatedTextRef.current
 
@@ -626,7 +671,12 @@ export function useChatLLM({
     noActionRetryArmed: boolean = true
   ) => {
     const s = useAppStore.getState()
-    
+
+    // Start each turn with no leftover thinking on screen.
+    reasoningTailRef.current = ''
+    lastReasoningPaintRef.current = 0
+    s.setStreamingReasoning('')
+
     // Abort any existing stream just in case
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -707,13 +757,13 @@ export function useChatLLM({
     void (async () => {
       // Cheap short-circuit: no persisted job means no network call at all.
       const job = await findResumableJob()
-      if (!job) return
+      if (!job) return void markInterruptedPlaceholders()
 
       const assistantMsgId = job.meta.assistantMessageId
       // Only chat jobs stream into a bubble. Anything else is left alone to
       // expire on its own retention timer.
-      if (job.meta.kind && job.meta.kind !== 'chat') return
-      if (!assistantMsgId) return
+      if (job.meta.kind && job.meta.kind !== 'chat') return void markInterruptedPlaceholders()
+      if (!assistantMsgId) return void markInterruptedPlaceholders()
       // The chat history arrives with the server sync, which typically lands
       // AFTER this effect runs — waiting for the bubble is what makes the
       // rejoin work on a cold reload rather than only on a warm remount.

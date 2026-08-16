@@ -295,6 +295,31 @@ def test_generation_job_lifecycle_buffers_and_finishes():
     assert job.buffer == "Hello world"
 
 
+def test_app_logging_lets_info_through_uvicorns_warning_root():
+    """uvicorn.run(log_level="warning") sets the ROOT logger to WARNING, so
+    every logger.info in this app was dropped — including the one number that
+    diagnoses a slow first token."""
+    import logging
+    import api_server
+
+    app_logger = logging.getLogger("web_canvas")
+    prior_level, prior_handlers = app_logger.level, list(app_logger.handlers)
+    app_logger.handlers.clear()
+    try:
+        logging.getLogger().setLevel(logging.WARNING)   # what uvicorn does
+        api_server._configure_app_logging()
+
+        assert app_logger.isEnabledFor(logging.INFO)
+        assert app_logger.handlers, "own handler required — the root has none at INFO"
+        # Not double-logged through whatever uvicorn installs on the root.
+        assert app_logger.propagate is False
+        # Child loggers (server_generation) inherit the raised level.
+        assert logging.getLogger("web_canvas.generation").isEnabledFor(logging.INFO)
+    finally:
+        app_logger.handlers[:] = prior_handlers
+        app_logger.setLevel(prior_level)
+
+
 def test_generation_records_time_to_first_token_once():
     """The one number that separates provider prefill from our own latency."""
     job = server_generation.registry.create("alice", {})
@@ -609,7 +634,43 @@ def test_generation_openai_request_and_usage():
 
     assert job.status == "done"
     assert job.buffer == "Hello"
-    assert job.usage == {"promptTokens": 30, "completionTokens": 2, "cachedPromptTokens": 12}
+    assert job.usage == {
+        "promptTokens": 30, "completionTokens": 2, "cachedPromptTokens": 12,
+        # Present even at zero: a large value is the proof that a slow first
+        # token was the model thinking rather than a stalled connection.
+        "reasoningTokens": 0,
+    }
+
+
+def test_generation_streams_reasoning_without_disturbing_the_document_text():
+    """Reasoning arrives on its own key and can precede every visible token.
+    It is reported live and counted, but never buffered — buffering it would
+    shift the replay offsets and push thinking into the document."""
+    job = _new_job()
+    seen: asyncio.Queue = asyncio.Queue()
+    job.subscribers.add(seen)
+    lines = [
+        'data: {"choices":[{"delta":{"reasoning_content":"weighing options"}}]}',
+        'data: {"choices":[{"delta":{"content":"Answer"}}]}',
+        "data: [DONE]",
+    ]
+    _run_job(
+        job, "openai",
+        {"apiKey": "sk", "model": "o-reasoner", "baseUrl": "https://api.openai.com/v1"},
+        [{"role": "user", "content": "hi"}],
+        _FakeStreamResponse(lines=lines), [],
+    )
+
+    assert job.buffer == "Answer"                          # not document text
+    assert job.length == 6                                 # ...and no offset shift
+    assert job.reasoning_chars == len("weighing options")
+    assert job.first_reasoning_latency is not None
+
+    events = []
+    while not seen.empty():
+        events.append(seen.get_nowait())
+    assert [e["type"] for e in events] == ["reasoning", "delta", "done"]
+    assert events[0]["text"] == "weighing options"
 
 
 def test_generation_ollama_request_omits_auth_and_stream_options():

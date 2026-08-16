@@ -156,6 +156,31 @@ describe('startRemoteGeneration', () => {
     expect(rec.done[0]?.text ?? '').toBe('hi')
   })
 
+  // Reasoning is the model's thinking, not its reply: reported live so a long
+  // wait is visible, but never part of the message and never an offset.
+  it('reports reasoning without letting it reach the message text', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-think' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'reasoning', text: 'weighing options' },
+            { type: 'delta', text: 'Answer', offset: 6 },
+            { type: 'done', offset: 6 }
+          ]))
+        : undefined
+    ]
+    const rec = recorder()
+    const thoughts: string[] = []
+
+    await startRemoteGeneration(messages, config, {}, { ...rec.callbacks, onReasoning: t => thoughts.push(t) })
+
+    expect(thoughts).toEqual(['weighing options'])
+    expect(rec.chunks).toEqual(['Answer'])
+    expect(rec.done[0].text).toBe('Answer')
+    // Reasoning advanced no offset; the finished job is cleared as usual.
+    expect(readPersistedJob()).toBeNull()
+  })
+
   it('maps SSE events onto the callback contract in order', async () => {
     routes = [
       url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-1', createdAt: 'now' }) : undefined,

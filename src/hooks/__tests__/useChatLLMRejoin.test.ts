@@ -125,15 +125,30 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     unmount()
   })
 
-  it('does nothing when there is no resumable job', async () => {
+  it('retires a placeholder whose job is gone instead of leaving it "Thinking..."', async () => {
+    // Nothing is generating, so the bubble must not keep reading as if it
+    // were: every path that would have cleared it died with the page, and the
+    // user is left staring at a turn that will never finish.
     findResumableJob.mockResolvedValue(null)
 
     const unmount = renderChatHook()
     await settle()
 
     expect(resumeRemoteGeneration).not.toHaveBeenCalled()
-    expect(bubble('a-1')).toBe('Thinking...')
+    expect(bubble('a-1')).toContain('Interrupted')
+    expect(bubble('a-1')).not.toBe('Thinking...')
     expect(useAppStore.getState().isStreaming).toBe(false)
+    unmount()
+  })
+
+  it('leaves a placeholder alone while its job is being rejoined', async () => {
+    findResumableJob.mockResolvedValue({ jobId: 'gen-live', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(resumeRemoteGeneration).toHaveBeenCalled()
+    expect(bubble('a-1')).not.toContain('Interrupted')
     unmount()
   })
 

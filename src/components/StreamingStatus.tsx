@@ -17,12 +17,14 @@ interface StreamingStatusProps {
   waitingLabel: string
   /** True while the model has produced nothing yet. */
   waiting: boolean
+  /** Tail of the model's thinking, when it streams any. '' otherwise. */
+  reasoning?: string
 }
 
 /** Below this the counter is noise rather than reassurance. */
 const SHOW_ELAPSED_AFTER_SECONDS = 2
 
-export function StreamingStatus({ label, waitingLabel, waiting }: StreamingStatusProps) {
+export function StreamingStatus({ label, waitingLabel, waiting, reasoning }: StreamingStatusProps) {
   const [elapsed, setElapsed] = useState(0)
 
   // Mounted for exactly one generation (the parent renders it only while
@@ -36,18 +38,29 @@ export function StreamingStatus({ label, waitingLabel, waiting }: StreamingStatu
   }, [])
 
   return (
-    <div style={{
-      display: 'flex',
-      alignItems: 'center',
-      gap: '0.5rem',
-      padding: '0.25rem 0.5rem',
-      fontSize: '0.8rem',
-      color: 'var(--text-muted)'
-    }}>
-      <RefreshCw size={12} className="animate-spin" />
-      <span>{waiting ? waitingLabel : label}</span>
-      {elapsed >= SHOW_ELAPSED_AFTER_SECONDS && (
-        <span style={{ opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{elapsed}s</span>
+    <div style={{ padding: '0.25rem 0.5rem', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <RefreshCw size={12} className="animate-spin" />
+        <span>{waiting ? waitingLabel : label}</span>
+        {elapsed >= SHOW_ELAPSED_AFTER_SECONDS && (
+          <span style={{ opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{elapsed}s</span>
+        )}
+      </div>
+      {waiting && reasoning && (
+        // The model's own thinking, not its answer: dimmed, one line, tail-only.
+        <div style={{
+          marginTop: '0.25rem',
+          paddingLeft: '1.25rem',
+          opacity: 0.55,
+          fontStyle: 'italic',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          direction: 'rtl',          // keep the newest text in view
+          textAlign: 'left'
+        }}>
+          <bdi style={{ direction: 'ltr' }}>{reasoning}</bdi>
+        </div>
       )}
     </div>
   )

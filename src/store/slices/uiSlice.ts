@@ -15,6 +15,15 @@ export interface UiSlice {
   setRoleplayMode: (active: boolean) => void
   setRoleplayConfig: (config: RoleplayConfig | null) => void
 
+  /**
+   * Tail of the reasoning the model is streaming right now, or ''.
+   * Transient and throttled by the writer: a reasoning model can spend a
+   * minute thinking before its first visible token, and showing that beats
+   * showing a spinner. Never persisted, never part of the message.
+   */
+  streamingReasoning: string
+  setStreamingReasoning: (text: string) => void
+
   // Selection & editor integration for inline diff review
   selectedText: string
   setSelectedText: (text: string) => void
@@ -24,6 +33,9 @@ export interface UiSlice {
 
 export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => ({
   isSidebarOpen: loadSavedSidebarOpen(),
+
+  streamingReasoning: '',
+  setStreamingReasoning: (text) => set({ streamingReasoning: text }),
 
   toggleSidebar: () => {
     set((state) => {
