@@ -49,6 +49,10 @@ export async function streamLLM(
   const { provider, apiKey, debug } = config
 
   const debugCallbacks: StreamCallbacks = {
+    // Spread FIRST so optional callbacks pass through. Rebuilding this object
+    // field by field silently dropped onReasoning and onAttached: the backend
+    // streamed the model's thinking and the UI never saw a byte of it.
+    ...callbacks,
     onChunk: (chunk: string) => {
       if (debug) {
         console.log('[DEBUG] Incoming LLM Chunk:', chunk)
@@ -197,9 +201,17 @@ async function streamOpenAI(
     if (dataString === '[DONE]') return
     try {
       const json = JSON.parse(dataString)
-      const content = json.choices?.[0]?.delta?.content
+      const delta = json.choices?.[0]?.delta
+      const content = delta?.content
       if (content) {
         callbacks.onChunk(content)
+      }
+      // Reasoning models think on a separate key before any visible token.
+      // Kept in step with the backend transport so the fallback path shows
+      // the same live thinking (see server_generation._stream_openai).
+      const reasoning = delta?.reasoning_content || delta?.reasoning
+      if (reasoning) {
+        callbacks.onReasoning?.(reasoning)
       }
     } catch (e) {
       console.warn('Failed to parse OpenAI SSE chunk', e, dataString)

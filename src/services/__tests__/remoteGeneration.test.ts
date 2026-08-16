@@ -105,6 +105,35 @@ afterEach(() => {
 
 describe('startRemoteGeneration', () => {
 
+  // Regression: streamLLM wraps the caller's callbacks to add debug logging,
+  // and rebuilt the object field by field — so every OPTIONAL callback was
+  // silently dropped on the way to the transport. The backend streamed the
+  // model's thinking for minutes and the UI never saw a byte of it.
+  it('passes optional callbacks through streamLLM to the transport', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-opt' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'attached', offset: 0, status: 'running' },
+            { type: 'reasoning', text: 'weighing options' },
+            { type: 'delta', text: 'Answer', offset: 6 },
+            { type: 'done', offset: 6 }
+          ]))
+        : undefined
+    ]
+    const seen: string[] = []
+    const rec = recorder()
+
+    await streamLLM(messages, { ...config, provider: 'grok' }, {
+      ...rec.callbacks,
+      onAttached: () => seen.push('attached'),
+      onReasoning: t => seen.push('reasoning:' + t)
+    })
+
+    expect(seen).toEqual(['attached', 'reasoning:weighing options'])
+    expect(rec.done[0].text).toBe('Answer')
+  })
+
   // Regression: the payload copies config field by field, and conversationId
   // was left out when generation moved server-side. The backend turns it into
   // xAI's x-grok-conv-id (same prompt-cache shard), so dropping it made every
