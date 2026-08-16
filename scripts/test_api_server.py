@@ -375,6 +375,29 @@ def test_generation_stream_announces_itself_before_any_token():
     assert events[1] == {"type": "delta", "text": "late text", "offset": 9}
 
 
+def test_generation_stream_survives_a_reasoning_event():
+    """Regression: the reader treated every non-delta event as terminal, so the
+    FIRST reasoning delta closed the stream. The job kept generating while every
+    client reported "disconnected before completion"."""
+    async def scenario():
+        job = server_generation.registry.create("alice", {})
+        stream = server_generation._job_event_stream(job, 0)
+        seen = [await anext(stream)]            # attached
+        job.note_reasoning("weighing options")
+        seen.append(await anext(stream))        # reasoning — must NOT end it
+        job.append("Answer")
+        seen.append(await anext(stream))        # the stream is still live
+        job.finish("done")
+        seen.append(await anext(stream))
+        await stream.aclose()
+        return seen
+
+    events = _sse_payloads(asyncio.run(scenario()))
+    assert [e["type"] for e in events] == ["attached", "reasoning", "delta", "done"]
+    assert events[1]["text"] == "weighing options"
+    assert events[2] == {"type": "delta", "text": "Answer", "offset": 6}
+
+
 def test_generation_stream_replay_has_no_duplicates_and_no_gaps():
     """A reader that dies mid-stream and re-attaches at its last offset sees
     every character exactly once."""
