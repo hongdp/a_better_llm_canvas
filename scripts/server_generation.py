@@ -55,6 +55,10 @@ MAX_BUFFER_CHARS = 4 * 1024 * 1024
 # emits a comment line so intermediaries do not drop an idle connection.
 SSE_HEARTBEAT_SECONDS = 15.0
 
+#: Event types that END a stream. Everything else is informational and must
+#: NOT close it — see the reader loop in _job_event_stream.
+TERMINAL_EVENT_TYPES = frozenset({"done", "error", "aborted"})
+
 # Connect fast, but allow long silences between provider deltas (reasoning
 # models can think for minutes before the first token).
 HTTP_CONNECT_TIMEOUT = 30.0
@@ -834,9 +838,15 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
                     continue  # already covered by the replay
                 yield _sse(event)
                 sent_offset = event["offset"]
-            else:
+            elif event["type"] in TERMINAL_EVENT_TYPES:
                 yield _sse(event)
                 return
+            else:
+                # Informational (reasoning, and anything added later). Passing
+                # it through the terminal branch closed the stream on the FIRST
+                # reasoning delta — the job kept generating server-side while
+                # every client saw "disconnected before completion".
+                yield _sse(event)
     finally:
         job.subscribers.discard(queue)
 
