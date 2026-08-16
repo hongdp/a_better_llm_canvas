@@ -163,6 +163,13 @@
   border-top: 1px solid var(--border-color);
   background-color: var(--bg-secondary);
   flex-shrink: 0;
+  /* A book with many chapters used to grow this bar without bound and push
+     the chat input off screen. Cap it at roughly the label plus two rows of
+     tags and let the rest scroll. Vertical scrolling (not the horizontal
+     strip used on phones) because a mouse wheel drives it directly. */
+  max-height: 5rem;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
 }
 
 .reference-title-label {
