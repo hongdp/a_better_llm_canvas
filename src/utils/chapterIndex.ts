@@ -34,9 +34,19 @@ export const MIN_CHARS_FOR_SUMMARY = 1000
  * detect that a document's content changed since its summary was generated.
  */
 export function hashDocumentContent(content: string): string {
+  // Hash the READABLE TEXT, not the raw HTML.
+  // Problem: summaries kept going stale without the chapter changing. The
+  //   hash covered markup, so a TipTap re-serialization, a <br>-to-paragraph
+  //   normalization, or an attribute the editor rewrote on load all changed
+  //   it — invalidating a summary whose subject matter was identical, and
+  //   burning a model call to regenerate the same text.
+  // Fix: derive the hash from the plain text with whitespace collapsed. Two
+  //   documents that read the same now hash the same, so a summary survives
+  //   markup churn and only real edits invalidate it.
+  const text = htmlToPlainText(content).replace(/\s+/g, ' ').trim()
   let hash = 0x811c9dc5
-  for (let i = 0; i < content.length; i++) {
-    hash ^= content.charCodeAt(i)
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i)
     hash = Math.imul(hash, 0x01000193)
   }
   return (hash >>> 0).toString(16)

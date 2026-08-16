@@ -26,6 +26,39 @@ const EDIT_IDLE_MS = 60_000
 const DEFER_RETRY_MS = 10_000
 
 const pendingQueue: string[] = []
+/**
+ * Queue-progress listeners. The summarizer is deliberately silent about
+ * failures (a stale summary is harmless), but silence also made the sidebar
+ * buttons look dead — pressing one produced no visible change whether it
+ * queued 12 chapters, skipped them all, or failed outright. The UI subscribes
+ * here so it can show what actually happened.
+ */
+export interface SummaryQueueStatus {
+  pending: number
+  running: boolean
+  lastError: string | null
+  completedThisRun: number
+}
+type QueueListener = (status: SummaryQueueStatus) => void
+const listeners = new Set<QueueListener>()
+let lastError: string | null = null
+let completedThisRun = 0
+
+const notify = () => {
+  const status: SummaryQueueStatus = {
+    pending: pendingQueue.length,
+    running: processing,
+    lastError,
+    completedThisRun
+  }
+  listeners.forEach(l => l(status))
+}
+
+export const subscribeSummaryQueue = (listener: QueueListener): (() => void) => {
+  listeners.add(listener)
+  listener({ pending: pendingQueue.length, running: processing, lastError, completedThisRun })
+  return () => { listeners.delete(listener) }
+}
 // Ids whose refresh was requested manually — they bypass the staleness check
 // (but never the loaded/length guards).
 const forcedIds = new Set<string>()
@@ -56,6 +89,7 @@ export const enqueueSummaryRefresh = (docId: string, force = false) => {
   if (!pendingQueue.includes(docId)) {
     pendingQueue.push(docId)
     debugLog('enqueued', docId, `(queue: ${pendingQueue.length})`)
+    notify()
   }
   void processQueue()
 }
@@ -106,13 +140,19 @@ const summarizeDocument = async (docId: string): Promise<void> => {
             // Hash captured before the call: if the user edited meanwhile,
             // the mismatch correctly re-marks the doc stale.
             useAppStore.getState().setDocumentSummary(docId, summary, contentHash)
+            completedThisRun++
             debugLog('summarized', docId, `(${summary.length} chars)`)
+            notify()
           }
           resolve()
         },
         onError: (err) => {
-          // Silent failure by design: keep the stale summary.
+          // The summary itself fails softly (the stale one stays usable), but
+          // the reason is now reported so a misconfigured model or a dead key
+          // is visible instead of looking like a dead button.
+          lastError = err.message
           debugLog('summary failed', docId, err.message)
+          notify()
           resolve()
         }
       }
@@ -123,6 +163,9 @@ const summarizeDocument = async (docId: string): Promise<void> => {
 const processQueue = async (): Promise<void> => {
   if (processing) return
   processing = true
+  lastError = null
+  completedThisRun = 0
+  notify()
   try {
     while (pendingQueue.length > 0) {
       // Defer while a chat/roleplay stream is running.
@@ -139,6 +182,7 @@ const processQueue = async (): Promise<void> => {
     }
   } finally {
     processing = false
+    notify()
   }
 }
 

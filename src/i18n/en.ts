@@ -77,6 +77,12 @@ export const en = {
   sidebar: {
     collapse: 'Collapse Sidebar',
     summarizeAll: 'Generate summaries for chapters that need them',
+    summaryQueued: 'Queued {count} chapter(s) for summarizing.',
+    summaryQueuedOne: 'Queued this chapter for summarizing.',
+    summaryNothing: 'Every chapter already has an up-to-date summary.',
+    summaryTooShort: 'Nothing to summarize — the chapter is too short or already current.',
+    summaryFailed: 'Could not queue summaries; see the console for details.',
+    summaryProgress: 'Summarizing… {done} done, {pending} left',
     refreshSummary: 'Regenerate this chapter summary',
     refreshSummaryStale: 'Summary is outdated — click to regenerate',
     expand: 'Expand Sidebar',
