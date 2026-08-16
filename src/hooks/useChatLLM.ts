@@ -3,7 +3,7 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration } from '../services/remoteGeneration'
+import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration, clearPersistedJob as clearPersistedGenerationJob } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
@@ -38,6 +38,9 @@ const MAX_HISTORY_CHARS = 80_000
 const KEEP_IMAGES_IN_LAST_MESSAGES = 4
 // Agentic lookup loop guards: how many <lookup> continuation rounds a single
 // user request may trigger, and how many chapters each round may attach.
+// A rejoined stream that produces nothing within this window is treated as
+// dead (expired job, restarted server) rather than left spinning.
+const REJOIN_FIRST_EVENT_TIMEOUT_MS = 20_000
 const MAX_LOOKUP_ROUNDS = 2
 const MAX_LOOKUP_CHAPTERS_PER_ROUND = 3
 
@@ -718,6 +721,14 @@ export function useChatLLM({
       accumulatedTextRef.current = ''
       s.setStreaming(true)
 
+      // Watchdog: if the job is gone or the stream never produces an event,
+      // the UI must not sit on "generating" forever. Any terminal callback
+      // clears this; firing it aborts the reader so the finally below runs.
+      let sawEvent = false
+      const watchdog = window.setTimeout(() => {
+        if (!sawEvent) abortControllerRef.current?.abort()
+      }, REJOIN_FIRST_EVENT_TIMEOUT_MS)
+
       // Re-attach from 0 rather than from the persisted offset: the render
       // path parses the response as a whole (a <canvas>/<edit> tag opened
       // before the offset must be seen), and the reload destroyed the
@@ -725,7 +736,7 @@ export function useChatLLM({
       // the bubble from the accumulator instead of appending to it. The
       // persisted offset still decides whether the job is worth rejoining at
       // all, and drives resumes by callers that kept their partial text.
-      await resumeRemoteGeneration(job.jobId, 0, buildStreamCallbacks({
+      const baseCallbacks = buildStreamCallbacks({
         // No request to replay, so the no-action retry is disarmed (0) and the
         // lookup loop stays off — this reader only renders what the job emits.
         apiMessages: [],
@@ -736,7 +747,36 @@ export function useChatLLM({
         lookupCtx: undefined,
         noActionRetriesLeft: 0,
         noActionRetryArmed: false
-      }), abortControllerRef.current.signal)
+      })
+
+      try {
+        await resumeRemoteGeneration(job.jobId, 0, {
+          onChunk: (chunk) => { sawEvent = true; baseCallbacks.onChunk(chunk) },
+          onDone: (text, usage) => { sawEvent = true; baseCallbacks.onDone(text, usage) },
+          onError: (err) => { sawEvent = true; baseCallbacks.onError(err) }
+        }, abortControllerRef.current.signal)
+      } catch (e) {
+        // Problem: setStreaming(true) sat before an unguarded await. When the
+        //   job had expired (or the server restarted, or the stream 404'd),
+        //   the throw escaped as an unhandled rejection and the UI was stuck
+        //   showing "is streaming changes…" with nothing ever arriving.
+        // Fix: every exit path reports and then clears the streaming flag.
+        const message = e instanceof Error ? e.message : String(e)
+        console.warn('[Rejoin] could not resume generation', message)
+        useAppStore.setState((st) => ({
+          messages: st.messages.map(m =>
+            m.id === assistantMsgId && (!m.content || m.content === 'Thinking...')
+              ? { ...m, content: '⚠️ The generation could not be resumed after the page reloaded — it may have finished or expired on the server. Please resend if the reply is missing.' }
+              : m
+          )
+        }))
+        clearPersistedGenerationJob()
+      } finally {
+        window.clearTimeout(watchdog)
+        // The terminal callbacks normally clear this; do it unconditionally so
+        // an abort or an early throw cannot leave the app "generating".
+        if (useAppStore.getState().isStreaming) useAppStore.getState().setStreaming(false)
+      }
     })()
   }, [buildStreamCallbacks])
 

@@ -18,7 +18,8 @@ const resumeRemoteGeneration = vi.fn()
 vi.mock('../../services/remoteGeneration', () => ({
   findResumableJob: (...a: unknown[]) => findResumableJob(...a),
   resumeRemoteGeneration: (...a: unknown[]) => resumeRemoteGeneration(...a),
-  abortRemoteGeneration: vi.fn()
+  abortRemoteGeneration: vi.fn(),
+  clearPersistedJob: vi.fn()
 }))
 
 // The rejoin never starts a new request; a no-op keeps the direct transport
@@ -174,6 +175,45 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
 
     expect(resumeRemoteGeneration).toHaveBeenCalledTimes(1)
     expect(bubble('a-1')).toBe('Back.')
+    unmount()
+  })
+})
+
+// ── the stuck-"streaming" regression ─────────────────────────────────────────
+// Reported from the device: after a reload mid-generation the header said
+// "… is streaming changes" forever while nothing arrived. setStreaming(true)
+// sat before an unguarded await, so a throw (expired job, restarted server,
+// 404 stream) escaped as an unhandled rejection and never cleared the flag.
+describe('rejoin failure handling', () => {
+  it('clears the streaming flag when the resume throws', async () => {
+    useAppStore.setState({
+      messages: [{ id: 'a1', role: 'assistant', content: 'Thinking...', timestamp: 't' }],
+      isStreaming: false
+    })
+    findResumableJob.mockResolvedValue({ jobId: 'gen-1', meta: { kind: 'chat', assistantMessageId: 'a1' }, offset: 0 })
+    resumeRemoteGeneration.mockRejectedValue(new Error('Generation stream failed (404): Not Found'))
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(bubble('a1')).toContain('could not be resumed')
+    unmount()
+  })
+
+  it('leaves an already-rendered reply untouched when the resume throws', async () => {
+    useAppStore.setState({
+      messages: [{ id: 'a2', role: 'assistant', content: 'partial answer so far', timestamp: 't' }],
+      isStreaming: false
+    })
+    findResumableJob.mockResolvedValue({ jobId: 'gen-2', meta: { kind: 'chat', assistantMessageId: 'a2' }, offset: 5 })
+    resumeRemoteGeneration.mockRejectedValue(new Error('boom'))
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(bubble('a2')).toBe('partial answer so far')
     unmount()
   })
 })
