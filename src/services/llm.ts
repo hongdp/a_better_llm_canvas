@@ -1,4 +1,10 @@
 import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
+import {
+  startRemoteGeneration,
+  isRemoteGenerationAvailable,
+  RemoteStartError,
+  type RemoteJobMeta
+} from './remoteGeneration'
 
 // Re-export for backward compatibility
 export type { LLMMessage, StreamCallbacks }
@@ -28,7 +34,16 @@ function maskRequestDetails(url: string, headers: Record<string, string>, body: 
  */
 export async function streamLLM(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string; debug?: boolean; signal?: AbortSignal; conversationId?: string },
+  config: ProviderConfig & {
+    provider: string
+    debug?: boolean
+    signal?: AbortSignal
+    conversationId?: string
+    /** Escape hatch: never use the remote transport (fallback path, tests). */
+    forceDirect?: boolean
+    /** Job description echoed back by the backend, used to rejoin after a reload. */
+    remoteMeta?: RemoteJobMeta
+  },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const { provider, apiKey, debug } = config
@@ -57,6 +72,23 @@ export async function streamLLM(
   try {
     if (!apiKey && provider !== 'ollama') {
       throw new Error(`API key is missing for ${provider}. Please configure it in Settings.`)
+    }
+
+    // Transport choice (resumable_generation.md §5): a logged-in client runs
+    // the generation as a backend job that outlives the tab; everyone else
+    // streams straight from the provider as before.
+    if (!config.forceDirect && isRemoteGenerationAvailable()) {
+      try {
+        await startRemoteGeneration(messages, config, config.remoteMeta ?? {}, debugCallbacks, config.signal)
+        return
+      } catch (e) {
+        if (!(e instanceof RemoteStartError)) throw e
+        // The job never came into existence (backend down, 500), so nothing is
+        // generating anywhere — running it directly is safe. Failures AFTER a
+        // successful start deliberately never reach here: retrying them
+        // locally would double-generate.
+        console.warn('[LLM] Remote generation unavailable, falling back to the direct transport:', e.message)
+      }
     }
 
     if (provider === 'openai' || provider === 'ollama' || provider === 'grok') {
@@ -484,6 +516,58 @@ async function streamAnthropic(
 }
 
 /**
+ * Splits an SSE response body into its `data:` payloads, keeping partial
+ * lines across reads.
+ *
+ * Exported so the remote-generation transport (services/remoteGeneration.ts)
+ * parses the wire format with the SAME code as the direct provider paths —
+ * one SSE parser in the codebase, not one per transport. Throws on abort or
+ * transport failure; the caller owns error reporting.
+ */
+export async function readSSEDataLines(
+  response: Response,
+  onData: (data: string, event?: string) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const reader = response.body?.getReader()
+  if (!reader) throw new Error('Response body is not readable')
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let currentEvent = ''
+
+  while (true) {
+    if (signal?.aborted) {
+      throw new Error('Stream aborted by user')
+    }
+    const { value, done } = await reader.read()
+    if (done) break
+
+    buffer += decoder.decode(value, { stream: true })
+    const lines = buffer.split('\n')
+
+    // Keep the last incomplete line in the buffer
+    buffer = lines.pop() || ''
+
+    for (const line of lines) {
+      const trimmed = line.trim()
+      if (!trimmed) continue
+
+      if (trimmed.startsWith('event:')) {
+        currentEvent = trimmed.slice(6).trim()
+      } else if (trimmed.startsWith('data:')) {
+        onData(trimmed.slice(5).trim(), currentEvent)
+      }
+    }
+  }
+
+  // Process any remaining buffer content
+  if (buffer && buffer.startsWith('data:')) {
+    onData(buffer.slice(5).trim(), currentEvent)
+  }
+}
+
+/**
  * Helper to read Server-Sent Events streams
  */
 async function readSSEStream(
@@ -492,13 +576,7 @@ async function readSSEStream(
   callbacks: StreamCallbacks,
   signal?: AbortSignal
 ): Promise<void> {
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('Response body is not readable')
-
-  const decoder = new TextDecoder()
-  let buffer = ''
   let fullText = ''
-  let currentEvent = ''
 
   let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number } | undefined = undefined
   let anthropicInputTokens = 0
@@ -547,39 +625,10 @@ async function readSSEStream(
   }
 
   try {
-    while (true) {
-      if (signal?.aborted) {
-        throw new Error('Stream aborted by user')
-      }
-      const { value, done } = await reader.read()
-      if (done) break
-
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      
-      // Keep the last incomplete line in the buffer
-      buffer = lines.pop() || ''
-
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-
-        if (trimmed.startsWith('event:')) {
-          currentEvent = trimmed.slice(6).trim()
-        } else if (trimmed.startsWith('data:')) {
-          const dataContent = trimmed.slice(5).trim()
-          onData(dataContent, currentEvent)
-          processDataLine(dataContent)
-        }
-      }
-    }
-
-    // Process any remaining buffer content
-    if (buffer && buffer.startsWith('data:')) {
-      const dataContent = buffer.slice(5).trim()
-      onData(dataContent, currentEvent)
+    await readSSEDataLines(response, (dataContent, event) => {
+      onData(dataContent, event)
       processDataLine(dataContent)
-    }
+    }, signal)
 
     if (anthropicInputTokens > 0 || anthropicOutputTokens > 0) {
       usage = {

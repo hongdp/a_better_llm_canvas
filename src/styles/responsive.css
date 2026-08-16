@@ -312,3 +312,57 @@
   border-left: none;
   box-shadow: none;
 }
+
+/* Reference-context bar: one scrollable row on phones.
+ * Problem: the bar wraps (`flex-wrap: wrap`, plus a full-width label), so a
+ *   book with many chapters grew it to several rows and pushed the chat
+ *   input off the screen — the tag bar ate the thing it belongs to.
+ * Fix: on the mobile layouts, keep it to a single row that scrolls
+ *   horizontally, with each tag capped so one long chapter title cannot
+ *   monopolize the row. Desktop keeps wrapping, where vertical space is
+ *   not scarce. */
+.layout-portrait .reference-selector-bar,
+.layout-landscape .reference-selector-bar,
+.layout-tablet-square .reference-selector-bar {
+  flex-wrap: nowrap;
+  align-items: center;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.4rem 0.75rem;
+  scrollbar-width: none; /* Firefox */
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain; /* swiping the tags must not drag the page */
+}
+
+.layout-portrait .reference-selector-bar::-webkit-scrollbar,
+.layout-landscape .reference-selector-bar::-webkit-scrollbar,
+.layout-tablet-square .reference-selector-bar::-webkit-scrollbar {
+  display: none;
+}
+
+/* The label claims a full row in the wrapping layout; inline it here. */
+.layout-portrait .reference-title-label,
+.layout-landscape .reference-title-label,
+.layout-tablet-square .reference-title-label {
+  width: auto;
+  flex: 0 0 auto;
+}
+
+.layout-portrait .reference-selector-bar .reference-tag,
+.layout-landscape .reference-selector-bar .reference-tag,
+.layout-tablet-square .reference-selector-bar .reference-tag {
+  flex: 0 0 auto;
+  max-width: 45vw;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: inline-block;
+}
+
+/* margin-left:auto would strand the chip past the scroll width. */
+.layout-portrait .reference-budget-chip,
+.layout-landscape .reference-budget-chip,
+.layout-tablet-square .reference-budget-chip {
+  margin-left: 0.25rem;
+  flex: 0 0 auto;
+}

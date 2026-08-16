@@ -3,6 +3,8 @@ import { Editor } from '@tiptap/react'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
+import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration } from '../services/remoteGeneration'
+import type { StreamCallbacks } from '../types/llm'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, looksLikeUnfulfilledDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
@@ -38,6 +40,48 @@ const KEEP_IMAGES_IN_LAST_MESSAGES = 4
 // user request may trigger, and how many chapters each round may attach.
 const MAX_LOOKUP_ROUNDS = 2
 const MAX_LOOKUP_CHAPTERS_PER_ROUND = 3
+
+/**
+ * Everything one streamed response needs in order to render itself: the
+ * request that produced it (for the no-action retry), the bubble it writes
+ * to, the document it may rewrite, and the loop guards.
+ */
+interface StreamRenderContext {
+  apiMessages: LLMMessage[]
+  assistantMsgId: string
+  originalDocContent: string
+  attachmentsText: string
+  estimatedInputTokens: number
+  lookupCtx?: LookupLoopContext
+  noActionRetriesLeft: number
+  /**
+   * False for readers that cannot re-issue the request (the rejoin path):
+   * neither the corrective retry nor its "gave up" warning applies there.
+   */
+  noActionRetryArmed?: boolean
+}
+
+/**
+ * Resolves once `messageId` exists in the store, or false once `timeoutMs`
+ * passes. Used by the rejoin path: on a cold reload the chat history is only
+ * restored when the background server sync completes.
+ */
+function waitForMessage(messageId: string, timeoutMs = 15_000): Promise<boolean> {
+  if (useAppStore.getState().messages.some(m => m.id === messageId)) return Promise.resolve(true)
+  return new Promise<boolean>(resolve => {
+    let unsubscribe: (() => void) | null = null
+    const timer = setTimeout(() => {
+      unsubscribe?.()
+      resolve(false)
+    }, timeoutMs)
+    unsubscribe = useAppStore.subscribe(state => {
+      if (!state.messages.some(m => m.id === messageId)) return
+      clearTimeout(timer)
+      unsubscribe?.()
+      resolve(true)
+    })
+  })
+}
 
 interface UseChatLLMProps {
   activeEditor: Editor | null
@@ -184,6 +228,379 @@ export function useChatLLM({
     return runWholeBookBatchesFlow(promptText, batches, assistantMsgId, perBatchChars, abortControllerRef.current.signal)
   }, [])
 
+  // The callback set that renders one streamed response into the chat
+  // bubble and the editor. Extracted from startLLMStreaming so the rejoin
+  // path (a generation that outlived the tab) drives the EXACT same
+  // rendering/parsing/settling logic instead of a second copy of it.
+  const buildStreamCallbacks = useCallback((ctx: StreamRenderContext): StreamCallbacks => {
+    const { apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens, lookupCtx, noActionRetriesLeft, noActionRetryArmed = true } = ctx
+    const s = useAppStore.getState()
+
+    return {
+      onChunk: (chunk: string) => {
+        accumulatedTextRef.current += chunk
+        const raw = accumulatedTextRef.current
+
+        // Incremental tag split (pure; chat/streamHandlers): routes
+        // document markup away from the chat bubble as it streams.
+        const { chatText, canvasText, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
+
+        // Prepend visual attachment details to conversational text. A
+        // streaming <lookup> request is protocol chatter, not an answer —
+        // show a neutral status instead of the raw tag.
+        const displayChatText = lookupCtx && raw.trimStart().toLowerCase().startsWith('<lookup')
+          ? '📖 Checking the chapter index…'
+          : attachmentsText
+            ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
+            : (chatText || 'Updating document...')
+
+        // Update assistant message from fresh store state
+        const latestMessages = useAppStore.getState().messages
+        s.setMessages(
+          latestMessages.map(m => {
+            if (m.id === assistantMsgId) {
+              return { ...m, content: displayChatText }
+            }
+            return m
+          })
+        )
+
+        if (isSelectionEdit) {
+          // Throttle the live preview: applying it on every token re-parses
+          // the whole growing replacement and re-renders ProseMirror each
+          // time (O(n²)), stuttering past a few paragraphs. ~60ms ≈ 16fps is
+          // smooth; the final, exact result is applied in onDone regardless.
+          const SELECTION_PREVIEW_THROTTLE_MS = 60
+          const now = Date.now()
+          const cleanedText = stripIncompleteEndTag(selectionReplaceText)
+          if (
+            cleanedText &&
+            activeEditor &&
+            selectionRangeRef.current &&
+            now - lastSelectionPreviewRef.current >= SELECTION_PREVIEW_THROTTLE_MS
+          ) {
+            lastSelectionPreviewRef.current = now
+            const { from } = selectionRangeRef.current
+            const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
+
+            const restoredText = restoreImagesFromPlaceholders(cleanedText)
+            const tempDiv = document.createElement('div')
+            tempDiv.innerHTML = restoredText
+            const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+
+            const tr = activeEditor.state.tr
+            tr.replace(from, currentEnd, slice)
+            activeEditor.view.dispatch(tr)
+
+            selectionEndRef.current = from + slice.size
+            setSaveStatus('unsaved')
+          }
+        } else if (canvasText.trim()) {
+          setSaveStatus('unsaved')
+          // Stream the document into the editor. The store is deliberately
+          // NOT updated here: it would churn persistence every tick and
+          // fight Editor.tsx's content-prop sync. onDone/onError own the
+          // final state (see settleCanvasPreview).
+          const now = Date.now()
+          if (activeEditor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
+            lastCanvasPreviewRef.current = now
+            canvasPreviewActiveRef.current = true
+            const partial = restoreImagesFromPlaceholders(trimIncompleteHtmlTail(canvasText))
+            activeEditor.chain()
+              .setMeta('addToHistory', false)
+              .setContent(partial, { emitUpdate: false })
+              .run()
+          }
+        }
+      },
+      onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
+        let finalInputTokens = estimatedInputTokens
+        let finalOutputTokens = Math.ceil(fullText.length / 4)
+        let cacheHits = 0
+
+        if (usage) {
+          finalInputTokens = usage.promptTokens
+          finalOutputTokens = usage.completionTokens
+          cacheHits = usage.cachedPromptTokens || 0
+        }
+
+        // Every round costs — account before deciding whether to continue.
+        s.addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
+
+        // Agentic lookup continuation: the model asked for more chapters
+        // instead of answering. Attach them and re-issue the SAME request.
+        // Rounds are transient — this response is never persisted (the
+        // assistant bubble is overwritten in place) and streaming stays on.
+        if (lookupCtx) {
+          const lookup = parseLookupRequest(fullText)
+          if (lookup) {
+            // Async continuation: requested chapters may exist only as
+            // server metadata (lazy loading) — fetch their content first,
+            // THIS is the "Layer 2 can fetch them later" the selector's
+            // degrade path relies on. ensureDocumentContents never throws.
+            void (async () => {
+              const sPre = useAppStore.getState()
+              const requestedIds = lookup.wantsAll
+                ? sPre.documents.filter(d => d.id !== sPre.activeDocumentId).map(d => d.id)
+                : resolveLookupTitles(lookup.titles, sPre.documents, sPre.activeDocumentId)
+              await sPre.ensureDocumentContents(requestedIds)
+              const sNow = useAppStore.getState()
+              const newIds = requestedIds
+                .filter(id => !lookupCtx.attachedIds.includes(id))
+                .filter(id => {
+                  const d = sNow.documents.find(doc => doc.id === id)
+                  return d !== undefined && d.contentLoaded !== false && d.content.length > 0
+                })
+                .slice(0, MAX_LOOKUP_CHAPTERS_PER_ROUND)
+
+              const canContinue = lookupCtx.round < MAX_LOOKUP_ROUNDS && newIds.length > 0
+              const combinedIds = canContinue ? [...lookupCtx.attachedIds, ...newIds] : lookupCtx.attachedIds
+              const newAutoIds = canContinue ? [...lookupCtx.autoIds, ...newIds] : lookupCtx.autoIds
+
+              // Status bubble (UI-only; stripChatDisplayArtifacts removes
+              // the 📖 line if an abort strands it in history).
+              const lookedUpTitles = newIds
+                .map(id => sNow.documents.find(d => d.id === id)?.title)
+                .filter(Boolean)
+                .join(', ')
+              const statusText = canContinue
+                ? `📖 Reading ${lookedUpTitles}…`
+                : '📖 Retrying with the already-available context…'
+              s.setMessages(useAppStore.getState().messages.map(m =>
+                m.id === assistantMsgId ? { ...m, content: statusText } : m
+              ))
+
+              if (sNow.debugMode) {
+                console.log('[AgenticLookup]', {
+                  round: lookupCtx.round,
+                  requested: lookup.wantsAll ? '*' : lookup.titles,
+                  reason: lookup.reason,
+                  attached: newIds,
+                  canContinue
+                })
+              }
+
+              accumulatedTextRef.current = ''
+              settleCanvasPreview(originalDocContent)
+              const dynamicContext = buildDynamicContext(combinedIds)
+              // Loop breaker: when nothing new can be attached (or rounds are
+              // exhausted), retry once WITHOUT lookupCtx and tell the model
+              // to answer with what it has — a further <lookup> just renders
+              // as text instead of looping.
+              const loopBreakNote = canContinue
+                ? ''
+                : '\n\n(Note: every chapter that can be provided is already included above. Answer with the available context. Do NOT emit <lookup> again.)'
+              const finalUserMessage: LLMMessage = {
+                role: 'user',
+                content: `${dynamicContext}\n\nUSER REQUEST:\n${lookupCtx.promptText}${loopBreakNote}`,
+                images: lookupCtx.images
+              }
+              const nextMessages = [...lookupCtx.prefixMessages, finalUserMessage]
+              previousAttachedIdsRef.current = combinedIds
+              void startLLMStreamingRef.current?.(
+                nextMessages,
+                assistantMsgId,
+                originalDocContent,
+                buildAttachmentsLabel(combinedIds, sNow.documents, newAutoIds),
+                Math.ceil(JSON.stringify(nextMessages).length / 4),
+                canContinue
+                  ? { ...lookupCtx, attachedIds: combinedIds, autoIds: newAutoIds, round: lookupCtx.round + 1 }
+                  : undefined
+              )
+            })()
+            return
+          }
+        }
+
+        // Classify the completed response (pure, tested in utils/text).
+        // Priority: selection_replace > localized edits > full-doc canvas.
+        const parsed = parseAssistantResponse(fullText)
+        const finalChatText = parsed.chatText
+
+        // Tag compliance is probabilistic (see
+        // looksLikeUnfulfilledDocumentUpdate): the model sometimes answers
+        // a write request with a one-line "done" and no tags, which used to
+        // surface as a success message over an unchanged document. Retry
+        // the turn once with the failed reply quoted back, then give up
+        // loudly rather than silently.
+        if (
+          noActionRetryArmed &&
+          noActionRetriesLeft > 0 &&
+          parsed.kind === 'chat' &&
+          looksLikeUnfulfilledDocumentUpdate(fullText)
+        ) {
+          settleCanvasPreview(originalDocContent)
+          s.setMessages(useAppStore.getState().messages.map(m =>
+            m.id === assistantMsgId
+              ? { ...m, content: `🔁 That reply contained no document update — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
+              : m
+          ))
+          accumulatedTextRef.current = ''
+          const retryMessages: LLMMessage[] = [
+            ...apiMessages,
+            { role: 'assistant', content: fullText },
+            { role: 'user', content: NO_ACTION_RETRY_INSTRUCTION }
+          ]
+          void startLLMStreamingRef.current?.(
+            retryMessages,
+            assistantMsgId,
+            originalDocContent,
+            attachmentsText,
+            Math.ceil(JSON.stringify(retryMessages).length / 4),
+            undefined,
+            noActionRetriesLeft - 1
+          )
+          return
+        }
+
+        s.setStreaming(false)
+
+        // Apply localized search/replace edits by rebuilding the full
+        // document locally, then reuse the existing diff machinery.
+        // Edits whose SEARCH text can't be located are skipped (never
+        // destructive) and reported to the user.
+        let editDiffedDoc: string | null = null
+        let editFailedCount = 0
+        if (parsed.kind === 'edits') {
+          const placeholderOriginal = preserveImagesWithPlaceholders(originalDocContent)
+          const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsed.editBlocks)
+          editFailedCount = failed.length
+          if (failed.length > 0) {
+            // Surface the unmatched SEARCH text for diagnosis — the usual
+            // cause is the model paraphrasing instead of copying verbatim.
+            console.warn(
+              `[edit-apply] ${failed.length}/${parsed.editBlocks.length} edit block(s) failed to match.`,
+              failed.map(f => ({ search: f.search }))
+            )
+          }
+          if (parsed.editBlocks.length - failed.length > 0) {
+            const newDoc = stripBlankParagraphs(restoreImagesFromPlaceholders(newPlaceholderDoc))
+            editDiffedDoc = diffHtml(originalDocContent, newDoc)
+          }
+        }
+
+        // Guard the destructive full-document replacement: if the response
+        // was cut off (no closing tag) or abbreviates unchanged regions
+        // with placeholders, applying the diff would silently delete
+        // content. Skip it, keep the original, and tell the user.
+        // Valid replacements then pass the image safety net: any image the
+        // rewrite dropped (the model lost its placeholder token) is
+        // re-inserted near its original position instead of vanishing.
+        let canvasIssue: 'truncated' | 'elided' | null = null
+        let canvasDoc: string | null = null
+        let reinsertedImages = 0
+        if (parsed.kind === 'canvas' && parsed.canvasText.trim()) {
+          const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(parsed.canvasText))
+          canvasIssue = validateCanvasReplacement(candidate, parsed.canvasClosed)
+          if (!canvasIssue) {
+            const result = reinsertMissingImages(candidate, originalDocContent)
+            canvasDoc = result.html
+            reinsertedImages = result.reinserted
+          }
+        }
+
+        // Message text lives in chat/streamHandlers; only the exhausted-
+        // retries condition needs hook-local state to compute.
+        const warningNote = buildCompletionWarnings({
+          canvasIssue,
+          editFailedCount,
+          exhaustedNoActionRetries:
+            noActionRetryArmed &&
+            noActionRetriesLeft === 0 &&
+            parsed.kind === 'chat' &&
+            looksLikeUnfulfilledDocumentUpdate(fullText),
+          reinsertedImages
+        })
+
+        const displayChatText = (attachmentsText
+          ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
+          : (finalChatText.trim() || 'Document updated successfully.')) + warningNote
+
+        const latestMessages = useAppStore.getState().messages
+        s.setMessages(
+          latestMessages.map(m => {
+            if (m.id === assistantMsgId) {
+              return { ...m, content: displayChatText }
+            }
+            return m
+          })
+        )
+
+        if (parsed.kind === 'selection') {
+          const cleanedText = stripIncompleteEndTag(parsed.selectionText)
+          if (cleanedText && activeEditor && selectionRangeRef.current) {
+            const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
+            const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
+            const { from } = selectionRangeRef.current
+            const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
+
+            const tempDiv = document.createElement('div')
+            tempDiv.innerHTML = diffed
+            const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+
+            const tr = activeEditor.state.tr
+            tr.replace(from, currentEnd, slice)
+            activeEditor.view.dispatch(tr)
+
+            s.updateActiveDocument({ content: activeEditor.getHTML() })
+          }
+        } else if (parsed.kind === 'edits') {
+          // Apply the locally-rebuilt diff, or leave the document untouched
+          // if no edit could be located.
+          s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
+        } else if (parsed.kind === 'canvas' && canvasDoc !== null) {
+          const diffed = diffHtml(originalDocContent, canvasDoc)
+          s.updateActiveDocument({ content: diffed })
+        } else if (canvasIssue) {
+          // Ensure the document is left exactly as it was before streaming.
+          s.updateActiveDocument({ content: originalDocContent })
+        }
+
+        // Converge the editor with whatever the store ended up holding.
+        // Required after a live preview: on the paths that keep the
+        // original HTML (truncated, elided, tag-free reply) the store value
+        // never changes, so nothing else would clear the streamed draft.
+        const settledState = useAppStore.getState()
+        settleCanvasPreview(
+          settledState.documents.find(d => d.id === settledState.activeDocumentId)?.content ?? originalDocContent
+        )
+        forceSave()
+      },
+      onError: (err: Error) => {
+        s.setStreaming(false)
+        
+        const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
+        if (isAbort) {
+          // Stopping mid-stream discards the partial draft — the store was
+          // never updated, so the editor must be rolled back explicitly.
+          settleCanvasPreview(originalDocContent)
+          forceSave()
+          return
+        }
+
+        setErrorMsg(err.message)
+        
+        const displayChatText = attachmentsText
+          ? `${attachmentsText}\n\n⚠️ Error during stream: ${err.message}`
+          : `⚠️ Error during stream: ${err.message}`
+
+        const latestMessages = useAppStore.getState().messages
+        s.setMessages(
+          latestMessages.map(m => {
+            if (m.id === assistantMsgId) {
+              return { ...m, content: displayChatText }
+            }
+            return m
+          })
+        )
+
+        settleCanvasPreview(originalDocContent)
+        s.updateActiveDocument({ content: originalDocContent })
+        forceSave()
+      }
+    }
+  }, [activeEditor, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview])
+
   // Shared LLM Streaming engine. `lookupCtx` (when set) arms the agentic
   // chapter-lookup loop: a response consisting of a <lookup> tag re-issues
   // the same request with the requested chapters attached (bounded rounds).
@@ -225,380 +642,103 @@ export function useChatLLM({
     try {
       await streamLLM(
         apiMessages,
-        { ...s.providerConfigs[s.activeProvider], provider: s.activeProvider, debug: s.debugMode, signal, conversationId: s.activeBookId },
         {
-          onChunk: (chunk: string) => {
-            accumulatedTextRef.current += chunk
-            const raw = accumulatedTextRef.current
-
-            // Incremental tag split (pure; chat/streamHandlers): routes
-            // document markup away from the chat bubble as it streams.
-            const { chatText, canvasText, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
-
-            // Prepend visual attachment details to conversational text. A
-            // streaming <lookup> request is protocol chatter, not an answer —
-            // show a neutral status instead of the raw tag.
-            const displayChatText = lookupCtx && raw.trimStart().toLowerCase().startsWith('<lookup')
-              ? '📖 Checking the chapter index…'
-              : attachmentsText
-                ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
-                : (chatText || 'Updating document...')
-
-            // Update assistant message from fresh store state
-            const latestMessages = useAppStore.getState().messages
-            s.setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return { ...m, content: displayChatText }
-                }
-                return m
-              })
-            )
-
-            if (isSelectionEdit) {
-              // Throttle the live preview: applying it on every token re-parses
-              // the whole growing replacement and re-renders ProseMirror each
-              // time (O(n²)), stuttering past a few paragraphs. ~60ms ≈ 16fps is
-              // smooth; the final, exact result is applied in onDone regardless.
-              const SELECTION_PREVIEW_THROTTLE_MS = 60
-              const now = Date.now()
-              const cleanedText = stripIncompleteEndTag(selectionReplaceText)
-              if (
-                cleanedText &&
-                activeEditor &&
-                selectionRangeRef.current &&
-                now - lastSelectionPreviewRef.current >= SELECTION_PREVIEW_THROTTLE_MS
-              ) {
-                lastSelectionPreviewRef.current = now
-                const { from } = selectionRangeRef.current
-                const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
-
-                const restoredText = restoreImagesFromPlaceholders(cleanedText)
-                const tempDiv = document.createElement('div')
-                tempDiv.innerHTML = restoredText
-                const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
-
-                const tr = activeEditor.state.tr
-                tr.replace(from, currentEnd, slice)
-                activeEditor.view.dispatch(tr)
-
-                selectionEndRef.current = from + slice.size
-                setSaveStatus('unsaved')
-              }
-            } else if (canvasText.trim()) {
-              setSaveStatus('unsaved')
-              // Stream the document into the editor. The store is deliberately
-              // NOT updated here: it would churn persistence every tick and
-              // fight Editor.tsx's content-prop sync. onDone/onError own the
-              // final state (see settleCanvasPreview).
-              const now = Date.now()
-              if (activeEditor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
-                lastCanvasPreviewRef.current = now
-                canvasPreviewActiveRef.current = true
-                const partial = restoreImagesFromPlaceholders(trimIncompleteHtmlTail(canvasText))
-                activeEditor.chain()
-                  .setMeta('addToHistory', false)
-                  .setContent(partial, { emitUpdate: false })
-                  .run()
-              }
-            }
-          },
-          onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
-            let finalInputTokens = estimatedInputTokens
-            let finalOutputTokens = Math.ceil(fullText.length / 4)
-            let cacheHits = 0
-
-            if (usage) {
-              finalInputTokens = usage.promptTokens
-              finalOutputTokens = usage.completionTokens
-              cacheHits = usage.cachedPromptTokens || 0
-            }
-
-            // Every round costs — account before deciding whether to continue.
-            s.addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
-
-            // Agentic lookup continuation: the model asked for more chapters
-            // instead of answering. Attach them and re-issue the SAME request.
-            // Rounds are transient — this response is never persisted (the
-            // assistant bubble is overwritten in place) and streaming stays on.
-            if (lookupCtx) {
-              const lookup = parseLookupRequest(fullText)
-              if (lookup) {
-                // Async continuation: requested chapters may exist only as
-                // server metadata (lazy loading) — fetch their content first,
-                // THIS is the "Layer 2 can fetch them later" the selector's
-                // degrade path relies on. ensureDocumentContents never throws.
-                void (async () => {
-                  const sPre = useAppStore.getState()
-                  const requestedIds = lookup.wantsAll
-                    ? sPre.documents.filter(d => d.id !== sPre.activeDocumentId).map(d => d.id)
-                    : resolveLookupTitles(lookup.titles, sPre.documents, sPre.activeDocumentId)
-                  await sPre.ensureDocumentContents(requestedIds)
-                  const sNow = useAppStore.getState()
-                  const newIds = requestedIds
-                    .filter(id => !lookupCtx.attachedIds.includes(id))
-                    .filter(id => {
-                      const d = sNow.documents.find(doc => doc.id === id)
-                      return d !== undefined && d.contentLoaded !== false && d.content.length > 0
-                    })
-                    .slice(0, MAX_LOOKUP_CHAPTERS_PER_ROUND)
-
-                  const canContinue = lookupCtx.round < MAX_LOOKUP_ROUNDS && newIds.length > 0
-                  const combinedIds = canContinue ? [...lookupCtx.attachedIds, ...newIds] : lookupCtx.attachedIds
-                  const newAutoIds = canContinue ? [...lookupCtx.autoIds, ...newIds] : lookupCtx.autoIds
-
-                  // Status bubble (UI-only; stripChatDisplayArtifacts removes
-                  // the 📖 line if an abort strands it in history).
-                  const lookedUpTitles = newIds
-                    .map(id => sNow.documents.find(d => d.id === id)?.title)
-                    .filter(Boolean)
-                    .join(', ')
-                  const statusText = canContinue
-                    ? `📖 Reading ${lookedUpTitles}…`
-                    : '📖 Retrying with the already-available context…'
-                  s.setMessages(useAppStore.getState().messages.map(m =>
-                    m.id === assistantMsgId ? { ...m, content: statusText } : m
-                  ))
-
-                  if (sNow.debugMode) {
-                    console.log('[AgenticLookup]', {
-                      round: lookupCtx.round,
-                      requested: lookup.wantsAll ? '*' : lookup.titles,
-                      reason: lookup.reason,
-                      attached: newIds,
-                      canContinue
-                    })
-                  }
-
-                  accumulatedTextRef.current = ''
-                  settleCanvasPreview(originalDocContent)
-                  const dynamicContext = buildDynamicContext(combinedIds)
-                  // Loop breaker: when nothing new can be attached (or rounds are
-                  // exhausted), retry once WITHOUT lookupCtx and tell the model
-                  // to answer with what it has — a further <lookup> just renders
-                  // as text instead of looping.
-                  const loopBreakNote = canContinue
-                    ? ''
-                    : '\n\n(Note: every chapter that can be provided is already included above. Answer with the available context. Do NOT emit <lookup> again.)'
-                  const finalUserMessage: LLMMessage = {
-                    role: 'user',
-                    content: `${dynamicContext}\n\nUSER REQUEST:\n${lookupCtx.promptText}${loopBreakNote}`,
-                    images: lookupCtx.images
-                  }
-                  const nextMessages = [...lookupCtx.prefixMessages, finalUserMessage]
-                  previousAttachedIdsRef.current = combinedIds
-                  void startLLMStreamingRef.current?.(
-                    nextMessages,
-                    assistantMsgId,
-                    originalDocContent,
-                    buildAttachmentsLabel(combinedIds, sNow.documents, newAutoIds),
-                    Math.ceil(JSON.stringify(nextMessages).length / 4),
-                    canContinue
-                      ? { ...lookupCtx, attachedIds: combinedIds, autoIds: newAutoIds, round: lookupCtx.round + 1 }
-                      : undefined
-                  )
-                })()
-                return
-              }
-            }
-
-            // Classify the completed response (pure, tested in utils/text).
-            // Priority: selection_replace > localized edits > full-doc canvas.
-            const parsed = parseAssistantResponse(fullText)
-            const finalChatText = parsed.chatText
-
-            // Tag compliance is probabilistic (see
-            // looksLikeUnfulfilledDocumentUpdate): the model sometimes answers
-            // a write request with a one-line "done" and no tags, which used to
-            // surface as a success message over an unchanged document. Retry
-            // the turn once with the failed reply quoted back, then give up
-            // loudly rather than silently.
-            if (
-              noActionRetriesLeft > 0 &&
-              parsed.kind === 'chat' &&
-              looksLikeUnfulfilledDocumentUpdate(fullText)
-            ) {
-              settleCanvasPreview(originalDocContent)
-              s.setMessages(useAppStore.getState().messages.map(m =>
-                m.id === assistantMsgId
-                  ? { ...m, content: `🔁 That reply contained no document update — retrying (${MAX_NO_ACTION_RETRIES - noActionRetriesLeft + 1}/${MAX_NO_ACTION_RETRIES})…` }
-                  : m
-              ))
-              accumulatedTextRef.current = ''
-              const retryMessages: LLMMessage[] = [
-                ...apiMessages,
-                { role: 'assistant', content: fullText },
-                { role: 'user', content: NO_ACTION_RETRY_INSTRUCTION }
-              ]
-              void startLLMStreamingRef.current?.(
-                retryMessages,
-                assistantMsgId,
-                originalDocContent,
-                attachmentsText,
-                Math.ceil(JSON.stringify(retryMessages).length / 4),
-                undefined,
-                noActionRetriesLeft - 1
-              )
-              return
-            }
-
-            s.setStreaming(false)
-
-            // Apply localized search/replace edits by rebuilding the full
-            // document locally, then reuse the existing diff machinery.
-            // Edits whose SEARCH text can't be located are skipped (never
-            // destructive) and reported to the user.
-            let editDiffedDoc: string | null = null
-            let editFailedCount = 0
-            if (parsed.kind === 'edits') {
-              const placeholderOriginal = preserveImagesWithPlaceholders(originalDocContent)
-              const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsed.editBlocks)
-              editFailedCount = failed.length
-              if (failed.length > 0) {
-                // Surface the unmatched SEARCH text for diagnosis — the usual
-                // cause is the model paraphrasing instead of copying verbatim.
-                console.warn(
-                  `[edit-apply] ${failed.length}/${parsed.editBlocks.length} edit block(s) failed to match.`,
-                  failed.map(f => ({ search: f.search }))
-                )
-              }
-              if (parsed.editBlocks.length - failed.length > 0) {
-                const newDoc = stripBlankParagraphs(restoreImagesFromPlaceholders(newPlaceholderDoc))
-                editDiffedDoc = diffHtml(originalDocContent, newDoc)
-              }
-            }
-
-            // Guard the destructive full-document replacement: if the response
-            // was cut off (no closing tag) or abbreviates unchanged regions
-            // with placeholders, applying the diff would silently delete
-            // content. Skip it, keep the original, and tell the user.
-            // Valid replacements then pass the image safety net: any image the
-            // rewrite dropped (the model lost its placeholder token) is
-            // re-inserted near its original position instead of vanishing.
-            let canvasIssue: 'truncated' | 'elided' | null = null
-            let canvasDoc: string | null = null
-            let reinsertedImages = 0
-            if (parsed.kind === 'canvas' && parsed.canvasText.trim()) {
-              const candidate = stripBlankParagraphs(restoreImagesFromPlaceholders(parsed.canvasText))
-              canvasIssue = validateCanvasReplacement(candidate, parsed.canvasClosed)
-              if (!canvasIssue) {
-                const result = reinsertMissingImages(candidate, originalDocContent)
-                canvasDoc = result.html
-                reinsertedImages = result.reinserted
-              }
-            }
-
-            // Message text lives in chat/streamHandlers; only the exhausted-
-            // retries condition needs hook-local state to compute.
-            const warningNote = buildCompletionWarnings({
-              canvasIssue,
-              editFailedCount,
-              exhaustedNoActionRetries:
-                noActionRetriesLeft === 0 &&
-                parsed.kind === 'chat' &&
-                looksLikeUnfulfilledDocumentUpdate(fullText),
-              reinsertedImages
-            })
-
-            const displayChatText = (attachmentsText
-              ? `${attachmentsText}\n\n${finalChatText.trim() || 'Document updated successfully.'}`
-              : (finalChatText.trim() || 'Document updated successfully.')) + warningNote
-
-            const latestMessages = useAppStore.getState().messages
-            s.setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return { ...m, content: displayChatText }
-                }
-                return m
-              })
-            )
-
-            if (parsed.kind === 'selection') {
-              const cleanedText = stripIncompleteEndTag(parsed.selectionText)
-              if (cleanedText && activeEditor && selectionRangeRef.current) {
-                const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
-                const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
-                const { from } = selectionRangeRef.current
-                const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
-
-                const tempDiv = document.createElement('div')
-                tempDiv.innerHTML = diffed
-                const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
-
-                const tr = activeEditor.state.tr
-                tr.replace(from, currentEnd, slice)
-                activeEditor.view.dispatch(tr)
-
-                s.updateActiveDocument({ content: activeEditor.getHTML() })
-              }
-            } else if (parsed.kind === 'edits') {
-              // Apply the locally-rebuilt diff, or leave the document untouched
-              // if no edit could be located.
-              s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
-            } else if (parsed.kind === 'canvas' && canvasDoc !== null) {
-              const diffed = diffHtml(originalDocContent, canvasDoc)
-              s.updateActiveDocument({ content: diffed })
-            } else if (canvasIssue) {
-              // Ensure the document is left exactly as it was before streaming.
-              s.updateActiveDocument({ content: originalDocContent })
-            }
-
-            // Converge the editor with whatever the store ended up holding.
-            // Required after a live preview: on the paths that keep the
-            // original HTML (truncated, elided, tag-free reply) the store value
-            // never changes, so nothing else would clear the streamed draft.
-            const settledState = useAppStore.getState()
-            settleCanvasPreview(
-              settledState.documents.find(d => d.id === settledState.activeDocumentId)?.content ?? originalDocContent
-            )
-            forceSave()
-          },
-          onError: (err: Error) => {
-            s.setStreaming(false)
-            
-            const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
-            if (isAbort) {
-              // Stopping mid-stream discards the partial draft — the store was
-              // never updated, so the editor must be rolled back explicitly.
-              settleCanvasPreview(originalDocContent)
-              forceSave()
-              return
-            }
-
-            setErrorMsg(err.message)
-            
-            const displayChatText = attachmentsText
-              ? `${attachmentsText}\n\n⚠️ Error during stream: ${err.message}`
-              : `⚠️ Error during stream: ${err.message}`
-
-            const latestMessages = useAppStore.getState().messages
-            s.setMessages(
-              latestMessages.map(m => {
-                if (m.id === assistantMsgId) {
-                  return { ...m, content: displayChatText }
-                }
-                return m
-              })
-            )
-
-            settleCanvasPreview(originalDocContent)
-            s.updateActiveDocument({ content: originalDocContent })
-            forceSave()
+          ...s.providerConfigs[s.activeProvider],
+          provider: s.activeProvider,
+          debug: s.debugMode,
+          signal,
+          conversationId: s.activeBookId,
+          // Job description for the remote transport: a reloaded tab uses
+          // it to find this generation and stream it back into this bubble.
+          remoteMeta: {
+            bookId: s.activeBookId,
+            documentId: s.activeDocumentId,
+            assistantMessageId: assistantMsgId,
+            kind: 'chat' as const
           }
-        }
+        },
+        buildStreamCallbacks({
+          apiMessages,
+          assistantMsgId,
+          originalDocContent,
+          attachmentsText,
+          estimatedInputTokens,
+          lookupCtx,
+          noActionRetriesLeft
+        })
       )
     } catch (e) {
       const err = e instanceof Error ? e : new Error(String(e))
       s.setStreaming(false)
       setErrorMsg(err.message || 'Failed to initialize LLM stream.')
     }
-  }, [activeEditor, selectedText, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview])
+  }, [activeEditor, selectedText, buildStreamCallbacks])
 
   // Keep the self-reference current for lookup-loop continuation rounds.
   useEffect(() => {
     startLLMStreamingRef.current = startLLMStreaming
   }, [startLLMStreaming])
+
+  // ── Rejoin a generation that outlived the tab (spec §5) ───────────────────
+  // With the remote transport the backend keeps generating after the tab is
+  // discarded (mobile Firefox does this within seconds of an app switch). On
+  // mount we ask the server whether the job recorded in localStorage is still
+  // worth reading and, if so, stream it back into the SAME assistant bubble —
+  // the reloaded tab visibly continues instead of showing a dead "Thinking…".
+  const rejoinAttemptedRef = useRef(false)
+  useEffect(() => {
+    // StrictMode mounts twice in development; one rejoin per page load only.
+    if (rejoinAttemptedRef.current) return
+    rejoinAttemptedRef.current = true
+
+    void (async () => {
+      // Cheap short-circuit: no persisted job means no network call at all.
+      const job = await findResumableJob()
+      if (!job) return
+
+      const assistantMsgId = job.meta.assistantMessageId
+      // Only chat jobs stream into a bubble. Anything else is left alone to
+      // expire on its own retention timer.
+      if (job.meta.kind && job.meta.kind !== 'chat') return
+      if (!assistantMsgId) return
+      // The chat history arrives with the server sync, which typically lands
+      // AFTER this effect runs — waiting for the bubble is what makes the
+      // rejoin work on a cold reload rather than only on a warm remount.
+      if (!(await waitForMessage(assistantMsgId))) return
+
+      const s = useAppStore.getState()
+      if (s.isStreaming) return
+
+      // The pre-stream document snapshot died with the tab; the version
+      // snapshot taken before the send is still in history if the user wants
+      // to revert, so diffing against the current content is the safe base.
+      const originalDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content || ''
+
+      abortControllerRef.current = new AbortController()
+      accumulatedTextRef.current = ''
+      s.setStreaming(true)
+
+      // Re-attach from 0 rather than from the persisted offset: the render
+      // path parses the response as a whole (a <canvas>/<edit> tag opened
+      // before the offset must be seen), and the reload destroyed the
+      // accumulated raw text. Replaying is safe because every chunk RE-RENDERS
+      // the bubble from the accumulator instead of appending to it. The
+      // persisted offset still decides whether the job is worth rejoining at
+      // all, and drives resumes by callers that kept their partial text.
+      await resumeRemoteGeneration(job.jobId, 0, buildStreamCallbacks({
+        // No request to replay, so the no-action retry is disarmed (0) and the
+        // lookup loop stays off — this reader only renders what the job emits.
+        apiMessages: [],
+        assistantMsgId,
+        originalDocContent,
+        attachmentsText: '',
+        estimatedInputTokens: 0,
+        lookupCtx: undefined,
+        noActionRetriesLeft: 0,
+        noActionRetryArmed: false
+      }), abortControllerRef.current.signal)
+    })()
+  }, [buildStreamCallbacks])
 
   // Whole-book planning (escalation ladder, spec §6 — implementation in
   // chat/wholeBook): plan + consent happen BEFORE anything enters the chat so
@@ -897,6 +1037,10 @@ export function useChatLLM({
       abortControllerRef.current.abort()
       abortControllerRef.current = null
     }
+    // With the remote transport, dropping the reader leaves the backend job
+    // generating (and billing) on its own — stopping has to reach the server
+    // too. No-op when nothing is running remotely.
+    void abortRemoteGeneration()
     useAppStore.getState().setStreaming(false)
   }, [])
 
