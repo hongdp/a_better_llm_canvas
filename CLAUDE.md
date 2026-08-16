@@ -105,6 +105,11 @@ npm run test:coverage       # coverage over utils, services/import, store/persis
 ./start.sh [--daemon|--stop|--status|--logs]  # convenience wrapper around npm run dev
 ```
 
+**Logs**: `app.log` holds the orchestrator + Vite output; the Python API
+server's own output (including `web_canvas.*` log lines — job starts,
+time-to-first-token, per-job summaries) goes to **`api-server.log`**. Grepping
+`app.log` for API behavior finds nothing.
+
 `npm run dev` does **not** just start Vite — `scripts/start-server.js` also
 spawns the Python API server (preferring `~/miniconda3/bin/python3`, falling
 back to `python3`) with auto-restart, and loads `.env`/`.env.local` into the
