@@ -13,7 +13,7 @@ import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -145,6 +145,11 @@ export function useChatLLM({
   const previousAttachedIdsRef = useRef<string[]>([])
   // Self-reference for the lookup loop: onDone re-invokes the streaming
   // engine, which can't reference its own useCallback binding directly.
+  // Reasoning display state: a tail (thinking can run to thousands of chars)
+  // painted at most a few times a second (it arrives token by token).
+  const reasoningTailRef = useRef('')
+  const lastReasoningPaintRef = useRef(0)
+
   const startLLMStreamingRef = useRef<
     ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext, noActionRetriesLeft?: number, noActionRetryArmed?: boolean) => Promise<void>) | null
   >(null)
@@ -240,7 +245,22 @@ export function useChatLLM({
     const s = useAppStore.getState()
 
     return {
+      onReasoning: (text: string) => {
+        // Thinking, shown live so a minute of reasoning is not dead air.
+        // Throttled and tail-only: this fires per delta, and the store drives
+        // the whole chat panel's rendering.
+        reasoningTailRef.current = (reasoningTailRef.current + text).slice(-REASONING_TAIL_CHARS)
+        const now = Date.now()
+        if (now - lastReasoningPaintRef.current < REASONING_PAINT_MS) return
+        lastReasoningPaintRef.current = now
+        useAppStore.getState().setStreamingReasoning(reasoningTailRef.current)
+      },
       onChunk: (chunk: string) => {
+        // The first visible token ends the thinking display.
+        if (reasoningTailRef.current) {
+          reasoningTailRef.current = ''
+          useAppStore.getState().setStreamingReasoning('')
+        }
         accumulatedTextRef.current += chunk
         const raw = accumulatedTextRef.current
 
@@ -626,7 +646,12 @@ export function useChatLLM({
     noActionRetryArmed: boolean = true
   ) => {
     const s = useAppStore.getState()
-    
+
+    // Start each turn with no leftover thinking on screen.
+    reasoningTailRef.current = ''
+    lastReasoningPaintRef.current = 0
+    s.setStreamingReasoning('')
+
     // Abort any existing stream just in case
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()

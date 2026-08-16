@@ -42,6 +42,11 @@ export interface StreamCallbacks {
    * some callers care (the chat bubble shows the wait instead of dead air).
    */
   onAttached?: () => void
+  /**
+   * A reasoning delta — the model's thinking, not document text. Optional:
+   * only reasoning models produce it, and it is never part of the reply.
+   */
+  onReasoning?: (text: string) => void
 }
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'

@@ -44,6 +44,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     clearChat,
     resetSessionTokens,
     isStreaming,
+    streamingReasoning,
     selectedText,
     activeEditor,
     roleplayMode,
@@ -343,6 +344,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         {isStreaming && (
           <StreamingStatus
             waiting={waitingForFirstToken}
+            reasoning={streamingReasoning}
             waitingLabel={roleplayMode
               ? `🎲 ${t.app.waitingFirstToken}`
               : `${getProviderLabel(activeProvider)} ${t.app.waitingFirstToken}`}

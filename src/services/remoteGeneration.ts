@@ -156,6 +156,10 @@ async function attachToJob(
         // can tell "connected, waiting" from "nothing is happening" — see the
         // header-flush note in server_generation._job_event_stream.
         callbacks.onAttached?.()
+      } else if (event.type === 'reasoning') {
+        // Thinking, not text: it never joins fullText and never advances the
+        // offset, so a reconnect simply misses what was thought while away.
+        if (event.text) callbacks.onReasoning?.(event.text)
       } else if (event.type === 'delta') {
         const text = event.text || ''
         if (!text) return

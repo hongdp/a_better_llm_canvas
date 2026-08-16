@@ -18,7 +18,9 @@ re-exported here would not affect the executing code.
 """
 
 import os
+import sys
 import json
+import logging
 import sqlite3
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
@@ -1011,8 +1013,30 @@ async def delete_book_legacy(request: Request):
     return {"success": True}
 
 
+def _configure_app_logging() -> None:
+    """Let this app's own INFO lines through.
+
+    Problem: nothing this server logged with logger.info ever reached the log —
+      time-to-first-token, job starts, all silently dropped.
+    Root cause: uvicorn.run(log_level="warning") configures the ROOT logger at
+      WARNING, and every "web_canvas.*" logger inherits it.
+    Fix: give the app namespace its own INFO handler on stdout (which
+      start.sh redirects into app.log). uvicorn's access-log noise stays off,
+      because only this namespace is raised.
+    """
+    app_logger = logging.getLogger("web_canvas")
+    app_logger.setLevel(logging.INFO)
+    if not app_logger.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
+        app_logger.addHandler(handler)
+    # Already handled here; do not also bubble up to whatever uvicorn installs.
+    app_logger.propagate = False
+
+
 if __name__ == "__main__":
     import uvicorn
+    _configure_app_logging()
     print(f"[Storage Server] Listening on http://{server_config.args.host}:{server_config.args.port}")
     print(f"[Storage Server] Storage directory: {server_config.STORAGE_DIR}")
     print(f"[Storage Server] Database: {server_db.DB_PATH}")

@@ -20,6 +20,11 @@ import { stripDocStatus } from '../../utils/text'
  */
 export const ASSISTANT_PLACEHOLDER = 'Thinking...'
 
+/** How much of the model's thinking to keep on screen. */
+export const REASONING_TAIL_CHARS = 240
+/** Minimum gap between reasoning repaints — deltas arrive far faster. */
+export const REASONING_PAINT_MS = 250
+
 export const MAX_NO_ACTION_RETRIES = 3
 export const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <canvas>, <edit> or <selection_replace> tag, so NOTHING was written to the document — the user saw only your message.
 

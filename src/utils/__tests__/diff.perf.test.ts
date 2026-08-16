@@ -42,10 +42,26 @@ function makeDoc(n: number, mut: (i: number) => string | null = () => null): str
 
 const results: { pattern: string; ms: number; del: number; ins: number; outKB: number }[] = []
 
+/**
+ * Runs per measurement, of which the FASTEST counts.
+ *
+ * The budgets below are absolute wall-clock, which makes them sensitive to
+ * whatever else the machine is doing — a build running alongside the suite
+ * pushed the 80ms case to 85ms and failed a push three times, with no code
+ * change. Taking the best of a few runs keeps the budget meaningful (the
+ * algorithm CAN do it in time on this machine) while dropping scheduler noise;
+ * a real algorithmic regression slows every run, so it still fails.
+ */
+const TIMING_RUNS = 3
+
 function measure(pattern: string, oldHtml: string, newHtml: string): number {
-  const start = performance.now()
-  const out = diffHtml(oldHtml, newHtml)
-  const ms = performance.now() - start
+  let ms = Infinity
+  let out = ''
+  for (let i = 0; i < TIMING_RUNS; i++) {
+    const start = performance.now()
+    out = diffHtml(oldHtml, newHtml)
+    ms = Math.min(ms, performance.now() - start)
+  }
   results.push({
     pattern,
     ms: Math.round(ms * 100) / 100,
