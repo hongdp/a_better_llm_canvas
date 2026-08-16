@@ -1,3 +1,4 @@
+import type { ReasoningEffort } from '../utils/reasoningEffort'
 export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
 
 export interface GeminiSafetySetting {
@@ -17,6 +18,13 @@ export interface ProviderConfig {
    * class). Empty/absent = use the main chat `model`.
    */
   summaryModel?: string
+  /**
+   * How hard the model should think before answering. Absent = this app's
+   * default (low — see DEFAULT_REASONING_EFFORT); 'default' = send nothing and
+   * let the provider choose. Silently ignored by models that have no such
+   * control.
+   */
+  reasoningEffort?: ReasoningEffort
 }
 
 export interface LLMMessage {

@@ -56,6 +56,9 @@ export const zh: TranslationDictionary = {
     instructPlaceholder: '向 {provider} ({model}) 发送指令...',
   },
   settings: {
+    reasoningEffort: '思考强度',
+    reasoningProviderDefault: '提供方默认',
+    reasoningEffortHint: '模型开始写之前思考多久。越低越快；默认设为 low，因为深度思考可能要几分钟才吐出第一个字。',
     title: '设置',
     tabs: {
       models: '模型与 API 密钥',

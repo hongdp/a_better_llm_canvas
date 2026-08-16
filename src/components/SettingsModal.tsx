@@ -3,6 +3,7 @@ import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, Shie
 import { useAppStore, type LLMProvider, PROVIDER_MODELS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
 import { useModelFetcher } from '../hooks/useModelFetcher'
+import { supportsReasoningEffort, supportedReasoningEfforts, DEFAULT_REASONING_EFFORT } from '../utils/reasoningEffort'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -55,7 +56,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const currentConfig = providerConfigs[activeTab] || providerConfigs.gemini
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model' | 'summaryModel', value: string | number) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model' | 'summaryModel' | 'reasoningEffort', value: string | number) => {
     updateProviderConfig(activeTab, { [field]: value })
   }
 
@@ -264,6 +265,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   className="form-input"
                 />
               </div>
+
+              {/* Reasoning effort — only for models that actually take one. */}
+              {supportsReasoningEffort(activeTab, currentConfig.model) && (
+                <div className="form-group">
+                  <label htmlFor="reasoning-effort-select">{t.settings.reasoningEffort}</label>
+                  <select
+                    id="reasoning-effort-select"
+                    value={currentConfig.reasoningEffort ?? DEFAULT_REASONING_EFFORT}
+                    onChange={(e) => handleConfigChange('reasoningEffort', e.target.value)}
+                    className="form-input"
+                  >
+                    {supportedReasoningEfforts(activeTab, currentConfig.model).map(level => (
+                      <option key={level} value={level}>
+                        {level === 'default' ? t.settings.reasoningProviderDefault : level}
+                      </option>
+                    ))}
+                  </select>
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                    {t.settings.reasoningEffortHint}
+                  </p>
+                </div>
+              )}
 
               {/* Debug Mode Checkbox */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>

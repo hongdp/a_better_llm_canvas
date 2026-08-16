@@ -156,6 +156,26 @@ describe('startRemoteGeneration', () => {
     expect(JSON.parse(String(startInit.body)).config.conversationId).toBe('book-42')
   })
 
+  // Same class of bug as conversationId above: the backend applies the effort,
+  // so a payload that omits it silently leaves every turn on the provider's
+  // default (three minutes of thinking, in the case that motivated this).
+  it('forwards reasoningEffort so the backend can apply it', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-effort' }) : undefined,
+      url => url.includes('/stream') ? streamingResponse(sse([{ type: 'done', offset: 0 }])) : undefined
+    ]
+
+    await startRemoteGeneration(
+      messages,
+      { ...config, provider: 'grok', reasoningEffort: 'low' },
+      {},
+      recorder().callbacks
+    )
+
+    const body = JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body))
+    expect(body.config.reasoningEffort).toBe('low')
+  })
+
   // The stream announces itself before the model speaks: response headers
   // only flush with the first body byte, so a slow first token left the client
   // unable to tell a live stream from a stalled one (15s of it, measured).

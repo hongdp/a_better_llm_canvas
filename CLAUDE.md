@@ -185,6 +185,16 @@ Safety failures (403)
 trigger a self-healing retry with local sensitive-word censorship, then an
 interactive Prompt Editor UI (`status === 'prompt_edit'`).
 
+**Reasoning effort**: `utils/reasoningEffort.ts` holds the per-provider
+capability table (no provider exposes one over the API — xAI's
+`/language-models` returns pricing and modalities only) plus the normalized
+levels. The app default is **low**, not the provider's: grok-4.6 defaults to
+`high` and was measured thinking for 127–199s before its first visible token.
+Both transports must apply it — `services/llm.ts` for the direct path and
+`scripts/server_generation.py` for the backend path — and the remote start
+payload must forward `reasoningEffort` (the payload copies config field by
+field; a field left out is silently ignored, as `conversationId` was).
+
 ### Backend API (`scripts/api_server.py`)
 FastAPI with cookie-based sessions (HttpOnly, SameSite=Lax) + CSRF
 double-submit tokens. Per-user storage isolated as `state_<username>.json` /

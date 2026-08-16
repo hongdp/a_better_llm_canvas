@@ -54,6 +54,9 @@ export const en = {
     instructPlaceholder: 'Instruct {provider} ({model})...',
   },
   settings: {
+    reasoningEffort: 'Thinking effort',
+    reasoningProviderDefault: "Provider default",
+    reasoningEffortHint: 'How long the model thinks before it starts writing. Lower is faster; the default is low because a deep pass can take minutes before the first word appears.',
     title: 'Settings',
     tabs: {
       models: 'Models & API Keys',

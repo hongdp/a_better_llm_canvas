@@ -1,4 +1,5 @@
 import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
+import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
 import {
   startRemoteGeneration,
   isRemoteGenerationAvailable,
@@ -175,6 +176,13 @@ async function streamOpenAI(
     body['max_tokens'] = config.maxOutputTokens
   }
 
+  // Reasoning effort, when this model takes one. Defaults to low rather than
+  // the provider's default — see utils/reasoningEffort for why.
+  const effort = resolveReasoningEffort(config.provider || 'openai', config.model, config.reasoningEffort)
+  if (effort) {
+    body['reasoning_effort'] = effort
+  }
+
   // Check if Ollama by checking baseUrl or apiKey
   const isOllama = config.apiKey === 'ollama-no-key' || config.baseUrl.includes('localhost') || config.baseUrl.includes('127.0.0.1');
   if (!isOllama) {
@@ -266,10 +274,17 @@ async function streamGemini(
     body['safetySettings'] = config.geminiSafetySettings
   }
 
+  const geminiGenerationConfig: Record<string, unknown> = {}
   if (config.maxOutputTokens) {
-    body['generationConfig'] = {
-      maxOutputTokens: config.maxOutputTokens
-    }
+    geminiGenerationConfig.maxOutputTokens = config.maxOutputTokens
+  }
+  // Gemini spends effort as a token budget rather than a word.
+  const geminiEffort = resolveReasoningEffort('gemini', config.model, config.reasoningEffort)
+  if (geminiEffort) {
+    geminiGenerationConfig.thinkingConfig = { thinkingBudget: reasoningBudgetTokens(geminiEffort) }
+  }
+  if (Object.keys(geminiGenerationConfig).length > 0) {
+    body['generationConfig'] = geminiGenerationConfig
   }
 
   // Gemini uses streamGenerateContent for streaming. Support model names with or without 'models/' prefix.
@@ -455,6 +470,17 @@ async function streamAnthropic(
     // full-document <canvas> rewrites.
     max_tokens: config.maxOutputTokens || 8192,
     stream: true,
+  }
+
+  // Anthropic's extended thinking is a budget, and the API requires it to be
+  // smaller than max_tokens — clamp rather than let the request 400.
+  const anthropicEffort = resolveReasoningEffort('anthropic', config.model, config.reasoningEffort)
+  if (anthropicEffort) {
+    const maxTokens = (body['max_tokens'] as number) || 8192
+    const budget = Math.min(reasoningBudgetTokens(anthropicEffort), Math.floor(maxTokens / 2))
+    if (budget >= 1024) {
+      body['thinking'] = { type: 'enabled', budget_tokens: budget }
+    }
   }
 
   // Use structured system prompt with cache_control for Anthropic prompt caching
