@@ -321,3 +321,45 @@ export const saveWholeBookMode = (mode: WholeBookMode) => {
     localStorage.removeItem(WHOLE_BOOK_MODE_KEY)
   }
 }
+
+
+// ── Workspace cache ownership ────────────────────────────────────────────────
+// The document/version caches live in this BROWSER, not in an account. Without
+// an owner check, signing in as a second user inherited the first user's
+// in-memory workspace — and the auto-save then wrote that content into the new
+// account (observed: a fresh account came up holding another account's book).
+const CACHE_OWNER_KEY = 'web_canvas_cache_owner'
+
+export const getCachedWorkspaceOwner = (): string | null =>
+  localStorage.getItem(CACHE_OWNER_KEY)
+
+export const setCachedWorkspaceOwner = (username: string | null): void => {
+  if (username) localStorage.setItem(CACHE_OWNER_KEY, username)
+  else localStorage.removeItem(CACHE_OWNER_KEY)
+}
+
+/**
+ * Drop every cached trace of the previous account's workspace: per-document
+ * records, the document index, versions, and the localStorage pointers that
+ * would otherwise resurrect the old book (active book/document id, title).
+ */
+export const clearWorkspaceCache = async (): Promise<void> => {
+  try {
+    const raw = await db.get<unknown>('web_canvas_documents')
+    if (isV3Index(raw)) {
+      await Promise.all(raw.ids.map(id => db.remove(DOC_KEY_PREFIX + id)))
+    }
+  } catch (e) {
+    console.warn('[Storage] Failed to clear cached documents', e)
+  }
+  await db.remove('web_canvas_documents')
+  await db.remove('web_canvas_versions')
+  lastWrittenById = null
+  for (const key of [
+    'web_canvas_active_book_id',
+    'web_canvas_active_document_id',
+    'web_canvas_book_title'
+  ]) {
+    localStorage.removeItem(key)
+  }
+}
