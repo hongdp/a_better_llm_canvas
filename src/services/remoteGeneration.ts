@@ -256,7 +256,9 @@ export async function startRemoteGeneration(
           // x-grok-conv-id, which routes the turn to the same prompt-cache
           // shard. Omitting it silently made every turn a full-price,
           // full-latency prefill once generation moved server-side.
-          conversationId: config.conversationId
+          conversationId: config.conversationId,
+          // Same lesson: the backend cannot apply an effort it never receives.
+          reasoningEffort: config.reasoningEffort
         },
         messages,
         meta

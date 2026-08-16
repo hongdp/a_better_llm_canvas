@@ -700,6 +700,103 @@ def test_generation_streams_reasoning_without_disturbing_the_document_text():
     assert events[0]["text"] == "weighing options"
 
 
+def test_generation_applies_reasoning_effort_per_provider():
+    """Each provider spells effort differently; the client sends the resolved
+    level and this maps it. A level that never reaches the wire is a setting
+    the user changed for nothing."""
+    openai_body = server_generation.build_openai_request(
+        {"apiKey": "sk", "model": "grok-4.6", "baseUrl": "https://api.x.ai/v1", "reasoningEffort": "low"},
+        [{"role": "user", "content": "hi"}], "grok",
+    )[2]
+    assert openai_body["reasoning_effort"] == "low"
+
+    gemini_body = server_generation.build_gemini_request(
+        {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g", "reasoningEffort": "medium"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert gemini_body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 4096}
+
+    # Anthropic's budget must stay under max_tokens, so it is clamped.
+    anthropic_body = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-sonnet-5", "baseUrl": "https://a",
+         "maxOutputTokens": 4096, "reasoningEffort": "high"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert anthropic_body["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+
+
+def test_generation_retries_without_effort_when_the_provider_rejects_it():
+    """The capability table is a guess about someone else's API. A wrong guess
+    costs one retry, not the turn."""
+    job = _new_job()
+    captured = []
+    attempts = []
+
+    class _RejectThenAccept:
+        """400s the first request, streams the second."""
+        def __init__(self):
+            self.calls = 0
+
+        @property
+        def status_code(self):
+            return 400 if self.calls == 1 else 200
+
+        async def aiter_lines(self):
+            for line in ['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"]:
+                yield line
+
+        async def aread(self):
+            return b'{"error":"Unsupported parameter: reasoning_effort"}'
+
+    response = _RejectThenAccept()
+
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_stream(url, headers, body):
+        response.calls += 1
+        attempts.append(body)
+        captured.append({"url": url, "headers": headers, "body": body})
+        yield response
+
+    with patch.object(server_generation, "_http_stream", fake_stream):
+        asyncio.run(server_generation.run_job(
+            job, "grok",
+            {"apiKey": "sk", "model": "grok-4.6", "baseUrl": "https://api.x.ai/v1", "reasoningEffort": "xhigh"},
+            [{"role": "user", "content": "hi"}],
+        ))
+
+    assert len(attempts) == 2
+    assert attempts[0]["reasoning_effort"] == "xhigh"
+    assert "reasoning_effort" not in attempts[1]   # dropped, not repeated
+    assert job.status == "done"
+    assert job.buffer == "ok"
+
+
+def test_generation_reasoning_rejection_matcher_is_not_a_blanket_retry():
+    assert server_generation._is_reasoning_effort_rejection("Unsupported parameter: reasoning_effort")
+    assert server_generation._is_reasoning_effort_rejection("thinking is not supported for this model")
+    # Unrelated failures must still fail — retrying them just doubles the cost.
+    assert not server_generation._is_reasoning_effort_rejection("Incorrect API key provided.")
+    assert not server_generation._is_reasoning_effort_rejection("429 rate limit exceeded")
+
+
+def test_generation_omits_reasoning_effort_when_not_chosen():
+    """'default' and absence both mean: send nothing, let the provider decide."""
+    for config in (
+        {"apiKey": "sk", "model": "grok-4.6", "baseUrl": "https://api.x.ai/v1"},
+        {"apiKey": "sk", "model": "grok-4.6", "baseUrl": "https://api.x.ai/v1", "reasoningEffort": "default"},
+    ):
+        body = server_generation.build_openai_request(config, [{"role": "user", "content": "hi"}], "grok")[2]
+        assert "reasoning_effort" not in body
+
+    gemini = server_generation.build_gemini_request(
+        {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert "generationConfig" not in gemini or "thinkingConfig" not in gemini.get("generationConfig", {})
+
+
 def test_generation_ollama_request_omits_auth_and_stream_options():
     job = _new_job()
     captured = []

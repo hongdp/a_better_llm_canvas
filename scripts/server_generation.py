@@ -326,6 +326,33 @@ def _split_data_url(image: str) -> Optional[Tuple[str, str]]:
     return match.group(1), match.group(2)
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# Reasoning effort
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Mirrors src/utils/reasoningEffort.ts — the client resolves the level against
+# its capability table and sends the RESULT, so this module only has to know
+# how each provider spells it. Keep the two in step: a level the client sends
+# and this drops is a setting the user changed for nothing.
+
+#: Anthropic and Gemini take a token budget instead of a word.
+THINKING_BUDGET_TOKENS = {
+    "minimal": 512,
+    "low": 1024,
+    "medium": 4096,
+    "high": 16384,
+    "xhigh": 32768,
+}
+
+
+def _reasoning_effort(config: Dict[str, Any]) -> Optional[str]:
+    """The level the client resolved, or None when the parameter is to be omitted."""
+    effort = config.get("reasoningEffort")
+    if not effort or effort == "default":
+        return None
+    return str(effort) if str(effort) in THINKING_BUDGET_TOKENS else None
+
+
 def build_openai_request(
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
@@ -366,6 +393,10 @@ def build_openai_request(
     if config.get("maxOutputTokens"):
         body["max_tokens"] = config["maxOutputTokens"]
 
+    effort = _reasoning_effort(config)
+    if effort:
+        body["reasoning_effort"] = effort
+
     # Ollama rejects stream_options, so it is detected the same way the client
     # detects it: the sentinel key or a loopback base URL.
     is_ollama = (
@@ -405,8 +436,15 @@ def build_gemini_request(
         body["systemInstruction"] = {"parts": [{"text": system_message.get("content") or ""}]}
     if config.get("geminiSafetySettings"):
         body["safetySettings"] = config["geminiSafetySettings"]
+    generation_config: Dict[str, Any] = {}
     if config.get("maxOutputTokens"):
-        body["generationConfig"] = {"maxOutputTokens": config["maxOutputTokens"]}
+        generation_config["maxOutputTokens"] = config["maxOutputTokens"]
+    gemini_effort = _reasoning_effort(config)
+    if gemini_effort:
+        # Gemini spends effort as a token budget rather than a word.
+        generation_config["thinkingConfig"] = {"thinkingBudget": THINKING_BUDGET_TOKENS[gemini_effort]}
+    if generation_config:
+        body["generationConfig"] = generation_config
 
     # Support model names with or without the 'models/' prefix.
     model = config.get("model") or ""
@@ -452,6 +490,15 @@ def build_anthropic_request(
         "max_tokens": config.get("maxOutputTokens") or 8192,
         "stream": True,
     }
+
+    # Extended thinking is a budget, and the API requires it to stay under
+    # max_tokens — clamp rather than let the request 400.
+    anthropic_effort = _reasoning_effort(config)
+    if anthropic_effort:
+        max_tokens = body.get("max_tokens") or 8192
+        budget = min(THINKING_BUDGET_TOKENS[anthropic_effort], max_tokens // 2)
+        if budget >= 1024:
+            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
 
     # Structured system prompt with cache_control for Anthropic prompt caching.
     if system_message:
@@ -745,6 +792,39 @@ async def _stream_gemini(
     return usage
 
 
+_REASONING_REJECTION_RE = re.compile(
+    r"(reasoning_effort|thinking|reasoning)[^\n]{0,120}?"
+    r"(unsupported|not supported|unknown|unrecognized|invalid|does not support)"
+    r"|(unsupported|unknown|unrecognized|invalid)[^\n]{0,40}?(reasoning_effort|thinking)",
+    re.IGNORECASE,
+)
+
+
+def _is_reasoning_effort_rejection(message: str) -> bool:
+    """Did the provider refuse the request because of the effort parameter?
+
+    The client's capability table is a best guess about other people's APIs
+    (none of them expose it), so a wrong guess must cost one retry rather than
+    the whole turn.
+    """
+    return bool(_REASONING_REJECTION_RE.search(message or ""))
+
+
+async def _dispatch_provider(
+    job: GenerationJob,
+    provider: str,
+    config: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if provider in ("openai", "ollama", "grok"):
+        return await _stream_openai(job, config, messages, provider)
+    if provider == "gemini":
+        return await _stream_gemini(job, config, messages)
+    if provider == "anthropic":
+        return await _stream_anthropic(job, config, messages)
+    raise ProviderError(f"Unsupported LLM provider: {provider}")
+
+
 async def run_job(
     job: GenerationJob,
     provider: str,
@@ -753,14 +833,23 @@ async def run_job(
 ) -> None:
     """Drive one provider stream to a terminal job state. Never raises."""
     try:
-        if provider in ("openai", "ollama", "grok"):
-            usage = await _stream_openai(job, config, messages, provider)
-        elif provider == "gemini":
-            usage = await _stream_gemini(job, config, messages)
-        elif provider == "anthropic":
-            usage = await _stream_anthropic(job, config, messages)
-        else:
-            raise ProviderError(f"Unsupported LLM provider: {provider}")
+        try:
+            usage = await _dispatch_provider(job, provider, config, messages)
+        except ProviderError as exc:
+            # Safe to retry only before any token was buffered — a parameter
+            # rejection is a 400 at request time, so nothing has streamed.
+            if not (
+                config.get("reasoningEffort")
+                and job.length == 0
+                and _is_reasoning_effort_rejection(str(exc))
+            ):
+                raise
+            logger.info(
+                "Job %s: provider rejected the reasoning effort; retrying without it",
+                job.job_id,
+            )
+            retry_config = {k: v for k, v in config.items() if k != "reasoningEffort"}
+            usage = await _dispatch_provider(job, provider, retry_config, messages)
         job.finish("done", usage=usage)
     except (asyncio.CancelledError, _JobAborted):
         # Swallowed deliberately: cancellation here is the abort endpoint's
