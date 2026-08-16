@@ -1024,10 +1024,21 @@ def _configure_app_logging() -> None:
       start.sh redirects into app.log). uvicorn's access-log noise stays off,
       because only this namespace is raised.
     """
+    # start-server.js pipes our stdout, and a piped stdout is BLOCK-buffered:
+    # log lines would sit in an 8KB buffer instead of reaching app.log. (Which
+    # is why even this server's startup prints never appeared there.) Line
+    # buffering fixes the prints too; stderr is the fallback because it stays
+    # line-buffered when piped no matter what.
+    stream = sys.stdout
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, OSError):
+        stream = sys.stderr
+
     app_logger = logging.getLogger("web_canvas")
     app_logger.setLevel(logging.INFO)
     if not app_logger.handlers:
-        handler = logging.StreamHandler(sys.stdout)
+        handler = logging.StreamHandler(stream)
         handler.setFormatter(logging.Formatter("%(asctime)s [%(name)s] %(message)s"))
         app_logger.addHandler(handler)
     # Already handled here; do not also bubble up to whatever uvicorn installs.

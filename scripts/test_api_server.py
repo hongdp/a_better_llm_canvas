@@ -300,6 +300,7 @@ def test_app_logging_lets_info_through_uvicorns_warning_root():
     every logger.info in this app was dropped — including the one number that
     diagnoses a slow first token."""
     import logging
+    import sys
     import api_server
 
     app_logger = logging.getLogger("web_canvas")
@@ -311,6 +312,9 @@ def test_app_logging_lets_info_through_uvicorns_warning_root():
 
         assert app_logger.isEnabledFor(logging.INFO)
         assert app_logger.handlers, "own handler required — the root has none at INFO"
+        # A piped stdout is block-buffered: without line buffering the lines
+        # sit in an 8KB buffer and never reach app.log.
+        assert sys.stdout.line_buffering or app_logger.handlers[0].stream is sys.stderr
         # Not double-logged through whatever uvicorn installs on the root.
         assert app_logger.propagate is False
         # Child loggers (server_generation) inherit the raised level.

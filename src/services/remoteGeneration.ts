@@ -105,6 +105,14 @@ function apiHeaders(): Record<string, string> {
  * Read lazily (never at module load) to keep the store graph out of the
  * import cycle.
  */
+/**
+ * Re-attach attempts after a stream ends without a terminal event. One is
+ * enough to ride out a proxy hiccup; a job that no longer exists fails its
+ * retry immediately (404), so this costs nothing when the server really died.
+ */
+const MAX_STREAM_RECONNECTS = 1
+const STREAM_RECONNECT_DELAY_MS = 500
+
 export function isRemoteGenerationAvailable(): boolean {
   return !!useAppStore.getState().user
 }
@@ -118,12 +126,16 @@ async function attachToJob(
   jobId: string,
   fromOffset: number,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  reconnectsLeft: number = MAX_STREAM_RECONNECTS,
+  carryText: string = ''
 ): Promise<void> {
   let offset = fromOffset
   // Text THIS reader rendered. On a resume it deliberately excludes the
   // replayed-before-the-offset prefix — onDone reports what was streamed here.
-  let fullText = ''
+  // A mid-turn reconnect carries it forward: one logical attach must report
+  // one whole answer, or the caller would parse only the tail.
+  let fullText = carryText
   let terminal = false
 
   try {
@@ -182,10 +194,16 @@ async function attachToJob(
     }, signal)
 
     if (!terminal) {
-      // Body ended without a terminal event: the connection dropped or the
-      // server restarted. Keep the persisted record — a later rejoin can still
-      // pick the job up if it survived — and report it instead of pretending
-      // the (possibly truncated) answer completed.
+      // Body ended without a terminal event: the connection dropped, or the
+      // server went away. The job may well still be generating, so re-attach
+      // once from what was rendered — a transient drop then costs nothing but
+      // a pause, and only a job that is really gone becomes an error.
+      if (reconnectsLeft > 0 && !signal?.aborted) {
+        await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
+        return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText)
+      }
+      // Keep the persisted record: a later page load can still pick the job up
+      // if it survived. Reporting beats pretending a truncated answer is whole.
       callbacks.onError(new Error('Generation stream disconnected before completion'))
     }
   } catch (error) {

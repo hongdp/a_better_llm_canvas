@@ -181,6 +181,52 @@ describe('startRemoteGeneration', () => {
     expect(readPersistedJob()).toBeNull()
   })
 
+  // A stream that ends without a terminal event usually means the connection
+  // dropped, not that the job died — the backend keeps generating. Re-attach
+  // once from what was rendered so a hiccup costs a pause, not the turn.
+  it('re-attaches once from the rendered offset when the stream drops', async () => {
+    const streamCalls: string[] = []
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-drop' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamCalls.push(url)
+        return streamCalls.length === 1
+          ? streamingResponse(sse([{ type: 'delta', text: 'Hel', offset: 3 }]))   // cut off
+          : streamingResponse(sse([{ type: 'delta', text: 'lo', offset: 5 }, { type: 'done', offset: 5 }]))
+      }
+    ]
+    const rec = recorder()
+
+    await startRemoteGeneration(messages, config, {}, rec.callbacks)
+
+    // The retry resumes at the offset already rendered — no gap, no duplicate.
+    expect(streamCalls[1]).toContain('from=3')
+    expect(rec.chunks).toEqual(['Hel', 'lo'])
+    expect(rec.errors).toEqual([])
+    expect(rec.done[0].text).toBe('Hello')
+  })
+
+  it('gives up after the single re-attach when the job is really gone', async () => {
+    let streamAttempts = 0
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-gone' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamAttempts++
+        return streamingResponse(sse([{ type: 'delta', text: 'partial', offset: 7 }]))
+      }
+    ]
+    const rec = recorder()
+
+    await startRemoteGeneration(messages, config, {}, rec.callbacks)
+
+    expect(streamAttempts).toBe(2)
+    expect(rec.errors).toEqual(['Generation stream disconnected before completion'])
+    // The record survives so a later page load can still pick the job up.
+    expect(readPersistedJob()?.jobId).toBe('gen-gone')
+  })
+
   it('maps SSE events onto the callback contract in order', async () => {
     routes = [
       url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-1', createdAt: 'now' }) : undefined,
@@ -292,18 +338,25 @@ describe('persisted job record', () => {
 
 describe('resumeRemoteGeneration', () => {
   it('reattaches at the stored offset with no duplicate and no gap', async () => {
-    // The server buffer is "Hello world"; the tab dies after "Hello".
+    // The server buffer is "Hello world"; the tab dies after "Hello". Within a
+    // live page the client would now self-heal, so the tab's death is modelled
+    // by failing the in-page reconnect too — only then is this a cold reload.
+    let fromFiveHits = 0
     routes = [
       url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-6' }) : undefined,
       url => url.includes('from=0')
         ? streamingResponse(sse([{ type: 'delta', text: 'Hello', offset: 5 }]))
         : undefined,
-      url => url.includes('from=5')
-        ? streamingResponse(sse([
-            { type: 'delta', text: ' world', offset: 11 },
-            { type: 'done', offset: 11 }
-          ]))
-        : undefined
+      url => {
+        if (!url.includes('from=5')) return undefined
+        fromFiveHits++
+        return fromFiveHits === 1
+          ? jsonResponse({ detail: 'Generation job not found.' }, false, 404)  // the page is gone
+          : streamingResponse(sse([
+              { type: 'delta', text: ' world', offset: 11 },
+              { type: 'done', offset: 11 }
+            ]))
+      }
     ]
     const first = recorder()
     await startRemoteGeneration(messages, config, { assistantMessageId: 'a-6' }, first.callbacks)
@@ -314,7 +367,7 @@ describe('resumeRemoteGeneration', () => {
     const second = recorder()
     await resumeRemoteGeneration(stored.jobId, stored.offset, second.callbacks)
 
-    expect(calls()[2]).toContain('/api/generate/gen-6/stream?from=5')
+    expect(calls()[3]).toContain('/api/generate/gen-6/stream?from=5')
     expect(first.chunks.join('') + second.chunks.join('')).toBe('Hello world')
     expect(second.done[0].text).toBe(' world')
     expect(readPersistedJob()).toBeNull()
