@@ -13,7 +13,7 @@ import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -957,7 +957,7 @@ export function useChatLLM({
     s.addMessage({
       id: assistantMsgId,
       role: 'assistant' as const,
-      content: 'Thinking...',
+      content: ASSISTANT_PLACEHOLDER,
       timestamp: new Date().toISOString(),
       provider: s.activeProvider,
       model: s.providerConfigs[s.activeProvider].model
@@ -1017,7 +1017,7 @@ export function useChatLLM({
     s.setMessages([...truncatedMessages, {
       id: assistantMsgId,
       role: 'assistant' as const,
-      content: 'Thinking...',
+      content: ASSISTANT_PLACEHOLDER,
       timestamp: new Date().toISOString(),
       provider: s.activeProvider,
       model: s.providerConfigs[s.activeProvider].model
