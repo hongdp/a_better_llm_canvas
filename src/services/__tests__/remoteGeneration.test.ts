@@ -104,6 +104,58 @@ afterEach(() => {
 })
 
 describe('startRemoteGeneration', () => {
+
+  // Regression: the payload copies config field by field, and conversationId
+  // was left out when generation moved server-side. The backend turns it into
+  // xAI's x-grok-conv-id (same prompt-cache shard), so dropping it made every
+  // turn a full-price, full-latency prefill — visible in the UI as ~0 cache
+  // hits on a book that had been cheap to continue.
+  it('forwards conversationId so the backend can route the prompt cache', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-cache' }) : undefined,
+      url => url.includes('/stream') ? streamingResponse(sse([{ type: 'done', offset: 0 }])) : undefined
+    ]
+
+    await startRemoteGeneration(
+      messages,
+      { ...config, provider: 'grok', conversationId: 'book-42' },
+      {},
+      recorder().callbacks
+    )
+
+    const startInit = fetchMock.mock.calls[0][1] as RequestInit
+    expect(JSON.parse(String(startInit.body)).config.conversationId).toBe('book-42')
+  })
+
+  // The stream announces itself before the model speaks: response headers
+  // only flush with the first body byte, so a slow first token left the client
+  // unable to tell a live stream from a stalled one (15s of it, measured).
+  it('reports the attach before any token arrives', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-att' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'attached', offset: 0, status: 'running' },
+            { type: 'delta', text: 'hi', offset: 2 },
+            { type: 'done', offset: 2 }
+          ]))
+        : undefined
+    ]
+    const rec = recorder()
+    const order: string[] = []
+    const callbacks = {
+      ...rec.callbacks,
+      onAttached: () => order.push('attached'),
+      onChunk: (c: string) => order.push('chunk:' + c)
+    }
+
+    await startRemoteGeneration(messages, config, {}, callbacks)
+
+    expect(order).toEqual(['attached', 'chunk:hi'])
+    // It is not text: nothing lands in the message and no offset is consumed.
+    expect(rec.done[0]?.text ?? '').toBe('hi')
+  })
+
   it('maps SSE events onto the callback contract in order', async () => {
     routes = [
       url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-1', createdAt: 'now' }) : undefined,

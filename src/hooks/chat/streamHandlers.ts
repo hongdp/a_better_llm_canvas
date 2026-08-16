@@ -13,6 +13,13 @@ import { stripDocStatus } from '../../utils/text'
 // produced content, 1 → 4/8, 2 → 7/8, 3 → 8/8. Failures are independent
 // re-rolls, not a stuck state, and a failed round costs ~25 output tokens, so
 // three is the point where the curve flattens.
+/**
+ * Bubble text between "the turn started" and the first token. Shared so the
+ * chat panel can recognise the wait and show it as such, rather than showing a
+ * spinner that looks identical to a stalled connection.
+ */
+export const ASSISTANT_PLACEHOLDER = 'Thinking...'
+
 export const MAX_NO_ACTION_RETRIES = 3
 export const NO_ACTION_RETRY_INSTRUCTION = `Your previous reply contained no <canvas>, <edit> or <selection_replace> tag, so NOTHING was written to the document — the user saw only your message.
 

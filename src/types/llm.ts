@@ -36,6 +36,12 @@ export interface StreamCallbacks {
   onChunk: (chunk: string) => void
   onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => void
   onError: (error: Error) => void
+  /**
+   * The transport is connected but the model has produced nothing yet.
+   * Optional: only the remote transport can distinguish this state, and only
+   * some callers care (the chat bubble shows the wait instead of dead air).
+   */
+  onAttached?: () => void
 }
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'

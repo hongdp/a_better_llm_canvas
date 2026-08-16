@@ -22,6 +22,7 @@ export const en = {
     expandChat: 'Expand chat history',
     saveAndSubmit: 'Save & Submit',
     streamingChanges: 'is streaming changes...',
+    waitingFirstToken: 'is thinking...',
     referenceContext: 'Reference Context (Optional):',
     referencePinnedHint: 'Pinned: always attached. Click to block auto-attachment.',
     referenceBlockedHint: 'Blocked: never auto-attached. Click to reset.',
