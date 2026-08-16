@@ -174,10 +174,13 @@ content to the editor and conversational text to chat. The static system
 prompt (`utils/systemPrompt.ts`) carries the protocol ONLY — channels, markup,
 status line. Persona, task, and style guidance belong to the user's preset and
 their message; do not add writing instructions to the system prompt. Every reply must also end with a
-`<doc_status>updated|unchanged</doc_status>` declaration: the model decides
-whether an edit was warranted, and the client only retries a reply that
-contradicts itself (declared an update but emitted no markup, or emitted edit
-markup the parser rejected). Never re-add local guessing of user intent.
+`<doc_status>updated|unchanged</doc_status>` declaration — **mandatory, on
+every reply**, including ones that change nothing. The model decides whether an
+edit was warranted; the client rejects a turn only on evidence from the reply
+itself: no declaration at all (`undeclared`), a declared update with no markup
+(`claimed`), markup the parser rejected (`malformed`), or a first-person claim
+of having written next to a `unchanged` declaration. Never re-add local guessing
+of user intent.
 Safety failures (403)
 trigger a self-healing retry with local sensitive-word censorship, then an
 interactive Prompt Editor UI (`status === 'prompt_edit'`).

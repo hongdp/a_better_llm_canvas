@@ -578,66 +578,6 @@ describe('parseEditBlocks — terminators models actually emit', () => {
   })
 })
 
-describe('detectFailedDocumentUpdate — length is not the signal', () => {
-  it('flags a long reply that carries edit markers nothing could parse', () => {
-    const text = '已在大纲补上要求。\n<edit>\n<<<<<<< SEARCH\n<p>原句</p>\n' + '补充说明。'.repeat(60)
-    expect(text.length).toBeGreaterThan(200)
-    expect(detectFailedDocumentUpdate(text)).toBe('malformed')
-  })
-
-  it('still ignores prose that merely mentions editing', () => {
-    const text = '我建议你把第二章的对话改得更口语一些，'.repeat(15)
-    expect(detectFailedDocumentUpdate(text)).toBeNull()
-  })
-})
-
-
-// ── detectFailedDocumentUpdate ───────────────────────────────────────────────
-// Whether an edit is warranted is the MODEL's call. The client only judges
-// whether the model's own output matches its own claim, which is why an
-// earlier intent-guessing version had to go: it retried ordinary chat three
-// times and warned about a failure that never happened.
-describe('detectFailedDocumentUpdate', () => {
-  it('flags edit markup the parser rejected', () => {
-    expect(detectFailedDocumentUpdate('<edit>\n<<<<<<< SEARCH\nmangled')).toBe('malformed')
-    expect(detectFailedDocumentUpdate('<<<<<<< SEARCH\n<p>a</p>\n=======')).toBe('malformed')
-  })
-
-  it('flags an action tag the model opened and never closed', () => {
-    expect(detectFailedDocumentUpdate('Sure! <canvas><h1>Draft')).toBe('malformed')
-    expect(detectFailedDocumentUpdate('<selection_replace>partial')).toBe('malformed')
-  })
-
-  it('flags a stated document change that produced no markup', () => {
-    for (const t of [
-      "I've updated the document as requested.",
-      'I have rewritten the second paragraph.',
-      "Here's the updated chapter.",
-      '已经帮你改好了',
-      '我已更新文档',
-      '文档已更新',
-      '已为你续写了这一段'
-    ]) expect(detectFailedDocumentUpdate(t), t).toBe('claimed')
-  })
-
-  it('leaves ordinary conversation alone — the cost of the old heuristic', () => {
-    for (const t of [
-      '流式测试正常，本次无需改文档。',
-      'stream test received — nothing to change here.',
-      '这段的节奏我觉得没问题。',
-      'The pacing reads well; I would not change it.',
-      '你要我做哪一件？',
-      'Which would you like me to do?',
-      '- 把选中正文写入文档\n- 续写 / 润色'
-    ]) expect(detectFailedDocumentUpdate(t), t).toBeNull()
-  })
-
-  it('returns null for empty input', () => {
-    expect(detectFailedDocumentUpdate('')).toBeNull()
-    expect(detectFailedDocumentUpdate('   ')).toBeNull()
-  })
-})
-
 // ── doc_status declaration ───────────────────────────────────────────────────
 // The model declares what it did; the client checks the declaration against
 // the markup. This replaces guessing intent from the user's prompt, and
@@ -677,24 +617,56 @@ describe('parseDocStatus / stripDocStatus', () => {
   })
 })
 
-describe('detectFailedDocumentUpdate — the declaration wins', () => {
+// ── detectFailedDocumentUpdate ───────────────────────────────────────────────
+// The declaration is MANDATORY on every reply. Without it a model that
+// silently skipped the work is indistinguishable from one that deliberately
+// answered in chat — which is how "it said it wrote and it didn't" kept
+// coming back after the intent-guessing heuristic was removed.
+describe('detectFailedDocumentUpdate', () => {
+  it('fails a reply that never declared its status', () => {
+    expect(detectFailedDocumentUpdate('这段读起来没问题。')).toBe('undeclared')
+    expect(detectFailedDocumentUpdate('Which chapter did you mean?')).toBe('undeclared')
+    expect(detectFailedDocumentUpdate('已经帮你改好了')).toBe('undeclared')
+  })
+
+  it('accepts a declared non-edit as a complete answer', () => {
+    expect(detectFailedDocumentUpdate('流式测试正常，本次无需改文档。\n<doc_status>unchanged</doc_status>')).toBeNull()
+    expect(detectFailedDocumentUpdate('The pacing reads well.\n<doc_status>unchanged</doc_status>')).toBeNull()
+    expect(detectFailedDocumentUpdate('你想让第三章从哪里开始写？\n<doc_status>unchanged</doc_status>')).toBeNull()
+  })
+
   it('flags a declared update that emitted nothing', () => {
-    // Neutral prose no pattern would ever catch — only the declaration reveals it.
+    // Neutral prose no pattern would ever catch — only the declaration shows it.
     expect(detectFailedDocumentUpdate('嗯。\n<doc_status>updated</doc_status>')).toBe('claimed')
     expect(detectFailedDocumentUpdate('Ok.\n<doc_status>updated</doc_status>')).toBe('claimed')
   })
 
-  it('trusts a declared non-edit over claim-shaped prose', () => {
-    // The model summarising what the USER already did must not trigger a retry.
-    expect(detectFailedDocumentUpdate('你已经把第二章改好了，这版读起来顺多了。\n<doc_status>unchanged</doc_status>')).toBeNull()
+  it('flags a reply that declares "unchanged" while claiming it wrote', () => {
+    // Self-contradiction is precisely what the user experiences as the bug,
+    // so the declaration stops being authoritative here.
+    for (const t of [
+      '我已经把第二章改写了一遍。\n<doc_status>unchanged</doc_status>',
+      "I've rewritten the second paragraph.\n<doc_status>unchanged</doc_status>",
+      '已经帮你把这段续写完了。\n<doc_status>unchanged</doc_status>'
+    ]) expect(detectFailedDocumentUpdate(t), t).toBe('claimed')
   })
 
-  it('still flags broken markup regardless of the declaration', () => {
+  it('still lets the model describe what the USER changed', () => {
+    // Not first person: no contradiction, no retry.
+    expect(detectFailedDocumentUpdate(
+      '你已经把第二章改好了，这版读起来顺多了。\n<doc_status>unchanged</doc_status>'
+    )).toBeNull()
+  })
+
+  it('flags broken markup whatever the declaration says', () => {
     expect(detectFailedDocumentUpdate('<edit>\n<<<<<<< SEARCH\nx\n<doc_status>unchanged</doc_status>')).toBe('malformed')
+    expect(detectFailedDocumentUpdate('Sure! <canvas><h1>Draft')).toBe('malformed')
+    const long = '已在大纲补上要求。\n<edit>\n<<<<<<< SEARCH\n<p>原句</p>\n' + '补充说明。'.repeat(60)
+    expect(detectFailedDocumentUpdate(long)).toBe('malformed')
   })
 
-  it('falls back to prose when the model omits the declaration', () => {
-    expect(detectFailedDocumentUpdate('已经帮你改好了')).toBe('claimed')
-    expect(detectFailedDocumentUpdate('这段读起来没问题。')).toBeNull()
+  it('returns null for empty input', () => {
+    expect(detectFailedDocumentUpdate('')).toBeNull()
+    expect(detectFailedDocumentUpdate('   ')).toBeNull()
   })
 })

@@ -217,7 +217,7 @@ describe('useChatLLM — normal completion', () => {
 describe('useChatLLM — no-action retry', () => {
   it('retries once with a corrective instruction and applies the recovered update', async () => {
     responses.push('已按大纲接上第二章，直接落笔。')            // tag-free: writes nothing
-    responses.push('好了。\n<canvas><h1>Ch3</h1><p>正文</p></canvas>')
+    responses.push('好了。\n<canvas><h1>Ch3</h1><p>正文</p></canvas>\n<doc_status>updated</doc_status>')
     const harness = renderChatHook()
 
     await send(harness, '继续写第三章')
@@ -229,7 +229,10 @@ describe('useChatLLM — no-action retry', () => {
       role: 'assistant',
       content: '已按大纲接上第二章，直接落笔。'
     })
-    expect(finalUserContent(1)).toContain('no <canvas>, <edit> or <selection_replace> tag')
+    // The corrective turn spells out BOTH acceptable shapes, so a model that
+    // genuinely has nothing to change can comply without inventing an edit.
+    expect(finalUserContent(1)).toContain('did not follow the output protocol')
+    expect(finalUserContent(1)).toContain('<doc_status>unchanged</doc_status>')
     // The recovery replaces the same bubble — no second assistant message.
     expect(assistantBubble()).toEqual(['好了。'])
     expect(activeContent()).toContain('Ch3')
@@ -239,7 +242,7 @@ describe('useChatLLM — no-action retry', () => {
   it('recovers on a later retry, not just the first', async () => {
     responses.push('已写好第三章。')          // attempt 1: nothing
     responses.push('第三章已经写完了。')       // retry 1: nothing
-    responses.push('好了。\n<canvas><p>RECOVERED_LATE</p></canvas>')  // retry 2: content
+    responses.push('好了。\n<canvas><p>RECOVERED_LATE</p></canvas>\n<doc_status>updated</doc_status>')  // retry 2: content
     const harness = renderChatHook()
 
     await send(harness, '继续写第三章')
@@ -258,14 +261,14 @@ describe('useChatLLM — no-action retry', () => {
 
     expect(calls).toHaveLength(4) // first attempt + MAX_NO_ACTION_RETRIES (3)
     expect(assistantBubble()).toHaveLength(1)
-    expect(assistantBubble()[0]).toContain('⚠️ The model answered without producing any document content')
+    expect(assistantBubble()[0]).toContain('⚠️ The model never produced a valid document update or a clear "no change" declaration')
     expect(activeContent()).toBe('<p>old text</p>') // untouched
     expect(useAppStore.getState().isStreaming).toBe(false)
     harness.unmount()
   })
 
   it('does not retry a clarifying question', async () => {
-    responses.push('你想让第三章从哪里开始写？')
+    responses.push('你想让第三章从哪里开始写？\n<doc_status>unchanged</doc_status>')
     const harness = renderChatHook()
 
     await send(harness, '写啊')
@@ -317,11 +320,11 @@ describe('useChatLLM — no-action retry', () => {
     harness.unmount()
   })
 
-  it('lets the model decline to edit — a tag-free reply with no claim stands', async () => {
-    // Deciding whether the document needs changing is the model's call. We do
-    // not re-read the request to second-guess it; this reply is self-consistent
-    // (it claims nothing), so it ships as chat even though the user said "改".
-    responses.push('流式测试正常，本次无需改文档。')
+  it('lets the model decline to edit when it says so in the protocol', async () => {
+    // Deciding whether the document needs changing is the model's call — but
+    // it has to SAY so. A declared non-edit ships as chat even though the user
+    // said "改"; the same reply without the declaration is a failed turn.
+    responses.push('流式测试正常，本次无需改文档。\n<doc_status>unchanged</doc_status>')
     const harness = renderChatHook()
 
     await send(harness, '改一下这段')
@@ -333,7 +336,7 @@ describe('useChatLLM — no-action retry', () => {
   })
 
   it('does not retry a substantive chat answer that made no document change', async () => {
-    const answer = '关于后续走向，我建议把冲突集中在三条线上，'.repeat(12)
+    const answer = '关于后续走向，我建议把冲突集中在三条线上，'.repeat(12) + '\n<doc_status>unchanged</doc_status>'
     responses.push(answer)
     const harness = renderChatHook()
 

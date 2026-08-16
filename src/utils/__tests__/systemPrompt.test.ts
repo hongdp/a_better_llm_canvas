@@ -78,6 +78,8 @@ describe('buildChatSystemPrompt', () => {
     expect(prompt).toContain('<doc_status>unchanged</doc_status>')
     // The decision is the model's; the app only checks the declaration.
     expect(prompt).toContain('the choice of whether to edit is yours')
+    // ...but declining to DECLARE is not one of the options.
+    expect(prompt).toContain('declining to edit is fine, declining to declare is not')
   })
 
   it('is deterministic — the prefix is stable for provider prompt caching', () => {

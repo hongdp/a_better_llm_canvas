@@ -696,21 +696,25 @@ export function stripDocStatus(text: string): string {
   return out.trimEnd()
 }
 
-const DOCUMENT_CLAIM_PATTERNS = [
-  // English
-  /\b(i(?:'ve| have)?\s+(?:just\s+)?(?:updated|rewritten|rewrote|revised|edited|expanded|shortened|added|inserted|removed|deleted|replaced|polished|translated|continued|drafted|restructured))\b/i,
-  /\b(updated|rewritten|revised|edited|added to|expanded|shortened)\s+(?:the\s+)?(document|chapter|section|paragraph|text|canvas)\b/i,
-  /\b(here(?:'s| is)\s+the\s+(?:updated|revised|rewritten|new)\b)/i,
-  /\b(done|all set)\b[^.!?]{0,20}\b(document|chapter|section|paragraph|edit|change)/i,
-  /\b(the (?:document|chapter|text) (?:is|has been) (?:now )?(?:updated|revised|rewritten|changed))\b/i,
-  // Chinese. One general rule: a completion marker (已/已经) followed, within
-  // the same clause, by a verb that only makes sense if the document changed.
-  // Models phrase this endlessly ("已按大纲接上第二章"), so matching whole
-  // canned sentences never held up.
-  /已(?:经)?[^。！？；\n]{0,10}?(?:更新|改写|重写|修改|润色|扩写|续写|写好|写完|写入|改好|改完|接上|补上|补全|补充|添加|加入|插入|删除|替换|翻译|调整|整理|落笔|完成)(?![^。！？\n]{0,6}[吗嘛？])/,
-  /(?:文档|章节|段落|正文|全文)(?:已|已经)/,
-  /(改好了|写好了|加上了|删掉了|替换好了)/
+/**
+ * First-person claims of having written.
+ *
+ * Deliberately narrow. It is used ONLY to catch a reply that declares
+ * "unchanged" while telling the user it changed something — a model
+ * describing what the USER did ("你已经把这段改好了") must stay out of it.
+ * The broader prose heuristic this replaced is gone: with the declaration
+ * mandatory, an undeclared reply is a protocol failure on its own and no
+ * amount of pattern-matching prose is needed to reach that verdict.
+ */
+const SELF_CLAIM_PATTERNS = [
+  /\bi(?:'ve| have)?\s+(?:just\s+)?(?:updated|rewritten|rewrote|revised|edited|expanded|added|inserted|removed|deleted|replaced|continued|drafted)\b/i,
+  /\bhere(?:'s| is)\s+the\s+(?:updated|revised|rewritten|new)\b/i,
+  /我已(?:经)?[^。！？；\n]{0,10}?(?:更新|改写|重写|修改|润色|扩写|续写|写好|写完|写入|改好|补上|添加|删除|替换)/,
+  // The lookbehind is load-bearing: "你已经把第二章改好了" is the model
+  // describing the USER's edit, not claiming its own.
+  /(?<![你您])已(?:经)?(?:帮你|为你|把|将)[^。！？；\n]{0,10}?(?:更新|改写|重写|修改|润色|扩写|续写|写好|写完|写入|改好|补上|添加|删除|替换)/
 ]
+
 
 /**
  * Did this reply FAIL to deliver a document update it should have delivered?
@@ -731,22 +735,34 @@ const DOCUMENT_CLAIM_PATTERNS = [
  * Callers pass the FULL response text and only ask when no document action
  * was parsed out of it.
  */
-export function detectFailedDocumentUpdate(fullText: string): 'malformed' | 'claimed' | null {
+export type DocumentUpdateFailure = 'malformed' | 'claimed' | 'undeclared'
+
+export function detectFailedDocumentUpdate(fullText: string): DocumentUpdateFailure | null {
   const text = (fullText || '').trim()
   if (!text) return null
   if (/<edits?\b|<{5,}\s*SEARCH/i.test(text)) return 'malformed'
   // An unclosed action tag: the model started the markup and never finished.
   if (/<(?:canvas|selection_replace)\b/i.test(text)) return 'malformed'
 
-  // The declaration outranks the prose heuristic in BOTH directions: it both
-  // catches claims the patterns would miss and silences false positives on a
-  // reply that deliberately changed nothing.
   const declared = parseDocStatus(text)
-  if (declared === 'unchanged') return null
+
+  // Declared an update and emitted nothing — the failure this exists for.
   if (declared === 'updated') return 'claimed'
 
-  if (DOCUMENT_CLAIM_PATTERNS.some(re => re.test(text))) return 'claimed'
-  return null
+  if (declared === 'unchanged') {
+    // Normally authoritative, and deliberately so: it silences prose that only
+    // DESCRIBES an edit ("你已经把这段改好了"). But a first-person claim of
+    // having written, next to a declaration of having written nothing, is the
+    // model contradicting itself — and that contradiction is exactly what the
+    // user sees as "it said it wrote and it didn't".
+    return SELF_CLAIM_PATTERNS.some(re => re.test(text)) ? 'claimed' : null
+  }
+
+  // No declaration at all. The protocol requires one on EVERY reply, including
+  // replies that change nothing, precisely so that "no markup" is never
+  // ambiguous: without it a model that silently skipped the work is
+  // indistinguishable from one that deliberately answered in chat.
+  return 'undeclared'
 }
 
 /**
