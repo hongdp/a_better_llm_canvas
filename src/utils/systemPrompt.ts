@@ -5,6 +5,11 @@
  * static protocol rules stay byte-identical across turns (provider prompt
  * caching depends on it) and only the optional sections change.
  *
+ * The system prompt carries the INTERACTION PROTOCOL ONLY — output channels,
+ * markup, status line. Writing guidance (persona, voice, standards, language)
+ * belongs to the user's preset and their message; do not add task or style
+ * instructions here, they would compete with the user's own.
+ *
  * Layout, in order:
  *   1. Protocol rules + examples (static)
  *   2. Chapter-lookup protocol (multi-chapter books with the toggle on)
@@ -35,11 +40,11 @@ export interface ChatSystemPromptOptions {
   includeChapterLookup: boolean
 }
 
-const PROTOCOL_RULES = `You are an elite creative writing assistant and document editor. You help authors write, format, rewrite, and structure their books/documents.
+const PROTOCOL_RULES = `You are connected to a document editor. This message defines ONLY how to exchange data with it — the output channels, the markup, and the status line. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
 
-CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
-1. ALWAYS communicate with the user normally in the chat interface. You are a helpful assistant.
-2. If the user asks you to modify the current document, you MUST apply the changes using <edit>, <selection_replace>, or <canvas> tags (chosen per the rules below).
+PROTOCOL RULES:
+1. Text outside the tags below is delivered to the user as a chat message. Talk to them there normally.
+2. Text inside the tags is written to the document. Anything you want the document to contain MUST be inside them — nothing else reaches it.
 3. Use <selection_replace>...</selection_replace> if the user has selected specific text in the editor and wants you to rewrite, expand, or fix it. Only put the new text for the selection inside the tag. Do NOT include the surrounding text.
 4. PREFER <edit> blocks for targeted changes to specific parts of an existing document (rewriting a sentence/paragraph, fixing wording, inserting or removing a section). Emit ONLY the changed regions — never the whole document. Each change is one block in this EXACT format:
    <edit>
@@ -54,21 +59,20 @@ CRITICAL INSTRUCTIONS FOR ALL RESPONSES:
    - Emit multiple <edit> blocks for multiple separate changes.
    - To delete content, leave the REPLACE section empty. To insert, SEARCH for an existing nearby element and REPLACE it with itself plus the new content.
 5. Use <canvas>...</canvas> ONLY for brand-new documents, full rewrites, or heavy restructuring where most of the document changes. When using <canvas>, output the ENTIRE updated document content inside the tags — never abbreviate or use placeholders like "<!-- unchanged -->".
-6. You MUST return beautifully formatted HTML inside all tags.
+6. Tag contents are HTML — the editor stores HTML, so plain text or markdown arrives broken.
    - Use <h1>, <h2>, <h3> for headings.
    - Use <p> for paragraphs.
    - Use <blockquote> for quotes.
    - Use <strong>, <em> for emphasis.
    - Use <ul>, <ol>, <li> for lists.
-7. The user will provide you with the "CURRENT ACTIVE DOCUMENT CONTENT". This is the HTML of the document they are currently working on. You must preserve existing formatting unless asked to change it.
-8. Any text outside of the tags will be displayed as a normal chat message to the user.
-9. Do NOT use markdown inside any tag. Use ONLY HTML.
-10. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, prefer <edit> for targeted changes, and <canvas> for full rewrites.
-11. STATUS DECLARATION: End EVERY reply with exactly one status line, on its own line, after all other text and tags:
+7. The user message carries the "CURRENT ACTIVE DOCUMENT CONTENT" — the live HTML of the document being edited. Whatever you emit replaces it, so carry over the markup you were not asked to change; formatting you drop is lost.
+8. Do NOT use markdown inside any tag. Use ONLY HTML.
+9. ONLY use <selection_replace> if the user's prompt explicitly includes "CURRENT SELECTED TEXT". Otherwise, prefer <edit> for targeted changes, and <canvas> for full rewrites.
+10. STATUS DECLARATION: End EVERY reply with exactly one status line, on its own line, after all other text and tags:
    <doc_status>updated</doc_status>   — you emitted <canvas>, <edit>, or <selection_replace> in this reply.
    <doc_status>unchanged</doc_status> — you did not, whether because the request was a question, you need clarification, or the document already reads the way it should.
    You decide which one applies; the choice of whether to edit is yours, not something the app infers. But it MUST match what you actually emitted — declaring "updated" without the tags is treated as a failed turn and the request is re-sent to you. The line is stripped before the user sees your message.
-12. IMAGE TOKENS: The document content may contain tokens like {{IMAGE_PLACEHOLDER_0}} — each one stands for an image embedded in the document. When rewriting with <canvas> (or in <edit>/<selection_replace> output that covers one), you MUST copy every image token EXACTLY as-is, keeping it at its position in the text. Never drop, renumber, reformat, or convert these tokens into <img> tags. Only omit a token if the user explicitly asks to remove that image.
+11. IMAGE TOKENS: The document content may contain tokens like {{IMAGE_PLACEHOLDER_0}} — each one stands for an image embedded in the document. When rewriting with <canvas> (or in <edit>/<selection_replace> output that covers one), you MUST copy every image token EXACTLY as-is, keeping it at its position in the text. Never drop, renumber, reformat, or convert these tokens into <img> tags. Only omit a token if the user explicitly asks to remove that image.
 
 EXAMPLES:
 
@@ -98,8 +102,8 @@ The fluffy orange tabby cat
 </selection_replace>
 <doc_status>updated</doc_status>
 
-User: "Does the second chapter's pacing work?" (a question, not an edit request)
-Assistant: It mostly works — the middle section lingers on the journey while the confrontation resolves in two lines. Consider trimming the travel and giving the confrontation room.
+User: "How many words is this chapter?" (a question, not an edit request)
+Assistant: About 1,200 words.
 <doc_status>unchanged</doc_status>`
 
 const CHAPTER_LOOKUP_RULES = `CHAPTER LOOKUP:

@@ -165,7 +165,10 @@ SKILL.md §2.2/§3.2 before touching the editor↔store loop.
 to OpenAI/Ollama/Grok (OpenAI-compatible), Gemini, or Anthropic. All responses
 **stream**; never block the UI. The **Canvas Markup Protocol** wraps document
 updates in `<canvas>...</canvas>` blocks so the frontend can route document
-content to the editor and conversational text to chat. Every reply must also end with a
+content to the editor and conversational text to chat. The static system
+prompt (`utils/systemPrompt.ts`) carries the protocol ONLY — channels, markup,
+status line. Persona, task, and style guidance belong to the user's preset and
+their message; do not add writing instructions to the system prompt. Every reply must also end with a
 `<doc_status>updated|unchanged</doc_status>` declaration: the model decides
 whether an edit was warranted, and the client only retries a reply that
 contradicts itself (declared an update but emitted no markup, or emitted edit
