@@ -65,8 +65,16 @@ let apiServerProcess = null
 let restartCount = 0
 const MAX_RESTARTS = 10
 const RESTART_DELAY_MS = 2000
+const MAX_RESTART_DELAY_MS = 15000
+
+// Uptime after which a process counts as "it worked": a crash later is a new
+// incident, not part of a crash loop. Without this the budget is a LIFETIME
+// cap — ten restarts across a long session and the backend stays dead while
+// Vite keeps serving a UI with nothing behind it.
+const HEALTHY_UPTIME_MS = 60_000
 
 function spawnApiServer() {
+  const startedAt = Date.now()
   console.log(`[Storage Server] Starting Python API server on port 3000 using ${pythonBin}...`)
   const proc = spawn(pythonBin, [
     path.join(process.cwd(), 'scripts', 'api_server.py'),
@@ -82,10 +90,15 @@ function spawnApiServer() {
   proc.on('close', (code, signal) => {
     if (signal === 'SIGTERM' || signal === 'SIGKILL') return // intentional shutdown
     console.error(`[Storage Server] Python API exited (code=${code}, signal=${signal})`)
+    if (Date.now() - startedAt > HEALTHY_UPTIME_MS) restartCount = 0
     if (restartCount < MAX_RESTARTS) {
       restartCount++
-      console.log(`[Storage Server] Restarting API server in ${RESTART_DELAY_MS}ms (attempt ${restartCount}/${MAX_RESTARTS})...`)
-      setTimeout(() => { apiServerProcess = spawnApiServer() }, RESTART_DELAY_MS)
+      // Back off: uvicorn can sit in graceful shutdown holding :3000 (an open
+      // SSE stream will do it), and a fixed 2s retry just burns the budget on
+      // EADDRINUSE before the port is free.
+      const delay = Math.min(RESTART_DELAY_MS * 2 ** (restartCount - 1), MAX_RESTART_DELAY_MS)
+      console.log(`[Storage Server] Restarting API server in ${delay}ms (attempt ${restartCount}/${MAX_RESTARTS})...`)
+      setTimeout(() => { apiServerProcess = spawnApiServer() }, delay)
     } else {
       console.error('[Storage Server] Max restart attempts reached. API server will not be restarted.')
     }
