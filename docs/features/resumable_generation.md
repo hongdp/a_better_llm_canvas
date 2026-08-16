@@ -4,20 +4,31 @@ Status: **Implemented** — see §8 for what shipped and the known gaps.
 
 ## 1. Why
 
-LLM generation runs in the browser tab: `services/llm.ts` streams straight
-from the provider. When the tab dies, the stream dies with it — and mobile
-Firefox routinely discards a backgrounded tab, so switching apps during a
-long generation loses everything produced so far. Measured on-device: the
-injected JS context was destroyed and the page came back with
-`navType: "reload"` after ~15 s in the background.
+LLM generation used to run inside the browser tab: `services/llm.ts` streamed
+straight from the provider, so anything that killed the tab killed the
+generation.
 
-No client-side trick fixes this. Wake locks do not survive a deliberate app
-switch, and a half-received stream cannot be resumed from the client because
-the provider connection is gone. The generation has to live somewhere that
-outlives the tab: **the backend already running on the user's machine**.
+**A correction to this document's original premise.** It was written expecting
+that mobile Firefox discards a backgrounded tab *during* generation. Testing
+on the device showed it does not: an active streaming connection keeps the tab
+alive, and the discards measured earlier (JS context destroyed, `navType:
+"reload"` after ~15 s in the background) happen while the tab is **idle**. The
+scenario that motivated this feature therefore does not reproduce.
 
-Secondary wins: generation started on the phone can be watched on the
-desktop, and closing the tab no longer aborts work in flight.
+What the design is actually worth, all verified rather than assumed:
+
+- **The tab is no longer a single point of failure.** Closing it, a crash, or
+  an OOM kill (observed on this device during a large edit) no longer loses
+  work in flight — the job keeps running on the backend.
+- **Stop actually stops.** The stop button used to drop the local reader while
+  the provider kept generating and billing; it now cancels the upstream
+  request.
+- **Cross-device.** A generation started on the phone can be watched on the
+  desktop.
+
+Kept deliberately after the premise was corrected: the feature is implemented,
+tested and on by default when logged in, and the benefits above stand on their
+own.
 
 ## 2. Shape
 
