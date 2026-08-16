@@ -212,3 +212,26 @@ describe('packChaptersIntoBatches', () => {
     expect(packChaptersIntoBatches([], 100)).toEqual([])
   })
 })
+
+// ── hash stability across markup churn ────────────────────────────────────────
+describe('hashDocumentContent stability', () => {
+  it('ignores markup differences that do not change the reading text', () => {
+    const a = '<p>第一行</p><p>第二行</p>'
+    const b = '<p>第一行<br>第二行</p>'          // before <br> normalization
+    const c = '<p class="x">第一行</p>\n<p>第二行</p>' // editor re-serialization
+    expect(hashDocumentContent(b)).toBe(hashDocumentContent(a))
+    expect(hashDocumentContent(c)).toBe(hashDocumentContent(a))
+  })
+
+  it('still changes when the actual text changes', () => {
+    expect(hashDocumentContent('<p>原文</p>')).not.toBe(hashDocumentContent('<p>改过的原文</p>'))
+  })
+
+  it('a summary survives a markup-only rewrite', () => {
+    const doc = makeDoc({ content: '<p>甲<br>乙</p>' })
+    doc.summary = 'S'
+    doc.summaryContentHash = hashDocumentContent(doc.content)
+    doc.content = '<p>甲</p><p>乙</p>' // what normalization produces
+    expect(isSummaryStale(doc)).toBe(false)
+  })
+})

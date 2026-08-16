@@ -198,6 +198,31 @@
   gap: 0.25rem;
 }
 
+/* Light theme: the default tag (grey text on the near-white bar) sat around
+   2.5:1 against its background — legible in dark mode, washed out in light.
+   Give unselected tags a real surface and body-strength text so the chapter
+   names can actually be read. */
+[data-theme="light"] .reference-tag {
+  background-color: #ffffff;
+  color: var(--text-primary);
+  border-color: var(--border-color-hover);
+}
+
+[data-theme="light"] .reference-tag.auto {
+  color: var(--accent);
+  background-color: var(--accent-glow);
+}
+
+[data-theme="light"] .reference-tag.blocked {
+  color: var(--text-secondary);
+  opacity: 0.6;
+}
+
+[data-theme="light"] .reference-title-label,
+[data-theme="light"] .reference-budget-chip {
+  color: var(--text-secondary);
+}
+
 .reference-tag:hover {
   border-color: var(--border-color-hover);
   background-color: var(--bg-tertiary);
@@ -281,4 +306,18 @@
   50% {
     opacity: .5;
   }
+}
+
+/* Summary queue feedback strip — the buttons are fire-and-forget, so this is
+   the only place the user learns that work was queued, finished, or failed. */
+.summary-status-strip {
+  padding: 0.35rem 1rem;
+  font-size: 0.7rem;
+  color: var(--text-secondary);
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-color);
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-shrink: 0;
 }

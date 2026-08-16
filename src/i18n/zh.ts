@@ -79,6 +79,12 @@ export const zh: TranslationDictionary = {
   sidebar: {
     collapse: '收起侧边栏',
     summarizeAll: '为需要的章节生成摘要',
+    summaryQueued: '已加入 {count} 个章节的摘要队列。',
+    summaryQueuedOne: '已加入本章的摘要队列。',
+    summaryNothing: '所有章节的摘要都是最新的。',
+    summaryTooShort: '无需生成——本章内容过短或摘要已是最新。',
+    summaryFailed: '摘要排队失败，详见控制台。',
+    summaryProgress: '正在生成摘要… 完成 {done}，剩余 {pending}',
     refreshSummary: '重新生成本章摘要',
     refreshSummaryStale: '摘要已过期 — 点击重新生成',
     expand: '展开侧边栏',

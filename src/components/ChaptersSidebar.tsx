@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react'
 import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
-import { enqueueSummaryRefresh } from '../services/chapterSummaries'
+import { enqueueSummaryRefresh, subscribeSummaryQueue, type SummaryQueueStatus } from '../services/chapterSummaries'
 import { isSummaryStale, MIN_CHARS_FOR_SUMMARY } from '../utils/chapterIndex'
 import { ImportUrlModal } from './ImportUrlModal'
 import { useTranslation } from '../i18n'
@@ -31,6 +31,59 @@ export const ChaptersSidebar: React.FC = () => {
     deleteBook,
     isStreaming
   } = useAppStore()
+
+  // Summary queue status — the buttons used to give no feedback at all, so a
+  // press that legitimately queued nothing (every chapter already fresh, or
+  // metadata-only) was indistinguishable from a broken button.
+  const pendingCountRef = useRef(0)
+  const [queueStatus, setQueueStatus] = useState<SummaryQueueStatus>({
+    pending: 0, running: false, lastError: null, completedThisRun: 0
+  })
+  const [summaryNotice, setSummaryNotice] = useState<string | null>(null)
+  React.useEffect(() => subscribeSummaryQueue((st) => {
+    pendingCountRef.current = st.pending
+    setQueueStatus(st)
+  }), [])
+
+  const [isSummarizing, setIsSummarizing] = useState(false)
+  const handleSummarizeAll = async () => {
+    if (isStreaming || isSummarizing) return
+    setIsSummarizing(true)
+    setSummaryNotice(null)
+    try {
+      const store = useAppStore.getState()
+      // Server books lazy-load chapter content; without this the summarizer
+      // silently skipped every chapter the user had never opened — which is
+      // most of them, and exactly why this button looked dead.
+      await store.ensureDocumentContents(store.documents.map(d => d.id))
+      const fresh = useAppStore.getState().documents
+      const before = pendingCountRef.current
+      fresh.forEach(d => enqueueSummaryRefresh(d.id))
+      const queued = pendingCountRef.current - before
+      setSummaryNotice(
+        queued > 0
+          ? t.sidebar.summaryQueued.replace('{count}', String(queued))
+          : t.sidebar.summaryNothing
+      )
+    } catch (err) {
+      console.error('Failed to queue summaries', err)
+      setSummaryNotice(t.sidebar.summaryFailed)
+    } finally {
+      setIsSummarizing(false)
+    }
+  }
+
+  const handleSummarizeOne = async (docId: string) => {
+    if (isStreaming) return
+    setSummaryNotice(null)
+    const store = useAppStore.getState()
+    await store.ensureDocumentContents([docId])
+    const before = pendingCountRef.current
+    enqueueSummaryRefresh(docId, true)
+    setSummaryNotice(
+      pendingCountRef.current > before ? t.sidebar.summaryQueuedOne : t.sidebar.summaryTooShort
+    )
+  }
 
   // Summary staleness per chapter, recomputed only when the documents array
   // changes. Problem: calling isSummaryStale(doc) inline in the row JSX
@@ -267,14 +320,14 @@ export const ChaptersSidebar: React.FC = () => {
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
           {documents.length > 1 && (
             <button
-              onClick={() => documents.forEach(d => enqueueSummaryRefresh(d.id))}
-              disabled={isStreaming}
+              onClick={handleSummarizeAll}
+              disabled={isStreaming || isSummarizing}
               className="btn-icon"
               title={t.sidebar.summarizeAll}
               type="button"
               style={{ padding: '0.25rem' }}
             >
-              <Sparkles size={15} />
+              {isSummarizing || queueStatus.running ? <RefreshCw size={15} className="animate-spin" /> : <Sparkles size={15} />}
             </button>
           )}
           <button
@@ -338,6 +391,21 @@ export const ChaptersSidebar: React.FC = () => {
         )}
       </div>
 
+      {(queueStatus.running || queueStatus.pending > 0 || summaryNotice || queueStatus.lastError) && (
+        <div className="summary-status-strip">
+          {queueStatus.running || queueStatus.pending > 0 ? (
+            <span>
+              <RefreshCw size={11} className="animate-spin" />{' '}
+              {t.sidebar.summaryProgress
+                .replace('{done}', String(queueStatus.completedThisRun))
+                .replace('{pending}', String(queueStatus.pending))}
+            </span>
+          ) : (
+            <span>{queueStatus.lastError ? `⚠️ ${queueStatus.lastError.slice(0, 80)}` : summaryNotice}</span>
+          )}
+        </div>
+      )}
+
       <div className="chapters-list">
         {documents.map((doc, idx) => {
           const isActive = doc.id === activeDocumentId
@@ -382,9 +450,12 @@ export const ChaptersSidebar: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
                 onDragStart={(e) => e.stopPropagation()}
               >
-                {doc.contentLoaded !== false && doc.content.length >= MIN_CHARS_FOR_SUMMARY && (
+                {/* Metadata-only chapters get the button too: the handler
+                    loads the content first. Hiding it there was why most
+                    chapters offered no way to summarize them at all. */}
+                {(doc.contentLoaded === false || doc.content.length >= MIN_CHARS_FOR_SUMMARY) && (
                   <button
-                    onClick={() => enqueueSummaryRefresh(doc.id, true)}
+                    onClick={() => { void handleSummarizeOne(doc.id) }}
                     disabled={isStreaming}
                     className="btn-icon chapter-action-btn"
                     title={summaryStaleById.get(doc.id) ? t.sidebar.refreshSummaryStale : t.sidebar.refreshSummary}
