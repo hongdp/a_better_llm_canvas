@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { diffHtml } from '../diff'
+import { stripDiffMarkup, diffHtml } from '../diff'
 
 describe('diffHtml', () => {
   it('returns the original HTML unchanged when inputs are identical', () => {
@@ -146,5 +146,37 @@ describe('diffHtml', () => {
     // All old words removed, all new words inserted.
     expect(result).toContain('old0')
     expect(result).toContain('new0')
+  })
+})
+
+// ── stripDiffMarkup ──────────────────────────────────────────────────────────
+// Review markup lives in the stored content, and that content is what the
+// model receives. Observed on a real turn: it copied
+// `<ins data-diff-id="diff-tz9zohl" class="diff-addition">` into an edit's
+// search string, which stops matching the moment that diff is resolved.
+describe('stripDiffMarkup', () => {
+  it('keeps insertions, which are what the draft now says', () => {
+    const html = '<p>before <ins class="diff-addition" data-diff-id="d1">added</ins> after</p>'
+    expect(stripDiffMarkup(html)).toBe('<p>before added after</p>')
+  })
+
+  it('drops deletions, which the draft no longer says', () => {
+    const html = '<p>kept <del class="diff-deletion" data-diff-id="d1">removed</del>text</p>'
+    expect(stripDiffMarkup(html)).toBe('<p>kept text</p>')
+  })
+
+  it('handles a document with both, across attribute orders', () => {
+    const html = '<p><del data-diff-id="d1" class="diff-deletion">old</del><ins data-diff-id="d2" class="diff-addition">new</ins></p>'
+    expect(stripDiffMarkup(html)).toBe('<p>new</p>')
+  })
+
+  it('leaves ordinary markup — including unrelated ins/del — alone', () => {
+    const html = '<p>a <ins>manual insert</ins> and <strong>bold</strong></p>'
+    expect(stripDiffMarkup(html)).toBe(html)
+  })
+
+  it('returns clean input untouched and survives empty input', () => {
+    expect(stripDiffMarkup('<p>plain</p>')).toBe('<p>plain</p>')
+    expect(stripDiffMarkup('')).toBe('')
   })
 })

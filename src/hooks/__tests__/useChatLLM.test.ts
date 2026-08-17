@@ -272,6 +272,25 @@ describe('useChatLLM — document tools', () => {
     })()
   })
 
+  it('says so when a tool call yields nothing applicable', () => {
+    // A called-but-unusable tool used to end the turn in silence: no change,
+    // no explanation, indistinguishable from the model deciding not to edit.
+    return (async () => {
+      responses.push({
+        text: '好的。',
+        toolCalls: [{ index: 0, name: 'edit_document', argumentsText: '{"edits": []}' }]
+      } as never)
+      const harness = renderChatHook()
+
+      await send(harness, '改一下第二段')
+
+      expect(assistantBubble()[0]).toContain('⚠️')
+      expect(assistantBubble()[0]).toContain('could not be used')
+      expect(activeContent()).toBe('<p>old text</p>')
+      harness.unmount()
+    })()
+  })
+
   it('does not retry a tool-call turn for a missing doc_status', () => {
     // Calling a tool IS the declaration. Demanding the line as well would
     // retry every successful turn.

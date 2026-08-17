@@ -4,6 +4,7 @@
  * image-placeholder transform so it needs none of the hook's refs.
  */
 import { useAppStore } from '../../store/useAppStore'
+import { stripDiffMarkup } from '../../utils/diff'
 import { truncateWithNotice, htmlToPlainText } from '../../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest } from '../../utils/chapterIndex'
 
@@ -58,7 +59,10 @@ export function buildDynamicContext(
     .join('\n')
 
   const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
-  const cleanActiveContent = preserveImages(activeDoc?.content || '')
+  // Review markup must not reach the model: it copies `<ins class=
+  // "diff-addition">` into an edit's search string, which stops matching the
+  // instant the user accepts or rejects that diff (observed on a real turn).
+  const cleanActiveContent = preserveImages(stripDiffMarkup(activeDoc?.content || ''))
 
   if (selectedText) {
     const cleanSelectedText = preserveImages(selectedText)
