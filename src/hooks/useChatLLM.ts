@@ -161,6 +161,17 @@ export function useChatLLM({
   const chatEndRef = useRef<HTMLDivElement>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const accumulatedTextRef = useRef('')
+  /**
+   * The editor as it is NOW, not as it was when a stream's callbacks were
+   * built. The rejoin effect runs on mount, before the editor exists, and
+   * captured `activeEditor: null` for the whole resumed turn — so a resumed
+   * generation streamed into the chat bubble while the document stayed blank.
+   */
+  const activeEditorRef = useRef<Editor | null>(activeEditor)
+  useEffect(() => {
+    activeEditorRef.current = activeEditor
+  }, [activeEditor])
+
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
   /** Set when a finished selection edit had nowhere valid left to land. */
   const selectionGoneRef = useRef(false)
@@ -205,10 +216,11 @@ export function useChatLLM({
     if (!canvasPreviewActiveRef.current) return
     canvasPreviewActiveRef.current = false
     lastCanvasPreviewRef.current = 0
-    if (activeEditor && activeEditor.getHTML() !== html) {
-      activeEditor.chain().setMeta('addToHistory', false).setContent(html, { emitUpdate: false }).run()
+    const editor = activeEditorRef.current
+    if (editor && editor.getHTML() !== html) {
+      editor.chain().setMeta('addToHistory', false).setContent(html, { emitUpdate: false }).run()
     }
-  }, [activeEditor])
+  }, [])
 
   // Image preservation during LLM streaming: swap base64 <img> tags for
   // small tokens before sending, restore them (tolerantly) on the way back.
@@ -323,9 +335,10 @@ export function useChatLLM({
           const SELECTION_PREVIEW_THROTTLE_MS = 60
           const now = Date.now()
           const cleanedText = stripIncompleteEndTag(selectionReplaceText)
+          const selectionEditor = activeEditorRef.current
           if (
             cleanedText &&
-            activeEditor &&
+            selectionEditor &&
             selectionRangeRef.current &&
             now - lastSelectionPreviewRef.current >= SELECTION_PREVIEW_THROTTLE_MS
           ) {
@@ -336,14 +349,14 @@ export function useChatLLM({
             const restoredText = restoreImagesFromPlaceholders(cleanedText)
             const tempDiv = document.createElement('div')
             tempDiv.innerHTML = restoredText
-            const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+            const slice = ProseMirrorDOMParser.fromSchema(selectionEditor.state.schema).parseSlice(tempDiv)
 
             // The document may have moved on since the selection was taken.
-            const range = clampSelectionRange(from, currentEnd, activeEditor.state.doc.content.size)
+            const range = clampSelectionRange(from, currentEnd, selectionEditor.state.doc.content.size)
             if (range) {
-              const tr = activeEditor.state.tr
+              const tr = selectionEditor.state.tr
               tr.replace(range.from, range.to, slice)
-              activeEditor.view.dispatch(tr)
+              selectionEditor.view.dispatch(tr)
 
               selectionEndRef.current = range.from + slice.size
               setSaveStatus('unsaved')
@@ -356,11 +369,12 @@ export function useChatLLM({
           // fight Editor.tsx's content-prop sync. onDone/onError own the
           // final state (see settleCanvasPreview).
           const now = Date.now()
-          if (activeEditor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
+          const editor = activeEditorRef.current
+          if (editor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
             lastCanvasPreviewRef.current = now
             canvasPreviewActiveRef.current = true
             const partial = restoreImagesFromPlaceholders(trimIncompleteHtmlTail(canvasText))
-            activeEditor.chain()
+            editor.chain()
               .setMeta('addToHistory', false)
               .setContent(partial, { emitUpdate: false })
               .run()
@@ -602,7 +616,8 @@ export function useChatLLM({
 
         if (parsed.kind === 'selection') {
           const cleanedText = stripIncompleteEndTag(parsed.selectionText)
-          if (cleanedText && activeEditor && selectionRangeRef.current) {
+          const finalEditor = activeEditorRef.current
+          if (cleanedText && finalEditor && selectionRangeRef.current) {
             const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
             const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
             const { from } = selectionRangeRef.current
@@ -610,15 +625,15 @@ export function useChatLLM({
 
             const tempDiv = document.createElement('div')
             tempDiv.innerHTML = diffed
-            const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
+            const slice = ProseMirrorDOMParser.fromSchema(finalEditor.state.schema).parseSlice(tempDiv)
 
-            const range = clampSelectionRange(from, currentEnd, activeEditor.state.doc.content.size)
+            const range = clampSelectionRange(from, currentEnd, finalEditor.state.doc.content.size)
             if (range) {
-              const tr = activeEditor.state.tr
+              const tr = finalEditor.state.tr
               tr.replace(range.from, range.to, slice)
-              activeEditor.view.dispatch(tr)
+              finalEditor.view.dispatch(tr)
 
-              s.updateActiveDocument({ content: activeEditor.getHTML() })
+              s.updateActiveDocument({ content: finalEditor.getHTML() })
             } else {
               // The selection is gone (chapter switched, document shortened).
               // Say so rather than throwing the turn away: the text is right
@@ -681,7 +696,7 @@ export function useChatLLM({
         forceSave()
       }
     }
-  }, [activeEditor, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview])
+  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview])
 
   // Shared LLM Streaming engine. `lookupCtx` (when set) arms the agentic
   // chapter-lookup loop: a response consisting of a <lookup> tag re-issues
