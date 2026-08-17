@@ -174,6 +174,24 @@ class GenerationJob:
         self.updated_at = _now_iso()
         self._publish({"type": "delta", "text": text, "offset": self.length})
 
+    def note_tool_call(self, index: int, call_id: Optional[str], name: Optional[str], arguments: str) -> None:
+        """Forward a tool-call argument delta live.
+
+        Not buffered, for the same reason reasoning is not: it is not document
+        text, and putting it in the buffer would shift every replay offset. A
+        reconnect re-reads the whole call from the provider's final message
+        instead.
+        """
+        if self.status != "running":
+            return
+        self._publish({
+            "type": "tool_call",
+            "index": index,
+            "id": call_id,
+            "name": name,
+            "text": arguments or "",
+        })
+
     def note_reasoning(self, text: str) -> None:
         """Record a reasoning delta and pass it on live.
 
@@ -401,6 +419,11 @@ def build_openai_request(
     if effort:
         body["reasoning_effort"] = effort
 
+    # Tools come from the client already in OpenAI shape — the internal
+    # representation, since four of five providers speak it natively.
+    if config.get("tools"):
+        body["tools"] = config["tools"]
+
     # Ollama rejects stream_options, so it is detected the same way the client
     # detects it: the sentinel key or a loopback base URL.
     is_ollama = (
@@ -617,6 +640,14 @@ async def _stream_openai(
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning:
                     job.note_reasoning(reasoning)
+                for tc in delta.get("tool_calls") or []:
+                    fn = tc.get("function") or {}
+                    job.note_tool_call(
+                        tc.get("index") or 0,
+                        tc.get("id"),
+                        fn.get("name"),
+                        fn.get("arguments") or "",
+                    )
             if parsed.get("usage"):
                 u = parsed["usage"]
                 usage = {

@@ -1,5 +1,6 @@
 import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
+import { DOCUMENT_TOOLS, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
 
 /**
  * A base URL typed with a trailing slash is normal; the resulting `//path`
@@ -189,6 +190,10 @@ async function streamOpenAI(
   if (effort) {
     body['reasoning_effort'] = effort
   }
+  // Already the internal shape — no translation needed for this family.
+  if (config.tools?.length) {
+    body['tools'] = config.tools
+  }
 
   // Check if Ollama by checking baseUrl or apiKey
   const isOllama = config.apiKey === 'ollama-no-key' || config.baseUrl.includes('localhost') || config.baseUrl.includes('127.0.0.1');
@@ -220,6 +225,14 @@ async function streamOpenAI(
       const content = delta?.content
       if (content) {
         callbacks.onChunk(content)
+      }
+      for (const tc of delta?.tool_calls ?? []) {
+        callbacks.onToolCallDelta?.({
+          index: typeof tc.index === 'number' ? tc.index : 0,
+          id: tc.id,
+          name: tc.function?.name,
+          argumentsText: tc.function?.arguments ?? ''
+        })
       }
       // Reasoning models think on a separate key before any visible token.
       // Kept in step with the backend transport so the fallback path shows
@@ -292,6 +305,12 @@ async function streamGemini(
   }
   if (Object.keys(geminiGenerationConfig).length > 0) {
     body['generationConfig'] = geminiGenerationConfig
+  }
+  if (config.tools?.length) {
+    const requested = config.tools as Array<{ function?: { name?: string } }>
+    body['tools'] = toGeminiTools(
+      DOCUMENT_TOOLS.filter(t => requested.some(x => x.function?.name === t.name))
+    )
   }
 
   // Gemini uses streamGenerateContent for streaming. Support model names with or without 'models/' prefix.
@@ -386,10 +405,21 @@ async function streamGemini(
                     throw new Error(`Content generation blocked or terminated abnormally: ${candidate.finishReason}`)
                   }
 
-                  const text = candidate.content?.parts?.[0]?.text
-                  if (text) {
-                    callbacks.onChunk(text)
-                    fullText += text
+                  for (const part of candidate.content?.parts ?? []) {
+                    if (part.text) {
+                      callbacks.onChunk(part.text)
+                      fullText += part.text
+                    }
+                    if (part.functionCall) {
+                      // Gemini delivers a function call whole rather than in
+                      // fragments, so it arrives as one delta carrying the
+                      // complete arguments. The accumulator handles both.
+                      callbacks.onToolCallDelta?.({
+                        index: 0,
+                        name: part.functionCall.name,
+                        argumentsText: JSON.stringify(part.functionCall.args ?? {})
+                      })
+                    }
                   }
                 }
               } catch (e) {
@@ -479,6 +509,13 @@ async function streamAnthropic(
     stream: true,
   }
 
+  if (config.tools?.length) {
+    const requested = config.tools as Array<{ function?: { name?: string } }>
+    body['tools'] = toAnthropicTools(
+      DOCUMENT_TOOLS.filter(t => requested.some(x => x.function?.name === t.name))
+    )
+  }
+
   // Anthropic's extended thinking is a budget, and the API requires it to be
   // smaller than max_tokens — clamp rather than let the request 400.
   const anthropicEffort = resolveReasoningEffort('anthropic', config.model, config.reasoningEffort)
@@ -549,7 +586,21 @@ async function streamAnthropic(
   await readSSEStream(response, (dataString) => {
     try {
       const json = JSON.parse(dataString)
-      if (json.type === 'content_block_delta' && json.delta?.text) {
+      if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
+        // Anthropic opens a block naming the tool, then streams its input as
+        // JSON fragments: the same two parts, a different envelope.
+        callbacks.onToolCallDelta?.({
+          index: json.index ?? 0,
+          id: json.content_block.id,
+          name: json.content_block.name,
+          argumentsText: ''
+        })
+      } else if (json.type === 'content_block_delta' && json.delta?.type === 'input_json_delta') {
+        callbacks.onToolCallDelta?.({
+          index: json.index ?? 0,
+          argumentsText: json.delta.partial_json ?? ''
+        })
+      } else if (json.type === 'content_block_delta' && json.delta?.text) {
         callbacks.onChunk(json.delta.text)
       } else if (json.type === 'message_delta' && json.delta?.text) {
         callbacks.onChunk(json.delta.text)

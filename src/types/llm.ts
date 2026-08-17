@@ -25,6 +25,11 @@ export interface ProviderConfig {
    * control.
    */
   reasoningEffort?: ReasoningEffort
+  /**
+   * Document tools in OpenAI shape (see utils/documentTools). Present for any
+   * provider that supports tool calling; adapters translate at the edge.
+   */
+  tools?: unknown[]
 }
 
 export interface LLMMessage {
@@ -55,6 +60,12 @@ export interface StreamCallbacks {
    * only reasoning models produce it, and it is never part of the reply.
    */
   onReasoning?: (text: string) => void
+  /**
+   * A tool-call argument delta, forwarded as it arrives so the document
+   * preview can render a partially-written `html` argument. `index`
+   * distinguishes parallel calls.
+   */
+  onToolCallDelta?: (delta: { index: number; id?: string; name?: string; argumentsText: string }) => void
 }
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'
