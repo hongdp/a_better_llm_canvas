@@ -133,9 +133,11 @@ export function buildCompletionWarnings(params: {
   exhaustedNoActionRetries: boolean
   /** A finished selection edit had nowhere valid left to land. */
   selectionGone?: boolean
+  /** The reply produced no usable document update and cannot be retried. */
+  unretriableFailedUpdate?: boolean
   reinsertedImages: number
 }): string {
-  const { canvasIssue, editFailedCount, exhaustedNoActionRetries, selectionGone, reinsertedImages } = params
+  const { canvasIssue, editFailedCount, exhaustedNoActionRetries, selectionGone, unretriableFailedUpdate, reinsertedImages } = params
 
   let warningNote = canvasIssue === 'truncated'
     ? '\n\n⚠️ The response was cut off before the document update finished, so no changes were applied (your document is unchanged). Please retry — for long documents, try editing a smaller selection at a time.'
@@ -149,6 +151,9 @@ export function buildCompletionWarnings(params: {
   // of letting "已改好" stand over an unchanged document.
   if (exhaustedNoActionRetries) {
     warningNote += `\n\n⚠️ The model never produced a valid document update or a clear "no change" declaration (retried ${MAX_NO_ACTION_RETRIES} times), so your document is unchanged. Ask again — naming the chapter or section usually helps.`
+  }
+  if (unretriableFailedUpdate) {
+    warningNote += '\n\n⚠️ This reply produced no usable document update, and it was resumed after a reload — so there is no request left to retry with. Your document is unchanged; send the instruction again to have another go.'
   }
   if (selectionGone) {
     warningNote += '\n\n⚠️ The text you had selected is no longer where it was (the chapter changed while this ran), so nothing was written. The rewrite is above — paste it where you want it, or select the text again and retry.'
