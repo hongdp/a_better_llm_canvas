@@ -1,6 +1,10 @@
 /* Chapters Sidebar Styles */
 .chapters-sidebar {
-  width: 240px;
+  /* Desktop width is user-adjustable (drag handle on the right edge) and
+     persisted. Phone layouts override width with their own overlay rules
+     below/in responsive.css, so the variable only affects desktop. */
+  width: var(--chapters-width, 240px);
+  position: relative;
   display: flex;
   flex-direction: column;
   background-color: var(--bg-secondary);
@@ -320,4 +324,26 @@
   align-items: center;
   gap: 0.3rem;
   flex-shrink: 0;
+}
+
+.sidebar-resize-handle {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 6px;
+  height: 100%;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 5;
+}
+.sidebar-resize-handle:hover,
+.sidebar-resize-handle.active {
+  background-color: var(--accent);
+  opacity: 0.35;
+}
+/* Phone layouts: the sidebar is a fixed-width overlay there. */
+.layout-portrait .sidebar-resize-handle,
+.layout-landscape .sidebar-resize-handle,
+.layout-tablet-square .sidebar-resize-handle {
+  display: none;
 }

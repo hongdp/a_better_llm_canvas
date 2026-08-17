@@ -81,6 +81,15 @@ export const en = {
     modelName: 'Model Name',
     save: 'Save Changes',
   },
+  overview: {
+    title: 'Book overview — {count} chapters',
+    close: 'Close overview',
+    stale: 'stale',
+    tooShort: 'Too short to summarize.',
+    notSummarized: 'Not summarized yet — click the sparkles to generate.',
+    dragToResize: 'Drag to resize',
+    toggle: 'Book overview (all chapter summaries)'
+  },
   sidebar: {
     summaryWaitingForChat: 'Summaries paused while the assistant is replying — {pending} queued, resuming after',
     showSummary: 'Show the summary the assistant reads',
