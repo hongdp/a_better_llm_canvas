@@ -81,6 +81,7 @@ export const zh: TranslationDictionary = {
     save: '保存更改',
   },
   sidebar: {
+    rebuildSummariesConfirm: '已有 {count} 章生成过摘要。要一并重建吗？它们只在章节内容变化时才会自动刷新，所以提示词的改动不会影响到它们。这会对每一章各发一次模型调用——先确认摘要用的是哪个提供商。',
     collapse: '收起侧边栏',
     summarizeAll: '为需要的章节生成摘要',
     summaryQueued: '已加入 {count} 个章节的摘要队列。',

@@ -57,8 +57,15 @@ export const ChaptersSidebar: React.FC = () => {
       // most of them, and exactly why this button looked dead.
       await store.ensureDocumentContents(store.documents.map(d => d.id))
       const fresh = useAppStore.getState().documents
+      // Existing summaries are only refreshed when the CONTENT changed, so a
+      // prompt change (language, length) never reaches them on its own. Offer
+      // the rebuild rather than forcing it: on a paid provider this is one
+      // call per chapter, and the user picks which provider pays.
+      const alreadySummarized = fresh.filter(d => d.summary).length
+      const rebuild = alreadySummarized > 0 &&
+        confirm(t.sidebar.rebuildSummariesConfirm.replace('{count}', String(alreadySummarized)))
       const before = pendingCountRef.current
-      fresh.forEach(d => enqueueSummaryRefresh(d.id))
+      fresh.forEach(d => enqueueSummaryRefresh(d.id, rebuild))
       const queued = pendingCountRef.current - before
       setSummaryNotice(
         queued > 0

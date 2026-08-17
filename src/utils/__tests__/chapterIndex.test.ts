@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {
+import { detectSummaryLanguage,
   hashDocumentContent,
   isSummaryStale,
   getChapterDigest,
@@ -233,5 +233,38 @@ describe('hashDocumentContent stability', () => {
     doc.summaryContentHash = hashDocumentContent(doc.content)
     doc.content = '<p>甲</p><p>乙</p>' // what normalization produces
     expect(isSummaryStale(doc)).toBe(false)
+  })
+})
+
+// ── detectSummaryLanguage ────────────────────────────────────────────────────
+// Picks which instruction to send. An English "same language as the chapter"
+// instruction mostly works and then occasionally does not — measured 83%, 83%,
+// 0% Chinese across three runs, the failure also blowing the length cap — while
+// the Chinese instruction held at 82-87%. This buys consistency, not capability.
+describe('detectSummaryLanguage', () => {
+  it('recognises Chinese prose', () => {
+    expect(detectSummaryLanguage('垃圾站的晨昏线没有晨，也没有昏。太阳只是一块被滤镜削薄的白斑。')).toBe('zh')
+  })
+
+  it('separates Japanese from Chinese by kana, not by han', () => {
+    // Han characters alone are shared; the kana is the giveaway.
+    expect(detectSummaryLanguage('彼は宇宙船の中で目を覚ました。窓の外には星が流れていた。')).toBe('ja')
+  })
+
+  it('recognises Korean', () => {
+    expect(detectSummaryLanguage('그는 우주선 안에서 눈을 떴다. 창밖으로 별이 흐르고 있었다.')).toBe('ko')
+  })
+
+  it('leaves Latin prose to the English instruction', () => {
+    expect(detectSummaryLanguage('The junkyard had no dawn and no dusk, only a filtered white smear.')).toBe('other')
+  })
+
+  it('is not fooled by a stray CJK name in English prose', () => {
+    // A quoted name must not flip a whole English chapter to a Chinese prompt.
+    expect(detectSummaryLanguage('Shen Jianchuan (沈见川) worked the night shift at the orbital junkyard for fourteen months, and never once spoke of it.')).toBe('other')
+  })
+
+  it('handles empty input', () => {
+    expect(detectSummaryLanguage('')).toBe('other')
   })
 })

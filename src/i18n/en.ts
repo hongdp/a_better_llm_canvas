@@ -79,6 +79,7 @@ export const en = {
     save: 'Save Changes',
   },
   sidebar: {
+    rebuildSummariesConfirm: '{count} chapters already have a summary. Rebuild those too? They are only refreshed automatically when the chapter text changes, so a prompt change does not reach them otherwise. This is one model call per chapter — check which provider runs summaries first.',
     collapse: 'Collapse Sidebar',
     summarizeAll: 'Generate summaries for chapters that need them',
     summaryQueued: 'Queued {count} chapter(s) for summarizing.',
