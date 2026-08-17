@@ -66,7 +66,10 @@ export function VersionHistorySidebar({ isHistoryOpen, onClose }: VersionHistory
                 </span>
                 <div className="history-item-actions">
                   <button
-                    onClick={() => restoreVersion(version.id)}
+                    // Async now: a snapshot's content may live only on the
+                    // server, and restoring the empty stub would blank the
+                    // chapter the user is trying to rescue.
+                    onClick={() => { void restoreVersion(version.id) }}
                     className="history-item-btn restore"
                     type="button"
                   >

@@ -17,7 +17,7 @@ export default defineConfig({
     coverage: {
       provider: 'v8',
       reporter: ['text', 'lcov'],
-      include: ['src/utils/**', 'src/services/import/**', 'src/store/persistence.ts', 'src/store/contentLoader.ts']
+      include: ['src/utils/**', 'src/services/import/**', 'src/store/persistence.ts', 'src/store/contentLoader.ts', 'src/store/versionMerge.ts']
     }
   }
 })

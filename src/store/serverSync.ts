@@ -17,6 +17,7 @@ import { loadSavedConfigs, mergeProviderConfigs, saveConfigsToCookie, saveSystem
 import { getIsInitialized, setIsInitialized } from './syncRuntime'
 import { normalizeBrParagraphs } from '../utils/convert'
 import { useAppStore } from './useAppStore'
+import { mergeVersions, versionsMissingOnServer, backfillVersions } from './versionMerge'
 
 /**
  * Rebuilding the document list from server metadata would wipe client-side
@@ -149,15 +150,27 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
             updates.documents = docs
             saveDocumentsToIndexedDB(docs, true)
           }
-          if (serverData.versions) {
-            updates.versions = serverData.versions.map((v: ServerVersionMeta) => ({
-              id: v.id,
-              documentId: v.documentId,
-              title: v.title,
-              timestamp: v.timestamp,
-              content: '', // Lazy-loaded on demand
-            }))
-            safeIndexedDBSet('web_canvas_versions', updates.versions)
+          // MERGE, never replace. This assignment used to be
+          // `updates.versions = serverData.versions.map(...)`, and since no
+          // caller ever POSTed a snapshot the server list was always empty —
+          // so every sync erased the local history, which is why an emptied
+          // chapter had nothing to roll back to.
+          {
+            const serverVersions: ServerVersionMeta[] = serverData.versions || []
+            const merged = mergeVersions(
+              useAppStore.getState().versions,
+              serverVersions,
+              activeBookId
+            )
+            updates.versions = merged
+            safeIndexedDBSet('web_canvas_versions', merged)
+
+            // Push the backlog this browser accumulated while the write path
+            // was missing, so history stops being per-device.
+            const backlog = versionsMissingOnServer(merged, serverVersions, activeBookId)
+            if (backlog.length > 0) {
+              void backfillVersions(backlog, activeBookId)
+            }
           }
           if (serverData.bookTitle) {
             updates.bookTitle = serverData.bookTitle
