@@ -6,9 +6,17 @@ import { enqueueSummaryRefresh, subscribeSummaryQueue, type SummaryQueueStatus }
 import { isSummaryStale, MIN_CHARS_FOR_SUMMARY } from '../utils/chapterIndex'
 import { ImportUrlModal } from './ImportUrlModal'
 import { useTranslation } from '../i18n'
+import { SIDEBAR_WIDTH, clampSize, loadPersistedSize, savePersistedSize } from '../utils/layoutPrefs'
 
 export const ChaptersSidebar: React.FC = () => {
   const { t } = useTranslation()
+
+  // Desktop width, drag-adjustable and persisted. Chapter summaries live in
+  // this column; a fixed 240px was the reason they were unreadable there.
+  const [sidebarWidth, setSidebarWidth] = useState(() =>
+    loadPersistedSize(SIDEBAR_WIDTH.key, SIDEBAR_WIDTH.fallback, SIDEBAR_WIDTH.bounds))
+  const [isResizingSidebar, setIsResizingSidebar] = useState(false)
+  const sidebarDrag = useRef<{ startX: number; startWidth: number } | null>(null)
   const {
     documents,
     activeDocumentId,
@@ -324,7 +332,34 @@ export const ChaptersSidebar: React.FC = () => {
   }
 
   return (
-    <aside className={`chapters-sidebar ${isSidebarOpen ? '' : 'collapsed'}`}>
+    <aside
+      className={`chapters-sidebar ${isSidebarOpen ? '' : 'collapsed'}`}
+      style={{ ['--chapters-width' as string]: `${sidebarWidth}px` }}
+    >
+      <div
+        className={`sidebar-resize-handle ${isResizingSidebar ? 'active' : ''}`}
+        onPointerDown={(e) => {
+          sidebarDrag.current = { startX: e.clientX, startWidth: sidebarWidth }
+          setIsResizingSidebar(true)
+          ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
+        }}
+        onPointerMove={(e) => {
+          if (!sidebarDrag.current) return
+          setSidebarWidth(clampSize(
+            sidebarDrag.current.startWidth + (e.clientX - sidebarDrag.current.startX),
+            SIDEBAR_WIDTH.bounds
+          ))
+        }}
+        onPointerUp={() => {
+          if (!sidebarDrag.current) return
+          sidebarDrag.current = null
+          setIsResizingSidebar(false)
+          setSidebarWidth(current => {
+            savePersistedSize(SIDEBAR_WIDTH.key, current, SIDEBAR_WIDTH.bounds)
+            return current
+          })
+        }}
+      />
       <div className="sidebar-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <BookOpen size={16} style={{ color: 'var(--text-secondary)' }} />

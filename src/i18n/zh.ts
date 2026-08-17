@@ -83,6 +83,15 @@ export const zh: TranslationDictionary = {
     modelName: '模型名称',
     save: '保存更改',
   },
+  overview: {
+    title: '全书总览——共 {count} 章',
+    close: '关闭总览',
+    stale: '已过期',
+    tooShort: '篇幅太短，无需摘要。',
+    notSummarized: '尚未生成摘要——点击 ✨ 生成。',
+    dragToResize: '拖动调整高度',
+    toggle: '全书总览（所有章节摘要）'
+  },
   sidebar: {
     summaryWaitingForChat: '助手回复中，摘要已暂停——{pending} 章排队，回复结束后继续',
     showSummary: '查看助手读到的摘要',

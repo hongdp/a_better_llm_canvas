@@ -4,6 +4,8 @@ import { ChatPanel } from './components/ChatPanel'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { AppHeader } from './components/AppHeader'
 import { CanvasHeader } from './components/CanvasHeader'
+import { BookOverviewDrawer } from './components/BookOverviewDrawer'
+import { CHAT_WIDTH, loadPersistedSize, savePersistedSize } from './utils/layoutPrefs'
 import { CanvasFooter } from './components/CanvasFooter'
 import { VersionHistorySidebar } from './components/VersionHistorySidebar'
 import { useAppStore } from './store/useAppStore'
@@ -48,8 +50,12 @@ function App() {
   } = useAppStore()
 
   // Local UI state
-  const [chatWidth, setChatWidth] = useState(380)
+  // Persisted: a drag-set width that reset to 380 on every reload taught
+  // people the handle was not worth using.
+  const [chatWidth, setChatWidth] = useState(() =>
+    loadPersistedSize(CHAT_WIDTH.key, CHAT_WIDTH.fallback, CHAT_WIDTH.bounds))
   const [isResizing, setIsResizing] = useState(false)
+  const [isOverviewOpen, setIsOverviewOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [imageGenInitialPrompt, setImageGenInitialPrompt] = useState('')
@@ -258,6 +264,10 @@ function App() {
         isResizingRef.current = false
         document.body.style.removeProperty('cursor')
         document.body.style.removeProperty('user-select')
+        setChatWidth(current => {
+          savePersistedSize(CHAT_WIDTH.key, current, CHAT_WIDTH.bounds)
+          return current
+        })
       }
     }
 
@@ -456,7 +466,13 @@ function App() {
                 isHistoryOpen={isHistoryOpen}
                 setIsHistoryOpen={setIsHistoryOpen}
                 onOpenImageGen={handleOpenImageGen}
+                isOverviewOpen={isOverviewOpen}
+                setIsOverviewOpen={setIsOverviewOpen}
               />
+
+              {isOverviewOpen && (
+                <BookOverviewDrawer layoutMode={layoutMode} onClose={() => setIsOverviewOpen(false)} />
+              )}
 
               {hasPendingDiffs && (
                 <div className="diff-review-banner">
