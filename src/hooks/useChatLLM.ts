@@ -297,7 +297,8 @@ export function useChatLLM({
         applyToolCallDelta(toolCallsRef.current, {
           index: delta.index,
           id: delta.id,
-          function: { name: delta.name, arguments: delta.argumentsText }
+          function: { name: delta.name, arguments: delta.argumentsText },
+          replace: delta.replace
         })
 
         // Render the document as it is written, exactly as the old tag

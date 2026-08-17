@@ -163,6 +163,7 @@ async function attachToJob(
         index?: number
         id?: string
         name?: string
+        replay?: boolean
         offset?: number
         message?: string
         usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }
@@ -187,7 +188,9 @@ async function attachToJob(
           index: typeof event.index === 'number' ? event.index : 0,
           id: event.id,
           name: event.name,
-          argumentsText: event.text || ''
+          argumentsText: event.text || '',
+          // A replay carries the whole call; appending it would duplicate.
+          replace: event.replay === true
         })
       } else if (event.type === 'reasoning') {
         // Thinking, not text: it never joins fullText and never advances the

@@ -88,6 +88,30 @@ describe('applyToolCallDelta / finishToolCalls', () => {
     expect(finishToolCalls(a)).toEqual([{ id: undefined, name: 'update_document', args: null }])
   })
 
+  it('replaces rather than appends on a replay', () => {
+    // After a reload the server sends each call's arguments WHOLE — there is
+    // no offset to resume a tool call from. Appending that to what a reader
+    // already has would duplicate the text into invalid JSON.
+    const a = acc()
+    applyToolCallDelta(a, { index: 0, function: { name: 'update_document', arguments: '{"html":"<p>par' } })
+    applyToolCallDelta(a, {
+      index: 0,
+      function: { name: 'update_document', arguments: '{"html":"<p>partial then whole</p>"}' },
+      replace: true
+    })
+
+    expect(finishToolCalls(a)).toEqual([
+      { id: undefined, name: 'update_document', args: { html: '<p>partial then whole</p>' } }
+    ])
+  })
+
+  it('keeps appending for ordinary deltas', () => {
+    const a = acc()
+    applyToolCallDelta(a, { index: 0, function: { name: 'x', arguments: '{"a":' } })
+    applyToolCallDelta(a, { index: 0, function: { arguments: '1}' } })
+    expect(finishToolCalls(a)[0].args).toEqual({ a: 1 })
+  })
+
   it('ignores an accumulator that never got a name', () => {
     const a = acc()
     applyToolCallDelta(a, { index: 0, function: { arguments: '{"html":"x"}' } })

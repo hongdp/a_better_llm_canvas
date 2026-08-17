@@ -58,20 +58,32 @@ export function partialStringArgument(argumentsText: string, key: string): strin
   return out
 }
 
-/** Merge one OpenAI-style streaming tool_call delta into the accumulator. */
+/**
+ * Merge one OpenAI-style streaming tool_call delta into the accumulator.
+ *
+ * `replace` marks a REPLAY: after a reload the server sends each call's
+ * arguments whole rather than in fragments, because there is no offset to
+ * resume a tool call from. Appending that to whatever a reader already has
+ * would duplicate the argument text and produce invalid JSON.
+ */
 export function applyToolCallDelta(
   accumulators: Map<number, ToolCallAccumulator>,
   delta: {
     index?: number
     id?: string
     function?: { name?: string; arguments?: string }
+    replace?: boolean
   }
 ): void {
   const index = typeof delta.index === 'number' ? delta.index : 0
   const existing = accumulators.get(index) ?? { argumentsText: '' }
   if (delta.id) existing.id = delta.id
   if (delta.function?.name) existing.name = delta.function.name
-  if (delta.function?.arguments) existing.argumentsText += delta.function.arguments
+  if (delta.function?.arguments !== undefined) {
+    existing.argumentsText = delta.replace
+      ? delta.function.arguments
+      : existing.argumentsText + delta.function.arguments
+  }
   accumulators.set(index, existing)
 }
 
