@@ -9,6 +9,17 @@ import { loadSavedActiveDocId } from '../settingsPersistence'
 // bodies, which run long after both modules have finished evaluating.
 import { useAppStore } from '../useAppStore'
 
+/**
+ * "Nothing there" as the editor writes it: an empty string, or the empty
+ * paragraph ProseMirror keeps because a document must contain one block.
+ */
+export function isBlankContent(html: string): boolean {
+  // Media carries no text but is very much content — a chapter holding only a
+  // generated illustration must not read as empty to the guard below.
+  if (/<(img|video|audio|iframe)\b/i.test(html)) return false
+  return !html.replace(/<[^>]+>/g, '').replace(/&nbsp;|\s/g, '')
+}
+
 export interface DocumentsSlice {
   // Multi-document state
   documents: CanvasDocument[]
@@ -259,6 +270,31 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
 
     updateActiveDocument: (updates) => {
       set((state) => {
+        const active = state.documents.find(d => d.id === state.activeDocumentId)
+
+        /**
+         * Problem: a chapter of prose was replaced with an empty document and
+         *   auto-saved over, with no version snapshot to go back to.
+         * Root cause: a completion path wrote back its "leave it as it was"
+         *   base, and that base had been captured before the chapter's lazy
+         *   content finished loading, so it was ''. The write itself looked
+         *   exactly like a legitimate one.
+         * Fix: blanking a non-empty chapter is never something the app does on
+         *   its own — clearing a chapter is a user action, and it goes through
+         *   the editor, which sends its own HTML rather than ''. So refuse the
+         *   write here, where every path converges, instead of auditing each
+         *   caller for a stale base. This is a backstop, not the cure: the
+         *   caller that captured an empty base is fixed too (see the rejoin in
+         *   useChatLLM), but the next one like it must not cost a chapter.
+         */
+        if (active && updates.content !== undefined && isBlankContent(updates.content) && !isBlankContent(active.content)) {
+          console.error(
+            '[documents] Refused to blank a non-empty chapter.',
+            { documentId: active.id, hadChars: active.content.length }
+          )
+          return {}
+        }
+
         const updatedDocs = state.documents.map((d) => {
           if (d.id === state.activeDocumentId) {
             return {
