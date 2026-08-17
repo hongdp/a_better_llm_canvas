@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles, FileText } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
 import { enqueueSummaryRefresh, subscribeSummaryQueue, type SummaryQueueStatus } from '../services/chapterSummaries'
@@ -40,6 +40,12 @@ export const ChaptersSidebar: React.FC = () => {
     pending: 0, running: false, lastError: null, completedThisRun: 0
   })
   const [summaryNotice, setSummaryNotice] = useState<string | null>(null)
+  /**
+   * Chapters whose summary is expanded. Until now the summaries were written,
+   * synced, injected into every prompt — and visible nowhere, so their quality
+   * could not be judged at all.
+   */
+  const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set())
   React.useEffect(() => subscribeSummaryQueue((st) => {
     pendingCountRef.current = st.pending
     setQueueStatus(st)
@@ -453,6 +459,21 @@ export const ChaptersSidebar: React.FC = () => {
                 {/* Metadata-only chapters get the button too: the handler
                     loads the content first. Hiding it there was why most
                     chapters offered no way to summarize them at all. */}
+                {doc.summary && (
+                  <button
+                    onClick={() => setExpandedSummaries(prev => {
+                      const next = new Set(prev)
+                      if (next.has(doc.id)) next.delete(doc.id); else next.add(doc.id)
+                      return next
+                    })}
+                    className="btn-icon chapter-action-btn"
+                    title={expandedSummaries.has(doc.id) ? t.sidebar.hideSummary : t.sidebar.showSummary}
+                    type="button"
+                    style={{ padding: '0.15rem' }}
+                  >
+                    <FileText size={13} />
+                  </button>
+                )}
                 {(doc.contentLoaded === false || doc.content.length >= MIN_CHARS_FOR_SUMMARY) && (
                   <button
                     onClick={() => { void handleSummarizeOne(doc.id) }}
@@ -500,6 +521,27 @@ export const ChaptersSidebar: React.FC = () => {
                   <Trash2 size={13} />
                 </button>
               </div>
+              {expandedSummaries.has(doc.id) && doc.summary && (
+                // What the assistant actually reads for this chapter, verbatim.
+                <div
+                  onClick={(e) => e.stopPropagation()}
+                  style={{
+                    margin: '0.35rem 0 0.15rem',
+                    padding: '0.5rem 0.6rem',
+                    borderRadius: '6px',
+                    backgroundColor: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-color)',
+                    fontSize: '0.72rem',
+                    lineHeight: 1.55,
+                    color: 'var(--text-muted)',
+                    whiteSpace: 'pre-wrap',
+                    maxHeight: '14rem',
+                    overflowY: 'auto'
+                  }}
+                >
+                  {doc.summary}
+                </div>
+              )}
             </div>
           )
         })}

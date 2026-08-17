@@ -19,6 +19,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     availableGeminiModels,
     availableGrokModels,
     availableOllamaModels,
+    summaryProvider,
+    setSummaryProvider,
     customSystemPrompts,
     addSystemPrompt,
     updateSystemPrompt,
@@ -236,6 +238,23 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
               {/* Summary Utility Model Input */}
               <div className="form-group">
+                <label htmlFor="summary-provider-select">{t.settings.summaryProvider}</label>
+                <select
+                  id="summary-provider-select"
+                  value={summaryProvider}
+                  onChange={(e) => setSummaryProvider(e.target.value as LLMProvider | 'active')}
+                  className="form-input"
+                  style={{ marginBottom: '0.75rem' }}
+                >
+                  <option value="active">{t.settings.summaryProviderFollowChat}</option>
+                  {(Object.keys(labels) as LLMProvider[]).map(p => (
+                    <option key={p} value={p}>{labels[p]}</option>
+                  ))}
+                </select>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '-0.5rem 0 0.75rem' }}>
+                  {t.settings.summaryProviderHint}
+                </p>
+
                 <label htmlFor="summary-model-input">Summary Model (optional — cheap model for background chapter summaries; empty = chat model)</label>
                 <input
                   id="summary-model-input"
