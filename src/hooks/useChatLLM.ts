@@ -16,7 +16,7 @@ import { applyToolCallDelta, finishToolCalls, partialStringArgument, type ToolCa
 import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/documentTools'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, findTextRange, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, collectTextSpans, findTextRangeInSpans, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -184,6 +184,12 @@ export function useChatLLM({
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
   /** Set when a finished selection edit had nowhere valid left to land. */
   const selectionGoneRef = useRef(false)
+  /**
+   * Selected text from a resumed job, waiting for the editor to exist so it
+   * can be relocated against the real document.
+   */
+  const pendingSelectionTextRef = useRef<string | null>(null)
+
   const selectionEndRef = useRef<number | null>(null)
   const originalSelectedTextRef = useRef<string>('')
   const imagePlaceholdersRef = useRef<ImagePlaceholderEntry[]>([])
@@ -212,6 +218,8 @@ export function useChatLLM({
   // the whole minute). Throttled harder than the selection preview because
   // each tick re-parses the WHOLE growing document, not a small slice.
   const CANVAS_PREVIEW_THROTTLE_MS = 250
+  /** Selection rewrites are short, so they repaint faster than a full document. */
+  const SELECTION_PREVIEW_THROTTLE_MS = 60
   const lastCanvasPreviewRef = useRef(0)
   // True once a live preview has written to the editor: every terminal path
   // (done / truncated / error / abort / retry) MUST then converge the editor
@@ -306,13 +314,16 @@ export function useChatLLM({
         // the JSON closes (measured on a real stream, 205 deltas, every one
         // of them renderable).
         const acc = toolCallsRef.current.get(delta.index)
-        if (!acc || acc.name !== 'update_document') return
-
+        if (!acc) return
         const partial = partialStringArgument(acc.argumentsText, 'html')
         if (partial === null) return
+
         const now = Date.now()
         const editor = activeEditorRef.current
-        if (editor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
+        if (!editor) return
+
+        if (acc.name === 'update_document') {
+          if (now - lastCanvasPreviewRef.current < CANVAS_PREVIEW_THROTTLE_MS) return
           lastCanvasPreviewRef.current = now
           canvasPreviewActiveRef.current = true
           setSaveStatus('unsaved')
@@ -320,6 +331,42 @@ export function useChatLLM({
             .setMeta('addToHistory', false)
             .setContent(restoreImagesFromPlaceholders(trimIncompleteHtmlTail(partial)), { emitUpdate: false })
             .run()
+          return
+        }
+
+        // Selection rewrites stream too. The tag protocol previewed these and
+        // the first tool migration did not, which read as "streaming stopped
+        // working" to anyone whose main use is rewriting a selection.
+        if (acc.name === 'replace_selection') {
+          // A resumed turn carries the selected TEXT, not a range: relocate it
+          // against the live document now that an editor exists. (Inlined at
+          // both use sites rather than shared through a useCallback, which
+          // would capture these refs and destabilise buildStreamCallbacks.)
+          if (pendingSelectionTextRef.current) {
+            const spans = collectTextSpans(editor.state.doc)
+            const relocated = findTextRangeInSpans(spans, pendingSelectionTextRef.current)
+            pendingSelectionTextRef.current = null
+            selectionRangeRef.current = relocated
+            selectionEndRef.current = relocated?.to ?? null
+          }
+          if (!selectionRangeRef.current) return
+          if (now - lastSelectionPreviewRef.current < SELECTION_PREVIEW_THROTTLE_MS) return
+          lastSelectionPreviewRef.current = now
+
+          const { from } = selectionRangeRef.current
+          const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
+          const range = clampSelectionRange(from, currentEnd, editor.state.doc.content.size)
+          if (!range) return
+
+          const tempDiv = document.createElement('div')
+          tempDiv.innerHTML = restoreImagesFromPlaceholders(trimIncompleteHtmlTail(partial))
+          const slice = ProseMirrorDOMParser.fromSchema(editor.state.schema).parseSlice(tempDiv)
+
+          const tr = editor.state.tr
+          tr.replace(range.from, range.to, slice)
+          editor.view.dispatch(tr)
+          selectionEndRef.current = range.from + slice.size
+          setSaveStatus('unsaved')
         }
       },
       onReasoning: (text: string) => {
@@ -370,7 +417,6 @@ export function useChatLLM({
           // the whole growing replacement and re-renders ProseMirror each
           // time (O(n²)), stuttering past a few paragraphs. ~60ms ≈ 16fps is
           // smooth; the final, exact result is applied in onDone regardless.
-          const SELECTION_PREVIEW_THROTTLE_MS = 60
           const now = Date.now()
           const cleanedText = stripIncompleteEndTag(selectionReplaceText)
           const selectionEditor = activeEditorRef.current
@@ -682,6 +728,13 @@ export function useChatLLM({
         if (parsed.kind === 'selection') {
           const cleanedText = stripIncompleteEndTag(parsed.selectionText)
           const finalEditor = activeEditorRef.current
+          if (finalEditor && pendingSelectionTextRef.current) {
+            const spans = collectTextSpans(finalEditor.state.doc)
+            const relocated = findTextRangeInSpans(spans, pendingSelectionTextRef.current)
+            pendingSelectionTextRef.current = null
+            selectionRangeRef.current = relocated
+            selectionEndRef.current = relocated?.to ?? null
+          }
           if (cleanedText && finalEditor && selectionRangeRef.current) {
             const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
             const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
@@ -901,8 +954,10 @@ export function useChatLLM({
       // dropping a finished rewrite because a ref was empty.
       if (job.meta.selectedText) {
         originalSelectedTextRef.current = job.meta.selectedText
-        selectionRangeRef.current = findTextRange(originalDocContent, job.meta.selectedText)
-        selectionEndRef.current = selectionRangeRef.current?.to ?? null
+        // Relocated against the LIVE document, not the HTML string: a
+        // plain-text index is not a ProseMirror position. Deferred until the
+        // editor exists, since the rejoin runs before it mounts.
+        pendingSelectionTextRef.current = job.meta.selectedText
       }
 
       abortControllerRef.current = new AbortController()
