@@ -24,6 +24,14 @@ export interface RemoteJobMeta {
   /** Chat bubble this job streams into — the anchor a rejoin needs. */
   assistantMessageId?: string
   kind?: 'chat' | 'roleplay' | 'summary' | 'batch'
+  /**
+   * The text the user had selected when the turn started, for a
+   * <selection_replace> edit. Positions cannot survive a reload — the range
+   * lived in a ref — but TEXT can be found again, which is how <edit> blocks
+   * have always located themselves. Without this a selection rewrite that
+   * finished after a refresh had nowhere to go and was dropped in silence.
+   */
+  selectedText?: string
 }
 
 export interface PersistedGenerationJob {
