@@ -99,6 +99,45 @@ export function collectTextSpans(doc: {
   return spans
 }
 
+/**
+ * Recover the range of a selection whose page died mid-turn.
+ *
+ * A resumed job carries the selected TEXT, not positions — ProseMirror
+ * positions do not survive the editor that produced them. Relocating it
+ * against the live document is what lets a rejoined selection rewrite preview
+ * and settle where the user actually selected. No-ops once relocated, and
+ * whenever there was no resumed selection to begin with.
+ *
+ * Module-level, taking the refs as arguments, deliberately: a useCallback here
+ * would capture them and destabilise the streaming callbacks, whose identity
+ * has to stay fixed (see the timeout note in CLAUDE.md — an unstable callback
+ * in effect deps is how the test runner wedges). It is shared by all three
+ * callers — tool-call preview, markup preview, and the final apply — because
+ * the markup one was MISSING it, so after a refresh `selectionRange` stayed
+ * null and the live preview was skipped for the whole turn.
+ */
+export function relocateResumedSelection(
+  editor: { state: { doc: Parameters<typeof collectTextSpans>[0] } },
+  refs: {
+    pendingSelectionText: { current: string | null }
+    selectionRange: { current: { from: number; to: number } | null }
+    selectionEnd: { current: number | null }
+  }
+): void {
+  const pending = refs.pendingSelectionText.current
+  if (!pending) return
+  const relocated = findTextRangeInSpans(collectTextSpans(editor.state.doc), pending)
+  // A FAILED lookup must not consume the pending text. On a reload the editor
+  // mounts before the server sync fills it, so the first chunks search an
+  // empty document — and when this cleared `pending` regardless, the final
+  // apply had nothing left to relocate with either, losing the diff as well
+  // as the preview. Leave it set and let a later chunk (or the apply) retry.
+  if (!relocated) return
+  refs.pendingSelectionText.current = null
+  refs.selectionRange.current = relocated
+  refs.selectionEnd.current = relocated.to
+}
+
 export function clampSelectionRange(
   from: number,
   to: number,

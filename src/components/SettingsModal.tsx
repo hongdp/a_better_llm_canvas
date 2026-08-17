@@ -4,6 +4,7 @@ import { useAppStore, type LLMProvider, PROVIDER_MODELS, DEFAULT_IMAGE_ANALYSIS_
 import { useTranslation } from '../i18n'
 import { useModelFetcher } from '../hooks/useModelFetcher'
 import { supportsReasoningEffort, supportedReasoningEfforts, DEFAULT_REASONING_EFFORT } from '../utils/reasoningEffort'
+import { autoProtocolFor } from '../utils/protocolChoice'
 
 interface SettingsModalProps {
   isOpen: boolean
@@ -59,7 +60,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
   const currentConfig = providerConfigs[activeTab] || providerConfigs.gemini
   const geminiConfig = providerConfigs.gemini
 
-  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model' | 'summaryModel' | 'reasoningEffort', value: string | number) => {
+  const handleConfigChange = (field: 'apiKey' | 'baseUrl' | 'maxOutputTokens' | 'model' | 'summaryModel' | 'reasoningEffort' | 'documentProtocol', value: string | number) => {
     updateProviderConfig(activeTab, { [field]: value })
   }
 
@@ -309,6 +310,30 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   </p>
                 </div>
               )}
+
+              {/* How this model is asked to edit the document. Per provider,
+                  because the right answer depends on how the provider streams
+                  tool arguments — see utils/protocolChoice. */}
+              <div className="form-group">
+                <label htmlFor="document-protocol-select">{t.settings.documentProtocol}</label>
+                <select
+                  id="document-protocol-select"
+                  value={currentConfig.documentProtocol ?? 'auto'}
+                  onChange={(e) => handleConfigChange('documentProtocol', e.target.value)}
+                  className="form-input"
+                >
+                  <option value="auto">
+                    {t.settings.protocolAuto(
+                      autoProtocolFor(activeTab) === 'tools' ? t.settings.protocolTools : t.settings.protocolMarkup
+                    )}
+                  </option>
+                  <option value="tools">{t.settings.protocolTools}</option>
+                  <option value="markup">{t.settings.protocolMarkup}</option>
+                </select>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                  {t.settings.documentProtocolHint}
+                </p>
+              </div>
 
               {/* Debug Mode Checkbox */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>

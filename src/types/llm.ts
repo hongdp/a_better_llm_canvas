@@ -1,4 +1,5 @@
 import type { ReasoningEffort } from '../utils/reasoningEffort'
+import type { DocumentProtocol } from '../utils/protocolChoice'
 export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
 
 export interface GeminiSafetySetting {
@@ -26,8 +27,16 @@ export interface ProviderConfig {
    */
   reasoningEffort?: ReasoningEffort
   /**
+   * How this model is asked to change the document: native tool calls, or the
+   * Canvas tag markup. Absent = 'auto', which picks per provider from measured
+   * streaming behaviour (see utils/protocolChoice). Bound to the provider
+   * config, so switching models switches protocol with it.
+   */
+  documentProtocol?: DocumentProtocol
+  /**
    * Document tools in OpenAI shape (see utils/documentTools). Present for any
    * provider that supports tool calling; adapters translate at the edge.
+   * Absent on the markup protocol — the tags are the interface there.
    */
   tools?: unknown[]
 }
