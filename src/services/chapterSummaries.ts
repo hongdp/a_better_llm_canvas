@@ -38,6 +38,13 @@ const pendingQueue: string[] = []
 export interface SummaryQueueStatus {
   pending: number
   running: boolean
+  /**
+   * The queue is intentionally idle because a chat/roleplay stream is running
+   * (and, on a single-slot local server, would be blocked by it anyway). The
+   * UI must say THAT — shown as "Summarizing…" this state reads as stuck, and
+   * a several-minute chat generation makes it read that way for minutes.
+   */
+  waitingForChat: boolean
   lastError: string | null
   completedThisRun: number
 }
@@ -45,11 +52,15 @@ type QueueListener = (status: SummaryQueueStatus) => void
 const listeners = new Set<QueueListener>()
 let lastError: string | null = null
 let completedThisRun = 0
+let waitingForChat = false
+/** True from the first item of a run until the queue drains — spans defers. */
+let runActive = false
 
 const notify = () => {
   const status: SummaryQueueStatus = {
     pending: pendingQueue.length,
     running: processing,
+    waitingForChat,
     lastError,
     completedThisRun
   }
@@ -58,7 +69,7 @@ const notify = () => {
 
 export const subscribeSummaryQueue = (listener: QueueListener): (() => void) => {
   listeners.add(listener)
-  listener({ pending: pendingQueue.length, running: processing, lastError, completedThisRun })
+  listener({ pending: pendingQueue.length, running: processing, waitingForChat, lastError, completedThisRun })
   return () => { listeners.delete(listener) }
 }
 // Ids whose refresh was requested manually — they bypass the staleness check
@@ -202,23 +213,34 @@ const summarizeDocument = async (docId: string): Promise<void> => {
 const processQueue = async (): Promise<void> => {
   if (processing) return
   processing = true
-  lastError = null
-  completedThisRun = 0
+  // A defer retry re-enters here mid-run; resetting the counters there turned
+  // "1 done" into "0 done" on screen. Only a FRESH run starts from zero.
+  if (!runActive) {
+    runActive = true
+    lastError = null
+    completedThisRun = 0
+  }
   notify()
   try {
     while (pendingQueue.length > 0) {
-      // Defer while a chat/roleplay stream is running.
+      // Defer while a chat/roleplay stream is running: on a single-slot local
+      // server the chat generation holds the only slot anyway. This is a
+      // distinct, visible state — not "Summarizing…".
       if (useAppStore.getState().isStreaming) {
         debugLog('stream in flight — deferring queue')
+        waitingForChat = true
         setTimeout(() => { void processQueue() }, DEFER_RETRY_MS)
         return
       }
+      waitingForChat = false
       const docId = pendingQueue.shift()!
       const force = forcedIds.delete(docId)
       // Re-check: content may have changed (or been summarized) since enqueue.
       if (!needsRefresh(docId, force)) continue
       await summarizeDocument(docId)
     }
+    runActive = false
+    waitingForChat = false
   } finally {
     processing = false
     notify()
