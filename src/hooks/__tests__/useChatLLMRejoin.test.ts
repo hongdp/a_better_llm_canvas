@@ -27,6 +27,13 @@ vi.mock('../../services/remoteGeneration', () => ({
 vi.mock('../../services/llm', () => ({ streamLLM: vi.fn() }))
 vi.mock('../../services/chapterSummaries', () => ({ enqueueStaleSummaryRefreshes: vi.fn() }))
 
+// The live previews parse their HTML into a ProseMirror slice. A real schema
+// is beside the point here — what is under test is whether the preview runs at
+// all — so the parser is stubbed down to "carry the html through".
+vi.mock('@tiptap/pm/model', () => ({
+  DOMParser: { fromSchema: () => ({ parseSlice: (el: { innerHTML: string }) => ({ size: el.innerHTML.length, html: el.innerHTML }) }) }
+}))
+
 import { useState } from 'react'
 import { useChatLLM } from '../useChatLLM'
 import { useAppStore } from '../../store/useAppStore'
@@ -60,8 +67,13 @@ function renderChatHook() {
  * captured that null rendered a resumed generation into the chat bubble while
  * the document stayed blank for the whole turn.
  */
-function makeFakeEditor() {
+function makeFakeEditor(docText = '') {
   const setContentCalls: string[] = []
+  // Replacements applied through the selection preview path.
+  const replacements: Array<{ from: number; to: number; html: string }> = []
+  const tr = {
+    replace: (from: number, to: number, slice: { html: string }) => { replacements.push({ from, to, html: slice.html }) }
+  }
   const chain = {
     setMeta: () => chain,
     setContent: (html: string) => { setContentCalls.push(html); return chain },
@@ -69,18 +81,30 @@ function makeFakeEditor() {
   }
   return {
     setContentCalls,
+    replacements,
     editor: {
       chain: () => chain,
       getHTML: () => '',
-      state: { doc: { content: { size: 100 } }, schema: {}, selection: { from: 0, to: 0 }, tr: {} },
+      state: {
+        // One text node, so collectTextSpans can locate a resumed selection.
+        doc: {
+          content: { size: 100 },
+          descendants: (fn: (n: { isText: boolean; text: string }, pos: number) => void) => {
+            if (docText) fn({ isText: true, text: docText }, 1)
+          }
+        },
+        schema: {},
+        selection: { from: 0, to: 0 },
+        tr
+      },
       view: { dispatch: () => {} }
     } as never
   }
 }
 
-function renderChatHookWithLateEditor() {
+function renderChatHookWithLateEditor(docText = '') {
   const container = document.createElement('div')
-  const fake = makeFakeEditor()
+  const fake = makeFakeEditor(docText)
   let root: Root
   let setEditor: (e: unknown) => void = () => {}
   const Probe = () => {
@@ -289,6 +313,36 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     // selection must at least have been RELOCATED rather than reported gone.
     expect(bubble('a-1')).not.toContain('no longer where it was')
     expect(useAppStore.getState().isStreaming).toBe(false)
+    unmount()
+  })
+
+  it('previews a replayed MARKUP selection rewrite, not just the tool one', async () => {
+    // The regression: relocating a resumed selection was wired into the
+    // tool-call preview and the final apply, but NOT into the markup chunk
+    // preview. On the markup protocol (what grok is on, because it sends tool
+    // arguments in one chunk) `selectionRange` stayed null for the whole
+    // rejoined turn, so the guard below it skipped every preview — the user
+    // saw the diff appear at the end and nothing before it.
+    findResumableJob.mockResolvedValue({
+      jobId: 'gen-markup-sel',
+      meta: { assistantMessageId: 'a-1', kind: 'chat', selectedText: '选中的原文' },
+      offset: 0
+    })
+    let emit: (chunk: string) => void = () => {}
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      emit = (chunk: string) => callbacks.onChunk(chunk)
+    })
+
+    const { fake, mountEditor, unmount } = renderChatHookWithLateEditor('选中的原文')
+    await settle()
+    mountEditor()
+
+    // Arriving in fragments, the way content deltas actually do.
+    await act(async () => { emit('<selection_replace><p>改写第一') })
+    await act(async () => { emit('段落</p></selection_replace>') })
+
+    expect(fake.replacements.length).toBeGreaterThan(0)
+    expect(fake.replacements[0].html).toContain('改写第一')
     unmount()
   })
 

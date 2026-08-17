@@ -17,7 +17,7 @@ import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/
 import { resolveDocumentProtocol } from '../utils/protocolChoice'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, collectTextSpans, findTextRangeInSpans, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -192,6 +192,16 @@ export function useChatLLM({
   const pendingSelectionTextRef = useRef<string | null>(null)
 
   const selectionEndRef = useRef<number | null>(null)
+  /**
+   * The three refs relocateResumedSelection needs, bundled once. Refs are
+   * stable for the life of the hook, so this object can be built here without
+   * affecting any callback's identity.
+   */
+  const selectionRefs = useRef({
+    pendingSelectionText: pendingSelectionTextRef,
+    selectionRange: selectionRangeRef,
+    selectionEnd: selectionEndRef
+  }).current
   const originalSelectedTextRef = useRef<string>('')
   const imagePlaceholdersRef = useRef<ImagePlaceholderEntry[]>([])
   // Chapters attached on the previous turn — feeds the scorer's continuity
@@ -345,17 +355,7 @@ export function useChatLLM({
         // the first tool migration did not, which read as "streaming stopped
         // working" to anyone whose main use is rewriting a selection.
         if (acc.name === 'replace_selection') {
-          // A resumed turn carries the selected TEXT, not a range: relocate it
-          // against the live document now that an editor exists. (Inlined at
-          // both use sites rather than shared through a useCallback, which
-          // would capture these refs and destabilise buildStreamCallbacks.)
-          if (pendingSelectionTextRef.current) {
-            const spans = collectTextSpans(editor.state.doc)
-            const relocated = findTextRangeInSpans(spans, pendingSelectionTextRef.current)
-            pendingSelectionTextRef.current = null
-            selectionRangeRef.current = relocated
-            selectionEndRef.current = relocated?.to ?? null
-          }
+          relocateResumedSelection(editor, selectionRefs)
           if (!selectionRangeRef.current) return
           if (now - lastSelectionPreviewRef.current < SELECTION_PREVIEW_THROTTLE_MS) return
           lastSelectionPreviewRef.current = now
@@ -427,6 +427,10 @@ export function useChatLLM({
           const now = Date.now()
           const cleanedText = stripIncompleteEndTag(selectionReplaceText)
           const selectionEditor = activeEditorRef.current
+          // A rejoined turn has the selected text but no range — without this
+          // the whole resumed rewrite previewed nothing, because the guard
+          // below reads selectionRangeRef and it was still null.
+          if (selectionEditor) relocateResumedSelection(selectionEditor, selectionRefs)
           if (
             cleanedText &&
             selectionEditor &&
@@ -735,13 +739,7 @@ export function useChatLLM({
         if (parsed.kind === 'selection') {
           const cleanedText = stripIncompleteEndTag(parsed.selectionText)
           const finalEditor = activeEditorRef.current
-          if (finalEditor && pendingSelectionTextRef.current) {
-            const spans = collectTextSpans(finalEditor.state.doc)
-            const relocated = findTextRangeInSpans(spans, pendingSelectionTextRef.current)
-            pendingSelectionTextRef.current = null
-            selectionRangeRef.current = relocated
-            selectionEndRef.current = relocated?.to ?? null
-          }
+          if (finalEditor) relocateResumedSelection(finalEditor, selectionRefs)
           if (cleanedText && finalEditor && selectionRangeRef.current) {
             const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
             const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
@@ -821,7 +819,10 @@ export function useChatLLM({
         forceSave()
       }
     }
-  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview])
+    // selectionRefs is a ref's `.current`, so it never changes identity — it is
+    // listed only to satisfy exhaustive-deps, and adding it cannot destabilise
+    // these callbacks (which must stay stable; see the timeout note in CLAUDE.md).
+  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview, selectionRefs])
 
   // Shared LLM Streaming engine. `lookupCtx` (when set) arms the agentic
   // chapter-lookup loop: a response consisting of a <lookup> tag re-issues
