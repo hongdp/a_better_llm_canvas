@@ -46,6 +46,31 @@ export interface StreamingSplit {
 }
 
 /**
+ * Locate a passage in the document by its TEXT, returning ProseMirror-style
+ * positions. Used when a reload destroyed the selection range: `<edit>` blocks
+ * have always relocated themselves by content, and a selection rewrite can do
+ * the same instead of being dropped.
+ *
+ * Returns null when the passage is gone or ambiguous — writing a rewrite at a
+ * guessed position is worse than not writing it.
+ */
+export function findTextRange(documentHtml: string, selectedText: string): { from: number; to: number } | null {
+  const needle = (selectedText || '').trim()
+  if (!needle) return null
+
+  const plain = (documentHtml || '').replace(/<[^>]*>/g, '')
+  const first = plain.indexOf(needle)
+  if (first === -1) return null
+  if (plain.indexOf(needle, first + 1) !== -1) return null   // ambiguous
+
+  // ProseMirror positions start at 1 (0 is before the document's first node),
+  // and each block adds one for its boundary. Close enough to seed the range:
+  // clampSelectionRange fits it to the live document before anything is
+  // dispatched, and the completion path re-diffs against the original text.
+  return { from: first + 1, to: first + 1 + needle.length }
+}
+
+/**
  * Fit a selection range captured BEFORE the stream to the document as it is
  * NOW, or report that it no longer exists.
  *

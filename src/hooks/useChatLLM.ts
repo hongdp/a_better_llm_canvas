@@ -14,7 +14,7 @@ import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, findTextRange, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -760,7 +760,9 @@ export function useChatLLM({
             bookId: s.activeBookId,
             documentId: s.activeDocumentId,
             assistantMessageId: assistantMsgId,
-            kind: 'chat' as const
+            kind: 'chat' as const,
+            // Survives the reload that the in-memory selection range cannot.
+            selectedText: originalSelectedTextRef.current || undefined
           }
         },
         buildStreamCallbacks({
@@ -820,6 +822,16 @@ export function useChatLLM({
       // snapshot taken before the send is still in history if the user wants
       // to revert, so diffing against the current content is the safe base.
       const originalDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content || ''
+
+      // The selection range died with the tab, but the TEXT was persisted with
+      // the job. Restoring it lets the completion path locate the passage the
+      // way <edit> blocks do — by content, not by position — instead of
+      // dropping a finished rewrite because a ref was empty.
+      if (job.meta.selectedText) {
+        originalSelectedTextRef.current = job.meta.selectedText
+        selectionRangeRef.current = findTextRange(originalDocContent, job.meta.selectedText)
+        selectionEndRef.current = selectionRangeRef.current?.to ?? null
+      }
 
       abortControllerRef.current = new AbortController()
       accumulatedTextRef.current = ''
