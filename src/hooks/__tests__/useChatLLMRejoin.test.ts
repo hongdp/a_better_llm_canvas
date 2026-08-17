@@ -254,6 +254,44 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     unmount()
   })
 
+  it('applies a replayed selection rewrite by relocating the text', async () => {
+    // The most common way this app is used: select a passage, ask for a
+    // rewrite, refresh mid-generation. The selection RANGE died with the tab,
+    // so the persisted selected TEXT has to find it again.
+    useAppStore.setState({
+      documents: [{
+        id: 'doc-1',
+        title: 'Chapter 1',
+        content: '<p>keep this</p><p>选中的原文</p><p>and this</p>',
+        createdAt: '', updatedAt: ''
+      }] as never,
+      activeDocumentId: 'doc-1'
+    })
+    findResumableJob.mockResolvedValue({
+      jobId: 'gen-sel',
+      meta: { assistantMessageId: 'a-1', kind: 'chat', selectedText: '选中的原文' },
+      offset: 0
+    })
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      callbacks.onToolCallDelta?.({
+        index: 0,
+        name: 'replace_selection',
+        argumentsText: '{"html": "<p>REWRITTEN_SELECTION</p>"}',
+        replace: true
+      })
+      callbacks.onDone('')
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    // Without an editor the store cannot be rewritten in place, but the
+    // selection must at least have been RELOCATED rather than reported gone.
+    expect(bubble('a-1')).not.toContain('no longer where it was')
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    unmount()
+  })
+
   it('retires a placeholder whose job is gone instead of leaving it "Thinking..."', async () => {
     // Nothing is generating, so the bubble must not keep reading as if it
     // were: every path that would have cleared it died with the page, and the

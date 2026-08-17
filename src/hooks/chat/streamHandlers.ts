@@ -46,42 +46,59 @@ export interface StreamingSplit {
 }
 
 /**
- * Locate a passage in the document by its TEXT, returning ProseMirror-style
- * positions. Used when a reload destroyed the selection range: `<edit>` blocks
- * have always relocated themselves by content, and a selection rewrite can do
- * the same instead of being dropped.
+ * Locate a passage by its TEXT in a live ProseMirror document.
  *
- * Returns null when the passage is gone or ambiguous — writing a rewrite at a
- * guessed position is worse than not writing it.
+ * Used when a reload destroyed the selection range: `<edit>` blocks have
+ * always relocated themselves by content, and a selection rewrite can do the
+ * same instead of being dropped.
+ *
+ * It walks the real node tree rather than doing string arithmetic on HTML. A
+ * plain-text index is NOT a ProseMirror position — every block boundary adds
+ * one — so an offset computed from a string lands further off with each
+ * preceding paragraph, which is worse than not relocating at all.
+ *
+ * Returns null when the passage is missing or ambiguous: rewriting the wrong
+ * paragraph is a worse outcome than reporting the selection gone.
  */
-export function findTextRange(documentHtml: string, selectedText: string): { from: number; to: number } | null {
+export interface TextNodeSpan {
+  text: string
+  from: number
+}
+
+export function findTextRangeInSpans(spans: TextNodeSpan[], selectedText: string): { from: number; to: number } | null {
   const needle = (selectedText || '').trim()
   if (!needle) return null
 
-  const plain = (documentHtml || '').replace(/<[^>]*>/g, '')
-  const first = plain.indexOf(needle)
-  if (first === -1) return null
-  if (plain.indexOf(needle, first + 1) !== -1) return null   // ambiguous
+  // One flat string, with a map back to document positions per character.
+  let flat = ''
+  const positions: number[] = []
+  for (const span of spans) {
+    for (let i = 0; i < span.text.length; i++) {
+      flat += span.text[i]
+      positions.push(span.from + i)
+    }
+  }
 
-  // ProseMirror positions start at 1 (0 is before the document's first node),
-  // and each block adds one for its boundary. Close enough to seed the range:
-  // clampSelectionRange fits it to the live document before anything is
-  // dispatched, and the completion path re-diffs against the original text.
-  return { from: first + 1, to: first + 1 + needle.length }
+  const first = flat.indexOf(needle)
+  if (first === -1) return null
+  if (flat.indexOf(needle, first + 1) !== -1) return null   // ambiguous
+
+  const from = positions[first]
+  const lastChar = positions[first + needle.length - 1]
+  return { from, to: lastChar + 1 }
 }
 
-/**
- * Fit a selection range captured BEFORE the stream to the document as it is
- * NOW, or report that it no longer exists.
- *
- * Problem: a selection replacement dispatches `tr.replace(from, to, slice)`
- *   with positions captured when the turn started. If the document changed
- *   meanwhile — the user switched chapters, an edit shortened it — ProseMirror
- *   throws "Position N out of range", which surfaced as
- *   "⚠️ Error during stream" and killed the whole generation.
- * Fix: clamp what is still addressable, and return null when the start itself
- *   is past the end of the document — writing there would be guesswork.
- */
+/** Collect the text nodes of a ProseMirror doc with their positions. */
+export function collectTextSpans(doc: {
+  descendants: (fn: (node: { isText?: boolean; text?: string }, pos: number) => void) => void
+}): TextNodeSpan[] {
+  const spans: TextNodeSpan[] = []
+  doc.descendants((node, pos) => {
+    if (node.isText && node.text) spans.push({ text: node.text, from: pos })
+  })
+  return spans
+}
+
 export function clampSelectionRange(
   from: number,
   to: number,
