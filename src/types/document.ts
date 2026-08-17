@@ -24,6 +24,12 @@ export interface CanvasDocument {
 export interface DocumentVersion {
   id: string
   documentId: string
+  /**
+   * Which book the snapshot belongs to. Optional because snapshots taken
+   * before version history became per-book have none — those are attributed to
+   * whichever book is open when they are next counted.
+   */
+  bookId?: string
   timestamp: string
   title: string
   content: string
