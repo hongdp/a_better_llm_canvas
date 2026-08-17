@@ -381,6 +381,53 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     unmount()
   })
 
+  it('never empties a chapter whose content had not finished loading', async () => {
+    // The data-loss bug, end to end. After a cold reload the chapter is in the
+    // store as metadata with `content: ''` until its fetch lands. The rejoin
+    // captured that as its "leave it as it was" base, every <edit> block then
+    // failed to match an empty document, and the completion path wrote the
+    // base back — replacing a chapter of prose with nothing, auto-saved, with
+    // no version snapshot behind it (the rejoin path takes none: it does not
+    // send, and snapshots are taken at send time).
+    const PROSE = '<p>三千字的正文，还没加载完就被当成了基准。</p>'
+    let fetched = false
+    useAppStore.setState({
+      documents: [{
+        id: 'doc-1', title: 'Chapter 1',
+        content: '',                     // lazy: metadata only, so far
+        contentLoaded: false,
+        createdAt: '', updatedAt: ''
+      }] as never,
+      activeDocumentId: 'doc-1',
+      ensureDocumentContents: (async () => {
+        fetched = true
+        useAppStore.setState(st => ({
+          documents: st.documents.map(d => d.id === 'doc-1' ? { ...d, content: PROSE, contentLoaded: true } : d)
+        }))
+      }) as never
+    })
+
+    findResumableJob.mockResolvedValue({ jobId: 'gen-lazy', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      // An edit whose SEARCH cannot be found — exactly what an empty base
+      // guarantees, and what the user saw reported as "skipped".
+      callbacks.onChunk(
+        '已把进门这一段再拉开。\n<edit>\n<<<<<<< SEARCH\n<p>一段并不存在于空文档里的原文</p>\n=======\n<p>改写后的段落</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'
+      )
+      callbacks.onDone(
+        '已把进门这一段再拉开。\n<edit>\n<<<<<<< SEARCH\n<p>一段并不存在于空文档里的原文</p>\n=======\n<p>改写后的段落</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'
+      )
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+    await settle()
+
+    expect(fetched).toBe(true)              // the base was loaded before use
+    expect(activeContent()).toBe(PROSE)     // and the chapter survived
+    unmount()
+  })
+
   it('retires a placeholder whose job is gone instead of leaving it "Thinking..."', async () => {
     // Nothing is generating, so the bubble must not keep reading as if it
     // were: every path that would have cleared it died with the page, and the

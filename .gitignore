@@ -45,3 +45,6 @@ __pycache__/
 
 # Local self-signed dev TLS cert (regenerate via certs/san.cnf)
 certs/dev-key.pem
+
+# Local agent worktrees and session state
+.claude/

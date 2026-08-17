@@ -65,8 +65,29 @@ export interface TextNodeSpan {
   from: number
 }
 
+/**
+ * The selection arrives as an HTML fragment — Editor.tsx serialises the
+ * ProseMirror slice, so one paragraph is `<p>text</p>` and two are
+ * `<p>a</p><p>b</p>`. The haystack here is the document flattened to text with
+ * no tags and no separators between blocks, so the needle has to be reduced
+ * the same way or it can never match. It never did: relocation returned null
+ * for EVERY resumed selection, single-block ones included.
+ *
+ * Block tags collapse to nothing rather than to a space, which is what makes a
+ * multi-block selection line up with the concatenated text spans.
+ */
+export function selectionNeedleFromHtml(selectedText: string): string {
+  if (!selectedText || selectedText.indexOf('<') === -1) return (selectedText || '').trim()
+  const doc = document.implementation.createHTMLDocument('')
+  const div = doc.createElement('div')
+  // Inert document: no browsing context, so embedded <img src="data:..."> in a
+  // selection is never fetched or decoded (same reason as in Editor.tsx).
+  div.innerHTML = selectedText
+  return (div.textContent || '').trim()
+}
+
 export function findTextRangeInSpans(spans: TextNodeSpan[], selectedText: string): { from: number; to: number } | null {
-  const needle = (selectedText || '').trim()
+  const needle = selectionNeedleFromHtml(selectedText)
   if (!needle) return null
 
   // One flat string, with a map back to document positions per character.

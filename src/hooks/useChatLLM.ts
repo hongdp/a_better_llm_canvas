@@ -958,7 +958,16 @@ export function useChatLLM({
       // The pre-stream document snapshot died with the tab; the version
       // snapshot taken before the send is still in history if the user wants
       // to revert, so diffing against the current content is the safe base.
-      const originalDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content || ''
+      //
+      // It has to be the LOADED content. Chapters lazy-load: after a cold
+      // reload the store holds the document with `content: ''` until its fetch
+      // lands, and this ran before it. An empty base made every <edit> block
+      // fail to match, and the completion path then wrote the base back —
+      // EMPTYING the chapter. Waiting for the content is the difference
+      // between a diff and data loss.
+      await s.ensureDocumentContents([s.activeDocumentId])
+      const reloaded = useAppStore.getState()
+      const originalDocContent = reloaded.documents.find(d => d.id === reloaded.activeDocumentId)?.content || ''
 
       // The selection range died with the tab, but the TEXT was persisted with
       // the job. Restoring it lets the completion path locate the passage the
