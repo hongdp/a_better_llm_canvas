@@ -84,6 +84,7 @@ export const zh: TranslationDictionary = {
     save: '保存更改',
   },
   sidebar: {
+    summaryWaitingForChat: '助手回复中，摘要已暂停——{pending} 章排队，回复结束后继续',
     showSummary: '查看助手读到的摘要',
     hideSummary: '收起摘要',
     rebuildSummariesConfirm: '已有 {count} 章生成过摘要。要一并重建吗？它们只在章节内容变化时才会自动刷新，所以提示词的改动不会影响到它们。这会对每一章各发一次模型调用——先确认摘要用的是哪个提供商。',

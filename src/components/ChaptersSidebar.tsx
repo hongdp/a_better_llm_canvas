@@ -37,7 +37,7 @@ export const ChaptersSidebar: React.FC = () => {
   // metadata-only) was indistinguishable from a broken button.
   const pendingCountRef = useRef(0)
   const [queueStatus, setQueueStatus] = useState<SummaryQueueStatus>({
-    pending: 0, running: false, lastError: null, completedThisRun: 0
+    pending: 0, running: false, waitingForChat: false, lastError: null, completedThisRun: 0
   })
   const [summaryNotice, setSummaryNotice] = useState<string | null>(null)
   /**
@@ -406,7 +406,14 @@ export const ChaptersSidebar: React.FC = () => {
 
       {(queueStatus.running || queueStatus.pending > 0 || summaryNotice || queueStatus.lastError) && (
         <div className="summary-status-strip">
-          {queueStatus.running || queueStatus.pending > 0 ? (
+          {queueStatus.waitingForChat && queueStatus.pending > 0 ? (
+            // Waiting is not summarizing: saying "Summarizing…" here made a
+            // paused queue look wedged for the length of a chat generation.
+            <span>
+              <RefreshCw size={11} />{' '}
+              {t.sidebar.summaryWaitingForChat.replace('{pending}', String(queueStatus.pending))}
+            </span>
+          ) : queueStatus.running || queueStatus.pending > 0 ? (
             <span>
               <RefreshCw size={11} className="animate-spin" />{' '}
               {t.sidebar.summaryProgress
