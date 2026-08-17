@@ -30,6 +30,40 @@ const FALLBACK_DIGEST_CHARS = 300
 export const MIN_CHARS_FOR_SUMMARY = 1000
 
 /**
+ * Which language a summary of this text should be written in.
+ *
+ * An English "write in the same language as the chapter" instruction mostly
+ * works and then occasionally does not: measured on a local Qwen3.8 IQ2_M over
+ * a Chinese chapter, three runs gave 83%, 83%, and 0% Chinese — the failure
+ * also blowing past the length cap at 1,475 characters. The same instruction
+ * written in Chinese gave 82%, 83%, 87% at 352-490 characters. So this exists
+ * for CONSISTENCY, not because English instructions force English output; an
+ * earlier note here claimed the latter on two samples and was wrong. (Marking
+ * the chapter boundary with explicit tags was tested too, and changed
+ * nothing.)
+ *
+ * Deliberately coarse. It only has to pick the instruction sentence, and the
+ * script a text is written in is enough for that.
+ */
+export type SummaryLanguage = 'zh' | 'ja' | 'ko' | 'other'
+
+export function detectSummaryLanguage(text: string): SummaryLanguage {
+  const sample = (text || '').slice(0, 4000)
+  if (!sample) return 'other'
+  const hangul = (sample.match(/[\uac00-\ud7af]/g) || []).length
+  const kana = (sample.match(/[\u3040-\u30ff]/g) || []).length
+  const han = (sample.match(/[\u4e00-\u9fff]/g) || []).length
+  const cjk = hangul + kana + han
+  // Latin prose with the odd quoted name should not count as CJK.
+  if (cjk / sample.length < 0.1) return 'other'
+  if (hangul > kana && hangul > han / 4) return 'ko'
+  // Kana is the giveaway for Japanese: han alone is shared with Chinese.
+  if (kana > sample.length * 0.05) return 'ja'
+  return han > 0 ? 'zh' : 'other'
+}
+
+
+/**
  * FNV-1a 32-bit content hash, hex-encoded. Not cryptographic — only used to
  * detect that a document's content changed since its summary was generated.
  */

@@ -1,11 +1,13 @@
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM } from './llm'
 import {
+  detectSummaryLanguage,
   hashDocumentContent,
   isSummaryStale,
   buildSummaryInput,
   MIN_CHARS_FOR_SUMMARY
 } from '../utils/chapterIndex'
+import type { SummaryLanguage } from '../utils/chapterIndex'
 
 /**
  * Background chapter summarizer feeding the always-on chapter index
@@ -104,6 +106,35 @@ export const enqueueStaleSummaryRefreshes = () => {
   }
 }
 
+/**
+ * The instruction, in the language the summary must come back in.
+ *
+ * Measured on a local Qwen3.8 IQ2_M, three runs per prompt over the same
+ * Chinese chapter: the English instruction gave 83%, 83%, 0% Chinese (the
+ * failure also running to 1,475 characters against a 300-character cap), the
+ * Chinese one 82%, 83%, 87% at 352-490 characters. Same-language instructions
+ * do not change what the model CAN do — they change how often it does it.
+ */
+const SUMMARY_SYSTEM_PROMPT: Record<SummaryLanguage, string> = {
+  zh: '你把小说章节压缩成简短的参考笔记。必须用中文书写。只输出纯文本，不要 markdown，不要 HTML，不要前言。',
+  ja: 'あなたは小説の章を短い参照メモに要約します。必ず日本語で書いてください。プレーンテキストのみ、markdown も HTML も前置きも不要です。',
+  ko: '당신은 소설 장을 짧은 참고 메모로 요약합니다. 반드시 한국어로 작성하세요. 마크다운, HTML, 서두 없이 일반 텍스트만 출력하세요.',
+  other: 'You summarize book chapters into compact reference notes. Write in the same language as the chapter. Output plain text only — no markdown, no HTML, no preamble.'
+}
+
+function buildSummaryUserPrompt(language: SummaryLanguage, title: string, text: string): string {
+  const instruction = {
+    zh: `用中文概括这一章，然后用「- 」列出关键人物、实体和事实。\n\n硬性限制（每条摘要都会在每一轮对话中被重新读取，超长比没有更糟）：\n- 概括部分最多 300 个汉字\n- 列表最多 8 条\n- 不要前言，不要「摘要：」这类标签，不要翻译成其他语言`,
+    ja: `この章を日本語で要約し、主要な人物・固有名詞・事実を「- 」で列挙してください。\n\n厳守（毎ターン読み込まれるため、長すぎる要約は無いより悪い）：\n- 要約は最大 300 文字\n- 箇条書きは最大 8 個\n- 前置き・ラベル・翻訳は不要`,
+    ko: `이 장을 한국어로 요약한 뒤, 주요 인물·고유명사·사실을 "- "로 나열하세요.\n\n반드시 지킬 것 (매 턴마다 다시 읽히므로 너무 긴 요약은 없느니만 못합니다):\n- 요약은 최대 300자\n- 항목은 최대 8개\n- 서두, 라벨, 번역 금지`,
+    other: `Summarize this chapter in the language it is written in, then list its key characters, entities, and facts as short "- " bullets.\n\nHard limits — every summary is re-read on every turn, so overrunning them is worse than having none:\n- the summary: at most 200 words\n- the bullets: at most 8\n- no preamble, no "Summary:" label, no translation`
+  }[language]
+
+  const titleLabel = language === 'other' ? 'CHAPTER TITLE' : '章节标题 / CHAPTER TITLE'
+  const textLabel = language === 'other' ? 'CHAPTER TEXT' : '章节正文 / CHAPTER TEXT'
+  return `${instruction}\n\n${titleLabel}: ${title}\n\n${textLabel}:\n${text}`
+}
+
 const summarizeDocument = async (docId: string): Promise<void> => {
   const s = useAppStore.getState()
   const doc = s.documents.find(d => d.id === docId)
@@ -111,6 +142,10 @@ const summarizeDocument = async (docId: string): Promise<void> => {
 
   const contentHash = hashDocumentContent(doc.content)
   const input = buildSummaryInput(doc)
+  // The instruction goes out IN the chapter's language. An English one mostly
+  // works and then occasionally returns an English summary at five times the
+  // length cap; see SUMMARY_SYSTEM_PROMPT for the measurements.
+  const language = detectSummaryLanguage(input)
   // Summaries are background drudge work on every chapter, so they get their
   // own provider: leaving them on the chat provider bills a frontier model for
   // work a local one does fine. 'active' keeps the old behaviour.
@@ -124,11 +159,11 @@ const summarizeDocument = async (docId: string): Promise<void> => {
   const messages = [
     {
       role: 'system' as const,
-      content: 'You summarize book chapters into compact reference notes. Output plain text only — no markdown, no HTML, no preamble.'
+      content: SUMMARY_SYSTEM_PROMPT[language]
     },
     {
       role: 'user' as const,
-      content: `Summarize this chapter in about 120 words, then list its key characters, entities, and facts as short "- " bullets.\n\nCHAPTER TITLE: ${doc.title}\n\nCHAPTER TEXT:\n${input}`
+      content: buildSummaryUserPrompt(language, doc.title, input)
     }
   ]
 
