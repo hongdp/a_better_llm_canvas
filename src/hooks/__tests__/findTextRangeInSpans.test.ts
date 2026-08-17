@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { findTextRangeInSpans, collectTextSpans, type TextNodeSpan } from '../chat/streamHandlers'
+import { findTextRangeInSpans, collectTextSpans, selectionNeedleFromHtml, type TextNodeSpan } from '../chat/streamHandlers'
 
 // A reload destroys the selection range (it lived in a ref), so a selection
 // rewrite that finishes afterwards has to find its passage again. The first
@@ -63,5 +63,55 @@ describe('collectTextSpans', () => {
       { text: 'hello', from: 1 },
       { text: 'world', from: 8 }
     ])
+  })
+})
+
+/**
+ * Why a resumed rewrite of TWO paragraphs used to lose its preview and its
+ * diff while ONE paragraph was fine — measured in the running app, not
+ * guessed. Editor.tsx publishes the selection as serialized HTML:
+ *
+ *   selection inside one block  -> "我推门。门轴轻轻一响…"        (no tags)
+ *   selection across two blocks -> "<p>一</p><p>二</p>"            (block tags)
+ *
+ * The haystack is the document flattened to text with no tags, so the first
+ * matched by luck and the second could never match. That asymmetry — not
+ * model randomness — is what made the bug look like it depended on how much
+ * the user selected.
+ */
+describe('selectionNeedleFromHtml', () => {
+  it('passes a tagless selection through unchanged', () => {
+    expect(selectionNeedleFromHtml('我推门。门轴轻轻一响')).toBe('我推门。门轴轻轻一响')
+  })
+
+  it('reduces a multi-block selection to what the haystack holds', () => {
+    // No separator between blocks: collectTextSpans concatenates text nodes,
+    // so a space or newline here would break the very case this fixes.
+    expect(selectionNeedleFromHtml('<p>第一段</p><p>第二段</p>')).toBe('第一段第二段')
+  })
+
+  it('drops inline markup that the flattened text does not carry', () => {
+    expect(selectionNeedleFromHtml('<p>a <strong>bold</strong> b</p>')).toBe('a bold b')
+  })
+
+  it('decodes entities, which the document stores as characters', () => {
+    expect(selectionNeedleFromHtml('<p>a &amp; b</p>')).toBe('a & b')
+  })
+})
+
+describe('relocating a selection that spans blocks', () => {
+  // Two paragraphs, as ProseMirror positions them: <p>第一段</p><p>第二段</p>
+  const spans = [{ text: '第一段', from: 1 }, { text: '第二段', from: 6 }]
+
+  it('finds a two-block selection from its serialized HTML', () => {
+    expect(findTextRangeInSpans(spans, '<p>第一段</p><p>第二段</p>')).toEqual({ from: 1, to: 9 })
+  })
+
+  it('still finds a single-block selection', () => {
+    expect(findTextRangeInSpans(spans, '第二段')).toEqual({ from: 6, to: 9 })
+  })
+
+  it('returns null when the passage is genuinely gone', () => {
+    expect(findTextRangeInSpans(spans, '<p>删掉的段落</p>')).toBeNull()
   })
 })
