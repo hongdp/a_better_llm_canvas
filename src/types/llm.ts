@@ -65,7 +65,14 @@ export interface StreamCallbacks {
    * preview can render a partially-written `html` argument. `index`
    * distinguishes parallel calls.
    */
-  onToolCallDelta?: (delta: { index: number; id?: string; name?: string; argumentsText: string }) => void
+  onToolCallDelta?: (delta: {
+    index: number
+    id?: string
+    name?: string
+    argumentsText: string
+    /** True when this carries the WHOLE call (a replay), not a fragment. */
+    replace?: boolean
+  }) => void
 }
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'

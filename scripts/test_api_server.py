@@ -464,6 +464,44 @@ def test_generation_stream_announces_itself_before_any_token():
     assert events[1] == {"type": "delta", "text": "late text", "offset": 9}
 
 
+def test_generation_replays_tool_calls_to_a_reconnecting_reader():
+    """Tool arguments are not document text, so they are kept out of the replay
+    buffer — but a reader that reconnects after a reload has to see them, or
+    the edit is lost. They are replayed WHOLE, since there is no offset to
+    resume a tool call from."""
+    async def scenario():
+        job = server_generation.registry.create("alice", {})
+        job.note_tool_call(0, "call_1", "update_document", '{"html": "<p>a')
+        job.note_tool_call(0, None, None, 'b</p>"}')
+        job.append("Done.")
+
+        # A fresh reader, as after a reload.
+        stream = server_generation._job_event_stream(job, 0)
+        seen = [await anext(stream) for _ in range(3)]
+        await stream.aclose()
+        return seen
+
+    events = _sse_payloads(asyncio.run(scenario()))
+    kinds = [e["type"] for e in events]
+    assert kinds[:2] == ["attached", "tool_call"]
+
+    call = events[1]
+    assert call["name"] == "update_document"
+    assert call["text"] == '{"html": "<p>ab</p>"}'   # whole, not a fragment
+    assert call["replay"] is True
+
+
+def test_generation_tool_calls_stay_out_of_the_replay_buffer():
+    """Putting them in `buffer` would shift every delta offset and push JSON
+    into the document."""
+    job = _new_job()
+    job.note_tool_call(0, "c", "update_document", '{"html": "<p>x</p>"}')
+
+    assert job.buffer == ""
+    assert job.length == 0
+    assert job.tool_calls[0]["arguments"] == '{"html": "<p>x</p>"}'
+
+
 def test_generation_stream_survives_a_reasoning_event():
     """Regression: the reader treated every non-delta event as terminal, so the
     FIRST reasoning delta closed the stream. The job kept generating while every

@@ -143,6 +143,10 @@ class GenerationJob:
         self.task: Optional[asyncio.Task] = None
         #: Prompt size in characters, for reading the latency line in context.
         self.input_chars = 0
+        #: Tool calls assembled so far, by index. Kept OUT of `buffer` so
+        #: replay offsets stay tied to document text alone — but kept, because
+        #: a reconnect that cannot see them loses the whole edit.
+        self.tool_calls: Dict[int, Dict[str, Any]] = {}
         #: Reasoning the model streamed before (or between) visible tokens.
         #: Counted, never buffered — it is not document text and must not move
         #: the replay offsets.
@@ -184,6 +188,13 @@ class GenerationJob:
         """
         if self.status != "running":
             return
+        entry = self.tool_calls.setdefault(index, {"id": None, "name": None, "arguments": ""})
+        if call_id:
+            entry["id"] = call_id
+        if name:
+            entry["name"] = name
+        entry["arguments"] += arguments or ""
+
         self._publish({
             "type": "tool_call",
             "index": index,
@@ -920,6 +931,7 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
     job.subscribers.add(queue)
     snapshot = job.buffer
     snapshot_offset = job.length
+    tool_calls_snapshot = {i: dict(c) for i, c in job.tool_calls.items()}
     terminal = job.terminal_event() if job.status != "running" else None
 
     try:
@@ -935,6 +947,20 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
         # Fix: one frame up front. It carries no text and advances no offset,
         #   so replay stays exact; unknown types are ignored by older clients.
         yield _sse({"type": "attached", "offset": from_offset, "status": job.status})
+
+        # Tool calls are replayed WHOLE, not by offset: they are not document
+        # text, so there is no offset to resume from. A reader that reconnects
+        # mid-call would otherwise see the tail of an argument it never saw the
+        # start of — or, after a reload, nothing at all.
+        for index, call in sorted(tool_calls_snapshot.items()):
+            yield _sse({
+                "type": "tool_call",
+                "index": index,
+                "id": call.get("id"),
+                "name": call.get("name"),
+                "text": call.get("arguments") or "",
+                "replay": True,
+            })
 
         sent_offset = from_offset
         start = max(0, min(from_offset, len(snapshot)))

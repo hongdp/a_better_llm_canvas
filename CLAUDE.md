@@ -110,6 +110,17 @@ server's own output (including `web_canvas.*` log lines — job starts,
 time-to-first-token, per-job summaries) goes to **`api-server.log`**. Grepping
 `app.log` for API behavior finds nothing.
 
+**Editing `scripts/*.py` requires restarting the API server** — Vite hot-reloads
+the frontend, the Python process does not reload itself. A backend running code
+from before your change looks exactly like a code defect, and cost three
+debugging detours in one session. Check it first, before reading any code:
+
+```bash
+ps -o lstart= -p $(ss -ltnp | grep ':3000' | grep -o 'pid=[0-9]*' | cut -d= -f2)
+```
+
+If that start time predates your edit, restart before concluding anything.
+
 `npm run dev` does **not** just start Vite — `scripts/start-server.js` also
 spawns the Python API server (preferring `~/miniconda3/bin/python3`, falling
 back to `python3`) with auto-restart, and loads `.env`/`.env.local` into the
