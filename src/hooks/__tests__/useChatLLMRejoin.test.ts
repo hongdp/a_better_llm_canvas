@@ -67,7 +67,8 @@ function renderChatHook() {
  * captured that null rendered a resumed generation into the chat bubble while
  * the document stayed blank for the whole turn.
  */
-function makeFakeEditor(docText = '') {
+function makeFakeEditor(initialDocText = '') {
+  let docText = initialDocText
   const setContentCalls: string[] = []
   // Replacements applied through the selection preview path.
   const replacements: Array<{ from: number; to: number; html: string }> = []
@@ -82,6 +83,8 @@ function makeFakeEditor(docText = '') {
   return {
     setContentCalls,
     replacements,
+    /** The server sync landing after the editor mounted. */
+    setDocText: (text: string) => { docText = text },
     editor: {
       chain: () => chain,
       getHTML: () => '',
@@ -102,9 +105,9 @@ function makeFakeEditor(docText = '') {
   }
 }
 
-function renderChatHookWithLateEditor(docText = '') {
+function renderChatHookWithLateEditor(initialDocText = '') {
   const container = document.createElement('div')
-  const fake = makeFakeEditor(docText)
+  const fake = makeFakeEditor(initialDocText)
   let root: Root
   let setEditor: (e: unknown) => void = () => {}
   const Probe = () => {
@@ -343,6 +346,38 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
 
     expect(fake.replacements.length).toBeGreaterThan(0)
     expect(fake.replacements[0].html).toContain('改写第一')
+    unmount()
+  })
+
+  it('keeps previewing once the document finishes loading, and still applies', async () => {
+    // The regression this guards: on a reload the editor mounts BEFORE the
+    // server sync fills it, so the first chunks search an empty document. When
+    // a failed lookup consumed the pending selection text anyway, everything
+    // downstream was lost — no preview for the rest of the turn, and no diff
+    // at the end either, because the apply had nothing left to relocate with.
+    findResumableJob.mockResolvedValue({
+      jobId: 'gen-late-doc',
+      meta: { assistantMessageId: 'a-1', kind: 'chat', selectedText: '选中的原文' },
+      offset: 0
+    })
+    let emit: (chunk: string) => void = () => {}
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      emit = (chunk: string) => callbacks.onChunk(chunk)
+    })
+
+    // Mounts with an EMPTY document, the way a cold reload does.
+    const { fake, mountEditor, unmount } = renderChatHookWithLateEditor('')
+    await settle()
+    mountEditor()
+
+    await act(async () => { emit('<selection_replace><p>改写') })
+    expect(fake.replacements).toHaveLength(0)   // nothing to relocate against yet
+
+    fake.setDocText('选中的原文')               // the sync lands
+    await act(async () => { emit('第一段落</p></selection_replace>') })
+
+    expect(fake.replacements.length).toBeGreaterThan(0)
+    expect(fake.replacements[0].html).toContain('改写')
     unmount()
   })
 

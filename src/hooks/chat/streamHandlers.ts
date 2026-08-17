@@ -127,9 +127,15 @@ export function relocateResumedSelection(
   const pending = refs.pendingSelectionText.current
   if (!pending) return
   const relocated = findTextRangeInSpans(collectTextSpans(editor.state.doc), pending)
+  // A FAILED lookup must not consume the pending text. On a reload the editor
+  // mounts before the server sync fills it, so the first chunks search an
+  // empty document — and when this cleared `pending` regardless, the final
+  // apply had nothing left to relocate with either, losing the diff as well
+  // as the preview. Leave it set and let a later chunk (or the apply) retry.
+  if (!relocated) return
   refs.pendingSelectionText.current = null
   refs.selectionRange.current = relocated
-  refs.selectionEnd.current = relocated?.to ?? null
+  refs.selectionEnd.current = relocated.to
 }
 
 export function clampSelectionRange(
