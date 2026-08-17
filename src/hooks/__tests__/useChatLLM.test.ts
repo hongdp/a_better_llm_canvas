@@ -15,7 +15,11 @@ import type { LLMMessage } from '../../types/llm'
 
 // ── Scripted LLM ──────────────────────────────────────────────────────────────
 // Each entry is one complete response; calls record what the hook sent.
-type ScriptedResponse = string | { chunks: string[]; error?: string }
+type ScriptedToolDelta = { index: number; name?: string; argumentsText: string }
+type ScriptedResponse =
+  | string
+  | { chunks: string[]; error?: string }
+  | { text: string; toolCalls: ScriptedToolDelta[] }
 const responses: ScriptedResponse[] = []
 const calls: LLMMessage[][] = []
 
@@ -27,6 +31,7 @@ vi.mock('../../services/llm', () => ({
       onChunk: (c: string) => void
       onDone: (t: string, u?: { promptTokens: number; completionTokens: number }) => void
       onError: (e: Error) => void
+      onToolCallDelta?: (d: { index: number; id?: string; name?: string; argumentsText: string }) => void
     }
   ) => {
     calls.push(messages)
@@ -38,6 +43,17 @@ vi.mock('../../services/llm', () => ({
     if (typeof scripted === 'string') {
       callbacks.onChunk(scripted)
       callbacks.onDone(scripted, { promptTokens: 10, completionTokens: 20 })
+      return
+    }
+    if ('toolCalls' in scripted) {
+      // A tool-calling turn: prose (if any) on the content channel, the call
+      // itself as argument deltas — the shape every provider streams.
+      if (scripted.text) callbacks.onChunk(scripted.text)
+      for (const delta of scripted.toolCalls) {
+        callbacks.onToolCallDelta?.(delta)
+        vi.setSystemTime(Date.now() + 300)
+      }
+      callbacks.onDone(scripted.text, { promptTokens: 10, completionTokens: 20 })
       return
     }
     let full = ''
@@ -211,6 +227,66 @@ describe('useChatLLM — normal completion', () => {
     expect(finalUserContent(0)).toContain('<p>old text</p>')
     expect(finalUserContent(0)).toContain('USER REQUEST:\n继续写')
     harness.unmount()
+  })
+})
+
+describe('useChatLLM — document tools', () => {
+  it('applies a tool call to the document, with no tags anywhere', () => {
+    // The whole point of the migration: no <canvas>, no <doc_status>, and the
+    // document still changes — because the model called a tool instead.
+    return (async () => {
+      responses.push({
+        text: '好的，已经写好了。',
+        toolCalls: [{ index: 0, name: 'update_document', argumentsText: '{"html": "<h1>Ch9</h1><p>TOOL_WRITTEN</p>"}' }]
+      } as never)
+      const harness = renderChatHook()
+
+      await send(harness, '写第九章')
+
+      expect(activeContent()).toContain('TOOL_WRITTEN')
+      expect(activeContent()).toContain('diff-addition')
+      expect(assistantBubble()).toEqual(['好的，已经写好了。'])
+      harness.unmount()
+    })()
+  })
+
+  it('assembles one call from many argument deltas', () => {
+    // Arguments arrive in fragments — 205 of them on a real local stream. The
+    // document must end up with the whole value, not the first fragment.
+    // (Rendering the PARTIAL value is the editor's job and is covered where an
+    // editor exists: utils/toolCallStream and the rejoin harness.)
+    return (async () => {
+      responses.push({
+        text: '',
+        toolCalls: [
+          { index: 0, name: 'update_document', argumentsText: '{"html": "<p>ASSEMBLED' },
+          { index: 0, argumentsText: '_FROM_PIECES</p>"}' }
+        ]
+      } as never)
+      const harness = renderChatHook()
+
+      await send(harness, '写一段')
+
+      expect(activeContent()).toContain('ASSEMBLED_FROM_PIECES')
+      harness.unmount()
+    })()
+  })
+
+  it('does not retry a tool-call turn for a missing doc_status', () => {
+    // Calling a tool IS the declaration. Demanding the line as well would
+    // retry every successful turn.
+    return (async () => {
+      responses.push({
+        text: '写好了。',
+        toolCalls: [{ index: 0, name: 'update_document', argumentsText: '{"html": "<p>x</p>"}' }]
+      } as never)
+      const harness = renderChatHook()
+
+      await send(harness, '写一段')
+
+      expect(calls).toHaveLength(1)
+      harness.unmount()
+    })()
   })
 })
 

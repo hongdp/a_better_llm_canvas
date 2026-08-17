@@ -160,6 +160,9 @@ async function attachToJob(
       let event: {
         type?: string
         text?: string
+        index?: number
+        id?: string
+        name?: string
         offset?: number
         message?: string
         usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }
@@ -176,6 +179,16 @@ async function attachToJob(
         // can tell "connected, waiting" from "nothing is happening" — see the
         // header-flush note in server_generation._job_event_stream.
         callbacks.onAttached?.()
+      } else if (event.type === 'tool_call') {
+        // Live tool-call arguments: the document preview reads a partially
+        // written `html` value out of them. Never part of fullText and never
+        // an offset — the same rules reasoning follows.
+        callbacks.onToolCallDelta?.({
+          index: typeof event.index === 'number' ? event.index : 0,
+          id: event.id,
+          name: event.name,
+          argumentsText: event.text || ''
+        })
       } else if (event.type === 'reasoning') {
         // Thinking, not text: it never joins fullText and never advances the
         // offset, so a reconnect simply misses what was thought while away.
@@ -242,7 +255,7 @@ function clearActiveJob(jobId: string): void {
  */
 export async function startRemoteGeneration(
   messages: LLMMessage[],
-  config: ProviderConfig & { provider: string; conversationId?: string },
+  config: ProviderConfig & { provider: string; conversationId?: string; tools?: unknown[] },
   meta: RemoteJobMeta,
   callbacks: StreamCallbacks,
   signal?: AbortSignal
@@ -266,7 +279,8 @@ export async function startRemoteGeneration(
           // full-latency prefill once generation moved server-side.
           conversationId: config.conversationId,
           // Same lesson: the backend cannot apply an effort it never receives.
-          reasoningEffort: config.reasoningEffort
+          reasoningEffort: config.reasoningEffort,
+          tools: config.tools
         },
         messages,
         meta

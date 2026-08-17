@@ -12,6 +12,8 @@ import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
+import { applyToolCallDelta, finishToolCalls, partialStringArgument, type ToolCallAccumulator } from '../utils/toolCallStream'
+import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/documentTools'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, findTextRange, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
@@ -167,6 +169,13 @@ export function useChatLLM({
    * captured `activeEditor: null` for the whole resumed turn — so a resumed
    * generation streamed into the chat bubble while the document stayed blank.
    */
+  /**
+   * Tool calls being assembled this turn. The document tools replaced the
+   * Canvas Markup Protocol: a model that could never emit `<canvas>` produces
+   * a correct tool call, because that format is in its training data.
+   */
+  const toolCallsRef = useRef(new Map<number, ToolCallAccumulator>())
+
   const activeEditorRef = useRef<Editor | null>(activeEditor)
   useEffect(() => {
     activeEditorRef.current = activeEditor
@@ -284,6 +293,34 @@ export function useChatLLM({
     const s = useAppStore.getState()
 
     return {
+      onToolCallDelta: (delta) => {
+        applyToolCallDelta(toolCallsRef.current, {
+          index: delta.index,
+          id: delta.id,
+          function: { name: delta.name, arguments: delta.argumentsText }
+        })
+
+        // Render the document as it is written, exactly as the old tag
+        // protocol did: the partial `html` argument is readable long before
+        // the JSON closes (measured on a real stream, 205 deltas, every one
+        // of them renderable).
+        const acc = toolCallsRef.current.get(delta.index)
+        if (!acc || acc.name !== 'update_document') return
+
+        const partial = partialStringArgument(acc.argumentsText, 'html')
+        if (partial === null) return
+        const now = Date.now()
+        const editor = activeEditorRef.current
+        if (editor && now - lastCanvasPreviewRef.current >= CANVAS_PREVIEW_THROTTLE_MS) {
+          lastCanvasPreviewRef.current = now
+          canvasPreviewActiveRef.current = true
+          setSaveStatus('unsaved')
+          editor.chain()
+            .setMeta('addToHistory', false)
+            .setContent(restoreImagesFromPlaceholders(trimIncompleteHtmlTail(partial)), { emitUpdate: false })
+            .run()
+        }
+      },
       onReasoning: (text: string) => {
         // Thinking, shown live so a minute of reasoning is not dead air.
         // Throttled and tail-only: this fires per delta, and the store drives
@@ -400,7 +437,13 @@ export function useChatLLM({
         // Rounds are transient — this response is never persisted (the
         // assistant bubble is overwritten in place) and streaming stays on.
         if (lookupCtx) {
-          const lookup = parseLookupRequest(fullText)
+          const lookupCall = finishToolCalls(toolCallsRef.current).find(c => c.name === 'lookup_chapters')
+          const titles = Array.isArray(lookupCall?.args?.titles)
+            ? (lookupCall!.args!.titles as unknown[]).filter((t): t is string => typeof t === 'string')
+            : null
+          const lookup = titles && titles.length > 0
+            ? { titles: titles.filter(t => t !== '*'), wantsAll: titles.includes('*'), reason: String(lookupCall?.args?.reason ?? '') }
+            : parseLookupRequest(fullText)
           if (lookup) {
             // Async continuation: requested chapters may exist only as
             // server metadata (lazy loading) — fetch their content first,
@@ -482,9 +525,19 @@ export function useChatLLM({
           }
         }
 
+        // Tool calls first: they are the protocol now. The legacy tag parse
+        // stays behind them for models with no tool support, and for a turn
+        // that answered in prose — deleting it would strand those.
+        const toolCalls = finishToolCalls(toolCallsRef.current)
+        const documentCall = toolCalls.find(c =>
+          c.name === 'update_document' || c.name === 'edit_document' || c.name === 'replace_selection'
+        )
+
         // Classify the completed response (pure, tested in utils/text).
         // Priority: selection_replace > localized edits > full-doc canvas.
-        const parsed = parseAssistantResponse(fullText)
+        const parsed = documentCall
+          ? toolCallToParsedResponse(documentCall, fullText)
+          : parseAssistantResponse(fullText)
         const finalChatText = parsed.chatText
 
         // Whether the document needed changing is the MODEL's call, not ours —
@@ -716,6 +769,7 @@ export function useChatLLM({
     const s = useAppStore.getState()
 
     // Start each turn with no leftover thinking on screen.
+    toolCallsRef.current = new Map()
     selectionGoneRef.current = false
     reasoningTailRef.current = ''
     lastReasoningPaintRef.current = 0
@@ -756,6 +810,12 @@ export function useChatLLM({
           conversationId: s.activeBookId,
           // Job description for the remote transport: a reloaded tab uses
           // it to find this generation and stream it back into this bubble.
+          // The tools this turn can actually use: replace_selection only with
+          // a selection, lookup_chapters only when the loop is armed.
+          tools: toOpenAITools(toolsForTurn({
+            hasSelection: !!selectionRangeRef.current,
+            allowLookup: !!lookupCtx
+          })),
           remoteMeta: {
             bookId: s.activeBookId,
             documentId: s.activeDocumentId,
