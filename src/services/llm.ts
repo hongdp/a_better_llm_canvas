@@ -1,5 +1,12 @@
 import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
+
+/**
+ * A base URL typed with a trailing slash is normal; the resulting `//path`
+ * is not. llama.cpp answers it with a bare 404 "File Not Found", which reads
+ * like a missing model rather than a stray character.
+ */
+const trimBaseUrl = (url: string) => (url || '').replace(/\/+$/, '')
 import {
   startRemoteGeneration,
   isRemoteGenerationAvailable,
@@ -132,7 +139,7 @@ async function streamOpenAI(
     headers['x-grok-conv-id'] = config.conversationId
   }
 
-  const url = `${config.baseUrl}/chat/completions`
+  const url = `${trimBaseUrl(config.baseUrl)}/chat/completions`
   const openAIMessages = messages.map(m => {
     if (m.images && m.images.length > 0) {
       const contentParts: Array<
@@ -289,7 +296,7 @@ async function streamGemini(
 
   // Gemini uses streamGenerateContent for streaming. Support model names with or without 'models/' prefix.
   const modelName = config.model.startsWith('models/') ? config.model.slice(7) : config.model
-  const url = `${config.baseUrl}/models/${modelName}:streamGenerateContent?key=${config.apiKey}`
+  const url = `${trimBaseUrl(config.baseUrl)}/models/${modelName}:streamGenerateContent?key=${config.apiKey}`
   
   if (config.debug) {
     console.log('[DEBUG] Outgoing Gemini Request:', maskRequestDetails(url, { 'Content-Type': 'application/json' }, body))
@@ -515,7 +522,7 @@ async function streamAnthropic(
     }
   })
 
-  const url = `${config.baseUrl}/messages`
+  const url = `${trimBaseUrl(config.baseUrl)}/messages`
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     'x-api-key': config.apiKey,
