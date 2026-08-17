@@ -99,6 +99,19 @@ describe('collectDiffRanges — reject', () => {
     expect(resolve(e, 'reject')).toBe('<ul><li><p>Old bullet</p></li></ul><p>After</p>')
   })
 
+  it('keeps a block whose only surviving text is a deleted-marked nbsp', () => {
+    // An intentional blank line (`<p>&nbsp;</p>`) that the model filled in: the
+    // nbsp carries diffDeletion, so reject must restore it, and the block has to
+    // survive to hold it even though JS trims a nbsp to nothing.
+    const e = makeEditor(
+      '<p>Keep.</p><p><del class="diff-deletion" data-diff-id="d1">&nbsp;</del><ins class="diff-addition" data-diff-id="d1">added</ins></p>'
+    )
+
+    const html = resolve(e, 'reject')
+    expect(html).not.toContain('added')
+    expect(html).toBe('<p>Keep.</p><p>&nbsp;</p>')
+  })
+
   it('keeps the block when it also holds an inline image the diff did not add', () => {
     const e = makeEditor(
       '<p><img src="data:image/png;base64,AAA"><ins class="diff-addition" data-diff-id="d1">caption</ins></p>'
@@ -186,6 +199,15 @@ describe('resolveDiffMarkupInHtml (no editor mounted)', () => {
       '<p>Intro</p><ul><li><p><ins class="diff-addition" data-diff-id="d1">New bullet</ins></p></li></ul>'
 
     expect(resolveDiffMarkupInHtml(html, 'reject')).toBe('<p>Intro</p>')
+  })
+
+  it('keeps text that sits between two insertions in the same block', () => {
+    // Exactly what diffHtml emits for '<p>A</p>' -> '<p>X A Y</p>'. The block is
+    // not empty afterwards — "A" is the original and must survive.
+    const html = diffHtml('<p>A</p>', '<p>X A Y</p>')
+    expect(html).toMatch(/^<p><ins[^>]*>X <\/ins>A<ins[^>]*> Y<\/ins><\/p>$/)
+
+    expect(resolveDiffMarkupInHtml(html, 'reject')).toBe('<p>A</p>')
   })
 
   it('leaves content without diff markup untouched', () => {

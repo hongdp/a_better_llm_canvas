@@ -40,10 +40,17 @@ function hasDiffMark(node: ProseMirrorNode, mark: DiffMarkName, diffId?: string)
   )
 }
 
+function otherMark(mark: DiffMarkName): DiffMarkName {
+  return mark === 'diffAddition' ? 'diffDeletion' : 'diffAddition'
+}
+
 /**
  * True when every bit of visible content in `block` is text carrying `mark`,
  * so erasing that text leaves nothing but an empty block node. Unmarked
- * whitespace between marked runs does not count as content.
+ * whitespace between marked runs does not count as content — but text under
+ * the opposite mark does, whatever its diff id: this action is about to
+ * restore it, and whitespace-only restored text is still content the block
+ * must survive to hold.
  */
 function isBlockEntirelyMarked(
   block: ProseMirrorNode,
@@ -52,6 +59,7 @@ function isBlockEntirelyMarked(
 ): boolean {
   if (!block.isTextblock || block.content.size === 0) return false
 
+  const kept = otherMark(mark)
   let sawMarked = false
   let onlyMarked = true
 
@@ -64,7 +72,7 @@ function isBlockEntirelyMarked(
     }
     if (hasDiffMark(child, mark, diffId)) {
       sawMarked = true
-    } else if ((child.text || '').trim().length > 0) {
+    } else if (hasDiffMark(child, kept) || (child.text || '').trim().length > 0) {
       onlyMarked = false
     }
   })
@@ -154,8 +162,14 @@ export function collectDiffRanges(
 export function resolveDiffMarkupInHtml(html: string, action: DiffAction): string {
   const removedTag = action === 'reject' ? 'ins' : 'del'
   const keptTag = action === 'reject' ? 'del' : 'ins'
+  // The element body is tempered rather than lazy (`[\s\S]*?`): a lazy body
+  // BACKTRACKS across `</ins>` to satisfy the trailing `</p>`, so
+  // `<p><ins>X </ins>A<ins> Y</ins></p>` — the shape `diffHtml` emits for a
+  // rewrite that keeps text in the middle — matched as one run and took the
+  // original "A" with it.
+  const body = `(?:(?!<\\/${removedTag}\\b)[\\s\\S])*`
   const emptiedBlock = new RegExp(
-    `<(p|h[1-6]|li|blockquote)\\b[^>]*>\\s*(?:<${removedTag}[^>]*data-diff-id="[^"]*"[^>]*>[\\s\\S]*?<\\/${removedTag}>\\s*)+<\\/\\1>`,
+    `<(p|h[1-6]|li|blockquote)\\b[^>]*>\\s*(?:<${removedTag}[^>]*data-diff-id="[^"]*"[^>]*>${body}<\\/${removedTag}>\\s*)+<\\/\\1>`,
     'gi'
   )
   let stripped = html.replace(emptiedBlock, '')
