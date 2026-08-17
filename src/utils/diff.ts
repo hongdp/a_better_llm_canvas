@@ -253,3 +253,24 @@ export function diffHtml(oldHtml: string, newHtml: string): string {
 
   return html
 }
+
+/**
+ * The document as it currently READS, with review markup removed.
+ *
+ * A pending diff leaves `<ins class="diff-addition">` and
+ * `<del class="diff-deletion">` in the stored content, and that content is
+ * what gets sent to the model. Measured from a real turn: the model copied
+ * `<ins data-diff-id="diff-tz9zohl" class="diff-addition">` into an
+ * `edit_document` search string. The moment the user accepts or rejects that
+ * diff the markup is gone, so the search can never match again — a silently
+ * failed edit whose cause is invisible from the outside.
+ *
+ * Insertions are kept (they are what the draft now says) and deletions are
+ * dropped, which is exactly the "accepted" reading the user is looking at.
+ */
+export function stripDiffMarkup(html: string): string {
+  if (!html || (!html.includes('diff-addition') && !html.includes('diff-deletion'))) return html || ''
+  return html
+    .replace(/<del\b[^>]*class="[^"]*diff-deletion[^"]*"[^>]*>[\s\S]*?<\/del>/gi, '')
+    .replace(/<ins\b[^>]*class="[^"]*diff-addition[^"]*"[^>]*>([\s\S]*?)<\/ins>/gi, '$1')
+}

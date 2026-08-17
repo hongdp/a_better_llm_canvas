@@ -549,7 +549,13 @@ export function useChatLLM({
         // no markup at all. Both used to surface as a success message over an
         // unchanged document. Retry with the failed reply quoted back, then
         // give up loudly rather than silently.
-        const failedUpdate = parsed.kind === 'chat' ? detectFailedDocumentUpdate(fullText) : null
+        // A document tool call IS the declaration, so the legacy text checks
+        // do not apply to it: demanding a <doc_status> line as well would
+        // retry a turn whose only fault is that the tool returned nothing —
+        // and the warning below explains that far better than a retry.
+        const failedUpdate = documentCall
+          ? null
+          : parsed.kind === 'chat' ? detectFailedDocumentUpdate(fullText) : null
         if (
           noActionRetryArmed &&
           noActionRetriesLeft > 0 &&
@@ -638,6 +644,11 @@ export function useChatLLM({
           canvasIssue,
           editFailedCount,
           selectionGone: selectionGoneRef.current,
+          // The model called a document tool and the call yielded nothing
+          // applicable — unusable arguments, or an empty edit list. Without
+          // this the turn ends in silence: no change, no explanation, which is
+          // indistinguishable from the model deciding not to edit.
+          toolCallProducedNothing: !!documentCall && parsed.kind === 'chat',
           exhaustedNoActionRetries:
             noActionRetryArmed &&
             noActionRetriesLeft === 0 &&
