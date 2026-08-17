@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
-import { Node as ProseMirrorNode, Mark as ProseMirrorMark } from '@tiptap/pm/model'
 import { Editor } from '@tiptap/react'
 import type { CanvasDocument } from '../store/useAppStore'
+import { collectDiffRanges, resolveDiffMarkupInHtml, type DiffAction } from '../utils/diffResolution'
 
 export function useDiffHandlers(
   activeEditor: Editor | null,
@@ -9,87 +9,34 @@ export function useDiffHandlers(
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void,
   triggerUnsaved: () => void
 ) {
+  const resolveAllDiffs = useCallback(
+    (action: DiffAction) => {
+      if (activeEditor) {
+        const { state, view } = activeEditor
+        const tr = state.tr
+        // Ranges come back last-position-first, so earlier ones stay valid.
+        collectDiffRanges(state.doc, action).forEach(range => {
+          if (range.op === 'delete') {
+            tr.delete(range.from, range.to)
+          } else {
+            tr.removeMark(range.from, range.to, state.schema.marks[range.mark])
+          }
+        })
+        view.dispatch(tr)
+        updateActiveDocument({ content: activeEditor.getHTML() })
+      } else {
+        updateActiveDocument({ content: resolveDiffMarkupInHtml(activeDoc.content, action) })
+      }
+      triggerUnsaved()
+    },
+    [activeEditor, activeDoc.content, updateActiveDocument, triggerUnsaved]
+  )
+
   // Accept all additions and finalize all deletions in active document
-  const handleAcceptAllDiffs = useCallback(() => {
-    if (activeEditor) {
-      const { state, view } = activeEditor
-      const { doc } = state
-      const tr = state.tr
-      const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
-
-      doc.descendants((node: ProseMirrorNode, pos: number) => {
-        if (node.isText) {
-          node.marks.forEach((mark: ProseMirrorMark) => {
-            if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
-              changes.push({
-                from: pos,
-                to: pos + node.nodeSize,
-                type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
-              })
-            }
-          })
-        }
-      })
-
-      changes.sort((a, b) => b.from - a.from)
-      changes.forEach(change => {
-        if (change.type === 'addition') {
-          tr.removeMark(change.from, change.to, state.schema.marks.diffAddition)
-        } else {
-          tr.delete(change.from, change.to)
-        }
-      })
-      view.dispatch(tr)
-      updateActiveDocument({ content: activeEditor.getHTML() })
-    } else {
-      const cleaned = activeDoc.content
-        .replace(/<ins[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/ins>/g, '$1')
-        .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '')
-      updateActiveDocument({ content: cleaned })
-    }
-    triggerUnsaved()
-  }, [activeEditor, activeDoc.content, updateActiveDocument, triggerUnsaved])
+  const handleAcceptAllDiffs = useCallback(() => resolveAllDiffs('accept'), [resolveAllDiffs])
 
   // Reject all additions and restore all deleted text in active document
-  const handleRejectAllDiffs = useCallback(() => {
-    if (activeEditor) {
-      const { state, view } = activeEditor
-      const { doc } = state
-      const tr = state.tr
-      const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
-
-      doc.descendants((node: ProseMirrorNode, pos: number) => {
-        if (node.isText) {
-          node.marks.forEach((mark: ProseMirrorMark) => {
-            if (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') {
-              changes.push({
-                from: pos,
-                to: pos + node.nodeSize,
-                type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
-              })
-            }
-          })
-        }
-      })
-
-      changes.sort((a, b) => b.from - a.from)
-      changes.forEach(change => {
-        if (change.type === 'addition') {
-          tr.delete(change.from, change.to)
-        } else {
-          tr.removeMark(change.from, change.to, state.schema.marks.diffDeletion)
-        }
-      })
-      view.dispatch(tr)
-      updateActiveDocument({ content: activeEditor.getHTML() })
-    } else {
-      const cleaned = activeDoc.content
-        .replace(/<ins[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/ins>/g, '')
-        .replace(/<del[^>]*data-diff-id="[^"]*"[^>]*>([\s\S]*?)<\/del>/g, '$1')
-      updateActiveDocument({ content: cleaned })
-    }
-    triggerUnsaved()
-  }, [activeEditor, activeDoc.content, updateActiveDocument, triggerUnsaved])
+  const handleRejectAllDiffs = useCallback(() => resolveAllDiffs('reject'), [resolveAllDiffs])
 
   return {
     handleAcceptAllDiffs,

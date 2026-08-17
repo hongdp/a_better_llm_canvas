@@ -6,6 +6,7 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { normalizeBrParagraphs } from '../utils/convert'
 import { saveScrollPosition, loadScrollPosition } from '../utils/scrollMemory'
+import { collectDiffRanges, type DiffAction } from '../utils/diffResolution'
 import { 
   Bold, 
   Italic, 
@@ -281,50 +282,16 @@ export const Editor: React.FC<EditorProps> = ({
   }
 
   // Handle single diff accept/reject using ProseMirror transactions
-  const handleResolveDiff = (diffId: string, action: 'accept' | 'reject') => {
+  const handleResolveDiff = (diffId: string, action: DiffAction) => {
     const { state, view } = editor
-    const { doc } = state
     const tr = state.tr
-    const changes: { from: number; to: number; type: 'addition' | 'deletion' }[] = []
 
-    doc.descendants((node, pos) => {
-      if (node.isText) {
-        node.marks.forEach(mark => {
-          if (
-            (mark.type.name === 'diffAddition' || mark.type.name === 'diffDeletion') &&
-            mark.attrs['data-diff-id'] === diffId
-          ) {
-            changes.push({
-              from: pos,
-              to: pos + node.nodeSize,
-              type: mark.type.name === 'diffAddition' ? 'addition' : 'deletion'
-            })
-          }
-        })
-      }
-    })
-
-    // Process from end of document to start to preserve relative index offsets
-    changes.sort((a, b) => b.from - a.from)
-
-    changes.forEach(change => {
-      if (action === 'accept') {
-        if (change.type === 'addition') {
-          // Keep additions: strip the ins mark
-          tr.removeMark(change.from, change.to, state.schema.marks.diffAddition)
-        } else {
-          // Confirm deletions: erase the text
-          tr.delete(change.from, change.to)
-        }
+    // Ranges are ordered end-of-document first, so earlier positions stay valid.
+    collectDiffRanges(state.doc, action, diffId).forEach(range => {
+      if (range.op === 'delete') {
+        tr.delete(range.from, range.to)
       } else {
-        // reject
-        if (change.type === 'addition') {
-          // Deny additions: erase the inserted text
-          tr.delete(change.from, change.to)
-        } else {
-          // Deny deletions: restore the deleted text by stripping the del mark
-          tr.removeMark(change.from, change.to, state.schema.marks.diffDeletion)
-        }
+        tr.removeMark(range.from, range.to, state.schema.marks[range.mark])
       }
     })
 
