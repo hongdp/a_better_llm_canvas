@@ -14,6 +14,7 @@ import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { applyToolCallDelta, finishToolCalls, partialStringArgument, type ToolCallAccumulator } from '../utils/toolCallStream'
 import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/documentTools'
+import { resolveDocumentProtocol } from '../utils/protocolChoice'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, collectTextSpans, findTextRangeInSpans, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
@@ -262,7 +263,13 @@ export function useChatLLM({
       role: 'system',
       content: buildChatSystemPrompt({
         customInstructions: preset?.content,
-        includeChapterLookup: s.agenticLookupEnabled && s.documents.length > 1
+        includeChapterLookup: s.agenticLookupEnabled && s.documents.length > 1,
+        // The prompt must teach whichever protocol the request will actually
+        // use — describing tools while sending none disables editing outright.
+        protocol: resolveDocumentProtocol(
+          s.activeProvider,
+          s.providerConfigs[s.activeProvider]?.documentProtocol
+        )
       })
     }
   }, [])
@@ -876,11 +883,15 @@ export function useChatLLM({
           // Job description for the remote transport: a reloaded tab uses
           // it to find this generation and stream it back into this bubble.
           // The tools this turn can actually use: replace_selection only with
-          // a selection, lookup_chapters only when the loop is armed.
-          tools: toOpenAITools(toolsForTurn({
-            hasSelection: !!selectionRangeRef.current,
-            allowLookup: !!lookupCtx
-          })),
+          // a selection, lookup_chapters only when the loop is armed. Omitted
+          // entirely on the markup protocol — offering both invites the model
+          // to mix them, and the tag parser then sees a reply with no tags.
+          tools: resolveDocumentProtocol(s.activeProvider, s.providerConfigs[s.activeProvider]?.documentProtocol) === 'tools'
+            ? toOpenAITools(toolsForTurn({
+                hasSelection: !!selectionRangeRef.current,
+                allowLookup: !!lookupCtx
+              }))
+            : undefined,
           remoteMeta: {
             bookId: s.activeBookId,
             documentId: s.activeDocumentId,

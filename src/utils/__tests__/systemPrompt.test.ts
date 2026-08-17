@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest'
-import { buildChatSystemPrompt, FORMAT_PROTOCOL_REMINDER } from '../systemPrompt'
+import { buildChatSystemPrompt, FORMAT_PROTOCOL_REMINDER, MARKUP_FORMAT_PROTOCOL_REMINDER } from '../systemPrompt'
+
+// Most of these assertions are about layering, which is protocol-independent;
+// they run on the tool protocol and the markup-specific cases say so.
+const build = (o: Omit<Parameters<typeof buildChatSystemPrompt>[0], 'protocol'> & { protocol?: 'tools' | 'markup' }) =>
+  buildChatSystemPrompt({ protocol: 'tools', ...o })
 
 describe('buildChatSystemPrompt', () => {
   it('states only what the tool schemas cannot say for themselves', () => {
@@ -7,7 +12,7 @@ describe('buildChatSystemPrompt', () => {
     // them here would give the model two sources to reconcile; what is left is
     // the channel rule and the document invariants a JSON schema has no place
     // to state.
-    const prompt = buildChatSystemPrompt({ includeChapterLookup: false })
+    const prompt = build({ includeChapterLookup: false })
     expect(prompt).toContain('{{IMAGE_PLACEHOLDER_0}}')
     expect(prompt).toContain('CURRENT ACTIVE DOCUMENT CONTENT')
     // The private tag language is gone.
@@ -17,12 +22,12 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('includes the chapter-lookup protocol only when asked', () => {
-    expect(buildChatSystemPrompt({ includeChapterLookup: false })).not.toContain('CHAPTER LOOKUP:')
-    expect(buildChatSystemPrompt({ includeChapterLookup: true })).toContain('CHAPTER LOOKUP:')
+    expect(build({ includeChapterLookup: false })).not.toContain('CHAPTER LOOKUP:')
+    expect(build({ includeChapterLookup: true })).toContain('CHAPTER LOOKUP:')
   })
 
   it('includes the custom instructions when a preset has content', () => {
-    const prompt = buildChatSystemPrompt({
+    const prompt = build({
       customInstructions: 'Write in a hard-boiled noir voice.',
       includeChapterLookup: false
     })
@@ -32,7 +37,7 @@ describe('buildChatSystemPrompt', () => {
 
   it('omits the custom-instructions section for an empty or blank preset', () => {
     for (const customInstructions of [undefined, '', '   \n  ']) {
-      const prompt = buildChatSystemPrompt({ customInstructions, includeChapterLookup: false })
+      const prompt = build({ customInstructions, includeChapterLookup: false })
       expect(prompt).not.toContain("USER'S CUSTOM WRITING INSTRUCTIONS")
     }
   })
@@ -41,7 +46,7 @@ describe('buildChatSystemPrompt', () => {
   // directly / avoid non-Chinese text" used to be the LAST thing the model
   // read, so it dropped the tags and nothing reached the document.
   it('puts the format-protocol reminder after the custom instructions, always last', () => {
-    const prompt = buildChatSystemPrompt({
+    const prompt = build({
       customInstructions: '直接输出小说正文，不添加任何解释。你避免非中文文本。',
       includeChapterLookup: true
     })
@@ -51,7 +56,7 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('keeps the reminder last even with no preset selected', () => {
-    expect(buildChatSystemPrompt({ includeChapterLookup: false }).endsWith(FORMAT_PROTOCOL_REMINDER)).toBe(true)
+    expect(build({ includeChapterLookup: false }).endsWith(FORMAT_PROTOCOL_REMINDER)).toBe(true)
   })
 
   it('scopes presets to style and reasserts that document text needs a tool call', () => {
@@ -65,7 +70,7 @@ describe('buildChatSystemPrompt', () => {
   // the user's own instructions, and the user always loses (theirs sit in the
   // middle of the prompt, ours sit at both ends).
   it('carries no persona, task, or style guidance', () => {
-    const prompt = buildChatSystemPrompt({ includeChapterLookup: true })
+    const prompt = build({ includeChapterLookup: true })
     for (const forbidden of [
       /elite/i,
       /creative writing assistant/i,
@@ -76,7 +81,7 @@ describe('buildChatSystemPrompt', () => {
   })
 
   it('keeps writing guidance out of the prompt', () => {
-    const prompt = buildChatSystemPrompt({ includeChapterLookup: false })
+    const prompt = build({ includeChapterLookup: false })
     expect(prompt).toContain('the task, the subject, the voice, the language and the standards all come from the user')
   })
 
@@ -84,15 +89,50 @@ describe('buildChatSystemPrompt', () => {
     // The <doc_status> line existed to tell "changed" from "did not change"
     // in a stream of prose. A tool call carries that structurally, so the
     // line — and its three failure modes — retire with it.
-    const prompt = buildChatSystemPrompt({ includeChapterLookup: false })
+    const prompt = build({ includeChapterLookup: false })
     expect(prompt).not.toContain('doc_status')
     expect(prompt).toContain('The document is changed ONLY by calling a tool')
     expect(prompt).toContain('Deciding whether the document needs changing is yours')
   })
 
+  // The whole point of the setting: one protocol per model, taught in full,
+  // never both at once. A prompt describing tools to a request that sends none
+  // silently disables document editing.
+  describe('markup protocol', () => {
+    it('teaches the tag language and the status line', () => {
+      const prompt = build({ includeChapterLookup: false, protocol: 'markup' })
+      expect(prompt).toContain('<canvas>')
+      expect(prompt).toContain('<<<<<<< SEARCH')
+      expect(prompt).toContain('<doc_status>updated</doc_status>')
+      expect(prompt).toContain('<selection_replace>')
+    })
+
+    it('says nothing about tools, which that request does not send', () => {
+      const prompt = build({ includeChapterLookup: false, protocol: 'markup' })
+      expect(prompt).not.toContain('calling a tool')
+      expect(prompt).not.toContain('tool argument')
+    })
+
+    it('ends with the markup reminder, which defends the tags', () => {
+      const prompt = build({
+        customInstructions: '直接输出小说正文，不添加任何解释。',
+        includeChapterLookup: true,
+        protocol: 'markup'
+      })
+      expect(prompt.endsWith(MARKUP_FORMAT_PROTOCOL_REMINDER)).toBe(true)
+      expect(MARKUP_FORMAT_PROTOCOL_REMINDER).toContain('never authorize you to drop the tags')
+    })
+
+    it('still carries no writing guidance', () => {
+      const prompt = build({ includeChapterLookup: false, protocol: 'markup' })
+      expect(prompt).toContain('the task, the subject, the voice, the language and the standards all come from the user')
+      expect(prompt).not.toMatch(/creative writing assistant/i)
+    })
+  })
+
   it('is deterministic — the prefix is stable for provider prompt caching', () => {
-    const a = buildChatSystemPrompt({ customInstructions: 'Voice: terse.', includeChapterLookup: true })
-    const b = buildChatSystemPrompt({ customInstructions: 'Voice: terse.', includeChapterLookup: true })
+    const a = build({ customInstructions: 'Voice: terse.', includeChapterLookup: true })
+    const b = build({ customInstructions: 'Voice: terse.', includeChapterLookup: true })
     expect(a).toBe(b)
   })
 })

@@ -196,6 +196,19 @@ Safety failures (403)
 trigger a self-healing retry with local sensitive-word censorship, then an
 interactive Prompt Editor UI (`status === 'prompt_edit'`).
 
+**Two document protocols, one per model.** The markup above is one of them;
+the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.
+documentProtocol` picks per provider (`utils/protocolChoice.ts`), default
+`auto`. Neither wins everywhere, and both halves are measured: a local
+Qwen3-14B never emits `<canvas>` but calls `update_document` correctly, while
+grok sends a whole tool call in ONE delta (113 chars) against 54 content
+deltas — so tool calling has no live preview there. Two rules follow:
+`buildChatSystemPrompt` requires `protocol` and teaches exactly one (describing
+tools to a request that sends none silently disables editing), and the
+`<doc_status>` machinery above applies to the markup protocol only — a tool
+call IS the declaration, so text-based failure detection is skipped when one is
+present.
+
 **Reasoning effort**: `utils/reasoningEffort.ts` holds the per-provider
 capability table (no provider exposes one over the API — xAI's
 `/language-models` returns pricing and modalities only) plus the normalized
