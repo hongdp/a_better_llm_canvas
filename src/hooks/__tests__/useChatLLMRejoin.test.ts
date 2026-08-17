@@ -125,6 +125,28 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     unmount()
   })
 
+  it('explains a resumed reply that wrote nothing, instead of going silent', async () => {
+    // A rejoined turn has no request to replay, so the usual retry cannot run.
+    // Without a message the user just sees a stream end and a document that
+    // never changed — the exact "it finished and nothing happened" report.
+    findResumableJob.mockResolvedValue({ jobId: 'gen-mute', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      // Says it rewrote the chapter, emits no markup: content the user
+      // watched stream that reached the document as nothing.
+      const text = '已经帮你把这一段扩写好了。\n<doc_status>updated</doc_status>'
+      callbacks.onChunk(text)
+      callbacks.onDone(text)
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(bubble('a-1')).toContain('⚠️')
+    expect(bubble('a-1')).toContain('no usable document update')
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    unmount()
+  })
+
   it('retires a placeholder whose job is gone instead of leaving it "Thinking..."', async () => {
     // Nothing is generating, so the bubble must not keep reading as if it
     // were: every path that would have cleared it died with the page, and the

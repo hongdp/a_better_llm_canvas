@@ -574,6 +574,15 @@ export function useChatLLM({
             noActionRetryArmed &&
             noActionRetriesLeft === 0 &&
             failedUpdate !== null,
+          // A rejoined turn has no request to replay, so it cannot retry — and
+          // silence is the worst outcome: the user watched it stream and then
+          // saw nothing reach the document, with no explanation.
+          //
+          // Only the two failures that mean content was LOST qualify. A merely
+          // undeclared reply is a protocol lapse, not evidence of loss, and
+          // warning about every one of those would shout over ordinary chat.
+          unretriableFailedUpdate:
+            !noActionRetryArmed && (failedUpdate === 'malformed' || failedUpdate === 'claimed'),
           reinsertedImages
         })
 
