@@ -56,6 +56,9 @@ export const zh: TranslationDictionary = {
     instructPlaceholder: '向 {provider} ({model}) 发送指令...',
   },
   settings: {
+    summaryProvider: '摘要使用的提供商',
+    summaryProviderFollowChat: '跟随对话所用的提供商',
+    summaryProviderHint: '章节摘要是对每一章都要跑的后台工作。指到本地或便宜的提供商，就不会占用你付费的对话模型。',
     reasoningEffort: '思考强度',
     reasoningProviderDefault: '提供方默认',
     reasoningEffortHint: '模型开始写之前思考多久。越低越快；默认设为 low，因为深度思考可能要几分钟才吐出第一个字。',
@@ -81,6 +84,8 @@ export const zh: TranslationDictionary = {
     save: '保存更改',
   },
   sidebar: {
+    showSummary: '查看助手读到的摘要',
+    hideSummary: '收起摘要',
     rebuildSummariesConfirm: '已有 {count} 章生成过摘要。要一并重建吗？它们只在章节内容变化时才会自动刷新，所以提示词的改动不会影响到它们。这会对每一章各发一次模型调用——先确认摘要用的是哪个提供商。',
     collapse: '收起侧边栏',
     summarizeAll: '为需要的章节生成摘要',

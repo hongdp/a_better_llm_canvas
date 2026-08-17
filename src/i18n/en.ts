@@ -54,6 +54,9 @@ export const en = {
     instructPlaceholder: 'Instruct {provider} ({model})...',
   },
   settings: {
+    summaryProvider: 'Summaries run on',
+    summaryProviderFollowChat: 'Same provider as chat',
+    summaryProviderHint: 'Chapter summaries are background work on every chapter. Pointing them at a local or cheap provider keeps them off your paid chat model.',
     reasoningEffort: 'Thinking effort',
     reasoningProviderDefault: "Provider default",
     reasoningEffortHint: 'How long the model thinks before it starts writing. Lower is faster; the default is low because a deep pass can take minutes before the first word appears.',
@@ -79,6 +82,8 @@ export const en = {
     save: 'Save Changes',
   },
   sidebar: {
+    showSummary: 'Show the summary the assistant reads',
+    hideSummary: 'Hide summary',
     rebuildSummariesConfirm: '{count} chapters already have a summary. Rebuild those too? They are only refreshed automatically when the chapter text changes, so a prompt change does not reach them otherwise. This is one model call per chapter — check which provider runs summaries first.',
     collapse: 'Collapse Sidebar',
     summarizeAll: 'Generate summaries for chapters that need them',

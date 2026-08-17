@@ -46,6 +46,28 @@ export interface StreamingSplit {
 }
 
 /**
+ * Fit a selection range captured BEFORE the stream to the document as it is
+ * NOW, or report that it no longer exists.
+ *
+ * Problem: a selection replacement dispatches `tr.replace(from, to, slice)`
+ *   with positions captured when the turn started. If the document changed
+ *   meanwhile — the user switched chapters, an edit shortened it — ProseMirror
+ *   throws "Position N out of range", which surfaced as
+ *   "⚠️ Error during stream" and killed the whole generation.
+ * Fix: clamp what is still addressable, and return null when the start itself
+ *   is past the end of the document — writing there would be guesswork.
+ */
+export function clampSelectionRange(
+  from: number,
+  to: number,
+  docSize: number
+): { from: number; to: number } | null {
+  if (!Number.isFinite(from) || !Number.isFinite(to) || docSize < 0) return null
+  if (from < 0 || from > docSize) return null
+  return { from, to: Math.min(Math.max(to, from), docSize) }
+}
+
+/**
  * Split the accumulated raw stream into conversational text and document
  * markup. Called on every chunk with the FULL text so far — it must tolerate
  * tags that have opened but not yet closed.
@@ -109,9 +131,11 @@ export function buildCompletionWarnings(params: {
   editFailedCount: number
   /** All no-action retries used and the last reply still had no tags. */
   exhaustedNoActionRetries: boolean
+  /** A finished selection edit had nowhere valid left to land. */
+  selectionGone?: boolean
   reinsertedImages: number
 }): string {
-  const { canvasIssue, editFailedCount, exhaustedNoActionRetries, reinsertedImages } = params
+  const { canvasIssue, editFailedCount, exhaustedNoActionRetries, selectionGone, reinsertedImages } = params
 
   let warningNote = canvasIssue === 'truncated'
     ? '\n\n⚠️ The response was cut off before the document update finished, so no changes were applied (your document is unchanged). Please retry — for long documents, try editing a smaller selection at a time.'
@@ -125,6 +149,9 @@ export function buildCompletionWarnings(params: {
   // of letting "已改好" stand over an unchanged document.
   if (exhaustedNoActionRetries) {
     warningNote += `\n\n⚠️ The model never produced a valid document update or a clear "no change" declaration (retried ${MAX_NO_ACTION_RETRIES} times), so your document is unchanged. Ask again — naming the chapter or section usually helps.`
+  }
+  if (selectionGone) {
+    warningNote += '\n\n⚠️ The text you had selected is no longer where it was (the chapter changed while this ran), so nothing was written. The rewrite is above — paste it where you want it, or select the text again and retry.'
   }
   if (reinsertedImages > 0) {
     warningNote += `\n\nℹ️ ${reinsertedImages} image${reinsertedImages > 1 ? 's' : ''} missing from the rewrite ${reinsertedImages > 1 ? 'were' : 'was'} restored near ${reinsertedImages > 1 ? 'their' : 'its'} original position. Delete ${reinsertedImages > 1 ? 'them' : 'it'} manually if the removal was intended.`

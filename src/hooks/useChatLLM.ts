@@ -14,7 +14,7 @@ import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   planWholeBook as planWholeBookFlow,
@@ -162,6 +162,8 @@ export function useChatLLM({
   const abortControllerRef = useRef<AbortController | null>(null)
   const accumulatedTextRef = useRef('')
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
+  /** Set when a finished selection edit had nowhere valid left to land. */
+  const selectionGoneRef = useRef(false)
   const selectionEndRef = useRef<number | null>(null)
   const originalSelectedTextRef = useRef<string>('')
   const imagePlaceholdersRef = useRef<ImagePlaceholderEntry[]>([])
@@ -336,12 +338,16 @@ export function useChatLLM({
             tempDiv.innerHTML = restoredText
             const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
 
-            const tr = activeEditor.state.tr
-            tr.replace(from, currentEnd, slice)
-            activeEditor.view.dispatch(tr)
+            // The document may have moved on since the selection was taken.
+            const range = clampSelectionRange(from, currentEnd, activeEditor.state.doc.content.size)
+            if (range) {
+              const tr = activeEditor.state.tr
+              tr.replace(range.from, range.to, slice)
+              activeEditor.view.dispatch(tr)
 
-            selectionEndRef.current = from + slice.size
-            setSaveStatus('unsaved')
+              selectionEndRef.current = range.from + slice.size
+              setSaveStatus('unsaved')
+            }
           }
         } else if (canvasText.trim()) {
           setSaveStatus('unsaved')
@@ -563,6 +569,7 @@ export function useChatLLM({
         const warningNote = buildCompletionWarnings({
           canvasIssue,
           editFailedCount,
+          selectionGone: selectionGoneRef.current,
           exhaustedNoActionRetries:
             noActionRetryArmed &&
             noActionRetriesLeft === 0 &&
@@ -596,11 +603,19 @@ export function useChatLLM({
             tempDiv.innerHTML = diffed
             const slice = ProseMirrorDOMParser.fromSchema(activeEditor.state.schema).parseSlice(tempDiv)
 
-            const tr = activeEditor.state.tr
-            tr.replace(from, currentEnd, slice)
-            activeEditor.view.dispatch(tr)
+            const range = clampSelectionRange(from, currentEnd, activeEditor.state.doc.content.size)
+            if (range) {
+              const tr = activeEditor.state.tr
+              tr.replace(range.from, range.to, slice)
+              activeEditor.view.dispatch(tr)
 
-            s.updateActiveDocument({ content: activeEditor.getHTML() })
+              s.updateActiveDocument({ content: activeEditor.getHTML() })
+            } else {
+              // The selection is gone (chapter switched, document shortened).
+              // Say so rather than throwing the turn away: the text is right
+              // there in the chat for the user to place themselves.
+              selectionGoneRef.current = true
+            }
           }
         } else if (parsed.kind === 'edits') {
           // Apply the locally-rebuilt diff, or leave the document untouched
@@ -677,6 +692,7 @@ export function useChatLLM({
     const s = useAppStore.getState()
 
     // Start each turn with no leftover thinking on screen.
+    selectionGoneRef.current = false
     reasoningTailRef.current = ''
     lastReasoningPaintRef.current = 0
     s.setStreamingReasoning('')

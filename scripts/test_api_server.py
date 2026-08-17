@@ -886,6 +886,29 @@ def test_generation_omits_reasoning_effort_when_not_chosen():
     assert "generationConfig" not in gemini or "thinkingConfig" not in gemini.get("generationConfig", {})
 
 
+def test_generation_tolerates_a_trailing_slash_in_the_base_url():
+    """Typing the URL with a trailing slash is normal; the resulting `//path`
+    is not. llama.cpp answers it with a bare 404 "File Not Found", which reads
+    like a missing model rather than a stray character."""
+    url, _, _ = server_generation.build_openai_request(
+        {"apiKey": "sk", "model": "m", "baseUrl": "http://127.0.0.1:8090/v1/"},
+        [{"role": "user", "content": "hi"}], "ollama",
+    )
+    assert url == "http://127.0.0.1:8090/v1/chat/completions"
+
+    gemini_url, _, _ = server_generation.build_gemini_request(
+        {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g/v1beta/"},
+        [{"role": "user", "content": "hi"}],
+    )
+    assert "//models/" not in gemini_url
+
+    anthropic_url, _, _ = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-sonnet-5", "baseUrl": "https://a/v1/"},
+        [{"role": "user", "content": "hi"}],
+    )
+    assert anthropic_url == "https://a/v1/messages"
+
+
 def test_generation_ollama_request_omits_auth_and_stream_options():
     job = _new_job()
     captured = []

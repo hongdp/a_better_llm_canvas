@@ -364,7 +364,7 @@ def build_openai_request(
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     """OpenAI-compatible request (openai / ollama / grok)."""
     api_key = config.get("apiKey") or ""
-    base_url = config.get("baseUrl") or ""
+    base_url = (config.get("baseUrl") or "").rstrip("/")
 
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if api_key and api_key != "ollama-no-key":
@@ -454,7 +454,7 @@ def build_gemini_request(
     model = config.get("model") or ""
     model_name = model[7:] if model.startswith("models/") else model
     url = (
-        f"{config.get('baseUrl') or ''}/models/{model_name}"
+        f"{(config.get('baseUrl') or '').rstrip('/')}/models/{model_name}"
         f":streamGenerateContent?key={config.get('apiKey') or ''}"
     )
     return url, {"Content-Type": "application/json"}, body
@@ -533,7 +533,7 @@ def build_anthropic_request(
             target["content"][-1]["cache_control"] = {"type": "ephemeral"}
             cache_breakpoints += 1
 
-    url = f"{config.get('baseUrl') or ''}/messages"
+    url = f"{(config.get('baseUrl') or '').rstrip('/')}/messages"
     headers = {
         "Content-Type": "application/json",
         "x-api-key": config.get("apiKey") or "",

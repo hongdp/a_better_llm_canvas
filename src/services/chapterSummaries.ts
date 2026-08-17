@@ -146,8 +146,12 @@ const summarizeDocument = async (docId: string): Promise<void> => {
   // works and then occasionally returns an English summary at five times the
   // length cap; see SUMMARY_SYSTEM_PROMPT for the measurements.
   const language = detectSummaryLanguage(input)
-  const baseConfig = s.providerConfigs[s.activeProvider]
-  // Summaries prefer the cheap utility model when configured (Settings).
+  // Summaries are background drudge work on every chapter, so they get their
+  // own provider: leaving them on the chat provider bills a frontier model for
+  // work a local one does fine. 'active' keeps the old behaviour.
+  const provider = s.summaryProvider === 'active' ? s.activeProvider : s.summaryProvider
+  const baseConfig = s.providerConfigs[provider]
+  // And, within it, the cheap utility model when one is configured.
   const config = baseConfig.summaryModel?.trim()
     ? { ...baseConfig, model: baseConfig.summaryModel.trim() }
     : baseConfig
@@ -166,7 +170,7 @@ const summarizeDocument = async (docId: string): Promise<void> => {
   await new Promise<void>((resolve) => {
     streamLLM(
       messages,
-      { ...config, provider: s.activeProvider, debug: s.debugMode, conversationId: s.activeBookId },
+      { ...config, provider, debug: s.debugMode, conversationId: s.activeBookId },
       {
         onChunk: () => {},
         onDone: (fullText) => {
