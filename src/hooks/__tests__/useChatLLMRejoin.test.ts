@@ -27,6 +27,7 @@ vi.mock('../../services/remoteGeneration', () => ({
 vi.mock('../../services/llm', () => ({ streamLLM: vi.fn() }))
 vi.mock('../../services/chapterSummaries', () => ({ enqueueStaleSummaryRefreshes: vi.fn() }))
 
+import { useState } from 'react'
 import { useChatLLM } from '../useChatLLM'
 import { useAppStore } from '../../store/useAppStore'
 
@@ -51,6 +52,61 @@ function renderChatHook() {
     root.render(createElement(Probe))
   })
   return () => act(() => root.unmount())
+}
+
+/**
+ * An editor that mounts AFTER the hook, the way the real one does: the rejoin
+ * effect runs on mount, when `activeEditor` is still null. Callbacks that
+ * captured that null rendered a resumed generation into the chat bubble while
+ * the document stayed blank for the whole turn.
+ */
+function makeFakeEditor() {
+  const setContentCalls: string[] = []
+  const chain = {
+    setMeta: () => chain,
+    setContent: (html: string) => { setContentCalls.push(html); return chain },
+    run: () => true
+  }
+  return {
+    setContentCalls,
+    editor: {
+      chain: () => chain,
+      getHTML: () => '',
+      state: { doc: { content: { size: 100 } }, schema: {}, selection: { from: 0, to: 0 }, tr: {} },
+      view: { dispatch: () => {} }
+    } as never
+  }
+}
+
+function renderChatHookWithLateEditor() {
+  const container = document.createElement('div')
+  const fake = makeFakeEditor()
+  let root: Root
+  let setEditor: (e: unknown) => void = () => {}
+  const Probe = () => {
+    const [editor, setEditorState] = useState<unknown>(null)
+    setEditor = setEditorState
+    useChatLLM({
+      activeEditor: editor as never,
+      selectedText: '',
+      uploadedImages: [],
+      setUploadedImages: vi.fn(),
+      layoutMode: 'landscape',
+      setIsChatExpanded: vi.fn(),
+      forceSave: vi.fn(),
+      setSaveStatus: vi.fn()
+    })
+    return null
+  }
+  act(() => {
+    root = createRoot(container)
+    root.render(createElement(Probe))
+  })
+  return {
+    fake,
+    mountEditor: () => act(() => { setEditor(fake.editor) }),
+    unmount: () => act(() => root.unmount())
+  }
 }
 
 /** Let the mount effect's awaits (findResumableJob → resume) settle. */
@@ -123,6 +179,33 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     expect(activeContent()).toContain('diff-addition')
     expect(useAppStore.getState().isStreaming).toBe(false)
     unmount()
+  })
+
+  it('streams a resumed generation into the document, not only the bubble', async () => {
+    // The editor mounts after the hook — the real order, and the reason the
+    // rejoin's callbacks used to hold a null editor for the whole turn.
+    let emit: ((chunk: string) => void) | null = null
+    let finish: ((text: string) => void) | null = null
+    findResumableJob.mockResolvedValue({ jobId: 'gen-live', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      emit = callbacks.onChunk
+      finish = callbacks.onDone
+      await new Promise(r => setTimeout(r, 0))
+    })
+
+    const h = renderChatHookWithLateEditor()
+    await settle()
+    h.mountEditor()
+
+    const partial = 'Working.\n<canvas><h1>重连测试</h1><p>第一段。</p>'
+    await act(async () => { emit?.(partial) })
+
+    // The document preview must have received the replayed canvas.
+    expect(h.fake.setContentCalls.length).toBeGreaterThan(0)
+    expect(h.fake.setContentCalls.join('')).toContain('重连测试')
+
+    await act(async () => { finish?.(partial + '</canvas>\n<doc_status>updated</doc_status>') })
+    h.unmount()
   })
 
   it('retires a placeholder whose job is gone instead of leaving it "Thinking..."', async () => {
