@@ -670,3 +670,4 @@ describe('detectFailedDocumentUpdate', () => {
     expect(detectFailedDocumentUpdate('   ')).toBeNull()
   })
 })
+
