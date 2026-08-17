@@ -230,6 +230,30 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     h.unmount()
   })
 
+  it('applies a tool call replayed to a resumed turn', async () => {
+    // The server replays the whole call on attach; if the rejoin forwards only
+    // onChunk/onDone/onError, that replay lands on a listener that does not
+    // exist and the document never changes — which is what "refresh loses it"
+    // looked like from outside.
+    findResumableJob.mockResolvedValue({ jobId: 'gen-tool', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      callbacks.onToolCallDelta?.({
+        index: 0,
+        name: 'update_document',
+        argumentsText: '{"html": "<p>REPLAYED_TOOL_CALL</p>"}',
+        replace: true
+      })
+      callbacks.onDone('')
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(activeContent()).toContain('REPLAYED_TOOL_CALL')
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    unmount()
+  })
+
   it('retires a placeholder whose job is gone instead of leaving it "Thinking..."', async () => {
     // Nothing is generating, so the bubble must not keep reading as if it
     // were: every path that would have cleared it died with the page, and the

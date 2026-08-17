@@ -45,6 +45,16 @@ export interface LLMMessage {
   cacheHint?: boolean
 }
 
+/**
+ * Callbacks a transport drives while a generation runs.
+ *
+ * WRAPPING THESE: spread the original first — `{ ...callbacks, onChunk: … }`.
+ * Rebuilding the object field by field silently drops every optional callback,
+ * which has already happened twice: `streamLLM`'s debug wrapper swallowed
+ * onReasoning/onAttached, and the rejoin path swallowed onToolCallDelta, each
+ * time producing a generation that streamed correctly and changed nothing.
+ * The compiler cannot catch it — every field here except three is optional.
+ */
 export interface StreamCallbacks {
   onChunk: (chunk: string) => void
   onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => void

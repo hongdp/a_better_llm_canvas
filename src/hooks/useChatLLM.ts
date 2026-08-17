@@ -896,6 +896,8 @@ export function useChatLLM({
 
       abortControllerRef.current = new AbortController()
       accumulatedTextRef.current = ''
+      // A rejoin skips startLLMStreaming, so the per-turn reset lives here too.
+      toolCallsRef.current = new Map()
       s.setStreaming(true)
 
       // Watchdog: if the job is gone or the stream never produces an event,
@@ -928,6 +930,12 @@ export function useChatLLM({
 
       try {
         await resumeRemoteGeneration(job.jobId, 0, {
+          // Spread FIRST. Rebuilding this field by field dropped
+          // onToolCallDelta, so a resumed generation replayed its tool call to
+          // a listener that no longer existed and the document never changed —
+          // the same mistake the debug wrapper in llm.ts made with the same
+          // consequence.
+          ...baseCallbacks,
           onChunk: (chunk) => { sawEvent = true; baseCallbacks.onChunk(chunk) },
           onDone: (text, usage) => { sawEvent = true; baseCallbacks.onDone(text, usage) },
           onError: (err) => { sawEvent = true; baseCallbacks.onError(err) }
