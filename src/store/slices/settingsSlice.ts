@@ -43,10 +43,6 @@ export interface SettingsSlice {
   setAvailableOllamaModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
-  // Agentic chapter lookup: lets the model request full chapter text
-  // mid-turn via the <lookup> protocol (multi-chapter books only).
-  agenticLookupEnabled: boolean
-  setAgenticLookupEnabled: (enabled: boolean) => void
 
   /**
    * Which provider runs background chapter summaries. 'active' follows the
@@ -134,11 +130,6 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     setSummaryProvider: (provider) => {
       localStorage.setItem('web_canvas_summary_provider', provider)
       set({ summaryProvider: provider })
-    },
-    agenticLookupEnabled: localStorage.getItem('web_canvas_agentic_lookup') !== 'false',
-    setAgenticLookupEnabled: (enabled) => {
-      localStorage.setItem('web_canvas_agentic_lookup', String(enabled))
-      set({ agenticLookupEnabled: enabled })
     },
     debugMode: initialDebugMode,
     setDebugMode: (enabled) => {

@@ -109,7 +109,7 @@ export function getChapterDigest(doc: IndexableDoc, maxChars: number = INDEX_DIG
 
 /**
  * Build the CHAPTER INDEX block sent with every request in a multi-chapter
- * book. Returns '' for single-document books (no index, no lookup surface).
+ * book. Returns '' for single-document books, where an index says nothing.
  *
  * Lives in the dynamic context (final user message), NOT the system prompt:
  * the index churns whenever a summary regenerates, and the system prompt's

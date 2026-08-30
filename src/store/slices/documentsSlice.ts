@@ -54,7 +54,7 @@ export interface DocumentsSlice {
    * Ensure the given documents' content is loaded (server books lazy-load
    * metadata-only chapters). Resolves once every needed fetch settles; a
    * failed doc stays unloaded and degrades to its index line. Callers that
-   * attach chapter content (pins, whole-book, Layer 2 lookup) MUST await this
+   * attach chapter content (pins, whole-book) MUST await this
    * first, or unopened chapters are silently dropped by the selector.
    */
   ensureDocumentContents: (ids: string[]) => Promise<void>

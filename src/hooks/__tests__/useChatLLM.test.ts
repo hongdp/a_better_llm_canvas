@@ -2,7 +2,7 @@
  * Flow tests for the chat orchestration hook.
  *
  * `startLLMStreaming` has three re-entrant paths that all drive the SAME
- * assistant bubble: the agentic <lookup> continuation, the no-action retry,
+ * assistant bubble: the no-action retry,
  * and normal completion. Each re-issues the request through a ref, so a
  * mistake shows up as a duplicated bubble, a lost document update, or an
  * unbounded loop — none of which the pure unit tests can see. These tests
@@ -165,7 +165,7 @@ const send = async (harness: Harness, prompt: string) => {
   await act(async () => {
     await harness.current.handleSendMessage(undefined, prompt)
   })
-  // The lookup / retry continuations are dispatched with `void` inside onDone;
+  // The retry continuation is dispatched with `void` inside onDone;
   // let those microtasks (and the scripted stream they drive) settle.
   await act(async () => { await Promise.resolve() })
   await act(async () => { await Promise.resolve() })
@@ -185,7 +185,6 @@ beforeEach(() => {
     isStreaming: false,
     user: null,
     activeBookId: 'book-test',
-    agenticLookupEnabled: false,
     wholeBookMode: 'off',
     pinnedReferenceIds: [],
     blockedReferenceIds: [],
@@ -443,58 +442,6 @@ describe('useChatLLM — no-action retry', () => {
   })
 })
 
-describe('useChatLLM — agentic lookup continuation', () => {
-  beforeEach(() => {
-    // doc-2 is blocked so Layer 1 cannot auto-attach it: whatever reaches the
-    // model in round 2 got there through <lookup>, which ignores the block.
-    // Its summary keeps the always-on chapter index from leaking the body.
-    useAppStore.setState({
-      documents: [
-        doc('doc-1', 'Chapter 1', '<p>old text</p>'),
-        {
-          ...doc('doc-2', 'Chapter 2', '<p>BETRAYAL_DETAIL_MARKER</p>'),
-          summary: 'A journey chapter.',
-          summaryContentHash: 'hash'
-        }
-      ],
-      activeDocumentId: 'doc-1',
-      blockedReferenceIds: ['doc-2'],
-      agenticLookupEnabled: true
-    })
-  })
-
-  it('attaches the requested chapter and re-issues the request into the same bubble', async () => {
-    responses.push('<lookup chapters="Chapter 2" reason="need the betrayal details"></lookup>')
-    responses.push('接上了。\n<canvas><p>continued</p></canvas>')
-    const harness = renderChatHook()
-
-    await send(harness, '继续写')
-
-    expect(calls).toHaveLength(2)
-    expect(finalUserContent(0)).not.toContain('BETRAYAL_DETAIL_MARKER')
-    expect(finalUserContent(1)).toContain('BETRAYAL_DETAIL_MARKER')
-    expect(assistantBubble()).toHaveLength(1)
-    expect(assistantBubble()[0]).toContain('接上了。')
-    expect(activeContent()).toContain('continued')
-    harness.unmount()
-  })
-
-  it('breaks the loop when the model keeps asking for chapters it already has', async () => {
-    responses.push('<lookup chapters="Chapter 2" reason="need it"></lookup>')
-    responses.push('<lookup chapters="Chapter 2" reason="need it again"></lookup>')
-    responses.push('好的。\n<canvas><p>ANSWERED_ANYWAY</p></canvas>')
-    const harness = renderChatHook()
-
-    await send(harness, '继续写')
-
-    // Round 2 has nothing new to attach, so it retries once with a loop-break
-    // note and no lookup context — three calls total, never more.
-    expect(calls).toHaveLength(3)
-    expect(finalUserContent(2)).toContain('Do NOT emit <lookup> again')
-    expect(activeContent()).toContain('ANSWERED_ANYWAY')
-    harness.unmount()
-  })
-})
 
 describe('useChatLLM — live <canvas> streaming into the editor', () => {
   // The stream arrives in pieces; the scripted mock delivers them as chunks so

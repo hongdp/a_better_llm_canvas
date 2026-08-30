@@ -6,9 +6,9 @@ import { streamLLM, type LLMMessage } from '../services/llm'
 import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration, clearPersistedJob as clearPersistedGenerationJob } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseLookupRequest, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml } from '../utils/diff'
-import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, resolveLookupTitles } from '../utils/llmContext'
+import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel } from '../utils/llmContext'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
@@ -16,7 +16,7 @@ import { applyToolCallDelta, finishToolCalls, partialStringArgument, type ToolCa
 import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/documentTools'
 import { resolveDocumentProtocol } from '../utils/protocolChoice'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
-import type { LookupLoopContext, HistorySourceMessage } from './chat/types'
+import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
 import {
@@ -40,13 +40,9 @@ const MAX_HISTORY_CHARS = 80_000
 // Base64 images are only re-sent for the most recent messages — older ones
 // dominate token cost while rarely being referenced again.
 const KEEP_IMAGES_IN_LAST_MESSAGES = 4
-// Agentic lookup loop guards: how many <lookup> continuation rounds a single
-// user request may trigger, and how many chapters each round may attach.
 // A rejoined stream that produces nothing within this window is treated as
 // dead (expired job, restarted server) rather than left spinning.
 const REJOIN_FIRST_EVENT_TIMEOUT_MS = 20_000
-const MAX_LOOKUP_ROUNDS = 2
-const MAX_LOOKUP_CHAPTERS_PER_ROUND = 3
 
 /**
  * Everything one streamed response needs in order to render itself: the
@@ -59,7 +55,6 @@ interface StreamRenderContext {
   originalDocContent: string
   attachmentsText: string
   estimatedInputTokens: number
-  lookupCtx?: LookupLoopContext
   noActionRetriesLeft: number
   /**
    * False for readers that cannot re-issue the request (the rejoin path):
@@ -207,15 +202,13 @@ export function useChatLLM({
   // Chapters attached on the previous turn — feeds the scorer's continuity
   // signal so a chapter under discussion isn't dropped mid-conversation.
   const previousAttachedIdsRef = useRef<string[]>([])
-  // Self-reference for the lookup loop: onDone re-invokes the streaming
-  // engine, which can't reference its own useCallback binding directly.
   // Reasoning display state: a tail (thinking can run to thousands of chars)
   // painted at most a few times a second (it arrives token by token).
   const reasoningTailRef = useRef('')
   const lastReasoningPaintRef = useRef(0)
 
   const startLLMStreamingRef = useRef<
-    ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, lookupCtx?: LookupLoopContext, noActionRetriesLeft?: number, noActionRetryArmed?: boolean) => Promise<void>) | null
+    ((apiMessages: LLMMessage[], assistantMsgId: string, originalDocContent: string, attachmentsText: string, estimatedInputTokens: number, noActionRetriesLeft?: number, noActionRetryArmed?: boolean) => Promise<void>) | null
   >(null)
   // Throttles the live selection-edit preview: re-parsing + replacing the whole
   // (growing) replacement on every streamed token is O(n²) and re-renders
@@ -264,7 +257,7 @@ export function useChatLLM({
   // Build the system prompt: a static instruction block (kept stable so
   // provider-side prompt caching works) plus the user's selected system
   // prompt preset, which only changes when they pick a different preset.
-  // Layering (protocol → lookup → preset → format reminder) lives in
+  // Layering (protocol → preset → format reminder) lives in
   // utils/systemPrompt so it can be tested.
   const buildSystemPrompt = useCallback((): LLMMessage => {
     const s = useAppStore.getState()
@@ -273,7 +266,6 @@ export function useChatLLM({
       role: 'system',
       content: buildChatSystemPrompt({
         customInstructions: preset?.content,
-        includeChapterLookup: s.agenticLookupEnabled && s.documents.length > 1,
         // The prompt must teach whichever protocol the request will actually
         // use — describing tools while sending none disables editing outright.
         protocol: resolveDocumentProtocol(
@@ -314,7 +306,7 @@ export function useChatLLM({
   // path (a generation that outlived the tab) drives the EXACT same
   // rendering/parsing/settling logic instead of a second copy of it.
   const buildStreamCallbacks = useCallback((ctx: StreamRenderContext): StreamCallbacks => {
-    const { apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens, lookupCtx, noActionRetriesLeft, noActionRetryArmed = true } = ctx
+    const { apiMessages, assistantMsgId, originalDocContent, attachmentsText, estimatedInputTokens, noActionRetriesLeft, noActionRetryArmed = true } = ctx
     const s = useAppStore.getState()
 
     return {
@@ -399,14 +391,10 @@ export function useChatLLM({
         // document markup away from the chat bubble as it streams.
         const { chatText, canvasText, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
 
-        // Prepend visual attachment details to conversational text. A
-        // streaming <lookup> request is protocol chatter, not an answer —
-        // show a neutral status instead of the raw tag.
-        const displayChatText = lookupCtx && raw.trimStart().toLowerCase().startsWith('<lookup')
-          ? '📖 Checking the chapter index…'
-          : attachmentsText
-            ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
-            : (chatText || 'Updating document...')
+        // Prepend visual attachment details to conversational text.
+        const displayChatText = attachmentsText
+          ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
+          : (chatText || 'Updating document...')
 
         // Update assistant message from fresh store state
         const latestMessages = useAppStore.getState().messages
@@ -490,98 +478,6 @@ export function useChatLLM({
         // Every round costs — account before deciding whether to continue.
         s.addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
 
-        // Agentic lookup continuation: the model asked for more chapters
-        // instead of answering. Attach them and re-issue the SAME request.
-        // Rounds are transient — this response is never persisted (the
-        // assistant bubble is overwritten in place) and streaming stays on.
-        if (lookupCtx) {
-          const lookupCall = finishToolCalls(toolCallsRef.current).find(c => c.name === 'lookup_chapters')
-          const titles = Array.isArray(lookupCall?.args?.titles)
-            ? (lookupCall!.args!.titles as unknown[]).filter((t): t is string => typeof t === 'string')
-            : null
-          const lookup = titles && titles.length > 0
-            ? { titles: titles.filter(t => t !== '*'), wantsAll: titles.includes('*'), reason: String(lookupCall?.args?.reason ?? '') }
-            : parseLookupRequest(fullText)
-          if (lookup) {
-            // Async continuation: requested chapters may exist only as
-            // server metadata (lazy loading) — fetch their content first,
-            // THIS is the "Layer 2 can fetch them later" the selector's
-            // degrade path relies on. ensureDocumentContents never throws.
-            void (async () => {
-              const sPre = useAppStore.getState()
-              const requestedIds = lookup.wantsAll
-                ? sPre.documents.filter(d => d.id !== sPre.activeDocumentId).map(d => d.id)
-                : resolveLookupTitles(lookup.titles, sPre.documents, sPre.activeDocumentId)
-              await sPre.ensureDocumentContents(requestedIds)
-              const sNow = useAppStore.getState()
-              const newIds = requestedIds
-                .filter(id => !lookupCtx.attachedIds.includes(id))
-                .filter(id => {
-                  const d = sNow.documents.find(doc => doc.id === id)
-                  return d !== undefined && d.contentLoaded !== false && d.content.length > 0
-                })
-                .slice(0, MAX_LOOKUP_CHAPTERS_PER_ROUND)
-
-              const canContinue = lookupCtx.round < MAX_LOOKUP_ROUNDS && newIds.length > 0
-              const combinedIds = canContinue ? [...lookupCtx.attachedIds, ...newIds] : lookupCtx.attachedIds
-              const newAutoIds = canContinue ? [...lookupCtx.autoIds, ...newIds] : lookupCtx.autoIds
-
-              // Status bubble (UI-only; stripChatDisplayArtifacts removes
-              // the 📖 line if an abort strands it in history).
-              const lookedUpTitles = newIds
-                .map(id => sNow.documents.find(d => d.id === id)?.title)
-                .filter(Boolean)
-                .join(', ')
-              const statusText = canContinue
-                ? `📖 Reading ${lookedUpTitles}…`
-                : '📖 Retrying with the already-available context…'
-              s.setMessages(useAppStore.getState().messages.map(m =>
-                m.id === assistantMsgId ? { ...m, content: statusText } : m
-              ))
-
-              if (sNow.debugMode) {
-                console.log('[AgenticLookup]', {
-                  round: lookupCtx.round,
-                  requested: lookup.wantsAll ? '*' : lookup.titles,
-                  reason: lookup.reason,
-                  attached: newIds,
-                  canContinue
-                })
-              }
-
-              accumulatedTextRef.current = ''
-              settleCanvasPreview(originalDocContent)
-              const dynamicContext = buildDynamicContext(combinedIds)
-              // Loop breaker: when nothing new can be attached (or rounds are
-              // exhausted), retry once WITHOUT lookupCtx and tell the model
-              // to answer with what it has — a further <lookup> just renders
-              // as text instead of looping.
-              const loopBreakNote = canContinue
-                ? ''
-                : '\n\n(Note: every chapter that can be provided is already included above. Answer with the available context. Do NOT emit <lookup> again.)'
-              const finalUserMessage: LLMMessage = {
-                role: 'user',
-                content: `${dynamicContext}\n\nUSER REQUEST:\n${lookupCtx.promptText}${loopBreakNote}`,
-                images: lookupCtx.images
-              }
-              const nextMessages = [...lookupCtx.prefixMessages, finalUserMessage]
-              previousAttachedIdsRef.current = combinedIds
-              void startLLMStreamingRef.current?.(
-                nextMessages,
-                assistantMsgId,
-                originalDocContent,
-                buildAttachmentsLabel(combinedIds, sNow.documents, newAutoIds),
-                Math.ceil(JSON.stringify(nextMessages).length / 4),
-                canContinue
-                  ? { ...lookupCtx, attachedIds: combinedIds, autoIds: newAutoIds, round: lookupCtx.round + 1 }
-                  : undefined,
-                MAX_NO_ACTION_RETRIES,
-                noActionRetryArmed
-              )
-            })()
-            return
-          }
-        }
 
         // Tool calls first: they are the protocol now. The legacy tag parse
         // stays behind them for models with no tool support, and for a turn
@@ -642,7 +538,6 @@ export function useChatLLM({
             originalDocContent,
             attachmentsText,
             Math.ceil(JSON.stringify(retryMessages).length / 4),
-            undefined,
             noActionRetriesLeft - 1,
             noActionRetryArmed
           )
@@ -822,18 +717,15 @@ export function useChatLLM({
     // selectionRefs is a ref's `.current`, so it never changes identity — it is
     // listed only to satisfy exhaustive-deps, and adding it cannot destabilise
     // these callbacks (which must stay stable; see the timeout note in CLAUDE.md).
-  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, buildDynamicContext, settleCanvasPreview, selectionRefs])
+  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, settleCanvasPreview, selectionRefs])
 
-  // Shared LLM Streaming engine. `lookupCtx` (when set) arms the agentic
-  // chapter-lookup loop: a response consisting of a <lookup> tag re-issues
-  // the same request with the requested chapters attached (bounded rounds).
+  // Shared LLM Streaming engine.
   const startLLMStreaming = useCallback(async (
     apiMessages: LLMMessage[],
     assistantMsgId: string,
     originalDocContent: string,
     attachmentsText: string,
     estimatedInputTokens: number,
-    lookupCtx?: LookupLoopContext,
     noActionRetriesLeft: number = MAX_NO_ACTION_RETRIES,
     // Armed for every real request. Disarmed only where there is no request to
     // replay (the rejoin reader), since a retry would have nothing to re-send.
@@ -883,14 +775,13 @@ export function useChatLLM({
           conversationId: s.activeBookId,
           // Job description for the remote transport: a reloaded tab uses
           // it to find this generation and stream it back into this bubble.
-          // The tools this turn can actually use: replace_selection only with
-          // a selection, lookup_chapters only when the loop is armed. Omitted
-          // entirely on the markup protocol — offering both invites the model
-          // to mix them, and the tag parser then sees a reply with no tags.
+          // The tools this turn can actually use: replace_selection only
+          // with a selection. Omitted entirely on the markup protocol —
+          // offering both invites the model to mix them, and the tag parser
+          // then sees a reply with no tags.
           tools: resolveDocumentProtocol(s.activeProvider, s.providerConfigs[s.activeProvider]?.documentProtocol) === 'tools'
             ? toOpenAITools(toolsForTurn({
-                hasSelection: !!selectionRangeRef.current,
-                allowLookup: !!lookupCtx
+                hasSelection: !!selectionRangeRef.current
               }))
             : undefined,
           remoteMeta: {
@@ -908,7 +799,6 @@ export function useChatLLM({
           originalDocContent,
           attachmentsText,
           estimatedInputTokens,
-          lookupCtx,
           noActionRetriesLeft,
           noActionRetryArmed
         })
@@ -920,7 +810,8 @@ export function useChatLLM({
     }
   }, [activeEditor, selectedText, buildStreamCallbacks])
 
-  // Keep the self-reference current for lookup-loop continuation rounds.
+  // Self-reference for the no-action retry: onDone re-invokes the streaming
+  // engine, which cannot reference its own useCallback binding directly.
   useEffect(() => {
     startLLMStreamingRef.current = startLLMStreaming
   }, [startLLMStreaming])
@@ -1003,14 +894,13 @@ export function useChatLLM({
       // persisted offset still decides whether the job is worth rejoining at
       // all, and drives resumes by callers that kept their partial text.
       const baseCallbacks = buildStreamCallbacks({
-        // No request to replay, so the no-action retry is disarmed (0) and the
-        // lookup loop stays off — this reader only renders what the job emits.
+        // No request to replay, so the no-action retry is disarmed (0):
+        // this reader only renders what the job emits.
         apiMessages: [],
         assistantMsgId,
         originalDocContent,
         attachmentsText: '',
         estimatedInputTokens: 0,
-        lookupCtx: undefined,
         noActionRetriesLeft: 0,
         noActionRetryArmed: false
       })
@@ -1063,7 +953,7 @@ export function useChatLLM({
   // Single source of truth for both send and resubmit: Layer 1 selection,
   // prompt layout ([stable system] + [optional sticky book prefix] +
   // [windowed history] + [volatile context in the final user message]),
-  // whole-book plan execution, and the lookup-loop arming. Returns null when
+  // and whole-book plan execution. Returns null when
   // a batched whole-book pass aborted/failed (already reported to the user).
   const assembleChatRequest = useCallback(async (opts: {
     promptText: string
@@ -1077,7 +967,6 @@ export function useChatLLM({
     apiMessages: LLMMessage[]
     attachmentsText: string
     estimatedInputTokens: number
-    lookupCtx?: LookupLoopContext
   } | null> => {
     const { promptText, images, historySource, assistantMsgId, wholeBookPlan } = opts
 
@@ -1130,18 +1019,15 @@ export function useChatLLM({
     // Execute the whole-book plan decided (and consented) before the message
     // entered the chat.
     let attachedIds = selection.attachedIds
-    let autoIds = selection.autoIds
+    const autoIds = selection.autoIds
     let dynamicContext: string
     let attachmentsText: string
-    let allowLookup = true
     // Sticky whole-book: the book text joins the stable prompt prefix (see
     // buildStickyBookPrefix in chat/wholeBook for the caching layout).
     let bookPrefixMessages: LLMMessage[] = []
 
     if (wholeBookPlan) {
       const { mode, sticky, docs, batches, budgetChars } = wholeBookPlan
-      allowLookup = false // everything available is already being provided
-      autoIds = []
 
       if (mode === 'full' && sticky) {
         bookPrefixMessages = buildStickyBookPrefix(docs)
@@ -1189,25 +1075,10 @@ export function useChatLLM({
 
     const apiMessages = [systemPrompt, ...bookPrefixMessages, ...historyMessages, finalUserMessage]
 
-    // Arm the agentic lookup loop for multi-chapter books (when enabled).
-    // Pointless in whole-book mode: everything is already provided.
-    const lookupCtx: LookupLoopContext | undefined =
-      allowLookup && s.agenticLookupEnabled && s.documents.length > 1
-        ? {
-            promptText,
-            images,
-            prefixMessages: [systemPrompt, ...historyMessages],
-            attachedIds,
-            autoIds,
-            round: 0
-          }
-        : undefined
-
     return {
       apiMessages,
       attachmentsText,
-      estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4),
-      lookupCtx
+      estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4)
     }
   }, [buildSystemPrompt, buildDynamicContext, runWholeBookBatches, forceSave])
 
@@ -1279,7 +1150,7 @@ export function useChatLLM({
     })
     if (!request) return
 
-    await startLLMStreaming(request.apiMessages, assistantMsgId, originalDocContent, request.attachmentsText, request.estimatedInputTokens, request.lookupCtx)
+    await startLLMStreaming(request.apiMessages, assistantMsgId, originalDocContent, request.attachmentsText, request.estimatedInputTokens)
   }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, planWholeBook, assembleChatRequest, startLLMStreaming])
 
   // Edit and Resubmit message handler
@@ -1340,7 +1211,7 @@ export function useChatLLM({
     })
     if (!request) return
 
-    await startLLMStreaming(request.apiMessages, assistantMsgId, originalDocContent, request.attachmentsText, request.estimatedInputTokens, request.lookupCtx)
+    await startLLMStreaming(request.apiMessages, assistantMsgId, originalDocContent, request.attachmentsText, request.estimatedInputTokens)
   }, [layoutMode, setIsChatExpanded, planWholeBook, assembleChatRequest, startLLMStreaming])
 
   // Stop generation

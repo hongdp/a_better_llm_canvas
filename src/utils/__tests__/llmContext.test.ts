@@ -5,7 +5,7 @@ import {
   truncateWithNotice,
   htmlToPlainText,
   detectReferencedDocIds,
-  buildAttachmentsLabel, resolveLookupTitles } from '../llmContext'
+  buildAttachmentsLabel } from '../llmContext'
 import type { LLMMessage } from '../../types/llm'
 
 const msg = (role: 'user' | 'assistant', content: string, images?: string[]): LLMMessage =>
@@ -223,32 +223,6 @@ describe('truncateWithNotice', () => {
   })
 })
 
-// ── resolveLookupTitles ───────────────────────────────────────────────────────
-describe('resolveLookupTitles', () => {
-  const docs = [
-    { id: 'a', title: 'Chapter 1: Origins' },
-    { id: 'b', title: 'Chapter 2: The Crossing' },
-    { id: 'c', title: 'Chapter 3: Ashfall' }
-  ]
-
-  it('resolves exact titles case-insensitively', () => {
-    expect(resolveLookupTitles(['chapter 3: ashfall'], docs, 'a')).toEqual(['c'])
-  })
-
-  it('resolves partial titles by containment', () => {
-    expect(resolveLookupTitles(['Ashfall'], docs, 'a')).toEqual(['c'])
-    expect(resolveLookupTitles(['Chapter 2: The Crossing (see index)'], docs, 'a')).toEqual(['b'])
-  })
-
-  it('excludes the active document and unknown titles, deduplicates', () => {
-    expect(resolveLookupTitles(['Chapter 1: Origins', 'Nonexistent', 'Origins', 'Chapter 1: Origins'], docs, 'a')).toEqual([])
-    expect(resolveLookupTitles(['Chapter 1: Origins', 'Origins'], docs, 'c')).toEqual(['a'])
-  })
-
-  it('preserves request order', () => {
-    expect(resolveLookupTitles(['Ashfall', 'Origins'], docs, 'b')).toEqual(['c', 'a'])
-  })
-})
 
 describe('stripChatDisplayArtifacts — no-action retry artifacts', () => {
   it('strips the 🔁 retry status bubble left by an aborted recovery round', () => {

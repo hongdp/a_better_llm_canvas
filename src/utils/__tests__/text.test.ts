@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseLookupRequest, parseAssistantResponse, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseAssistantResponse, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -440,56 +440,6 @@ describe('parseAssistantResponse', () => {
     expect(parseAssistantResponse(editsAndCanvas).kind).toBe('edits')
   })
 })
-
-// ── parseLookupRequest ────────────────────────────────────────────────────────
-describe('parseLookupRequest', () => {
-  it('parses a clean lookup tag with multiple titles', () => {
-    const r = parseLookupRequest('<lookup chapters="Chapter 3: Ashfall; Chapter 7: Return" reason="continuity"></lookup>')
-    expect(r).toEqual({ titles: ['Chapter 3: Ashfall', 'Chapter 7: Return'], wantsAll: false, reason: 'continuity' })
-  })
-
-  it('parses a self-closing tag and single quotes', () => {
-    const r = parseLookupRequest("<lookup chapters='Chapter 1' reason='check names'/>")
-    expect(r).toEqual({ titles: ['Chapter 1'], wantsAll: false, reason: 'check names' })
-  })
-
-  it('tolerates brief surrounding prose', () => {
-    const r = parseLookupRequest('Let me check that chapter first.\n<lookup chapters="Chapter 2"></lookup>')
-    expect(r?.titles).toEqual(['Chapter 2'])
-  })
-
-  it('parses the whole-book request', () => {
-    const r = parseLookupRequest('<lookup chapters="*" reason="full outline"></lookup>')
-    expect(r).toEqual({ titles: [], wantsAll: true, reason: 'full outline' })
-  })
-
-  it('returns null when there is no lookup tag', () => {
-    expect(parseLookupRequest('Here is your answer about chapter 3.')).toBeNull()
-  })
-
-  it('returns null when a real action tag is present — content beats lookup', () => {
-    expect(parseLookupRequest('<lookup chapters="Chapter 2"></lookup>\n<canvas><p>New doc</p></canvas>')).toBeNull()
-    expect(parseLookupRequest('<edit>\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit><lookup chapters="X"/>')).toBeNull()
-  })
-
-  it('returns null when substantial prose surrounds the tag', () => {
-    const essay = 'word '.repeat(120)
-    expect(parseLookupRequest(essay + '<lookup chapters="Chapter 2"/>')).toBeNull()
-  })
-
-  it('returns null for an empty or missing chapters attribute', () => {
-    expect(parseLookupRequest('<lookup chapters=""></lookup>')).toBeNull()
-    expect(parseLookupRequest('<lookup reason="hm"></lookup>')).toBeNull()
-    expect(parseLookupRequest('<lookup chapters="; ;"></lookup>')).toBeNull()
-  })
-
-  it('trims quotes and whitespace from titles and defaults reason to empty', () => {
-    const r = parseLookupRequest('<lookup chapters=" \'Chapter 5\' ;  Chapter 6  "></lookup>')
-    expect(r?.titles).toEqual(['Chapter 5', 'Chapter 6'])
-    expect(r?.reason).toBe('')
-  })
-})
-
 
 describe('trimIncompleteHtmlTail', () => {
   it('drops a partially streamed tag', () => {

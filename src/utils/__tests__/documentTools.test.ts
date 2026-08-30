@@ -13,19 +13,14 @@ import {
 // on the first attempt with these — the format is in its training data.
 describe('toolsForTurn', () => {
   it('offers replace_selection only when there is a selection', () => {
-    const withSel = toolsForTurn({ hasSelection: true, allowLookup: false }).map(t => t.name)
-    const without = toolsForTurn({ hasSelection: false, allowLookup: false }).map(t => t.name)
+    const withSel = toolsForTurn({ hasSelection: true }).map(t => t.name)
+    const without = toolsForTurn({ hasSelection: false }).map(t => t.name)
     expect(withSel).toContain('replace_selection')
     expect(without).not.toContain('replace_selection')
   })
 
-  it('offers lookup_chapters only when the loop is armed', () => {
-    expect(toolsForTurn({ hasSelection: false, allowLookup: true }).map(t => t.name)).toContain('lookup_chapters')
-    expect(toolsForTurn({ hasSelection: false, allowLookup: false }).map(t => t.name)).not.toContain('lookup_chapters')
-  })
-
   it('always offers the two that always apply', () => {
-    const names = toolsForTurn({ hasSelection: false, allowLookup: false }).map(t => t.name)
+    const names = toolsForTurn({ hasSelection: false }).map(t => t.name)
     expect(names).toEqual(['update_document', 'edit_document'])
   })
 })

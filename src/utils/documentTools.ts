@@ -20,7 +20,6 @@ export type DocumentToolName =
   | 'update_document'
   | 'edit_document'
   | 'replace_selection'
-  | 'lookup_chapters'
 
 export interface JsonSchema {
   type: string
@@ -104,34 +103,15 @@ export const DOCUMENT_TOOLS: DocumentTool[] = [
       },
       required: ['html']
     }
-  },
-  {
-    name: 'lookup_chapters',
-    description:
-      'Fetch the full text of chapters that are listed in the CHAPTER INDEX but not included in the context. The request is retried automatically with them attached. Never guess at a chapter you have not been shown.',
-    parameters: {
-      type: 'object',
-      properties: {
-        titles: {
-          type: 'array',
-          description: 'Chapter titles copied EXACTLY from the CHAPTER INDEX. Use ["*"] for the whole book.',
-          items: { type: 'string' }
-        },
-        reason: { type: 'string', description: 'One line: why these chapters are needed.' }
-      },
-      required: ['titles']
-    }
   }
 ]
 
 /** The tools a turn should offer, given what the turn can actually use. */
 export function toolsForTurn(options: {
   hasSelection: boolean
-  allowLookup: boolean
 }): DocumentTool[] {
   return DOCUMENT_TOOLS.filter(tool => {
     if (tool.name === 'replace_selection') return options.hasSelection
-    if (tool.name === 'lookup_chapters') return options.allowLookup
     return true
   })
 }

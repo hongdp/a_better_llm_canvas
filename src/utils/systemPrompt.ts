@@ -12,7 +12,6 @@
  *
  * Layout, in order:
  *   1. Protocol rules + examples (static)
- *   2. Chapter-lookup protocol (multi-chapter books with the toggle on)
  *   3. The user's custom writing instructions (their preset)
  *   4. FORMAT PROTOCOL REMINDER — always last (see below)
  *
@@ -36,8 +35,6 @@
 export interface ChatSystemPromptOptions {
   /** The active preset's content (trimmed by the caller); empty ⇒ omitted. */
   customInstructions?: string
-  /** Include the `<lookup>` protocol (multi-chapter books, toggle on). */
-  includeChapterLookup: boolean
   /**
    * Which document protocol this model is on (see utils/protocolChoice).
    * 'tools' describes only what the schemas cannot say; 'markup' teaches the
@@ -144,14 +141,6 @@ User: "How many words is this chapter?" (a question, not an edit request)
 Assistant: About 1,200 words.
 <doc_status>unchanged</doc_status>`
 
-const CHAPTER_LOOKUP_RULES = `CHAPTER LOOKUP:
-The user message may include a CHAPTER INDEX listing every chapter of the book with a one-line summary. If answering well requires the FULL TEXT of chapters that are NOT included in your context, respond with ONLY this tag and nothing else:
-<lookup chapters="Chapter 3: Ashfall; Chapter 7: Return" reason="need the betrayal details for continuity"></lookup>
-- Copy chapter titles EXACTLY as they appear in CHAPTER INDEX, separated by semicolons.
-- The requested chapters will be attached and your request retried automatically.
-- Never guess or invent the content of a chapter you have not been shown; look it up instead.
-- Do NOT use <lookup> for chapters already provided in your context.`
-
 /**
  * Final section of the system prompt. Must stay last: it exists to outrank
  * output-channel language inside the user's custom writing instructions.
@@ -175,12 +164,9 @@ Every instruction above, including the user's custom writing instructions, gover
  * and why the format reminder is last.
  */
 export function buildChatSystemPrompt(options: ChatSystemPromptOptions): string {
-  const { customInstructions, includeChapterLookup, protocol } = options
+  const { customInstructions, protocol } = options
   const sections = [protocol === 'tools' ? TOOL_PROTOCOL_RULES : MARKUP_PROTOCOL_RULES]
 
-  if (includeChapterLookup) {
-    sections.push(CHAPTER_LOOKUP_RULES)
-  }
   if (customInstructions?.trim()) {
     sections.push(
       `USER'S CUSTOM WRITING INSTRUCTIONS (apply these to all content you write):\n${customInstructions.trim()}`

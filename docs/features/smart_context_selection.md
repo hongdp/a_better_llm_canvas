@@ -1,4 +1,7 @@
-# Feature Specification — Smart Context Selection & Agentic Chapter Lookup
+# Feature Specification — Smart Context Selection
+
+> Layer 2 (agentic chapter lookup) was **removed on 2026-08-17** after shipping
+> unused — see §5. Layers 0, 1 and 3 are live.
 
 Status: **Implemented** (branch `feat/smart-context-selection`) — see §11 for
 v1 deviations from this design.
@@ -11,7 +14,7 @@ manual selector into a layered system:
 |---|---|---|
 | **0 — Chapter index** | Title + short summary of every chapter, always in context | ~100–200 tokens/chapter per turn |
 | **1 — Auto-selection** | Deterministic scorer pre-attaches relevant chapters; user pins/blocks | Scoring is free (no LLM); attached full text same price as today's manual attach |
-| **2 — Agentic lookup** | Model requests missing chapters mid-turn via `<lookup>` tag | One extra round-trip on a scorer miss |
+| ~~**2 — Agentic lookup**~~ | ~~Model requests missing chapters mid-turn~~ | **Removed 2026-08-17 — never fired once in production (§5)** |
 | **3 — Whole-book mode** | Escalation ladder for global tasks (outline, consistency) | Free digest → single big call → confirmed map-reduce |
 
 The design mirrors the **skill pattern** from agentic frameworks: skill
@@ -69,7 +72,7 @@ server and across devices automatically once they are fields on
 ### 2.2 Generation: lazy, never real-time
 
 **Staleness is tolerated by design.** A summary is navigation metadata, not a
-source of truth — the model can always fetch full text via Layer 2. A
+source of truth. A
 slightly outdated summary is harmless, so regeneration is lazy:
 
 - A chapter becomes *stale* when `hash(content) !== summaryContentHash`.
@@ -140,7 +143,7 @@ export function selectReferenceChapters(input: ChapterScoreInput, budget: Select
 Include chapters scoring ≥ 40, greedy by score, under a total reference
 budget (default 60k chars; per-doc cap stays 20k). Budget overflow drops
 lowest-score chapters first (they degrade to their index line, not to
-nothing). A wrong selection degrades to a Layer 2 lookup, never a
+nothing). A wrong selection degrades to the chapter's index line, never a
 hallucination.
 
 ### 4.2 Interaction workflow
@@ -170,88 +173,48 @@ Auto-selected IDs are computed at send time and never persisted.
 
 ---
 
-## 5. Layer 2 — Agentic On-Demand Lookup
+## 5. Layer 2 — Agentic On-Demand Lookup — **REMOVED 2026-08-17**
 
-### 5.1 The skill analogy
+Shipped, then deleted unused. The machinery reached the model on every
+multi-chapter turn (the toggle defaulted ON, the `<lookup>` rules were in the
+system prompt, and `lookup_chapters` was offered as a tool on the tool
+protocol) — and the model never once used it.
 
-| Skill pattern | This feature |
+Evidence that decided it, counted across the author's real book archive on the
+storage server:
+
+| Marker | Occurrences |
 |---|---|
-| Name + description always in prompt | Chapter index always in dynamic context |
-| Body read from disk when needed | Full chapter text attached on request |
-| Agent decides relevance itself | Model emits a lookup tag naming chapters |
-| Bounded tool loop | Max 2 lookup rounds, 3 chapters per round |
+| `<lookup` (a request the model emitted) | **0** |
+| `📖` (the status bubble a lookup round renders) | **0** |
+| `Attached Context` (Layer 1 doing its job) | 57 |
 
-### 5.2 Protocol
+So Layer 1 was carrying the whole load and Layer 2 was dead weight: a bounded
+retry loop, a second parse path in `onDone`, a settings toggle, a tool
+definition, and a block of system prompt, none of it ever exercised outside
+tests.
 
-One new tag in the Canvas Markup Protocol. Static system-prompt instruction
-(cache-safe):
+Removed in full: `parseLookupRequest`, `resolveLookupTitles`,
+`LookupLoopContext`, the `lookup_chapters` tool and its `allowLookup` gate, the
+`CHAPTER_LOOKUP_RULES` prompt block, the `agenticLookupEnabled` setting and its
+Settings checkbox, and the continuation loop in `useChatLLM`.
 
-```
-If you need the FULL TEXT of chapters listed in CHAPTER INDEX but not
-included in your context, respond with ONLY this tag and nothing else:
-<lookup chapters="Chapter 3: Ashfall; Chapter 7: Return" reason="…"></lookup>
-The requested chapters will be provided and your request retried. Never guess
-about the content of a chapter you have not been shown.
-```
+**If this is revisited**, the original design is in git history
+(`git show <commit-before>:docs/features/smart_context_selection.md`) and the
+questions worth answering first are:
 
-Chapters are requested **by title** (models copy titles reliably from the
-index); the client resolves them with the same fuzzy matching as
-`detectReferencedDocIds`. `chapters="*"` requests the whole book and routes
-into the §6 ladder.
+1. Did the models simply not know the protocol, or did they never *need* it
+   because Layer 1's picks were adequate? Those call for opposite fixes.
+2. On the tool protocol the model had a real `lookup_chapters` function and
+   still did not call it — which points at (b) rather than a syntax problem.
+3. A cheaper probe than rebuilding the loop: log when the model's answer cites
+   a chapter that was only in the index, never attached. If that never
+   happens, Layer 2 has no job.
 
-### 5.3 Why a markup tag instead of native tool-calling
-
-- `services/llm.ts` streams plain text across 5 providers; native function
-  calling would mean 5 provider-specific schemas and would break the single
-  shared streaming path.
-- `<canvas>` / `<edit>` / `<selection_replace>` already establish the
-  text-protocol precedent, and `extractTaggedBlock` machinery is reusable.
-- Cost: slightly lower reliability than native tools — mitigated by the
-  strict "ONLY this tag" rule and a parser tolerant of surrounding
-  whitespace/prose.
-
-### 5.4 Client loop (in `useChatLLM.ts`)
-
-```
-send(messages)
-  └─ stream completes → is the response a <lookup> tag?
-       ├─ no  → normal handling (canvas/edit/chat routing)
-       └─ yes →
-            1. status bubble: "📖 Reading Chapter 3: Ashfall…"
-            2. resolve titles → doc IDs; drop already-attached + unknown
-            3. nothing new resolvable OR round > 2:
-               re-send with injected note "All available chapters are already
-               attached — answer with what you have." (loop breaker)
-            4. else attach (20k/doc + total budget caps; summaries for
-               overflow) and re-send the SAME request with augmented
-               dynamic context
-```
-
-Rules:
-
-- **History hygiene**: lookup rounds are transient — neither the `<lookup>`
-  response nor the retry is persisted to `chatMessages`; only the final
-  answer is stored, with `[Attached Context: …]` labels including looked-up
-  chapters. Protocol chatter never re-enters history
-  (`stripChatDisplayArtifacts` philosophy).
-- **Cache friendliness**: augmented content goes into the same dynamic
-  context slot (final user message) → system prompt + history prefix stay
-  byte-identical between rounds; round 2 is largely a cache hit.
-- **Abort** stops the whole loop, not just the current stream.
-- **Token accounting**: per-round usage added to session counters; the
-  status bubble makes extra rounds visible — cost is never silent.
-- **Settings toggle** ("Agentic chapter lookup"), default ON for
-  multi-chapter books; no-op for single-document books.
-
-### 5.5 How Layers 1 and 2 cooperate
-
-Layer 1 is the **prefetch** — zero latency, catches explicit mentions,
-adjacency, topical overlap. Layer 2 is the **miss handler** — one extra
-round-trip, driven by the model's actual need, which no client heuristic
-fully predicts. Steady state: most turns need zero lookups; a lookup firing
-is a logged signal (debug mode) that the scorer missed something.
-
----
+Note that the [cache-first context strategy](cache_first_context.md) changes
+the economics either way: chapters now enter an append-only ledger, so a
+mid-turn addition costs one appended block rather than a rebuilt prompt. A
+future Layer 2 would be markedly cheaper than the one removed here.
 
 ## 6. Layer 3 — Whole-Book Tasks (Escalation Ladder)
 
