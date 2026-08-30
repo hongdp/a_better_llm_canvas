@@ -41,6 +41,8 @@ export interface SettingsSlice {
    */
   availableOllamaModels: string[]
   setAvailableOllamaModels: (models: string[]) => void
+  availableRunpodModels: string[]
+  setAvailableRunpodModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
   // Agentic chapter lookup: lets the model request full chapter text
@@ -102,6 +104,7 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
     availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
     availableOllamaModels: [],
+    availableRunpodModels: [],
     setProvider: (provider) => {
       localStorage.setItem('web_canvas_active_provider', provider)
       setCookie('__Secure-web_canvas_active_provider', provider)
@@ -114,6 +117,9 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
       set({ availableGrokModels: models })
     },
 
+    setAvailableRunpodModels: (models) => {
+      set({ availableRunpodModels: models })
+    },
     setAvailableOllamaModels: (models) => {
       set({ availableOllamaModels: models })
     },

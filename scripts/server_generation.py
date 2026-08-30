@@ -65,10 +65,38 @@ TERMINAL_EVENT_TYPES = frozenset({"done", "error", "aborted"})
 HTTP_CONNECT_TIMEOUT = 30.0
 HTTP_READ_TIMEOUT = 600.0
 
-SUPPORTED_PROVIDERS = ("openai", "ollama", "grok", "gemini", "anthropic")
+SUPPORTED_PROVIDERS = ("openai", "ollama", "runpod", "grok", "gemini", "anthropic")
 
 #: Hosts /api/models will query. Local model servers only — see the endpoint.
 LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
+
+#: Additionally allowed for /api/models, over HTTPS only: RunPod's per-pod HTTP
+#: proxy. A pod reached through the SSH tunnel is already loopback and needs
+#: nothing here; this is for addressing a pod directly.
+#:
+#: Widening an SSRF guard deserves a reason. This suffix resolves to RunPod's
+#: public proxy tier, never to anything on this machine's network, so it does
+#: not buy an attacker reach they did not already have from the open internet.
+#: The endpoint's whole behaviour is one GET of {base}/models whose parsed
+#: names are returned, and reaching it already requires an authenticated
+#: session. Matching is on a leading-dot suffix so a lookalike registration
+#: like "evilproxy.runpod.net.attacker.com" cannot satisfy it.
+REMOTE_MODEL_HOST_SUFFIXES = (".proxy.runpod.net",)
+
+
+def is_queryable_model_host(base_url: str) -> bool:
+    """Whether /api/models may fetch a listing from this URL."""
+    parsed = urlparse(base_url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme not in ("http", "https"):
+        return False
+    if host in LOCAL_HOSTNAMES:
+        return True
+    # Remote hosts are HTTPS-only: the listing would otherwise cross the
+    # public internet in the clear.
+    return parsed.scheme == "https" and any(
+        host.endswith(suffix) for suffix in REMOTE_MODEL_HOST_SUFFIXES
+    )
 
 _DATA_URL_RE = re.compile(r"^data:(image/[a-zA-Z+.-]+);base64,(.+)$")
 
@@ -391,7 +419,7 @@ def build_openai_request(
     messages: List[Dict[str, Any]],
     provider: str = "openai",
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
-    """OpenAI-compatible request (openai / ollama / grok)."""
+    """OpenAI-compatible request (openai / ollama / runpod / grok)."""
     api_key = config.get("apiKey") or ""
     base_url = (config.get("baseUrl") or "").rstrip("/")
 
@@ -435,14 +463,18 @@ def build_openai_request(
     if config.get("tools"):
         body["tools"] = config["tools"]
 
-    # Ollama rejects stream_options, so it is detected the same way the client
-    # detects it: the sentinel key or a loopback base URL.
-    is_ollama = (
-        api_key == "ollama-no-key"
+    # llama.cpp rejects stream_options, and it sits behind both `ollama` and
+    # `runpod`. Detected the same way the client detects it (services/llm.ts):
+    # the provider, the sentinel key, or a loopback base URL. The provider has
+    # to be in the test because a pod addressed directly is neither loopback
+    # nor keyless.
+    is_llama_cpp = (
+        provider == "runpod"
+        or api_key == "ollama-no-key"
         or "localhost" in base_url
         or "127.0.0.1" in base_url
     )
-    if not is_ollama:
+    if not is_llama_cpp:
         body["stream_options"] = {"include_usage": True}
 
     return url, headers, body
@@ -862,7 +894,7 @@ async def _dispatch_provider(
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if provider in ("openai", "ollama", "grok"):
+    if provider in ("openai", "ollama", "runpod", "grok"):
         return await _stream_openai(job, config, messages, provider)
     if provider == "gemini":
         return await _stream_gemini(job, config, messages)
@@ -1025,7 +1057,7 @@ async def start_generation(request: Request):
         raise HTTPException(status_code=400, detail="config must be an object.")
     if not isinstance(messages, list) or not messages:
         raise HTTPException(status_code=400, detail="messages must be a non-empty array.")
-    if not config.get("apiKey") and provider != "ollama":
+    if not config.get("apiKey") and provider not in ("ollama", "runpod"):
         raise HTTPException(
             status_code=400,
             detail=f"API key is missing for {provider}. Please configure it in Settings.",
@@ -1064,11 +1096,13 @@ async def list_provider_models(request: Request):
     if not base_url:
         raise HTTPException(status_code=400, detail="baseUrl is required.")
 
-    parsed = urlparse(base_url)
-    if parsed.scheme not in ("http", "https") or (parsed.hostname or "") not in LOCAL_HOSTNAMES:
+    if not is_queryable_model_host(base_url):
         raise HTTPException(
             status_code=400,
-            detail="Only local endpoints (localhost / 127.0.0.1) can be queried this way.",
+            detail=(
+                "Only local endpoints (localhost / 127.0.0.1) or an https "
+                "*.proxy.runpod.net endpoint can be queried this way."
+            ),
         )
 
     try:

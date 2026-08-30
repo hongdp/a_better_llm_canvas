@@ -52,7 +52,9 @@ const SUPPORT_TABLE: Record<string, ModelReasoningSupport[]> = {
   gemini: [
     { match: /gemini-2\.5|gemini-3/i, levels: ['default', 'minimal', 'low', 'medium', 'high'] }
   ],
-  ollama: []
+  ollama: [],
+  // llama.cpp takes --reasoning as a server flag, not a per-request field.
+  runpod: []
 }
 
 /**

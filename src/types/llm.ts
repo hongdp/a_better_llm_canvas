@@ -1,6 +1,6 @@
 import type { ReasoningEffort } from '../utils/reasoningEffort'
 import type { DocumentProtocol } from '../utils/protocolChoice'
-export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'grok'
+export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'runpod' | 'grok'
 
 export interface GeminiSafetySetting {
   category: string
@@ -116,5 +116,9 @@ export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
   anthropic: ['claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
   ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
+  // Shown only until the endpoint answers /models. These are the aliases
+  // llama.cpp's router derives from the model directory names in
+  // scripts/cloud_endpoint — a live listing replaces them.
+  runpod: ['qwen3.8-IQ4_XS', 'qwen3.8-IQ3_XXS', 'qwen3.8-Q4_K_M'],
   grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
 }

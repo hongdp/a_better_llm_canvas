@@ -42,7 +42,7 @@ const COARSE_TOOL_STREAMING = new Set(['grok', 'gemini'])
  * which do stream tool arguments finely (205 deltas measured on llama.cpp
  * behind the ollama setting).
  */
-const NEEDS_TOOLS = new Set(['ollama'])
+const NEEDS_TOOLS = new Set(['ollama', 'runpod'])
 
 export function resolveDocumentProtocol(
   provider: string,

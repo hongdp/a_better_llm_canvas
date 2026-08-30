@@ -20,6 +20,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     availableGeminiModels,
     availableGrokModels,
     availableOllamaModels,
+    availableRunpodModels,
     summaryProvider,
     setSummaryProvider,
     customSystemPrompts,
@@ -69,6 +70,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     openai: 'OpenAI',
     anthropic: 'Anthropic',
     ollama: 'Ollama (Local)',
+    runpod: 'RunPod (Cloud GPU)',
     grok: 'Grok (xAI)'
   }
 
@@ -96,7 +98,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
         {/* Selection Tabs */}
         <div className="settings-tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-          {(['gemini', 'openai', 'anthropic', 'ollama', 'grok'] as const).map((prov) => (
+          {(['gemini', 'openai', 'anthropic', 'ollama', 'runpod', 'grok'] as const).map((prov) => (
             <button
               key={prov}
               onClick={() => setActiveTab(prov)}
@@ -188,6 +190,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     ? availableGrokModels
                     : activeTab === 'ollama' && availableOllamaModels && availableOllamaModels.length > 0
                     ? availableOllamaModels
+                    : activeTab === 'runpod' && availableRunpodModels && availableRunpodModels.length > 0
+                    ? availableRunpodModels
                     : (PROVIDER_MODELS[activeTab as LLMProvider] || [])
                   ).map(model => (
                     <option key={model} value={model}>
@@ -200,7 +204,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               {/* API Key Input */}
               <div className="form-group">
                 <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                  <Key size={14} /> {activeTab === 'ollama' ? 'API Key (Optional)' : `${labels[activeTab]} ${t.settings.apiKey}`}
+                  <Key size={14} /> {activeTab === 'ollama' || activeTab === 'runpod' ? 'API Key (Optional)' : `${labels[activeTab]} ${t.settings.apiKey}`}
                 </label>
                 <input
                   id="api-key-input"
@@ -212,6 +216,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     activeTab === 'openai' ? 'Enter OpenAI API Key (sk-...)...' :
                     activeTab === 'anthropic' ? 'Enter Anthropic API Key (sk-ant-...)...' :
                     activeTab === 'grok' ? 'Enter Grok API Key (xai-...)...' :
+                    activeTab === 'runpod' ? 'Leave as ollama-no-key unless the endpoint sets --api-key...' :
                     'Optional token for authenticated local proxies...'
                   }
                   className="form-input"
@@ -231,6 +236,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     activeTab === 'openai' ? 'e.g. https://api.openai.com/v1' :
                     activeTab === 'anthropic' ? 'e.g. https://api.anthropic.com/v1' :
                     activeTab === 'grok' ? 'e.g. https://api.x.ai/v1' :
+                    activeTab === 'runpod' ? 'e.g. http://127.0.0.1:8100/v1 (tunnel) or https://<pod-id>-8000.proxy.runpod.net/v1' :
                     'e.g. http://localhost:11434/v1'
                   }
                   className="form-input"

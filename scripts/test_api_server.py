@@ -1179,3 +1179,55 @@ def test_generation_masking_never_leaks_credentials():
     assert "sk-secret" not in dumped
     assert "sk-ant-secret" not in dumped
     assert masked["url"].endswith("key=***")
+
+
+# --- RunPod provider ---------------------------------------------------------
+
+def test_model_host_allowlist_admits_loopback_and_https_runpod_only():
+    ok = server_generation.is_queryable_model_host
+    # Loopback, unchanged behaviour.
+    assert ok("http://127.0.0.1:8100/v1")
+    assert ok("http://localhost:11434/v1")
+    # A pod addressed directly, over HTTPS.
+    assert ok("https://abc123-8000.proxy.runpod.net/v1")
+    # ...but not in the clear: the listing would cross the internet plaintext.
+    assert not ok("http://abc123-8000.proxy.runpod.net/v1")
+    # The guard still has to hold for everything else.
+    assert not ok("http://169.254.169.254/latest/meta-data")
+    assert not ok("http://192.168.0.5:3000/v1")
+    assert not ok("https://api.openai.com/v1")
+    assert not ok("file:///etc/passwd")
+
+
+def test_model_host_allowlist_rejects_suffix_lookalikes():
+    # The whole point of matching a leading-dot suffix rather than a substring:
+    # anyone can register these, and a naive `in` test would admit them.
+    ok = server_generation.is_queryable_model_host
+    assert not ok("https://evil.proxy.runpod.net.attacker.com/v1")
+    assert not ok("https://notproxy.runpod.net.evil.com/v1")
+    assert not ok("https://myproxy.runpod.net.co/v1")
+
+
+def test_generation_runpod_direct_pod_url_omits_auth_and_stream_options():
+    # The case the pre-RunPod detection could not see: a pod addressed
+    # DIRECTLY is neither loopback nor keyless, so a URL-only test would send
+    # stream_options to a llama.cpp that rejects it. The provider must decide.
+    job = _new_job()
+    captured = []
+    _run_job(
+        job, "runpod",
+        {"apiKey": "", "model": "qwen3.8-IQ4_XS",
+         "baseUrl": "https://abc123-8000.proxy.runpod.net/v1"},
+        [{"role": "user", "content": "hi"}],
+        _FakeStreamResponse(lines=['data: {"choices":[{"delta":{"content":"yo"}}]}', "data: [DONE]"]),
+        captured,
+    )
+    request = captured[0]
+    assert request["url"] == "https://abc123-8000.proxy.runpod.net/v1/chat/completions"
+    assert "Authorization" not in request["headers"]
+    assert "stream_options" not in request["body"]
+    assert job.buffer == "yo"
+
+
+def test_runpod_is_a_supported_provider_needing_no_api_key():
+    assert "runpod" in server_generation.SUPPORTED_PROVIDERS
