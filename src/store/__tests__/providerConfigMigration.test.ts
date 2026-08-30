@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { migrateProvidersConfig } from '../settingsPersistence'
+import { migrateProvidersConfig, loadSavedProvider } from '../settingsPersistence'
 import { DEFAULT_CONFIGS } from '../defaults'
 
 // Adding a provider changes a PERSISTED shape: everyone already has a stored
@@ -65,5 +65,25 @@ describe('provider config migration: adding the runpod provider', () => {
       gemini: { apiKey: 'k', model: 'm', baseUrl: 'b', maxOutputTokens: 1 },
     }))
     expect(merged.runpod.baseUrl).toBe(DEFAULT_CONFIGS.runpod.baseUrl)
+  })
+})
+
+// A provider that can be SELECTED but not RELOADED is worse than one missing:
+// the choice appears to work, then silently reverts on the next visit. This
+// is the enumerated-in-N-places hazard of adding a provider — the AppHeader
+// dropdown and these validation lists were both missed on the first pass.
+describe('loadSavedProvider accepts the runpod provider', () => {
+  beforeEach(() => {
+    localStorage.clear()
+  })
+
+  it('round-trips runpod from localStorage', () => {
+    localStorage.setItem('web_canvas_active_provider', 'runpod')
+    expect(loadSavedProvider()).toBe('runpod')
+  })
+
+  it('still rejects garbage', () => {
+    localStorage.setItem('web_canvas_active_provider', 'not-a-provider')
+    expect(loadSavedProvider()).not.toBe('not-a-provider')
   })
 })

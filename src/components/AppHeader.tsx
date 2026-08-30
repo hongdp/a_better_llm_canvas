@@ -105,6 +105,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="ollama">Ollama</option>
+            <option value="runpod">RunPod</option>
             <option value="grok">Grok (xAI)</option>
           </select>
         </div>
