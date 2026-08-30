@@ -234,14 +234,26 @@ class GenerationJob:
         self.usage = usage
         self.error = error
         self.updated_at = _now_iso()
+        # Prompt-cache result belongs in the same line as the latency it
+        # explains. A turn that lost its cached prefix is otherwise
+        # indistinguishable from a slow model: same log, ten times the wait.
+        prompt_tokens = (usage or {}).get("promptTokens") or 0
+        cached_tokens = (usage or {}).get("cachedPromptTokens")
+        if cached_tokens is not None and prompt_tokens:
+            cache_note = f"cache {cached_tokens}/{prompt_tokens} ({100 * cached_tokens / prompt_tokens:.0f}%)"
+        elif prompt_tokens:
+            cache_note = f"cache n/a, {prompt_tokens} prompt tokens"
+        else:
+            cache_note = "cache n/a"
         logger.info(
-            "Job %s %s: %s chars in, first token %s, reasoning %s chars, output %s chars",
+            "Job %s %s: %s chars in, first token %s, reasoning %s chars, output %s chars, %s",
             self.job_id,
             status,
             self.input_chars,
             f"{self.first_delta_latency:.2f}s" if self.first_delta_latency is not None else "never",
             self.reasoning_chars,
             self.length,
+            cache_note,
         )
         self.finished_at = _monotonic()
         self._publish(self.terminal_event())
@@ -1091,7 +1103,24 @@ async def list_provider_models(request: Request):
             for m in data["models"]
             if isinstance(m, dict) and (m.get("name") or m.get("model"))
         ]
-    return {"models": names}
+
+    # Context window, when the server states it. llama.cpp reports the value it
+    # was actually STARTED with (`-c`), which is the only trustworthy source:
+    # the client cannot infer it, and it changes whenever the model is
+    # relaunched — this endpoint was restarted from 32K to 262144 in one day.
+    # Anything that budgets history against "the model's limit" needs this
+    # number rather than a table that silently goes stale.
+    context_windows: Dict[str, int] = {}
+    if isinstance(data.get("data"), list):
+        for entry in data["data"]:
+            if not isinstance(entry, dict):
+                continue
+            meta = entry.get("meta")
+            n_ctx = meta.get("n_ctx") if isinstance(meta, dict) else None
+            if isinstance(n_ctx, int) and n_ctx > 0 and entry.get("id"):
+                context_windows[str(entry["id"])] = n_ctx
+
+    return {"models": names, "contextWindows": context_windows}
 
 
 @router.get("/api/generate/active")

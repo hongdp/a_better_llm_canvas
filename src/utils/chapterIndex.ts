@@ -1,4 +1,4 @@
-import { htmlToPlainText, truncateWithNotice } from './llmContext'
+import { htmlToPlainText } from './llmContext'
 
 /**
  * Chapter index ("Layer 0") helpers: give the LLM whole-book awareness by
@@ -26,72 +26,6 @@ const LARGE_BOOK_CHAPTER_THRESHOLD = 40
 const LARGE_BOOK_DIGEST_MAX_CHARS = 150
 /** Fallback digest length when a chapter has no generated summary yet. */
 const FALLBACK_DIGEST_CHARS = 300
-/** Chapters shorter than this never need an LLM summary — a text sample is enough. */
-export const MIN_CHARS_FOR_SUMMARY = 1000
-
-/**
- * Which language a summary of this text should be written in.
- *
- * An English "write in the same language as the chapter" instruction mostly
- * works and then occasionally does not: measured on a local Qwen3.8 IQ2_M over
- * a Chinese chapter, three runs gave 83%, 83%, and 0% Chinese — the failure
- * also blowing past the length cap at 1,475 characters. The same instruction
- * written in Chinese gave 82%, 83%, 87% at 352-490 characters. So this exists
- * for CONSISTENCY, not because English instructions force English output; an
- * earlier note here claimed the latter on two samples and was wrong. (Marking
- * the chapter boundary with explicit tags was tested too, and changed
- * nothing.)
- *
- * Deliberately coarse. It only has to pick the instruction sentence, and the
- * script a text is written in is enough for that.
- */
-export type SummaryLanguage = 'zh' | 'ja' | 'ko' | 'other'
-
-export function detectSummaryLanguage(text: string): SummaryLanguage {
-  const sample = (text || '').slice(0, 4000)
-  if (!sample) return 'other'
-  const hangul = (sample.match(/[\uac00-\ud7af]/g) || []).length
-  const kana = (sample.match(/[\u3040-\u30ff]/g) || []).length
-  const han = (sample.match(/[\u4e00-\u9fff]/g) || []).length
-  const cjk = hangul + kana + han
-  // Latin prose with the odd quoted name should not count as CJK.
-  if (cjk / sample.length < 0.1) return 'other'
-  if (hangul > kana && hangul > han / 4) return 'ko'
-  // Kana is the giveaway for Japanese: han alone is shared with Chinese.
-  if (kana > sample.length * 0.05) return 'ja'
-  return han > 0 ? 'zh' : 'other'
-}
-
-
-/**
- * FNV-1a 32-bit content hash, hex-encoded. Not cryptographic — only used to
- * detect that a document's content changed since its summary was generated.
- */
-export function hashDocumentContent(content: string): string {
-  // Hash the READABLE TEXT, not the raw HTML.
-  // Problem: summaries kept going stale without the chapter changing. The
-  //   hash covered markup, so a TipTap re-serialization, a <br>-to-paragraph
-  //   normalization, or an attribute the editor rewrote on load all changed
-  //   it — invalidating a summary whose subject matter was identical, and
-  //   burning a model call to regenerate the same text.
-  // Fix: derive the hash from the plain text with whitespace collapsed. Two
-  //   documents that read the same now hash the same, so a summary survives
-  //   markup churn and only real edits invalidate it.
-  const text = htmlToPlainText(content).replace(/\s+/g, ' ').trim()
-  let hash = 0x811c9dc5
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i)
-    hash = Math.imul(hash, 0x01000193)
-  }
-  return (hash >>> 0).toString(16)
-}
-
-/** A summary is stale when the content no longer matches the hash it was made from. */
-export function isSummaryStale(doc: Pick<IndexableDoc, 'content' | 'summary' | 'summaryContentHash'>): boolean {
-  if (!doc.summary) return true
-  return doc.summaryContentHash !== hashDocumentContent(doc.content)
-}
-
 /**
  * One-line digest of a chapter for the index: the generated summary when
  * present (even if slightly stale — staleness is tolerated by design), else
@@ -109,7 +43,7 @@ export function getChapterDigest(doc: IndexableDoc, maxChars: number = INDEX_DIG
 
 /**
  * Build the CHAPTER INDEX block sent with every request in a multi-chapter
- * book. Returns '' for single-document books (no index, no lookup surface).
+ * book. Returns '' for single-document books, where an index says nothing.
  *
  * Lives in the dynamic context (final user message), NOT the system prompt:
  * the index churns whenever a summary regenerates, and the system prompt's
@@ -130,14 +64,6 @@ export function buildChapterIndex(documents: IndexableDoc[], activeDocumentId: s
 
   return `CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):
 ${lines.join('\n')}`
-}
-
-/**
- * Plain-text sample of a chapter used as the summarizer's input, capped so a
- * giant chapter can't blow up the (cheap) summary call.
- */
-export function buildSummaryInput(doc: IndexableDoc, maxChars: number = 30_000): string {
-  return truncateWithNotice(htmlToPlainText(doc.content), maxChars)
 }
 
 // ── Whole-book mode helpers (escalation ladder, spec §6) ─────────────────────

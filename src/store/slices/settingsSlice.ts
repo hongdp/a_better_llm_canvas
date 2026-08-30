@@ -41,20 +41,22 @@ export interface SettingsSlice {
    */
   availableOllamaModels: string[]
   setAvailableOllamaModels: (models: string[]) => void
+  /**
+   * Context window per model id, as reported by the endpoint itself
+   * (llama.cpp states `n_ctx` on /v1/models). Only the server knows what it
+   * was started with — this endpoint went from 32K to 262144 in one day — so
+   * a reported value always beats the table in utils/contextWindow.ts.
+   */
+  discoveredContextWindows: Record<string, number>
+  setDiscoveredContextWindows: (windows: Record<string, number>) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
-  // Agentic chapter lookup: lets the model request full chapter text
-  // mid-turn via the <lookup> protocol (multi-chapter books only).
-  agenticLookupEnabled: boolean
-  setAgenticLookupEnabled: (enabled: boolean) => void
 
   /**
    * Which provider runs background chapter summaries. 'active' follows the
    * chat provider (the old behaviour); anything else lets a cheap or local
    * model do the drudge work while chat stays on the expensive one.
    */
-  summaryProvider: LLMProvider | 'active'
-  setSummaryProvider: (provider: LLMProvider | 'active') => void
 
   // Image analysis prompt
   imageAnalysisPrompt: string
@@ -114,6 +116,10 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
       set({ availableGrokModels: models })
     },
 
+    discoveredContextWindows: {},
+    setDiscoveredContextWindows: (windows) => {
+      set(state => ({ discoveredContextWindows: { ...state.discoveredContextWindows, ...windows } }))
+    },
     setAvailableOllamaModels: (models) => {
       set({ availableOllamaModels: models })
     },
@@ -129,16 +135,6 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
         saveConfigsToCookie(updatedConfigs)
         return { providerConfigs: updatedConfigs }
       })
-    },
-    summaryProvider: (localStorage.getItem('web_canvas_summary_provider') as LLMProvider | 'active') || 'active',
-    setSummaryProvider: (provider) => {
-      localStorage.setItem('web_canvas_summary_provider', provider)
-      set({ summaryProvider: provider })
-    },
-    agenticLookupEnabled: localStorage.getItem('web_canvas_agentic_lookup') !== 'false',
-    setAgenticLookupEnabled: (enabled) => {
-      localStorage.setItem('web_canvas_agentic_lookup', String(enabled))
-      set({ agenticLookupEnabled: enabled })
     },
     debugMode: initialDebugMode,
     setDebugMode: (enabled) => {

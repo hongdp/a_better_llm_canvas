@@ -1,9 +1,7 @@
-import React, { useMemo, useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Sparkles, FileText } from 'lucide-react'
+import React, { useRef, useState } from 'react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, FileText } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
-import { enqueueSummaryRefresh, subscribeSummaryQueue, type SummaryQueueStatus } from '../services/chapterSummaries'
-import { isSummaryStale, MIN_CHARS_FOR_SUMMARY } from '../utils/chapterIndex'
 import { ImportUrlModal } from './ImportUrlModal'
 import { useTranslation } from '../i18n'
 import { SIDEBAR_WIDTH, clampSize, loadPersistedSize, savePersistedSize } from '../utils/layoutPrefs'
@@ -40,84 +38,12 @@ export const ChaptersSidebar: React.FC = () => {
     isStreaming
   } = useAppStore()
 
-  // Summary queue status — the buttons used to give no feedback at all, so a
-  // press that legitimately queued nothing (every chapter already fresh, or
-  // metadata-only) was indistinguishable from a broken button.
-  const pendingCountRef = useRef(0)
-  const [queueStatus, setQueueStatus] = useState<SummaryQueueStatus>({
-    pending: 0, running: false, waitingForChat: false, lastError: null, completedThisRun: 0
-  })
-  const [summaryNotice, setSummaryNotice] = useState<string | null>(null)
   /**
    * Chapters whose summary is expanded. Until now the summaries were written,
    * synced, injected into every prompt — and visible nowhere, so their quality
    * could not be judged at all.
    */
   const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set())
-  React.useEffect(() => subscribeSummaryQueue((st) => {
-    pendingCountRef.current = st.pending
-    setQueueStatus(st)
-  }), [])
-
-  const [isSummarizing, setIsSummarizing] = useState(false)
-  const handleSummarizeAll = async () => {
-    if (isStreaming || isSummarizing) return
-    setIsSummarizing(true)
-    setSummaryNotice(null)
-    try {
-      const store = useAppStore.getState()
-      // Server books lazy-load chapter content; without this the summarizer
-      // silently skipped every chapter the user had never opened — which is
-      // most of them, and exactly why this button looked dead.
-      await store.ensureDocumentContents(store.documents.map(d => d.id))
-      const fresh = useAppStore.getState().documents
-      // Existing summaries are only refreshed when the CONTENT changed, so a
-      // prompt change (language, length) never reaches them on its own. Offer
-      // the rebuild rather than forcing it: on a paid provider this is one
-      // call per chapter, and the user picks which provider pays.
-      const alreadySummarized = fresh.filter(d => d.summary).length
-      const rebuild = alreadySummarized > 0 &&
-        confirm(t.sidebar.rebuildSummariesConfirm.replace('{count}', String(alreadySummarized)))
-      const before = pendingCountRef.current
-      fresh.forEach(d => enqueueSummaryRefresh(d.id, rebuild))
-      const queued = pendingCountRef.current - before
-      setSummaryNotice(
-        queued > 0
-          ? t.sidebar.summaryQueued.replace('{count}', String(queued))
-          : t.sidebar.summaryNothing
-      )
-    } catch (err) {
-      console.error('Failed to queue summaries', err)
-      setSummaryNotice(t.sidebar.summaryFailed)
-    } finally {
-      setIsSummarizing(false)
-    }
-  }
-
-  const handleSummarizeOne = async (docId: string) => {
-    if (isStreaming) return
-    setSummaryNotice(null)
-    const store = useAppStore.getState()
-    await store.ensureDocumentContents([docId])
-    const before = pendingCountRef.current
-    enqueueSummaryRefresh(docId, true)
-    setSummaryNotice(
-      pendingCountRef.current > before ? t.sidebar.summaryQueuedOne : t.sidebar.summaryTooShort
-    )
-  }
-
-  // Summary staleness per chapter, recomputed only when the documents array
-  // changes. Problem: calling isSummaryStale(doc) inline in the row JSX
-  //   hashed each chapter's FULL content twice per render — and this
-  //   component re-renders on every store change (each selection tick,
-  //   keystroke, ...), which froze the UI on large books.
-  // Fix: memoize on the documents identity; renders triggered by unrelated
-  //   store changes reuse the cached map.
-  const summaryStaleById = useMemo(() => {
-    const stale = new Map<string, boolean>()
-    for (const doc of documents) stale.set(doc.id, isSummaryStale(doc))
-    return stale
-  }, [documents])
 
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
   const [pendingChapters, setPendingChapters] = useState<{ title: string; content: string }[]>([])
@@ -365,20 +291,7 @@ export const ChaptersSidebar: React.FC = () => {
           <BookOpen size={16} style={{ color: 'var(--text-secondary)' }} />
           <h2>Chapters</h2>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-          {documents.length > 1 && (
-            <button
-              onClick={handleSummarizeAll}
-              disabled={isStreaming || isSummarizing}
-              className="btn-icon"
-              title={t.sidebar.summarizeAll}
-              type="button"
-              style={{ padding: '0.25rem' }}
-            >
-              {isSummarizing || queueStatus.running ? <RefreshCw size={15} className="animate-spin" /> : <Sparkles size={15} />}
-            </button>
-          )}
-          <button
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>          <button
             onClick={toggleSidebar}
             className="btn-icon"
             title={t.sidebar.collapse}
@@ -439,28 +352,6 @@ export const ChaptersSidebar: React.FC = () => {
         )}
       </div>
 
-      {(queueStatus.running || queueStatus.pending > 0 || summaryNotice || queueStatus.lastError) && (
-        <div className="summary-status-strip">
-          {queueStatus.waitingForChat && queueStatus.pending > 0 ? (
-            // Waiting is not summarizing: saying "Summarizing…" here made a
-            // paused queue look wedged for the length of a chat generation.
-            <span>
-              <RefreshCw size={11} />{' '}
-              {t.sidebar.summaryWaitingForChat.replace('{pending}', String(queueStatus.pending))}
-            </span>
-          ) : queueStatus.running || queueStatus.pending > 0 ? (
-            <span>
-              <RefreshCw size={11} className="animate-spin" />{' '}
-              {t.sidebar.summaryProgress
-                .replace('{done}', String(queueStatus.completedThisRun))
-                .replace('{pending}', String(queueStatus.pending))}
-            </span>
-          ) : (
-            <span>{queueStatus.lastError ? `⚠️ ${queueStatus.lastError.slice(0, 80)}` : summaryNotice}</span>
-          )}
-        </div>
-      )}
-
       <div className="chapters-list">
         {documents.map((doc, idx) => {
           const isActive = doc.id === activeDocumentId
@@ -505,9 +396,6 @@ export const ChaptersSidebar: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
                 onDragStart={(e) => e.stopPropagation()}
               >
-                {/* Metadata-only chapters get the button too: the handler
-                    loads the content first. Hiding it there was why most
-                    chapters offered no way to summarize them at all. */}
                 {doc.summary && (
                   <button
                     onClick={() => setExpandedSummaries(prev => {
@@ -522,20 +410,7 @@ export const ChaptersSidebar: React.FC = () => {
                   >
                     <FileText size={13} />
                   </button>
-                )}
-                {(doc.contentLoaded === false || doc.content.length >= MIN_CHARS_FOR_SUMMARY) && (
-                  <button
-                    onClick={() => { void handleSummarizeOne(doc.id) }}
-                    disabled={isStreaming}
-                    className="btn-icon chapter-action-btn"
-                    title={summaryStaleById.get(doc.id) ? t.sidebar.refreshSummaryStale : t.sidebar.refreshSummary}
-                    type="button"
-                    style={{ padding: '0.15rem' }}
-                  >
-                    <Sparkles size={13} style={summaryStaleById.get(doc.id) ? { color: 'var(--accent)' } : undefined} />
-                  </button>
-                )}
-                <button
+                )}                <button
                   onClick={() => handleMoveUp(idx)}
                   disabled={idx === 0 || isStreaming}
                   className="btn-icon chapter-action-btn move-up"

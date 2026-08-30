@@ -4,7 +4,7 @@
  * Server book loads only fetch chapter METADATA (contentLoaded: false); full
  * content arrives on demand. Before this module existed, the only fetch point
  * was opening a chapter — so pinning an unopened chapter, whole-book mode, and
- * the Layer 2 lookup loop all silently skipped chapters the user never opened
+ * the whole-book paths all silently skipped chapters the user never opened
  * (the context selector's `attachable()` drops empty docs). The store's
  * `ensureDocumentContents` action wraps these helpers to close that hole.
  */

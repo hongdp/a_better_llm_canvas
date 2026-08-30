@@ -169,7 +169,6 @@ beforeEach(() => {
     isStreaming: false,
     user: { username: 'alice' },
     activeBookId: 'book-test',
-    agenticLookupEnabled: false,
     wholeBookMode: 'off',
     pinnedReferenceIds: [],
     blockedReferenceIds: [],

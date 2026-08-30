@@ -84,56 +84,6 @@ export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
   }
 }
 
-/** Parsed agentic chapter-lookup request (see smart_context_selection.md §5). */
-export interface LookupRequest {
-  /** Requested chapter titles, as copied from the CHAPTER INDEX. */
-  titles: string[]
-  /** True when the model requested every chapter (chapters="*"). */
-  wantsAll: boolean
-  /** The model's stated reason (may be empty). */
-  reason: string
-}
-
-/**
- * Parse a `<lookup chapters="A; B" reason="..."></lookup>` request from an
- * LLM response. The protocol asks for the tag to be the ENTIRE response, but
- * the parser tolerates a little surrounding prose. Returns null when:
- * - there is no lookup tag;
- * - the response also contains a real action tag (<canvas>/<edit>/
- *   <selection_replace>) — a content response always wins over a lookup;
- * - substantial prose surrounds the tag (it was likely commentary, and
- *   treating the response as a lookup would discard a real answer).
- */
-export function parseLookupRequest(text: string): LookupRequest | null {
-  const tagMatch = /<lookup\b([^>]*?)\/?>(?:\s*<\/lookup\s*>)?/i.exec(text)
-  if (!tagMatch) return null
-
-  if (/<canvas\b|<selection_replace\b|<edit\b|<{5,}\s*SEARCH/i.test(text.replace(tagMatch[0], ''))) {
-    return null
-  }
-
-  const surrounding = (text.substring(0, tagMatch.index) + text.substring(tagMatch.index + tagMatch[0].length)).trim()
-  if (surrounding.length > 400) return null
-
-  const attrs = tagMatch[1]
-  const chaptersMatch = /chapters\s*=\s*"([^"]*)"/i.exec(attrs) || /chapters\s*=\s*'([^']*)'/i.exec(attrs)
-  const reasonMatch = /reason\s*=\s*"([^"]*)"/i.exec(attrs) || /reason\s*=\s*'([^']*)'/i.exec(attrs)
-  const chaptersRaw = (chaptersMatch?.[1] ?? '').trim()
-  if (!chaptersRaw) return null
-
-  if (chaptersRaw === '*') {
-    return { titles: [], wantsAll: true, reason: reasonMatch?.[1]?.trim() ?? '' }
-  }
-
-  const titles = chaptersRaw
-    .split(/;|\n/)
-    .map(t => t.trim().replace(/^["']|["']$/g, ''))
-    .filter(Boolean)
-  if (titles.length === 0) return null
-
-  return { titles, wantsAll: false, reason: reasonMatch?.[1]?.trim() ?? '' }
-}
-
 /**
  * Detect explicit "elision" / lazy-omission markers in an LLM-produced document
  * replacement. When asked to re-emit a long document, models often abbreviate

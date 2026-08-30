@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { detectSummaryLanguage,
-  hashDocumentContent,
-  isSummaryStale,
-  getChapterDigest,
+import {  getChapterDigest,
   buildChapterIndex,
-  buildSummaryInput,
   extractHeadingTree,
   buildWholeBookDigest,
   packChaptersIntoBatches,
@@ -18,49 +14,7 @@ const makeDoc = (overrides: Partial<IndexableDoc> = {}): IndexableDoc => ({
   ...overrides
 })
 
-// ── hashDocumentContent ───────────────────────────────────────────────────────
-describe('hashDocumentContent', () => {
-  it('is deterministic for the same content', () => {
-    expect(hashDocumentContent('hello world')).toBe(hashDocumentContent('hello world'))
-  })
 
-  it('differs for different content', () => {
-    expect(hashDocumentContent('hello world')).not.toBe(hashDocumentContent('hello world!'))
-  })
-
-  it('handles empty and unicode content', () => {
-    expect(hashDocumentContent('')).toMatch(/^[0-9a-f]+$/)
-    expect(hashDocumentContent('第一章：起源')).toMatch(/^[0-9a-f]+$/)
-    expect(hashDocumentContent('第一章：起源')).not.toBe(hashDocumentContent('第二章：渡河'))
-  })
-})
-
-// ── isSummaryStale ────────────────────────────────────────────────────────────
-describe('isSummaryStale', () => {
-  it('is stale when there is no summary', () => {
-    expect(isSummaryStale(makeDoc())).toBe(true)
-  })
-
-  it('is fresh when the hash matches current content', () => {
-    const doc = makeDoc()
-    doc.summary = 'Riva finds an archive.'
-    doc.summaryContentHash = hashDocumentContent(doc.content)
-    expect(isSummaryStale(doc)).toBe(false)
-  })
-
-  it('is stale after the content changes', () => {
-    const doc = makeDoc()
-    doc.summary = 'Riva finds an archive.'
-    doc.summaryContentHash = hashDocumentContent(doc.content)
-    doc.content += '<p>New paragraph.</p>'
-    expect(isSummaryStale(doc)).toBe(true)
-  })
-
-  it('is stale when a summary exists but the hash is missing', () => {
-    const doc = makeDoc({ summary: 'Some summary' })
-    expect(isSummaryStale(doc)).toBe(true)
-  })
-})
 
 // ── getChapterDigest ──────────────────────────────────────────────────────────
 describe('getChapterDigest', () => {
@@ -137,21 +91,6 @@ describe('buildChapterIndex', () => {
   })
 })
 
-// ── buildSummaryInput ─────────────────────────────────────────────────────────
-describe('buildSummaryInput', () => {
-  it('converts HTML to plain text', () => {
-    const input = buildSummaryInput(makeDoc())
-    expect(input).not.toContain('<h1>')
-    expect(input).toContain('Origins')
-  })
-
-  it('truncates giant chapters with an explicit notice', () => {
-    const doc = makeDoc({ content: `<p>${'z'.repeat(50_000)}</p>` })
-    const input = buildSummaryInput(doc, 10_000)
-    expect(input.length).toBeLessThan(11_000)
-    expect(input).toContain('[truncated')
-  })
-})
 
 // ── extractHeadingTree ────────────────────────────────────────────────────────
 describe('extractHeadingTree', () => {
@@ -210,61 +149,5 @@ describe('packChaptersIntoBatches', () => {
 
   it('returns empty for no docs', () => {
     expect(packChaptersIntoBatches([], 100)).toEqual([])
-  })
-})
-
-// ── hash stability across markup churn ────────────────────────────────────────
-describe('hashDocumentContent stability', () => {
-  it('ignores markup differences that do not change the reading text', () => {
-    const a = '<p>第一行</p><p>第二行</p>'
-    const b = '<p>第一行<br>第二行</p>'          // before <br> normalization
-    const c = '<p class="x">第一行</p>\n<p>第二行</p>' // editor re-serialization
-    expect(hashDocumentContent(b)).toBe(hashDocumentContent(a))
-    expect(hashDocumentContent(c)).toBe(hashDocumentContent(a))
-  })
-
-  it('still changes when the actual text changes', () => {
-    expect(hashDocumentContent('<p>原文</p>')).not.toBe(hashDocumentContent('<p>改过的原文</p>'))
-  })
-
-  it('a summary survives a markup-only rewrite', () => {
-    const doc = makeDoc({ content: '<p>甲<br>乙</p>' })
-    doc.summary = 'S'
-    doc.summaryContentHash = hashDocumentContent(doc.content)
-    doc.content = '<p>甲</p><p>乙</p>' // what normalization produces
-    expect(isSummaryStale(doc)).toBe(false)
-  })
-})
-
-// ── detectSummaryLanguage ────────────────────────────────────────────────────
-// Picks which instruction to send. An English "same language as the chapter"
-// instruction mostly works and then occasionally does not — measured 83%, 83%,
-// 0% Chinese across three runs, the failure also blowing the length cap — while
-// the Chinese instruction held at 82-87%. This buys consistency, not capability.
-describe('detectSummaryLanguage', () => {
-  it('recognises Chinese prose', () => {
-    expect(detectSummaryLanguage('垃圾站的晨昏线没有晨，也没有昏。太阳只是一块被滤镜削薄的白斑。')).toBe('zh')
-  })
-
-  it('separates Japanese from Chinese by kana, not by han', () => {
-    // Han characters alone are shared; the kana is the giveaway.
-    expect(detectSummaryLanguage('彼は宇宙船の中で目を覚ました。窓の外には星が流れていた。')).toBe('ja')
-  })
-
-  it('recognises Korean', () => {
-    expect(detectSummaryLanguage('그는 우주선 안에서 눈을 떴다. 창밖으로 별이 흐르고 있었다.')).toBe('ko')
-  })
-
-  it('leaves Latin prose to the English instruction', () => {
-    expect(detectSummaryLanguage('The junkyard had no dawn and no dusk, only a filtered white smear.')).toBe('other')
-  })
-
-  it('is not fooled by a stray CJK name in English prose', () => {
-    // A quoted name must not flip a whole English chapter to a Chinese prompt.
-    expect(detectSummaryLanguage('Shen Jianchuan (沈见川) worked the night shift at the orbital junkyard for fourteen months, and never once spoke of it.')).toBe('other')
-  })
-
-  it('handles empty input', () => {
-    expect(detectSummaryLanguage('')).toBe('other')
   })
 })
