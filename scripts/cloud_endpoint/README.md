@@ -76,7 +76,7 @@ big for 96 GB:
 | mazinb NVFP4 | 173.6 GiB | no |
 | dealignai NVFP4 | 125.9 GiB | no |
 | FP8 | 172.8 GiB | no |
-| **IQ3_XXS GGUF** | **79.3 GiB** | **yes**, ~16 GiB left for KV |
+| **IQ3_XXS GGUF** | **79.3 GiB** | **yes** — and by a wider margin than expected, see Measured |
 
 The "NVFP4" repos are not 4-bit in any useful sense — they are the size of the
 FP8 export. Checked against the Hugging Face blob listing, not assumed.
@@ -84,6 +84,93 @@ FP8 export. Checked against the Hugging Face blob listing, not assumed.
 llama.cpp is also the stack already proven on this architecture: the CUDA path
 was measured end to end on the workstation. vLLM's path here has never been
 run.
+
+### Which "RTX 6000 Pro" — the catalog lists three
+
+They are not interchangeable, and the cheapest is the one you cannot get. From
+RunPod's catalog API, all three 96 GB:
+
+| `gpuTypeIds` value | secure | community | stock | host CUDA |
+|---|---|---|---|---|
+| `NVIDIA RTX PRO 6000 Blackwell Server Edition` | **$2.09** | $1.69 | **HIGH** | 13.2 |
+| `NVIDIA RTX PRO 6000 Blackwell Workstation Edition` | $1.89 | $1.69 | LOW, `EU-CZ-1` only | 13.0 |
+| `NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition` | $0.50 | $1.64 | **NONE** | — |
+
+**Server Edition** is the one to ask for: it is the only one with real stock,
+and its $2.09 is the number the cost table above is built on. The Workstation
+Edition's $1.89 saves 10% but exists in one data centre at LOW availability —
+a wake that cannot find a card is not a wake.
+
+Ask for it by the exact id, not the display name (`RTX PRO 6000` and
+`RTX PRO 6000 WK` both render as "RTX 6000 Pro" in conversation, and they are
+different machines).
+
+## Measured — 2026-08-30
+
+Rented an RTX PRO 6000 Server Edition for 46 minutes (**$1.60**), ran
+`validate_pod.sh` then `measure.py`, deleted the pod. No network volume was
+created. Both questions came back yes, and one by much more than expected.
+
+| | workstation | this pod | |
+|---|---|---|---|
+| context | 262144 | **262144** | full — the *first* rung of the ladder held |
+| cold prefill | 137 tok/s | **2540 tok/s** | **18.5×** |
+| generation | 18.8 tok/s | **110.5 tok/s** | **5.9×** |
+
+VRAM at 262144 context: **59,727 MiB of 97,887**. Not a squeeze — 37 GiB spare.
+
+On a prompt the shape the app actually sends (36,442 tokens of a book-sized
+sticky prefix):
+
+| | prefill | |
+|---|---|---|
+| cold, first send | **11.78 s** | 3,094 tok/s |
+| same prefix, new question | **0.25 s** | 35,926 of 36,442 tokens served from cache |
+
+That 47× gap is the single most important number here, and it is what the
+serverless question below turns on.
+
+Output was checked for coherence, not just speed — the model returns
+well-formed Chinese prose, so the rates above are measuring real work.
+
+### Why it fits so easily: the PLE table never goes to the GPU
+
+The 96 GB card is not holding 79 GiB of weights. It is holding 52.5.
+
+This architecture (`qwen4exp`) carries a **per-layer embedding table indexed by
+3-grams** — 16 heads, ~20 million entries each:
+
+```
+qwen4exp.ple.ngram_size        = 3
+qwen4exp.ple.heads_per_ngram   = 8
+qwen4exp.ple.head_vocab_sizes  = [20000003, 20000023, ... ]   # 16 heads
+```
+
+It is by far the largest tensor in the file, and llama.cpp leaves it on the
+host, mmap'd, because a sparse lookup does not belong in VRAM:
+
+| | GiB |
+|---|---|
+| `per_layer_token_embd.weight` — the n-gram table | **26.82** |
+| expert FFN (`ffn_down/gate/up_exps`) | 49.81 |
+| everything else | 2.71 |
+| **total on disk** | **79.34** |
+| **of which sent to VRAM** | **52.52** |
+
+52.52 GiB of weights + 5.81 GiB of KV and compute buffers = 58.33 GiB, which is
+the 59,727 MiB `nvidia-smi` reports. The accounting closes.
+
+**This is why the full 262144 context fits**, and the earlier "~16 GiB left for
+KV" guess was wrong: a quarter of the model was never going to compete with the
+KV cache for VRAM in the first place.
+
+**It also puts a condition on the network-volume plan.** Those 26.82 GiB are
+read by random per-token lookups out of an mmap'd file. On this pod that file
+sat on a local container disk behind 1.5 TB of page cache, which is the
+best case. Put the GGUF on a network volume and the same lookups become network
+storage reads until the page cache is warm. Before committing to the volume,
+confirm the pod tier you rent has enough RAM to cache 27 GiB — and treat the
+first request after a wake as slower than the 11.78 s measured here.
 
 ## Cost, honestly
 
@@ -120,12 +207,54 @@ awake seconds.
 
 ## Setup — RunPod
 
-0. **Validate first, before creating anything that bills monthly.** Rent an
-   RTX 6000 Pro pod with a container disk, run `validate_pod.sh` on it, then
-   `measure.py` against it. About two dollars, and it answers the only two
-   questions that matter: does 79 GiB of weights leave a usable context on a
-   96 GB card, and is prefill actually faster than the workstation's. See
-   "Storage is the monthly floor" below for why this step comes first.
+0. **Validate first, before creating anything that bills monthly.** ✅ **Done
+   2026-08-30 — see "Measured" above. $1.60, pod deleted, no volume created.**
+   Kept here because it is the step to repeat if the model or the card changes.
+   Rent an
+   RTX 6000 Pro pod with a **container** disk (not a network volume), run
+   `validate_pod.sh` on it, then `measure.py` against it. About two dollars,
+   and it answers the only two questions that matter: does 79 GiB of weights
+   leave a usable context on a 96 GB card, and is prefill actually faster than
+   the workstation's. See "Storage is the monthly floor" below for why this
+   step comes first.
+
+   The exact pod, pre-checked against the catalog:
+
+   | field | value |
+   |---|---|
+   | `gpuTypeIds` | `["NVIDIA RTX PRO 6000 Blackwell Server Edition"]` |
+   | `cloudType` | `SECURE` |
+   | `imageName` | `runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404` |
+   | `containerDiskInGb` | `200` (79 GiB of weights + the build, with room) |
+   | `ports` | `["8000/http", "22/tcp"]` |
+   | `sshPublicKey` | contents of `~/.ssh/id_rsa.pub` |
+
+   Then, on the pod — the two slow steps run concurrently, so this is one
+   wait of ~20 minutes rather than two of ~15:
+
+   ```bash
+   HF_TOKEN=$(cat ~/.cache/huggingface/token) bash validate_pod.sh
+   ```
+
+   **This needs a funded RunPod balance.** A zero-balance account fails the
+   create with `402 Payment Required` after every catalog call has succeeded,
+   so the key looking fine proves nothing about whether a pod can start.
+
+   **SSH in on the *direct* endpoint, not the proxy.** A pod created with
+   `sshPublicKey` gets that key in its `PUBLIC_KEY` env, which only the direct
+   endpoint honours:
+
+   | | authenticates against | works here |
+   |---|---|---|
+   | `ssh <id>-<hash>@ssh.runpod.io` | keys in RunPod **account settings** | no |
+   | `ssh root@<ip> -p <port>` | the pod's **`PUBLIC_KEY`** | **yes** |
+
+   `ssh.direct` is `null` in the create response and only appears once
+   `runtime` does (~5 min), so re-read the pod rather than using the proxy
+   command the create handed back. And never poll with stderr suppressed: the
+   proxy's `Permission denied (publickey)` is instant and permanent, but with
+   `2>/dev/null` it is indistinguishable from "still booting" and a retry loop
+   will burn its whole budget on it.
 
 1. **Create the pod** in the RunPod console (once): an RTX 6000 Pro, a network
    volume big enough for the weights (~80 GB) plus llama.cpp, and HTTP port
@@ -199,7 +328,7 @@ awake seconds.
   request does.
 - **One VM.** Two browsers hitting it at once is fine; two VMs is not modelled.
 
-## Consider Serverless first — it probably beats this
+## Serverless — considered, and it loses on the prefix cache
 
 RunPod Serverless does the wake and the sleep itself. Checked against what
 people actually run: a light Docker image containing `llama-server`, the GGUF
@@ -210,22 +339,73 @@ Qwen GGUFs among them) to copy from.
 | | this proxy + a pod | serverless |
 |---|---|---|
 | lifecycle | our code, our bugs | the platform's |
-| billing | per second running | per second running |
+| **rate** | **$2.09/h** | **$3.49/h — 67% more for the same card** |
+| **what is billed** | wall-clock while running | **only while a request executes** |
 | **storage floor** | network volume, ~$10/mo | **the same volume, same $10** |
 | cold start | boot the machine, then load | **60–90s** — image cached, weights on the volume |
 | work to build | a shell script on the pod | **a Docker image with a handler** |
 
-Two things that surprised us. The storage floor does not go away: the weights
-have to sit on a network volume either way, or every cold start re-downloads
-79 GiB. And serverless's cold start is *faster* than this proxy's, because
-nothing has to boot — the worker is placed onto an image that is already
-cached.
+Three things that surprised us.
 
-So serverless is the better default for this workload. This proxy earns its
-place for the other one: a whole GPU machine you occasionally need for
-something that is not an inference endpoint — which is what the mahjong
-project wants — or when you would rather keep one pod warm across a writing
-afternoon than pay a cold start whenever you pause to think.
+The storage floor does not go away: the weights have to sit on a network
+volume either way, or every cold start re-downloads 79 GiB. And serverless's
+cold start is *faster* than this proxy's, because nothing has to boot — the
+worker is placed onto an image that is already cached.
+
+**Serverless is not the same price per second.** An earlier draft of this table
+claimed both bill "per second running", which made serverless look like a free
+win. It is $3.49/h against the pod's $2.09/h for an RTX PRO 6000 — confirmed
+against both RunPod's catalog API (`price.serverless`) and the public pricing
+page. What makes it cheaper anyway is the *other* half of that row: a pod bills
+wall-clock from boot to stop, so it charges for the writer's thinking time,
+while serverless charges only while a request is actually executing.
+
+### Scaling to zero throws away the prefix cache
+
+This is the part that decides it, and it is now measured. llama.cpp keeps the
+KV of a shared prompt prefix **in the worker's memory**. The app's sticky
+whole-book prefix is byte-identical turn over turn, so on a warm server the
+second and every later turn skips the prefill entirely:
+
+| | prefill | to first token |
+|---|---|---|
+| warm — prefix still cached | **0.25 s** | immediate |
+| cold — cache gone | **11.78 s** | plus a 60–90 s worker cold start |
+
+A network volume persists *files*, not process memory. When a serverless worker
+scales to zero the process dies and that cache dies with it. **A 5-second idle
+timeout therefore discards it on every pause longer than five seconds** — which
+is every pause, since a writer reads the reply before answering. Each turn then
+pays the cold column: a cold start, then 11.78 s of prefill that a warm server
+would have skipped.
+
+So the two configurations are not a cost trade-off, they are a different
+product:
+
+| 1 h session, 20 turns, ~2 min of thinking between them | billed | first token |
+|---|---|---|
+| **pod, warm throughout** ($2.09/h) | 1 h + 15 min tail = **$2.61** | **0.25 s** |
+| serverless, 5 s idle ($3.49/h) | only executing time — **cheaper** | **60–90 s, every turn** |
+| serverless, idle long enough to hold the cache | wall-clock at $3.49/h = **$3.78** | 0.25 s |
+
+Serverless is cheaper **only** in the configuration that destroys the cache, and
+the configuration that preserves it costs more than the pod for the same
+wall-clock. The rate premium and the cache are the same problem seen twice.
+
+**What is still a guess:** whether RunPod bills flex-worker cold-start time, and
+the real duty cycle of a writing session (turns per hour, gap lengths). Both
+shift the middle row. The prefill numbers above are measured; that row's
+"cheaper" is not quantified.
+
+So the earlier verdict is reversed. **A warm pod is the right default for
+this workload** — it is the cheaper of the two ways to keep a prefix cache
+alive, and this app's whole performance story is that cache. Serverless stays
+the better answer for a stateless endpoint, where there is no prefix to lose.
+
+That also means the wake proxy is doing real work rather than duplicating the
+platform: holding one pod warm across a writing session, and stopping it when
+the session ends, is exactly the lifecycle serverless will not give us at this
+price.
 
 ## Tests
 
