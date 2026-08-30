@@ -14,7 +14,6 @@
  * and reordered, since their order came from a score recomputed per prompt —
  * on every single turn.
  */
-import { useAppStore } from '../../store/useAppStore'
 import { stripDiffMarkup } from '../../utils/diff'
 import { truncateWithNotice, htmlToPlainText } from '../../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest } from '../../utils/chapterIndex'
@@ -22,6 +21,19 @@ import type { LLMMessage } from '../../types/llm'
 
 // Per-document cap for read-only reference documents attached as context.
 const MAX_REFERENCE_DOC_CHARS = 20_000
+
+/**
+ * What rendering needs from a document. Passed in rather than read from the
+ * store: these functions decide what the model sees, so they must be callable
+ * — and assertable — outside a running app. The acceptance harness in
+ * scripts/acceptance builds real prompts with them.
+ */
+export interface RenderableDoc {
+  id: string
+  title: string
+  content: string
+  summary?: string
+}
 
 /**
  * Whole-book options: `perDocChars` lifts the per-doc cap for Rung 1
@@ -48,15 +60,15 @@ export function renderLedgerChapter(title: string, content: string, perDocChars:
  * Returns [] for an empty ledger so the caller can spread it unconditionally.
  */
 export function buildLedgerMessages(
+  documents: RenderableDoc[],
   ledgerIds: string[],
   perDocChars: number = MAX_REFERENCE_DOC_CHARS
 ): LLMMessage[] {
   if (ledgerIds.length === 0) return []
-  const s = useAppStore.getState()
 
   const chapters = ledgerIds
     .map(id => {
-      const doc = s.documents.find(d => d.id === id)
+      const doc = documents.find(d => d.id === id)
       return doc ? renderLedgerChapter(doc.title, doc.content, perDocChars) : ''
     })
     .filter(Boolean)
@@ -90,21 +102,21 @@ export function buildLedgerMessages(
  * are copied from current bytes.
  */
 export function buildVolatileTail(
+  documents: RenderableDoc[],
+  activeDocumentId: string | null,
   selectedText: string,
   preserveImages: (html: string) => string,
   opts?: DynamicContextOptions
 ): string {
-  const s = useAppStore.getState()
-
   const chapterIndex = opts?.includeWholeBookDigest
-    ? buildWholeBookDigest(s.documents, s.activeDocumentId)
-    : buildChapterIndex(s.documents, s.activeDocumentId)
+    ? buildWholeBookDigest(documents, activeDocumentId)
+    : buildChapterIndex(documents, activeDocumentId)
   let chapterIndexBlock = chapterIndex ? `${chapterIndex}\n\n` : ''
   if (opts?.notesBlock) {
     chapterIndexBlock += `BOOK ANALYSIS NOTES (compiled by reading every chapter of this book in batches for this request — treat them as your own reading of the full text):\n${opts.notesBlock}\n\n`
   }
 
-  const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
+  const activeDoc = documents.find(d => d.id === activeDocumentId)
   // Review markup must not reach the model: it copies `<ins class=
   // "diff-addition">` into an edit's search string, which stops matching the
   // instant the user accepts or rejects that diff (observed on a real turn).
@@ -138,13 +150,13 @@ ${cleanActiveContent}
  * call, so there is no cross-turn prefix to protect.
  */
 export function buildInlineReferenceBlock(
+  documents: RenderableDoc[],
   referenceIds: string[],
   perDocChars: number
 ): string {
-  const s = useAppStore.getState()
   const body = referenceIds
     .map(id => {
-      const doc = s.documents.find(d => d.id === id)
+      const doc = documents.find(d => d.id === id)
       return doc ? renderLedgerChapter(doc.title, doc.content, perDocChars) : ''
     })
     .filter(Boolean)

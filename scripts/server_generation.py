@@ -234,14 +234,26 @@ class GenerationJob:
         self.usage = usage
         self.error = error
         self.updated_at = _now_iso()
+        # Prompt-cache result belongs in the same line as the latency it
+        # explains. A turn that lost its cached prefix is otherwise
+        # indistinguishable from a slow model: same log, ten times the wait.
+        prompt_tokens = (usage or {}).get("promptTokens") or 0
+        cached_tokens = (usage or {}).get("cachedPromptTokens")
+        if cached_tokens is not None and prompt_tokens:
+            cache_note = f"cache {cached_tokens}/{prompt_tokens} ({100 * cached_tokens / prompt_tokens:.0f}%)"
+        elif prompt_tokens:
+            cache_note = f"cache n/a, {prompt_tokens} prompt tokens"
+        else:
+            cache_note = "cache n/a"
         logger.info(
-            "Job %s %s: %s chars in, first token %s, reasoning %s chars, output %s chars",
+            "Job %s %s: %s chars in, first token %s, reasoning %s chars, output %s chars, %s",
             self.job_id,
             status,
             self.input_chars,
             f"{self.first_delta_latency:.2f}s" if self.first_delta_latency is not None else "never",
             self.reasoning_chars,
             self.length,
+            cache_note,
         )
         self.finished_at = _monotonic()
         self._publish(self.terminal_event())

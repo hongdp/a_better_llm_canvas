@@ -15,6 +15,24 @@ export interface ChatSlice {
   sessionInputTokens: number
   sessionOutputTokens: number
   sessionCacheHitTokens: number
+  /**
+   * The LAST turn's cache result. Session totals hide a single collapsed turn:
+   * a prompt that lost its prefix and re-read 60k characters still leaves the
+   * cumulative hit rate looking healthy. Every cache regression in this app so
+   * far was invisible for exactly that reason.
+   */
+  lastTurnCache: {
+    provider: string
+    promptTokens: number
+    cachedTokens: number | null
+    firstTokenMs: number | null
+  } | null
+  setLastTurnCache: (record: {
+    provider: string
+    promptTokens: number
+    cachedTokens: number | null
+    firstTokenMs: number | null
+  }) => void
   sessionCacheMissTokens: number
   addSessionTokens: (input: number, output: number, cacheHit?: number) => void
   resetSessionTokens: () => void
@@ -50,6 +68,8 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set) 
   sessionInputTokens: 0,
   sessionOutputTokens: 0,
   sessionCacheHitTokens: 0,
+  lastTurnCache: null,
+  setLastTurnCache: (record) => set({ lastTurnCache: record }),
   sessionCacheMissTokens: 0,
   addSessionTokens: (input, output, cacheHit = 0) => set((state) => {
     // Clamp defensively: providers report input/cached tokens in different

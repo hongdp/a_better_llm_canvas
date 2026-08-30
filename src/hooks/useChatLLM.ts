@@ -21,6 +21,7 @@ import {
   historyBudgetChars,
   cjkRatioOf
 } from '../utils/contextWindow'
+import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
 import type { HistorySourceMessage, LedgerConsentRequest, LedgerConsentChoice } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
@@ -236,6 +237,11 @@ export function useChatLLM({
   // text, and a different model is a different cache entirely — in both cases
   // the prefix we think is hot does not exist, so the ledger starts over.
   const ledgerScopeRef = useRef<string>('')
+  // Time-to-first-token for the turn in flight. On a local endpoint this is
+  // the ONLY cache signal — llama.cpp reports no cached-token count, and a
+  // lost prefix shows up purely as prefill time.
+  const turnStartedAtRef = useRef<number>(0)
+  const firstTokenAtRef = useRef<number>(0)
   // Reasoning display state: a tail (thinking can run to thousands of chars)
   // painted at most a few times a second (it arrives token by token).
   const reasoningTailRef = useRef('')
@@ -315,7 +321,14 @@ export function useChatLLM({
   // this wrapper binds the current selection and the per-request
   // image-placeholder registry.
   const buildTail = useCallback((opts?: DynamicContextOptions): string => {
-    return buildVolatileTail(selectedText, preserveImagesWithPlaceholders, opts)
+    const s = useAppStore.getState()
+    return buildVolatileTail(
+      s.documents,
+      s.activeDocumentId,
+      selectedText,
+      preserveImagesWithPlaceholders,
+      opts
+    )
   }, [selectedText, preserveImagesWithPlaceholders])
 
   // Whole-book Rung 2 batched read (implementation in chat/wholeBook). The
@@ -400,6 +413,7 @@ export function useChatLLM({
         }
       },
       onReasoning: (text: string) => {
+        if (firstTokenAtRef.current === 0) firstTokenAtRef.current = Date.now()
         // Thinking, shown live so a minute of reasoning is not dead air.
         // Throttled and tail-only: this fires per delta, and the store drives
         // the whole chat panel's rendering.
@@ -410,6 +424,7 @@ export function useChatLLM({
         useAppStore.getState().setStreamingReasoning(reasoningTailRef.current)
       },
       onChunk: (chunk: string) => {
+        if (firstTokenAtRef.current === 0) firstTokenAtRef.current = Date.now()
         // The first visible token ends the thinking display.
         if (reasoningTailRef.current) {
           reasoningTailRef.current = ''
@@ -508,6 +523,15 @@ export function useChatLLM({
 
         // Every round costs — account before deciding whether to continue.
         s.addSessionTokens(finalInputTokens, finalOutputTokens, cacheHits)
+        // …and record THIS turn, because session totals hide a collapse.
+        s.setLastTurnCache({
+          provider: s.activeProvider,
+          promptTokens: finalInputTokens,
+          cachedTokens: usage ? (usage.cachedPromptTokens ?? null) : null,
+          firstTokenMs: firstTokenAtRef.current > 0 && turnStartedAtRef.current > 0
+            ? firstTokenAtRef.current - turnStartedAtRef.current
+            : null
+        })
 
 
         // Tool calls first: they are the protocol now. The legacy tag parse
@@ -763,6 +787,11 @@ export function useChatLLM({
     noActionRetryArmed: boolean = true
   ) => {
     const s = useAppStore.getState()
+
+    // Clock for time-to-first-token. Reset per request, including retries:
+    // each one pays its own prefill.
+    turnStartedAtRef.current = Date.now()
+    firstTokenAtRef.current = 0
 
     // Start each turn with no leftover thinking on screen.
     toolCallsRef.current = new Map()
@@ -1050,11 +1079,19 @@ export function useChatLLM({
         images: m.images
       }))
     const activeDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content ?? ''
+    // Budget against the provider's price cliff where it has one, not just its
+    // window: xAI's long-context tier counts CACHED tokens toward the
+    // threshold and doubles every rate above it, so a well-cached conversation
+    // can cross the line with nothing looking wrong.
+    const cacheProfile = getCacheProfile(s.activeProvider)
     const historyBudget = historyBudgetChars({
-      contextTokens: resolveContextWindowTokens(
-        s.activeProvider,
-        s.providerConfigs[s.activeProvider]?.model ?? '',
-        s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? '']
+      contextTokens: targetPromptTokens(
+        cacheProfile,
+        resolveContextWindowTokens(
+          s.activeProvider,
+          s.providerConfigs[s.activeProvider]?.model ?? '',
+          s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? '']
+        )
       ),
       maxOutputTokens: s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384,
       // Everything else this turn sends: system prompt, the ledger block and
@@ -1096,7 +1133,7 @@ export function useChatLLM({
       } else if (mode === 'full') {
         // Rung 1: attach every chapter, single call.
         attachedIds = docs.map(d => d.id)
-        dynamicContext = buildInlineReferenceBlock(attachedIds, Number.MAX_SAFE_INTEGER) +
+        dynamicContext = buildInlineReferenceBlock(s.documents, attachedIds, Number.MAX_SAFE_INTEGER) +
           '\n' + buildTail()
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters)]`
       } else if (mode === 'batched') {
@@ -1165,7 +1202,7 @@ export function useChatLLM({
       }
 
       attachedIds = plan.ledger.entries.map(e => e.id)
-      bookPrefixMessages = buildLedgerMessages(attachedIds)
+      bookPrefixMessages = buildLedgerMessages(s.documents, attachedIds)
       ledgerRef.current = plan.ledger
       previousAttachedIdsRef.current = attachedIds
       dynamicContext = buildTail()

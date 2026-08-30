@@ -17,7 +17,8 @@ export function CanvasFooter({ activeDoc }: CanvasFooterProps) {
     sessionInputTokens,
     sessionCacheHitTokens,
     sessionCacheMissTokens,
-    sessionOutputTokens
+    sessionOutputTokens,
+    lastTurnCache
   } = useAppStore()
 
   const [storageSize] = useState('0 B')
@@ -42,6 +43,25 @@ export function CanvasFooter({ activeDoc }: CanvasFooterProps) {
           </span>
           / Out: {sessionOutputTokens.toLocaleString()}
         </span>
+        {/* This turn, not the session. Cumulative totals stay healthy-looking
+            while a single turn loses its cached prefix and re-reads everything,
+            which is how every cache regression here went unnoticed. */}
+        {lastTurnCache && (
+          <>
+            <span className="footer-sep footer-secondary" style={{ opacity: 0.3 }}>|</span>
+            <span className="footer-turn-cache footer-secondary" title="Last turn: prefix reuse and time to first token">
+              Last turn:{' '}
+              {lastTurnCache.cachedTokens !== null && lastTurnCache.promptTokens > 0
+                ? `${Math.round((lastTurnCache.cachedTokens / lastTurnCache.promptTokens) * 100)}% cached`
+                : 'cache n/a'}
+              {lastTurnCache.firstTokenMs !== null && (
+                <span style={{ color: 'var(--text-muted)', marginLeft: '0.25rem' }}>
+                  ({(lastTurnCache.firstTokenMs / 1000).toFixed(1)}s to first token)
+                </span>
+              )}
+            </span>
+          </>
+        )}
         <span className="footer-sep footer-secondary" style={{ opacity: 0.3 }}>|</span>
         <span className="footer-storage footer-secondary">Storage: {storageSize}</span>
       </div>

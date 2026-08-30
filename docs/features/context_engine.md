@@ -147,9 +147,31 @@ Strategy:
 - Free money the other providers do not have: **the window is enormous**
   (262144) and costs nothing per token. The budget should fill it rather than
   trim, which is what the model-derived budget now does.
-- Because there is no cached-token field, the only honest signal is
-  time-to-first-token. It is already logged per job; the engine should record
-  the *expected* prefix reuse alongside it so the two can be compared.
+- Because there is no cached-token field in the OpenAI-compatible usage block,
+  the honest signals are `timings.cache_n` (tokens served from cache) and
+  time-to-first-token. Both are now recorded per turn.
+- **Reuse here is partial, and that is architectural.** Measured on
+  Qwen3.8-Flash-Next (hybrid: Gated DeltaNet + sparse attention, `ssm.*` in the
+  GGUF) by `scripts/acceptance/contextCache.accept.ts`:
+
+  | scenario | cached / total | prefill |
+  |---|---|---|
+  | cold | 0 / 4558 | 33.3s |
+  | second turn, history appended | **3690 / 4582** | 7.8s (**4.3×**) |
+  | the identical prompt again | 4522 / 4526 | 0.3s |
+  | a chapter appended inside the ledger | 1510 / 4556 | 22.7s |
+  | the same chapters reordered | 1510 / 4556 | 22.7s |
+
+  A recurrent state cannot be rewound to an arbitrary token, so a shared prefix
+  is not always fully reusable. `--swa-full`, denser context checkpoints
+  (`-cms 512 -ctxcp 64`) and splitting the ledger into one message pair per
+  chapter were each measured and changed nothing — do not retry them.
+
+  The consequence for this design: the layout still pays here (4.3× on the
+  common case of continuing a conversation), but the full win belongs to plain
+  transformers. grok caches an exact prefix automatically, so the same layout
+  should reuse everything there — which is what the new per-turn telemetry
+  exists to confirm.
 
 ### anthropic / openai / gemini — secondary
 
