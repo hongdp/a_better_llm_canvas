@@ -45,6 +45,8 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from controllers import GceController, RunPodController, VMController, VMState
+
 logger = logging.getLogger("wake_proxy")
 
 # ── Configuration ───────────────────────────────────────────────────────────
@@ -54,30 +56,6 @@ MAX_SESSION_SECONDS = int(os.environ.get("WAKE_MAX_SESSION_SECONDS", "21600"))  
 WAKE_TIMEOUT_SECONDS = int(os.environ.get("WAKE_TIMEOUT_SECONDS", "600"))   # 10 min
 HEALTH_POLL_SECONDS = float(os.environ.get("WAKE_HEALTH_POLL_SECONDS", "5"))
 UPSTREAM_BASE_URL = os.environ.get("WAKE_UPSTREAM_URL", "")                 # e.g. http://10.0.0.5:8000/v1
-
-
-class VMState:
-    STOPPED = "stopped"
-    STARTING = "starting"
-    RUNNING = "running"
-    STOPPING = "stopping"
-
-
-class VMController:
-    """What the proxy needs from a machine. Substituted in tests."""
-
-    async def state(self) -> str:
-        raise NotImplementedError
-
-    async def start(self) -> None:
-        raise NotImplementedError
-
-    async def stop(self) -> None:
-        raise NotImplementedError
-
-    async def healthy(self) -> bool:
-        """True once the model server behind the VM answers."""
-        raise NotImplementedError
 
 
 @dataclass
@@ -205,71 +183,23 @@ class WakeManager:
                 logger.exception("idle watcher failed; will retry next tick")
 
 
-# ── GCE implementation ──────────────────────────────────────────────────────
-
-class GceController(VMController):
-    """Drives one Compute Engine instance through the gcloud CLI.
-
-    The CLI rather than the API client: it is already installed and
-    authenticated on this machine (the mahjong project uses it), which is one
-    fewer credential path to get wrong.
-    """
-
-    def __init__(self, project: str, zone: str, instance: str, health_url: str):
-        self.project = project
-        self.zone = zone
-        self.instance = instance
-        self.health_url = health_url
-
-    async def _gcloud(self, *args: str, timeout: float = 180.0) -> str:
-        proc = await asyncio.create_subprocess_exec(
-            "gcloud", "compute", "instances", *args,
-            f"--project={self.project}", f"--zone={self.zone}",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
-            proc.kill()
-            raise
-        if proc.returncode != 0:
-            raise RuntimeError(f"gcloud {' '.join(args)} failed: {err.decode()[:400]}")
-        return out.decode().strip()
-
-    async def state(self) -> str:
-        raw = await self._gcloud(
-            "describe", self.instance, "--format=value(status)", timeout=60
-        )
-        return {
-            "RUNNING": VMState.RUNNING,
-            "TERMINATED": VMState.STOPPED,
-            "STOPPED": VMState.STOPPED,
-            "SUSPENDED": VMState.STOPPED,
-            "STAGING": VMState.STARTING,
-            "PROVISIONING": VMState.STARTING,
-            "STOPPING": VMState.STOPPING,
-        }.get(raw.strip(), VMState.STOPPED)
-
-    async def start(self) -> None:
-        await self._gcloud("start", self.instance)
-
-    async def stop(self) -> None:
-        await self._gcloud("stop", self.instance)
-
-    async def healthy(self) -> bool:
-        try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                res = await client.get(self.health_url)
-                return res.status_code == 200
-        except Exception:  # noqa: BLE001 — unreachable is simply "not healthy"
-            return False
-
-
 # ── HTTP surface ────────────────────────────────────────────────────────────
 
-def create_app(manager: WakeManager, upstream_base_url: str) -> FastAPI:
+async def resolve_upstream(manager: WakeManager, fallback: str) -> str:
+    """Where to forward this request.
+
+    A controller may decide it dynamically — RunPod hands out a different
+    public port each run, so a value read at startup is wrong the first time
+    the pod wakes. Falls back to the configured URL for machines with a fixed
+    address.
+    """
+    dynamic = await manager.controller.upstream_url()
+    return (dynamic or fallback).rstrip("/")
+
+
+def create_app(manager: WakeManager, upstream_base_url: str = "") -> FastAPI:
     app = FastAPI(title="wake proxy")
-    upstream = upstream_base_url.rstrip("/")
+    fallback_upstream = upstream_base_url.rstrip("/")
 
     @app.on_event("startup")
     async def _start_watcher() -> None:
@@ -305,6 +235,10 @@ def create_app(manager: WakeManager, upstream_base_url: str) -> FastAPI:
             await manager.ensure_awake()
         except TimeoutError as exc:
             raise HTTPException(status_code=504, detail=str(exc)) from exc
+
+        upstream = await resolve_upstream(manager, fallback_upstream)
+        if not upstream:
+            raise HTTPException(status_code=503, detail="no upstream address yet")
 
         body = await request.body()
         headers = {
@@ -346,13 +280,34 @@ def create_app(manager: WakeManager, upstream_base_url: str) -> FastAPI:
 
 
 def build_default_app() -> FastAPI:
-    project = os.environ["WAKE_GCP_PROJECT"]
-    zone = os.environ["WAKE_GCP_ZONE"]
-    instance = os.environ["WAKE_GCP_INSTANCE"]
-    upstream = UPSTREAM_BASE_URL or os.environ["WAKE_UPSTREAM_URL"]
-    health = os.environ.get("WAKE_HEALTH_URL", f"{upstream.rstrip('/')}/models")
-    controller = GceController(project, zone, instance, health)
-    return create_app(WakeManager(controller=controller), upstream)
+    """Pick a backend from the environment.
+
+    RunPod is the cheaper default ($2.09/h for a 96GB card, per-second, no
+    monthly minimum); GCE is there because the mahjong project already lives
+    on it.
+    """
+    backend = os.environ.get("WAKE_BACKEND", "runpod").lower()
+
+    if backend == "runpod":
+        controller: VMController = RunPodController(
+            api_key=os.environ["RUNPOD_API_KEY"],
+            pod_id=os.environ["RUNPOD_POD_ID"],
+            internal_port=int(os.environ.get("RUNPOD_INTERNAL_PORT", "8000")),
+        )
+        # The address is discovered per wake, so nothing static is needed.
+        return create_app(WakeManager(controller=controller), UPSTREAM_BASE_URL)
+
+    if backend == "gce":
+        upstream = UPSTREAM_BASE_URL or os.environ["WAKE_UPSTREAM_URL"]
+        controller = GceController(
+            os.environ["WAKE_GCP_PROJECT"],
+            os.environ["WAKE_GCP_ZONE"],
+            os.environ["WAKE_GCP_INSTANCE"],
+            os.environ.get("WAKE_HEALTH_URL", f"{upstream.rstrip('/')}/models"),
+        )
+        return create_app(WakeManager(controller=controller), upstream)
+
+    raise SystemExit(f"unknown WAKE_BACKEND={backend!r} (expected 'runpod' or 'gce')")
 
 
 if __name__ == "__main__":
