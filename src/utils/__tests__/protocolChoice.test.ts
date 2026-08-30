@@ -27,6 +27,14 @@ describe('resolveDocumentProtocol', () => {
     expect(resolveDocumentProtocol('ollama', 'auto')).toBe('tools')
   })
 
+  it('puts runpod on tools too — it is the same llama.cpp, just rented', () => {
+    // The provider is separate so a local model and a pod can be configured
+    // at once; the protocol need is identical, and defaulting it to markup
+    // would silently disable document editing on the pod.
+    expect(resolveDocumentProtocol('runpod', 'auto')).toBe('tools')
+    expect(resolveDocumentProtocol('runpod', undefined)).toBe('tools')
+  })
+
   it('defaults an unknown provider to markup, the shipped path', () => {
     expect(resolveDocumentProtocol('some-new-provider', 'auto')).toBe('markup')
   })
