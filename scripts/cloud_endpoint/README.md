@@ -199,13 +199,33 @@ awake seconds.
   request does.
 - **One VM.** Two browsers hitting it at once is fine; two VMs is not modelled.
 
-## If you would rather not run this at all
+## Consider Serverless first — it probably beats this
 
-RunPod Serverless does the wake and the sleep itself, with per-second billing
-and no proxy to maintain. It is the better choice unless you want control over
-when the machine sleeps, or you dislike paying a cold start inside a session.
-This proxy keeps one pod warm for the whole session and naps between sessions,
-which suits a writing afternoon better than per-request scaling does.
+RunPod Serverless does the wake and the sleep itself. Checked against what
+people actually run: a light Docker image containing `llama-server`, the GGUF
+pulled onto a network volume on first boot, and an OpenAI-compatible endpoint
+with streaming. Community harnesses exist for exactly this shape (abliterated
+Qwen GGUFs among them) to copy from.
+
+| | this proxy + a pod | serverless |
+|---|---|---|
+| lifecycle | our code, our bugs | the platform's |
+| billing | per second running | per second running |
+| **storage floor** | network volume, ~$10/mo | **the same volume, same $10** |
+| cold start | boot the machine, then load | **60–90s** — image cached, weights on the volume |
+| work to build | a shell script on the pod | **a Docker image with a handler** |
+
+Two things that surprised us. The storage floor does not go away: the weights
+have to sit on a network volume either way, or every cold start re-downloads
+79 GiB. And serverless's cold start is *faster* than this proxy's, because
+nothing has to boot — the worker is placed onto an image that is already
+cached.
+
+So serverless is the better default for this workload. This proxy earns its
+place for the other one: a whole GPU machine you occasionally need for
+something that is not an inference endpoint — which is what the mahjong
+project wants — or when you would rather keep one pod warm across a writing
+afternoon than pay a cold start whenever you pause to think.
 
 ## Tests
 
