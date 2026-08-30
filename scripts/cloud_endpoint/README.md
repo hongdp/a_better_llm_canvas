@@ -10,7 +10,7 @@ web_canvas  ──▶  wake_proxy (this workstation, 127.0.0.1:8091)
                      │  idle 15 min   → stop the machine
                      ▼
                  a GPU, from one of two backends
-                     └── vLLM + Qwen3.8-Flash-Next-Uncensored-NVFP4
+                     └── llama.cpp + Qwen3.8-Flash-Next-Uncensored IQ3_XXS
                      └── idle backstop timer (halts if the proxy dies)
 ```
 
@@ -60,16 +60,30 @@ can crash and an abandoned GPU bills by the hour.
 **The weights live on the VM's boot disk.** A wake is then a boot plus a local
 load, not a 90 GB download.
 
-## Machine and model
+## Machine and model — llama.cpp, not vLLM
 
-Both backends land on the same card: an RTX PRO 6000 (Blackwell, 96 GB), which fits
-`orcarouter/Qwen3.8-Flash-Next-Uncensored-NVFP4` — the 4-bit format Blackwell
-runs natively. vLLM and SGLang both support this architecture (`qwen4exp`);
-SGLang shipped day-0 support with the Qwen team.
+Both backends land on the same card: an RTX PRO 6000 (Blackwell, 96 GB). The
+model that fits it is the **IQ3_XXS GGUF, 79.3 GiB**, served by llama.cpp.
 
-Do not use the GGUF build here. GGUF is llama.cpp's format; vLLM's support for
-it is partial and slower, and there is no reason to pay for a GPU to run a
-worse path.
+That is not the obvious choice, so here is why the obvious one is wrong. vLLM
+and SGLang do support this architecture (`qwen4exp`, SGLang day-0), which
+argues for a safetensors build — but every published uncensored build is too
+big for 96 GB:
+
+| build | size | fits 96 GB |
+|---|---|---|
+| orcarouter NVFP4 | 170.9 GiB | no |
+| mazinb NVFP4 | 173.6 GiB | no |
+| dealignai NVFP4 | 125.9 GiB | no |
+| FP8 | 172.8 GiB | no |
+| **IQ3_XXS GGUF** | **79.3 GiB** | **yes**, ~16 GiB left for KV |
+
+The "NVFP4" repos are not 4-bit in any useful sense — they are the size of the
+FP8 export. Checked against the Hugging Face blob listing, not assumed.
+
+llama.cpp is also the stack already proven on this architecture: the CUDA path
+was measured end to end on the workstation. vLLM's path here has never been
+run.
 
 ## Cost, honestly
 
@@ -81,7 +95,21 @@ With a 15-minute idle stop, at RunPod's $2.09/h (GCE's $4.5/h in brackets):
 | 2 h in one sitting | ~68 | **~$142** ($305) |
 | 2 h split into 4 sittings | ~83 | **~$174** ($375) |
 
-A month with no writing costs $0 on either.
+### Storage is the monthly floor
+
+Compute stops when the pod stops; storage does not.
+
+| | running | **stopped** |
+|---|---|---|
+| network volume | $0.07/GB/mo | **$0.07/GB/mo — still billed** |
+| pod volume disk | $0.10/GB/mo | **$0.20/GB/mo — the rate doubles** |
+
+A 150 GB network volume is therefore **~$10.50/month whether or not you write
+a word**. That is the price of a wake being a boot rather than a 79 GiB
+download; terminating the pod between sessions removes it and turns every
+first request into twenty minutes.
+
+So "no monthly fee" is not strictly true here. It is about ten dollars.
 
 Fragmented sessions cost more: each gap under 15 minutes is paid for, each gap
 over it costs a fresh wake. A Mac Studio with 128 GB is $4,499 — break-even
@@ -92,10 +120,17 @@ awake seconds.
 
 ## Setup — RunPod
 
+0. **Validate first, before creating anything that bills monthly.** Rent an
+   RTX 6000 Pro pod with a container disk, run `validate_pod.sh` on it, then
+   `measure.py` against it. About two dollars, and it answers the only two
+   questions that matter: does 79 GiB of weights leave a usable context on a
+   96 GB card, and is prefill actually faster than the workstation's. See
+   "Storage is the monthly floor" below for why this step comes first.
+
 1. **Create the pod** in the RunPod console (once): an RTX 6000 Pro, a network
-   volume big enough for the NVFP4 weights (~90 GB) plus the venv, a vLLM
-   image, and HTTP port 8000 exposed. Keeping the weights on the volume is
-   what makes a wake a boot plus a local load rather than a re-download.
+   volume big enough for the weights (~80 GB) plus llama.cpp, and HTTP port
+   8000 exposed. Keeping the weights on the volume is what makes a wake a boot
+   plus a local load rather than a re-download.
 
 2. **Note the pod id** and create an API key.
 
