@@ -263,10 +263,39 @@ with the first request's, that the shared prefix actually contains the chapter
 text, and that a newly pinned chapter appends rather than reorders. Removing
 the ledger block or the prefix-keeping logic turns those red (checked).
 
-### Not done
+### Breaker 3, partly addressed: budget against the model, not a constant
 
-Breakers 3, 4 and 5 from §3 are untouched: history is still trimmed from the
-front at 80k chars, images are still stripped on a rolling offset, and
-same-role merging still happens at assembly time. Each rewrites history that
-the model has already seen, and each is worth its own change — the ledger was
-the one holding the bulk of the tokens.
+`MAX_HISTORY_CHARS = 80_000` is gone. The window is now derived per turn in
+`utils/contextWindow.ts`:
+
+```
+budget = contextTokens − maxOutputTokens − (system + ledger + active doc) − 10% safety
+```
+
+Two things made the flat number wrong in both directions at once. The local
+endpoint runs at **262144** tokens, so history was being trimmed at roughly a
+tenth of what fits; and a 32k model would have been handed a prompt it must
+silently truncate — from the FRONT, which is precisely the cached prefix.
+
+The window comes from the endpoint when it states one: llama.cpp reports
+`meta.n_ctx` on `/v1/models`, and `/api/models` now forwards it as
+`contextWindows` into `discoveredContextWindows` in the store. A reported value
+always beats the table, because only the server knows what it was started with
+— this endpoint went from 32K to 262144 within a day. The table in
+`contextWindow.ts` is the fallback for providers that report nothing.
+
+Token estimation is CJK-aware: `length / 4` is an English rule, and a Chinese
+character is roughly one token, so it underestimates this app's actual content
+four-fold. `estimateTokens` counts the scripts separately, and `tokensToChars`
+converts back using the conversation's measured CJK ratio.
+
+Trimming from the front still *happens* when a conversation genuinely outgrows
+the window — it is just far rarer now, and it is no longer triggered by a
+constant that has nothing to do with the model in use.
+
+### Still not done
+
+Breakers 4 and 5 from §3: images are stripped on a rolling offset, so a
+message's bytes change as the conversation advances past it, and same-role
+merging happens at assembly time rather than at message creation. Both rewrite
+history the model has already seen. Each is worth its own change.

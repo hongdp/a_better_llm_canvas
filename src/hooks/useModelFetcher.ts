@@ -44,17 +44,40 @@ function normalizeModelList(data: unknown): string[] {
   return []
 }
 
-async function listLocalModelsDirect(baseUrl: string): Promise<string[]> {
+/**
+ * Context windows the endpoint stated, keyed by model id. llama.cpp puts
+ * `n_ctx` under each model's `meta`; our own backend proxy forwards it as
+ * `contextWindows`. Anything else simply has none, and the table in
+ * utils/contextWindow.ts answers instead.
+ */
+function normalizeContextWindows(data: unknown): Record<string, number> {
+  const payload = (data ?? {}) as {
+    data?: Array<{ id?: string; meta?: { n_ctx?: number } }>
+    contextWindows?: Record<string, number>
+  }
+  if (payload.contextWindows && typeof payload.contextWindows === 'object') {
+    return payload.contextWindows
+  }
+  const out: Record<string, number> = {}
+  for (const entry of payload.data ?? []) {
+    const n = entry?.meta?.n_ctx
+    if (entry?.id && typeof n === 'number' && n > 0) out[entry.id] = n
+  }
+  return out
+}
+
+async function listLocalModelsDirect(baseUrl: string): Promise<{ names: string[]; windows: Record<string, number> }> {
   try {
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/models`)
-    if (!res.ok) return []
-    return normalizeModelList(await res.json())
+    if (!res.ok) return { names: [], windows: {} }
+    const data = await res.json()
+    return { names: normalizeModelList(data), windows: normalizeContextWindows(data) }
   } catch {
-    return []
+    return { names: [], windows: {} }
   }
 }
 
-async function listLocalModelsViaBackend(baseUrl: string): Promise<string[]> {
+async function listLocalModelsViaBackend(baseUrl: string): Promise<{ names: string[]; windows: Record<string, number> }> {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
@@ -64,10 +87,11 @@ async function listLocalModelsViaBackend(baseUrl: string): Promise<string[]> {
       },
       body: JSON.stringify({ baseUrl })
     })
-    if (!res.ok) return []
-    return normalizeModelList(await res.json())
+    if (!res.ok) return { names: [], windows: {} }
+    const data = await res.json()
+    return { names: normalizeModelList(data), windows: normalizeContextWindows(data) }
   } catch {
-    return []
+    return { names: [], windows: {} }
   }
 }
 
@@ -215,16 +239,20 @@ export function useModelFetcher(
 
     const fetchOllamaModels = async () => {
       try {
-        let list = await listLocalModelsDirect(ollamaBaseUrl)
-        if (list.length === 0) {
+        let listed = await listLocalModelsDirect(ollamaBaseUrl)
+        if (listed.names.length === 0) {
           // The page is served over HTTPS in this setup, so the browser blocks
           // every plain-http local endpoint as mixed content — the fetch above
           // can never succeed there. The backend runs on the same host as the
           // model server and is same-origin for the page, so it can answer.
-          list = await listLocalModelsViaBackend(ollamaBaseUrl)
+          listed = await listLocalModelsViaBackend(ollamaBaseUrl)
         }
+        const list = listed.names
         if (list.length === 0) return
         setAvailableOllamaModels(list)
+        if (Object.keys(listed.windows).length > 0) {
+          useAppStore.getState().setDiscoveredContextWindows(listed.windows)
+        }
         // A stale name from a previous endpoint would 404 on every send.
         if (!list.includes(ollamaConfig.model)) {
           updateProviderConfig('ollama', { model: list[0] })

@@ -1091,7 +1091,24 @@ async def list_provider_models(request: Request):
             for m in data["models"]
             if isinstance(m, dict) and (m.get("name") or m.get("model"))
         ]
-    return {"models": names}
+
+    # Context window, when the server states it. llama.cpp reports the value it
+    # was actually STARTED with (`-c`), which is the only trustworthy source:
+    # the client cannot infer it, and it changes whenever the model is
+    # relaunched — this endpoint was restarted from 32K to 262144 in one day.
+    # Anything that budgets history against "the model's limit" needs this
+    # number rather than a table that silently goes stale.
+    context_windows: Dict[str, int] = {}
+    if isinstance(data.get("data"), list):
+        for entry in data["data"]:
+            if not isinstance(entry, dict):
+                continue
+            meta = entry.get("meta")
+            n_ctx = meta.get("n_ctx") if isinstance(meta, dict) else None
+            if isinstance(n_ctx, int) and n_ctx > 0 and entry.get("id"):
+                context_windows[str(entry["id"])] = n_ctx
+
+    return {"models": names, "contextWindows": context_windows}
 
 
 @router.get("/api/generate/active")

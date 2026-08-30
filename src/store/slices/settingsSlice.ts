@@ -41,6 +41,14 @@ export interface SettingsSlice {
    */
   availableOllamaModels: string[]
   setAvailableOllamaModels: (models: string[]) => void
+  /**
+   * Context window per model id, as reported by the endpoint itself
+   * (llama.cpp states `n_ctx` on /v1/models). Only the server knows what it
+   * was started with — this endpoint went from 32K to 262144 in one day — so
+   * a reported value always beats the table in utils/contextWindow.ts.
+   */
+  discoveredContextWindows: Record<string, number>
+  setDiscoveredContextWindows: (windows: Record<string, number>) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
 
@@ -110,6 +118,10 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
       set({ availableGrokModels: models })
     },
 
+    discoveredContextWindows: {},
+    setDiscoveredContextWindows: (windows) => {
+      set(state => ({ discoveredContextWindows: { ...state.discoveredContextWindows, ...windows } }))
+    },
     setAvailableOllamaModels: (models) => {
       set({ availableOllamaModels: models })
     },

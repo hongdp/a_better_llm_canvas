@@ -15,6 +15,12 @@ import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { applyToolCallDelta, finishToolCalls, partialStringArgument, type ToolCallAccumulator } from '../utils/toolCallStream'
 import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/documentTools'
 import { resolveDocumentProtocol } from '../utils/protocolChoice'
+import {
+  resolveContextWindowTokens,
+  estimateTokens,
+  historyBudgetChars,
+  cjkRatioOf
+} from '../utils/contextWindow'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { HistorySourceMessage, LedgerConsentRequest, LedgerConsentChoice } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
@@ -45,7 +51,6 @@ export type { WholeBookConsentRequest, WholeBookConsentChoice }
 // Approximate character budget for chat history sent to the LLM. History is
 // windowed (most recent first) so long sessions don't grow the prompt without
 // bound; the active document is always sent in full separately.
-const MAX_HISTORY_CHARS = 80_000
 // Base64 images are only re-sent for the most recent messages — older ones
 // dominate token cost while rarely being referenced again.
 const KEEP_IMAGES_IN_LAST_MESSAGES = 4
@@ -1038,15 +1043,39 @@ export function useChatLLM({
 
     // Prompt layout: the stable prefix is what makes provider prompt caching
     // effective turn over turn.
+    // History is budgeted against the MODEL's window, not a flat number. A
+    // 262144-token local endpoint was being trimmed at ~20k tokens of Chinese
+    // while a 32k model would have been handed a prompt it must silently
+    // truncate — and truncation hits the FRONT of the prompt, which is exactly
+    // the cached prefix. `estimateTokens` counts CJK at ~1 token/char: the
+    // length/4 rule used elsewhere underestimates Chinese four-fold.
+    const historyTexts = historySource
+      .filter(m => m.id !== 'welcome')
+      .map(m => ({
+        role: m.role,
+        content: stripChatDisplayArtifacts(m.content),
+        images: m.images
+      }))
+    const activeDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content ?? ''
+    const historyBudget = historyBudgetChars({
+      contextTokens: resolveContextWindowTokens(
+        s.activeProvider,
+        s.providerConfigs[s.activeProvider]?.model ?? '',
+        s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? '']
+      ),
+      maxOutputTokens: s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384,
+      // Everything else this turn sends: system prompt, the ledger block and
+      // the volatile tail. The ledger is not built yet, so its members are
+      // priced from the documents they will render.
+      fixedTokens:
+        estimateTokens(systemPrompt.content) +
+        estimateTokens(activeDocContent) +
+        ledgerRef.current.entries.reduce((sum, e) => sum + Math.ceil(e.chars * 0.9), 0),
+      cjkRatio: cjkRatioOf(historyTexts.map(m => m.content).join('') || activeDocContent)
+    })
     const historyMessages: LLMMessage[] = trimHistoryForContext(
-      historySource
-        .filter(m => m.id !== 'welcome')
-        .map(m => ({
-          role: m.role,
-          content: stripChatDisplayArtifacts(m.content),
-          images: m.images
-        })),
-      { maxChars: MAX_HISTORY_CHARS, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
+      historyTexts,
+      { maxChars: historyBudget, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
     )
     if (historyMessages.length > 0) {
       historyMessages[historyMessages.length - 1].cacheHint = true
