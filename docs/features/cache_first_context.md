@@ -293,9 +293,49 @@ Trimming from the front still *happens* when a conversation genuinely outgrows
 the window — it is just far rarer now, and it is no longer triggered by a
 constant that has nothing to do with the model in use.
 
-### Still not done
+### Breakers 4 and 5, fixed
 
-Breakers 4 and 5 from §3: images are stripped on a rolling offset, so a
-message's bytes change as the conversation advances past it, and same-role
-merging happens at assembly time rather than at message creation. Both rewrite
-history the model has already seen. Each is worth its own change.
+`trimHistoryForContext` now **normalizes the whole history first, then cuts
+whole messages from the front**, instead of cutting and then reshaping what
+survived.
+
+- **Images (4).** History messages never carry images; the turn that attached
+  one sends it, and afterwards the message keeps a fixed
+  `[image sent earlier in this conversation]` placeholder. The old rolling
+  "last 4 keep theirs" rule meant a message silently lost its images once the
+  conversation moved past it — new bytes for a message the model had already
+  seen. A message that was *only* an image keeps the placeholder rather than
+  vanishing, which would delete a turn and merge the assistant turns around it.
+- **Same-role merging (5).** Merging runs on the full history before the budget
+  cut, so a merged block is atomic: sent whole or not at all. Merging after the
+  cut let the window start *inside* a run and emit a fragment the model had
+  never seen — the cached prefix ends exactly there. Mutation-checked: restoring
+  the old order turns the fragment test red.
+
+## 12. Ordering for the way this book is actually written
+
+The first ordering heuristic — farthest-in-book-order first, on the theory that
+the writer edits an adjacent chapter next — was wrong for this app's main
+workflows:
+
+| Workflow | What happens |
+|---|---|
+| A. Pinned outline + write the next chapter from the previous one | The outline is referenced every turn and revised after most sessions |
+| B. Fold the new chapter back into the outline | The outline becomes the **active document** |
+| C. Go back and finish an earlier chapter using later text (rarer) | A long-finished chapter becomes active |
+
+A permanently pinned outline is usually chapter zero, so book distance sorted
+it **first** — the most expensive position, since removing an entry re-sends
+everything after it — while it is in fact the most frequently edited document
+in the book. Workflow B then paid for the whole ledger every time.
+
+`orderAdmissionsByStability` sorts by `updatedAt` instead, oldest first, with
+book distance only as a tie-break. Finished chapters lead; the outline sinks to
+the end, where invalidating it costs nothing but itself. Measured in the tests:
+workflow B re-sends 500 characters instead of 18,000.
+
+Workflow C remains the expensive case — the most stable chapter sits first, and
+jumping back to edit it invalidates the rest. The design **self-heals**: that
+chapter leaves the ledger while it is active, and when it returns its timestamp
+is fresh, so it sorts last from then on. One expensive turn, not a recurring
+one.

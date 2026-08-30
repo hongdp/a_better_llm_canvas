@@ -30,7 +30,7 @@ import {
   hashContent,
   planLedgerTurn,
   planKeepingRemoved,
-  orderAdmissionsForSwitchCost,
+  orderAdmissionsByStability,
   type ContextLedger,
   type LedgerPlan
 } from '../utils/contextLedger'
@@ -48,12 +48,6 @@ import {
 // from the hook module after the split into hooks/chat/.
 export type { WholeBookConsentRequest, WholeBookConsentChoice }
 
-// Approximate character budget for chat history sent to the LLM. History is
-// windowed (most recent first) so long sessions don't grow the prompt without
-// bound; the active document is always sent in full separately.
-// Base64 images are only re-sent for the most recent messages — older ones
-// dominate token cost while rarely being referenced again.
-const KEEP_IMAGES_IN_LAST_MESSAGES = 4
 // Per-chapter cap in the ledger. Mirrors the reference-doc cap the renderer
 // applies, so the planner's cost arithmetic matches the bytes actually sent.
 const MAX_LEDGER_DOC_CHARS = 20_000
@@ -1075,7 +1069,7 @@ export function useChatLLM({
     })
     const historyMessages: LLMMessage[] = trimHistoryForContext(
       historyTexts,
-      { maxChars: historyBudget, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
+      { maxChars: historyBudget }
     )
     if (historyMessages.length > 0) {
       historyMessages[historyMessages.length - 1].cacheHint = true
@@ -1139,12 +1133,17 @@ export function useChatLLM({
     } else {
       // Cache-first assembly: chapters go into an append-only block ahead of
       // the history, so an unchanged set costs nothing to re-send. New
-      // admissions are ordered farthest-first, because switching the active
-      // document truncates the ledger at that chapter's position — the nearer
-      // a chapter is in book order, the likelier it is edited next, and the
-      // later it should sit. See docs/features/cache_first_context.md.
+      // admissions are ordered most-stable-first, because removing an entry
+      // re-sends everything after it — so the documents the writer revises
+      // constantly (the outline) belong at the END, where invalidating them
+      // costs only themselves. See docs/features/cache_first_context.md.
       const bookOrder = s.documents.map(d => d.id)
-      const desiredIds = orderAdmissionsForSwitchCost(attachedIds, bookOrder, s.activeDocumentId)
+      const desiredIds = orderAdmissionsByStability(
+        attachedIds,
+        s.documents.map(d => ({ id: d.id, updatedAt: d.updatedAt })),
+        bookOrder,
+        s.activeDocumentId
+      )
       const docsForPlan = s.documents.map(d => ({
         id: d.id,
         chars: Math.min(d.content.length, MAX_LEDGER_DOC_CHARS),

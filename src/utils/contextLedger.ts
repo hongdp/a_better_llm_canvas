@@ -198,24 +198,53 @@ export function planKeepingRemoved(
   return planLedgerTurn(current, union, docs, activeDocumentId)
 }
 
+/** What the stability ordering needs to know about a document. */
+export interface StabilityDocLike {
+  id: string
+  /** ISO timestamp of the last edit. Missing sorts as "very old". */
+  updatedAt?: string
+}
+
 /**
- * Order new admissions so that the ones most likely to become the active
- * document next are appended LAST. Switching to a chapter truncates the ledger
- * at its position, so the further back it sits, the less has to be re-sent.
- * Adjacency in book order is the predictor: the writer moves to the next or
- * previous chapter far more often than to a distant one.
+ * Order new admissions from most stable to least stable, so the chapters most
+ * likely to change next sit at the END of the ledger — where invalidating them
+ * costs nothing but themselves.
+ *
+ * Removing an entry re-sends everything after it, so position is a bet on how
+ * long a chapter will stay untouched. `updatedAt` is the honest signal: a
+ * chapter finished last week is stable; the outline the writer revises after
+ * every session is not.
+ *
+ * This replaces an earlier book-distance heuristic that was exactly wrong for
+ * this app's main workflow. A permanently pinned outline is usually chapter
+ * zero — far from wherever the writer is working — so distance sorted it
+ * FIRST, the most expensive slot, while it is in fact the most frequently
+ * edited document in the book. Book distance survives only as a tie-break.
  */
-export function orderAdmissionsForSwitchCost(
+export function orderAdmissionsByStability(
   ids: string[],
+  docs: StabilityDocLike[],
   bookOrder: string[],
   activeDocumentId: string | null
 ): string[] {
+  const byId = new Map(docs.map(d => [d.id, d]))
   const activeIdx = bookOrder.indexOf(activeDocumentId ?? '')
-  if (activeIdx === -1) return [...ids]
+
+  const editedAt = (id: string) => {
+    const raw = byId.get(id)?.updatedAt
+    const t = raw ? Date.parse(raw) : NaN
+    return Number.isNaN(t) ? 0 : t
+  }
   const distance = (id: string) => {
     const idx = bookOrder.indexOf(id)
-    return idx === -1 ? Number.MAX_SAFE_INTEGER : Math.abs(idx - activeIdx)
+    if (idx === -1 || activeIdx === -1) return Number.MAX_SAFE_INTEGER
+    return Math.abs(idx - activeIdx)
   }
-  // Farthest first, nearest last: nearest is the likeliest next switch.
-  return [...ids].sort((a, b) => distance(b) - distance(a))
+
+  return [...ids].sort((a, b) => {
+    // Oldest edit first — it is the least likely to be invalidated.
+    if (editedAt(a) !== editedAt(b)) return editedAt(a) - editedAt(b)
+    // Then farthest from the writing frontier, for the same reason.
+    return distance(b) - distance(a)
+  })
 }

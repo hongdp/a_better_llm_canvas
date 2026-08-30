@@ -4,7 +4,7 @@ import {
   hashContent,
   planLedgerTurn,
   planKeepingRemoved,
-  orderAdmissionsForSwitchCost,
+  orderAdmissionsByStability,
   type ContextLedger,
   type LedgerDocLike
 } from '../contextLedger'
@@ -209,18 +209,127 @@ describe('hashContent', () => {
   })
 })
 
-describe('orderAdmissionsForSwitchCost', () => {
-  it('appends the chapters nearest the active one last', () => {
-    const book = ['ch1', 'ch2', 'ch3', 'ch4', 'ch5']
+describe('the writing workflows this is for', () => {
+  // A pinned outline plus the two or three chapters around the writing
+  // frontier, which is what this app is actually used with.
+  const book = ['outline', 'ch7', 'ch8', 'ch9']
+  const docs: LedgerDocLike[] = [
+    { id: 'outline', chars: 3000, hash: hashContent('outline-v1') },
+    { id: 'ch7', chars: 9000, hash: hashContent('ch7') },
+    { id: 'ch8', chars: 9000, hash: hashContent('ch8') },
+    { id: 'ch9', chars: 500, hash: hashContent('ch9') }
+  ]
+  const times = [
+    { id: 'outline', updatedAt: '2026-08-17T10:00:00.000Z' },
+    { id: 'ch7', updatedAt: '2026-06-01T00:00:00.000Z' },
+    { id: 'ch8', updatedAt: '2026-08-16T00:00:00.000Z' },
+    { id: 'ch9', updatedAt: '2026-08-17T09:00:00.000Z' }
+  ]
 
-    // Active is ch3; ch2/ch4 are the likeliest next edits, so they go last and
-    // a switch to them truncates the least.
-    expect(orderAdmissionsForSwitchCost(['ch2', 'ch5', 'ch4'], book, 'ch3'))
-      .toEqual(['ch5', 'ch2', 'ch4'])
+  it('A: writing ch9 from the outline and ch8 costs nothing after turn one', () => {
+    const ordered = orderAdmissionsByStability(['outline', 'ch7', 'ch8'], times, book, 'ch9')
+    expect(ordered).toEqual(['ch7', 'ch8', 'outline'])   // outline last, by design
+
+    const first = planLedgerTurn(EMPTY_LEDGER, ordered, docs, 'ch9')
+    const second = planLedgerTurn(first.ledger, ordered, docs, 'ch9')
+    expect(second.resendChars).toBe(0)
+    expect(second.cachedPrefixCount).toBe(3)
   })
 
-  it('leaves the order alone when the active document is not in the book', () => {
-    const book = ['ch1', 'ch2']
-    expect(orderAdmissionsForSwitchCost(['ch2', 'ch1'], book, null)).toEqual(['ch2', 'ch1'])
+  it('B: folding the new chapter back into the outline is nearly free', () => {
+    // The outline becomes the active document. Because stability put it last,
+    // dropping it costs nothing after it. Sorted by book order it would have
+    // sat FIRST and taken 18,000 characters of chapters down with it.
+    const ledger = planLedgerTurn(
+      EMPTY_LEDGER,
+      orderAdmissionsByStability(['outline', 'ch7', 'ch8'], times, book, 'ch9'),
+      docs,
+      'ch9'
+    ).ledger
+
+    const switched = planLedgerTurn(ledger, ['ch7', 'ch8', 'ch9'], docs, 'outline')
+
+    expect(switched.drops).toEqual([{ id: 'outline', reason: 'now-active' }])
+    expect(switched.cachedPrefixCount).toBe(2)          // ch7, ch8 stay put
+    expect(switched.resendChars).toBe(500)              // only the new ch9
+  })
+
+  it('B: the edited outline re-enters at the END, so the next turn is cheap again', () => {
+    const ledger = planLedgerTurn(EMPTY_LEDGER, ['ch7', 'ch8'], docs, 'outline').ledger
+    const edited = docs.map(d => d.id === 'outline' ? { ...d, hash: hashContent('outline-v2') } : d)
+
+    const back = planLedgerTurn(ledger, ['ch7', 'ch8', 'outline'], edited, 'ch9')
+
+    expect(back.ledger.entries.map(e => e.id)).toEqual(['ch7', 'ch8', 'outline'])
+    expect(back.cachedPrefixCount).toBe(2)
+    expect(back.resendChars).toBe(3000)                 // the outline alone
+  })
+
+  it('C: going back to finish an earlier chapter is the expensive case, once', () => {
+    // ch7 is the most stable, so it sits FIRST — and jumping back to edit it
+    // re-sends everything after. The system then self-heals: ch7 leaves, and
+    // when it returns its timestamp is fresh, so it sorts last from then on.
+    const ledger = planLedgerTurn(
+      EMPTY_LEDGER,
+      orderAdmissionsByStability(['ch7', 'ch8', 'outline'], times, book, 'ch9'),
+      docs,
+      'ch9'
+    ).ledger
+    expect(ledger.entries.map(e => e.id)).toEqual(['ch7', 'ch8', 'outline'])
+
+    const jumped = planLedgerTurn(ledger, ['ch8', 'outline'], docs, 'ch7')
+    expect(jumped.cachedPrefixCount).toBe(0)
+    expect(jumped.resentIds).toEqual(['ch8', 'outline'])
+
+    // …and afterwards ch7 is the most recently edited, so it is ordered last.
+    const freshTimes = times.map(t => t.id === 'ch7' ? { ...t, updatedAt: '2026-08-17T11:00:00.000Z' } : t)
+    expect(orderAdmissionsByStability(['ch7', 'ch8', 'outline'], freshTimes, book, 'ch8'))
+      .toEqual(['ch8', 'outline', 'ch7'])
+  })
+})
+
+describe('orderAdmissionsByStability', () => {
+  // The workflows this ordering exists for:
+  //   A. a permanently pinned outline + writing the next chapter from the
+  //      preceding one — the outline is referenced every turn AND revised
+  //      after most sessions;
+  //   B. folding the new chapter back into the outline, which makes the
+  //      outline the active document;
+  //   C. more rarely, going back to finish an earlier chapter using later text.
+  const book = ['outline', 'ch1', 'ch2', 'ch3', 'ch4']
+  const docs = [
+    { id: 'outline', updatedAt: '2026-08-17T10:00:00.000Z' },  // revised constantly
+    { id: 'ch1', updatedAt: '2026-06-01T00:00:00.000Z' },      // finished long ago
+    { id: 'ch2', updatedAt: '2026-06-20T00:00:00.000Z' },
+    { id: 'ch3', updatedAt: '2026-08-16T00:00:00.000Z' },      // written yesterday
+    { id: 'ch4', updatedAt: '2026-08-17T09:00:00.000Z' }
+  ]
+
+  it('puts the constantly-revised outline LAST, not first', () => {
+    // Book distance would have sorted the outline first — the most expensive
+    // slot — because chapter zero is far from wherever the writer is.
+    expect(orderAdmissionsByStability(['outline', 'ch1', 'ch3'], docs, book, 'ch4'))
+      .toEqual(['ch1', 'ch3', 'outline'])
+  })
+
+  it('orders finished chapters before recently written ones', () => {
+    expect(orderAdmissionsByStability(['ch3', 'ch1', 'ch2'], docs, book, 'ch4'))
+      .toEqual(['ch1', 'ch2', 'ch3'])
+  })
+
+  it('falls back to book distance when edit times tie', () => {
+    const sameDay = [
+      { id: 'ch1', updatedAt: '2026-06-01T00:00:00.000Z' },
+      { id: 'ch3', updatedAt: '2026-06-01T00:00:00.000Z' }
+    ]
+    // ch3 is adjacent to the active ch4, so it is likelier to be edited next
+    // and belongs later.
+    expect(orderAdmissionsByStability(['ch3', 'ch1'], sameDay, book, 'ch4'))
+      .toEqual(['ch1', 'ch3'])
+  })
+
+  it('treats a document with no timestamp as maximally stable', () => {
+    const mixed = [{ id: 'a' }, { id: 'b', updatedAt: '2026-08-17T00:00:00.000Z' }]
+    expect(orderAdmissionsByStability(['b', 'a'], mixed, ['a', 'b'], null)).toEqual(['a', 'b'])
   })
 })

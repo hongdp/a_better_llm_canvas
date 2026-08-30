@@ -10,7 +10,6 @@ import type { ChatMessage, RoleplayConfig } from '../types/chat'
 // Older narration beyond this window is dropped — the world lore and game
 // state documents carry the durable canon forward.
 const MAX_RP_HISTORY_CHARS = 80_000
-const KEEP_IMAGES_IN_LAST_MESSAGES = 4
 // World lore lives in the system prompt every turn; the model keeps rewriting
 // it via <story_lore>, so cap it before it dominates the token budget.
 const MAX_LORE_CHARS = 30_000
@@ -582,7 +581,7 @@ export function useRoleplayLLM({
 
     const historyMessages: LLMMessage[] = trimHistoryForContext(
       filteredHistory.slice(0, -1),
-      { maxChars: MAX_RP_HISTORY_CHARS, keepImagesInLast: KEEP_IMAGES_IN_LAST_MESSAGES }
+      { maxChars: MAX_RP_HISTORY_CHARS }
     )
     if (historyMessages.length > 0) {
       historyMessages[historyMessages.length - 1].cacheHint = true

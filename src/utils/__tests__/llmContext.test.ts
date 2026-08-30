@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   trimHistoryForContext,
+  IMAGE_PLACEHOLDER_TEXT,
   stripChatDisplayArtifacts,
   truncateWithNotice,
   htmlToPlainText,
@@ -56,21 +57,57 @@ describe('trimHistoryForContext', () => {
     expect(result[0].role).toBe('user')
   })
 
-  it('strips images from messages outside the keepImagesInLast window', () => {
+  it('never carries images on history messages', () => {
+    // A rolling "last N keep their images" rule meant a message silently lost
+    // its images once the conversation advanced past it — new bytes for a
+    // message the model had already seen, which ends the cached prefix there.
     const history = [
       msg('user', 'first', ['data:image/png;base64,AAA']),
-      msg('assistant', 'ok'),
-      msg('user', 'second', ['data:image/png;base64,BBB']),
-      msg('assistant', 'done'),
+      msg('assistant', 'reply'),
+      msg('user', 'second', ['data:image/png;base64,BBB'])
     ]
-    const result = trimHistoryForContext(history, { maxChars: 1000, keepImagesInLast: 2 })
-    expect(result[0].images).toBeUndefined()
-    expect(result[2].images).toEqual(['data:image/png;base64,BBB'])
+    const result = trimHistoryForContext(history, { maxChars: 1000 })
+    expect(result.every(m => m.images === undefined)).toBe(true)
+  })
+
+  it('carries them when a caller explicitly asks', () => {
+    const history = [msg('user', 'look', ['img'])]
+    const result = trimHistoryForContext(history, { maxChars: 1000, keepImages: true })
+    expect(result[0].images).toEqual(['img'])
+  })
+
+  it('never emits a fragment of a merged same-role run', () => {
+    // Merging AFTER the budget cut lets the window start inside a run of
+    // same-role turns, producing a message whose bytes the model has never
+    // seen — the cached prefix ends right there. Normalizing first makes the
+    // merged block atomic: it is either sent whole or not at all.
+    const history = [
+      msg('user', 'q'),
+      msg('assistant', 'r'),
+      msg('user', 'x'.repeat(40)),
+      msg('user', 'y'.repeat(40)),
+      msg('assistant', 'final')
+    ]
+
+    const result = trimHistoryForContext(history, { maxChars: 60, minKeepMessages: 1 })
+
+    expect(result.some(m => m.content === 'y'.repeat(40))).toBe(false)
+    expect(result.some(m => m.content === 'x'.repeat(40))).toBe(false)
+  })
+
+  it('merges a same-role run into one message before budgeting', () => {
+    const history = [
+      msg('user', 'x'),
+      msg('user', 'y'),
+      msg('assistant', 'ok')
+    ]
+    const result = trimHistoryForContext(history, { maxChars: 1000 })
+    expect(result.map(m => m.content)).toEqual(['x\n\ny', 'ok'])
   })
 
   it('does not mutate the input messages', () => {
     const history = [msg('user', 'first', ['img']), msg('assistant', 'ok'), msg('user', 'x'), msg('assistant', 'y')]
-    trimHistoryForContext(history, { maxChars: 1000, keepImagesInLast: 1 })
+    trimHistoryForContext(history, { maxChars: 1000 })
     expect(history[0].images).toEqual(['img'])
   })
 
@@ -89,7 +126,7 @@ describe('trimHistoryForContext', () => {
     expect(result.map(m => m.content)).toEqual(['question\n\nfollow-up', 'answer'])
   })
 
-  it('keeps an image-only message even with empty text', () => {
+  it('keeps an image-only message as a placeholder rather than dropping the turn', () => {
     const history = [
       msg('user', 'q'),
       msg('assistant', 'a'),
@@ -98,7 +135,10 @@ describe('trimHistoryForContext', () => {
     ]
     const result = trimHistoryForContext(history, { maxChars: 1000 })
     expect(result.length).toBe(4)
-    expect(result[2].images).toEqual(['data:image/png;base64,AAA'])
+    // The bytes are stable forever; the image itself travelled in the turn
+    // that attached it.
+    expect(result[2].content).toBe(IMAGE_PLACEHOLDER_TEXT)
+    expect(result[2].images).toBeUndefined()
   })
 
   it('merges consecutive same-role turns created by dropped messages', () => {
