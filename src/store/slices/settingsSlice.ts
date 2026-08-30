@@ -57,8 +57,6 @@ export interface SettingsSlice {
    * chat provider (the old behaviour); anything else lets a cheap or local
    * model do the drudge work while chat stays on the expensive one.
    */
-  summaryProvider: LLMProvider | 'active'
-  setSummaryProvider: (provider: LLMProvider | 'active') => void
 
   // Image analysis prompt
   imageAnalysisPrompt: string
@@ -137,11 +135,6 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
         saveConfigsToCookie(updatedConfigs)
         return { providerConfigs: updatedConfigs }
       })
-    },
-    summaryProvider: (localStorage.getItem('web_canvas_summary_provider') as LLMProvider | 'active') || 'active',
-    setSummaryProvider: (provider) => {
-      localStorage.setItem('web_canvas_summary_provider', provider)
-      set({ summaryProvider: provider })
     },
     debugMode: initialDebugMode,
     setDebugMode: (enabled) => {

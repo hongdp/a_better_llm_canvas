@@ -1,8 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { RefreshCw, Sparkles, X } from 'lucide-react'
+import { useCallback, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
-import { enqueueSummaryRefresh, subscribeSummaryQueue, type SummaryQueueStatus } from '../services/chapterSummaries'
-import { isSummaryStale, MIN_CHARS_FOR_SUMMARY } from '../utils/chapterIndex'
 import { OVERVIEW_HEIGHT, clampSize, loadPersistedSize, savePersistedSize } from '../utils/layoutPrefs'
 import { useTranslation } from '../i18n'
 
@@ -26,14 +24,9 @@ export function BookOverviewDrawer({ layoutMode, onClose }: BookOverviewDrawerPr
   const documents = useAppStore(state => state.documents)
   const activeDocumentId = useAppStore(state => state.activeDocumentId)
   const setActiveDocument = useAppStore(state => state.setActiveDocumentId)
-  const isStreaming = useAppStore(state => state.isStreaming)
 
   const isPhone = layoutMode !== 'desktop'
 
-  const [queue, setQueue] = useState<SummaryQueueStatus>({
-    pending: 0, running: false, waitingForChat: false, lastError: null, completedThisRun: 0
-  })
-  useEffect(() => subscribeSummaryQueue(setQueue), [])
 
   const [height, setHeight] = useState(() =>
     loadPersistedSize(OVERVIEW_HEIGHT.key, OVERVIEW_HEIGHT.fallback, OVERVIEW_HEIGHT.bounds))
@@ -57,11 +50,6 @@ export function BookOverviewDrawer({ layoutMode, onClose }: BookOverviewDrawerPr
     })
   }, [])
 
-  const summarize = (docId: string) => {
-    void useAppStore.getState().ensureDocumentContents([docId]).then(() => {
-      enqueueSummaryRefresh(docId, true)
-    })
-  }
 
   return (
     <div
@@ -84,15 +72,6 @@ export function BookOverviewDrawer({ layoutMode, onClose }: BookOverviewDrawerPr
           {t.overview.title.replace('{count}', String(documents.length))}
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', fontSize: '0.72rem', color: 'var(--text-muted)' }}>
-          {queue.waitingForChat && queue.pending > 0 ? (
-            <span><RefreshCw size={11} /> {t.sidebar.summaryWaitingForChat.replace('{pending}', String(queue.pending))}</span>
-          ) : (queue.running || queue.pending > 0) ? (
-            <span><RefreshCw size={11} className="animate-spin" /> {t.sidebar.summaryProgress
-              .replace('{done}', String(queue.completedThisRun))
-              .replace('{pending}', String(queue.pending))}</span>
-          ) : queue.lastError ? (
-            <span>⚠️ {queue.lastError.slice(0, 60)}</span>
-          ) : null}
           <button onClick={onClose} className="btn-icon" title={t.overview.close} type="button" style={{ padding: '0.25rem' }}>
             <X size={15} />
           </button>
@@ -101,8 +80,6 @@ export function BookOverviewDrawer({ layoutMode, onClose }: BookOverviewDrawerPr
 
       <div style={{ flex: 1, overflowY: 'auto', padding: '0.4rem 0.9rem 0.9rem' }}>
         {documents.map(doc => {
-          const tooShort = doc.contentLoaded !== false && doc.content.length < MIN_CHARS_FOR_SUMMARY
-          const stale = !!doc.summary && isSummaryStale(doc)
           return (
             <div key={doc.id} style={{ padding: '0.55rem 0', borderBottom: '1px solid var(--border-color)' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -120,28 +97,13 @@ export function BookOverviewDrawer({ layoutMode, onClose }: BookOverviewDrawerPr
                 >
                   {doc.title}
                 </button>
-                {stale && (
-                  <span style={{ fontSize: '0.65rem', color: 'var(--accent)', flexShrink: 0 }}>{t.overview.stale}</span>
-                )}
-                {!tooShort && (
-                  <button
-                    onClick={() => summarize(doc.id)}
-                    disabled={isStreaming}
-                    className="btn-icon"
-                    title={t.sidebar.refreshSummary}
-                    type="button"
-                    style={{ padding: '0.3rem', flexShrink: 0 }}
-                  >
-                    <Sparkles size={13} />
-                  </button>
-                )}
               </div>
               <div style={{
                 marginTop: '0.3rem', fontSize: '0.78rem', lineHeight: 1.6,
                 color: doc.summary ? 'var(--text-secondary)' : 'var(--text-muted)',
                 whiteSpace: 'pre-wrap'
               }}>
-                {doc.summary || (tooShort ? t.overview.tooShort : t.overview.notSummarized)}
+                {doc.summary || t.overview.notSummarized}
               </div>
             </div>
           )

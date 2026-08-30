@@ -45,7 +45,28 @@ automation.
 
 ---
 
-## 2. Foundation: Chapter Summaries
+## 2. Foundation: Chapter Summaries — **generation removed 2026-08-17**
+
+> Summaries were built to feed Layer 0's index and Layer 2's lookup. Layer 2
+> was deleted as dead code (§5), and the author keeps a hand-written outline
+> chapter, which serves the purpose the index was meant to serve — better,
+> because it is written deliberately.
+>
+> **Generation is gone**: the background summarizer, its queue, the
+> `summaryProvider` setting, the Settings control, the sidebar and overview
+> buttons, and the staleness machinery (`isSummaryStale`,
+> `hashDocumentContent`, `detectSummaryLanguage`, `buildSummaryInput`).
+>
+> **The data is not.** `summary` and `summaryContentHash` remain on
+> `CanvasDocument`, are still persisted and server-synced, still render in the
+> sidebar and the overview drawer, and still feed both the chapter index and
+> the scorer's keyword-overlap signal. Existing summaries keep working; new
+> chapters simply have none, and the index falls back to a content digest.
+>
+> Deleting it also removed the last background producer of requests against the
+> single-slot local endpoint — see context_engine.md §3.
+>
+> The original design follows, for whoever revisits this.
 
 ### 2.1 Schema
 

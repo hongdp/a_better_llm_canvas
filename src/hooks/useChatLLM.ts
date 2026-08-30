@@ -21,7 +21,6 @@ import {
   historyBudgetChars,
   cjkRatioOf
 } from '../utils/contextWindow'
-import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
 import type { HistorySourceMessage, LedgerConsentRequest, LedgerConsentChoice } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
@@ -1074,10 +1073,6 @@ export function useChatLLM({
     if (historyMessages.length > 0) {
       historyMessages[historyMessages.length - 1].cacheHint = true
     }
-
-    // Non-blocking: this turn uses existing summaries; refreshed ones (queued
-    // behind the in-flight stream) serve the next turn.
-    enqueueStaleSummaryRefreshes()
 
     // Execute the whole-book plan decided (and consented) before the message
     // entered the chat.

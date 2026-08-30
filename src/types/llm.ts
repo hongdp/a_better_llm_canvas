@@ -15,11 +15,6 @@ export interface ProviderConfig {
   geminiSafetySettings?: GeminiSafetySetting[]
   maxOutputTokens?: number
   /**
-   * Cheap "utility" model for background chapter summaries (Flash/Haiku
-   * class). Empty/absent = use the main chat `model`.
-   */
-  summaryModel?: string
-  /**
    * How hard the model should think before answering. Absent = this app's
    * default (low — see DEFAULT_REASONING_EFFORT); 'default' = send nothing and
    * let the provider choose. Silently ignored by models that have no such

@@ -33,12 +33,14 @@ measuring this app, neither addressable by prompt layout:
    cached and output rates together. An append-only ledger grows monotonically,
    so it will eventually cross that line — and because the cache hit rate stays
    high, nothing looks wrong while the bill doubles.
-2. **The local endpoint has exactly one KV slot.** `llama-server` runs with
-   `--parallel 1`, so its prefix cache is a single shared resource. The
-   background chapter summarizer (`services/chapterSummaries.ts`, whenever
-   `summaryProvider` resolves to the active provider) sends its own request to
-   that same slot and evicts the conversation's KV. The next chat turn then
-   pays a full re-prefill — measured at 42.87s — with no visible cause.
+2. ~~**The local endpoint has exactly one KV slot.**~~ **Resolved 2026-08-17
+   by deleting the summarizer.** `llama-server` runs with `--parallel 1`, so
+   its prefix cache is a single shared resource, and the background chapter
+   summarizer sent its own requests to that same slot — evicting the
+   conversation's KV and making the next chat turn pay a full re-prefill with
+   no visible cause. Summary *generation* is gone (§3, ollama profile), so
+   nothing competes for the slot any more. The constraint itself remains, and
+   any future background work against a local endpoint must respect it.
 
 A per-provider strategy is not polish. It is the difference between a design
 that works on paper and one that works on this machine.
@@ -137,14 +139,11 @@ Strategy:
 Strategy:
 
 - **Cache arbitration.** With one slot, the prefix belongs to whoever spoke
-  last. Background work must not interleave with the conversation:
-  1. Queue background jobs (summaries) behind the foreground stream — they
-     already are, via the summary queue — **and** hold them while the
-     conversation is warm, rather than firing between turns.
-  2. Prefer routing them elsewhere: the Ollama daemon on `:11434` is a separate
-     process with its own cache, and summarization does not need the big model.
-  3. Where neither is possible, accept the eviction *knowingly* and stop
-     pretending the next turn is cheap.
+  last. There is no background work left to arbitrate — the summarizer, the
+  only other producer of requests, was deleted — but the rule stands for
+  anything added later: hold it while the conversation is warm, route it to a
+  different endpoint (the Ollama daemon on `:11434` is a separate process with
+  its own cache), or accept the eviction knowingly.
 - Free money the other providers do not have: **the window is enormous**
   (262144) and costs nothing per token. The budget should fill it rather than
   trim, which is what the model-derived budget now does.
