@@ -32,6 +32,13 @@ export interface SelectionInput {
   blockedIds: string[]
   /** Chapters attached on the previous turn (conversation continuity). */
   previousAttachedIds?: string[]
+  /**
+   * Chapters already in the context ledger — sent on an earlier turn and
+   * therefore already inside the model's cached prefix. They stay attached
+   * for free (no budget, no re-scoring); dropping one costs a re-prefill and
+   * is the user's call, not the scorer's. See contextLedger.ts.
+   */
+  ledgerIds?: string[]
 }
 
 export interface SelectionOptions {
@@ -44,7 +51,12 @@ export interface SelectionOptions {
 }
 
 export interface SelectionResult {
-  /** Final ids to attach: pinned first (book order), then autos by score. */
+  /**
+   * Every chapter this turn wants attached: the ledger's members (minus any
+   * the user blocked) plus this turn's admissions. This is a SET, not a
+   * layout — `planLedgerTurn` decides the order, which is why nothing here
+   * sorts by score any more.
+   */
   attachedIds: string[]
   /** The auto-selected subset of attachedIds. */
   autoIds: string[]
@@ -128,6 +140,7 @@ export function selectReferenceChapters(
   const { maxTotalChars, perDocChars, scoreThreshold } = { ...DEFAULT_SELECTION_OPTIONS, ...options }
   const { promptText, recentHistory, documents, activeDocumentId, pinnedIds, blockedIds } = input
   const previousAttachedIds = input.previousAttachedIds ?? []
+  const ledgerIds = input.ledgerIds ?? []
 
   const candidates = documents.filter(d => d.id !== activeDocumentId)
   const attachable = (d: SelectableDoc) => d.contentLoaded !== false && d.content.length > 0
@@ -154,7 +167,10 @@ export function selectReferenceChapters(
     if (mentionedInPrompt.has(doc.id)) score += SCORE_TITLE_IN_PROMPT
     if (mentionedInHistory.has(doc.id)) score += SCORE_TITLE_IN_HISTORY
     if (adjacentIds.has(doc.id)) score += SCORE_ADJACENT
-    if (previousAttachedIds.includes(doc.id)) score += SCORE_PREVIOUS_TURN
+    // Continuity only needs a nudge for candidates that are NOT already in
+    // the ledger; a ledger member is kept regardless, and scoring it here
+    // would only distort which NEW chapter wins the remaining budget.
+    if (!ledgerIds.includes(doc.id) && previousAttachedIds.includes(doc.id)) score += SCORE_PREVIOUS_TURN
     if (keywords.length > 0) {
       const digest = `${doc.title}\n${doc.summary ?? ''}`.toLowerCase()
       let hits = 0
@@ -166,8 +182,16 @@ export function selectReferenceChapters(
     scores[doc.id] = score
   }
 
+  // Ledger members ride along for free: their bytes are already in the
+  // model's cached prefix, so they cost no budget this turn. A blocked one is
+  // the user asking for it to go — the ledger planner turns that into a
+  // consent prompt rather than a silent eviction.
+  const keptLedgerIds = ledgerIds.filter(id => !blockedIds.includes(id) && id !== activeDocumentId)
+
   // Pinned: always attached, in book order.
-  const pinnedDocs = candidates.filter(d => pinnedIds.includes(d.id) && attachable(d))
+  const pinnedDocs = candidates.filter(d =>
+    pinnedIds.includes(d.id) && attachable(d) && !keptLedgerIds.includes(d.id)
+  )
   let usedChars = pinnedDocs.reduce((sum, d) => sum + docCost(d, perDocChars), 0)
 
   // Autos: qualified by score, greedy by score under the remaining budget.
@@ -176,6 +200,7 @@ export function selectReferenceChapters(
       !pinnedIds.includes(d.id) &&
       !blockedIds.includes(d.id) &&
       attachable(d) &&
+      !keptLedgerIds.includes(d.id) &&
       scores[d.id] >= scoreThreshold
     )
     .sort((a, b) => scores[b.id] - scores[a.id])
@@ -193,7 +218,7 @@ export function selectReferenceChapters(
   }
 
   return {
-    attachedIds: [...pinnedDocs.map(d => d.id), ...autoIds],
+    attachedIds: [...keptLedgerIds, ...pinnedDocs.map(d => d.id), ...autoIds],
     autoIds,
     droppedForBudget,
     scores,

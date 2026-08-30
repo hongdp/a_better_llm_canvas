@@ -386,6 +386,43 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       )}
 
+      {/* Ledger eviction consent: the user's selection would drop chapters out
+          of the cached prefix, which costs a re-prefill. Blocks the send. */}
+      {chatLLM.ledgerConsent && (
+        <div className="whole-book-consent glass-panel" style={{
+          margin: '0.75rem',
+          padding: '0.75rem',
+          borderRadius: '8px',
+          border: '1px solid var(--accent)',
+          backgroundColor: 'var(--accent-glow)',
+          fontSize: '0.85rem',
+          display: 'flex',
+          flexDirection: 'column',
+          gap: '0.6rem'
+        }}>
+          <span style={{ color: 'var(--text-primary)' }}>
+            ♻️ {t.app.ledgerConsentPrompt
+              .replace('{titles}', chatLLM.ledgerConsent.droppedTitles.join('、'))
+              .replace('{chapters}', String(chatLLM.ledgerConsent.resendChapters))
+              .replace('{chars}', chatLLM.ledgerConsent.resendChars.toLocaleString())}
+          </span>
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button type="button" className="btn-primary" style={{ padding: '0.35rem 0.9rem', fontSize: '0.8rem' }}
+              onClick={() => chatLLM.resolveLedgerConsent('keep')}>
+              {t.app.ledgerConsentKeep}
+            </button>
+            <button type="button" className="btn-secondary" style={{ padding: '0.35rem 0.9rem', fontSize: '0.8rem' }}
+              onClick={() => chatLLM.resolveLedgerConsent('remove')}>
+              {t.app.ledgerConsentRemove}
+            </button>
+            <button type="button" className="btn-secondary" style={{ padding: '0.35rem 0.9rem', fontSize: '0.8rem' }}
+              onClick={() => chatLLM.resolveLedgerConsent('cancel')}>
+              {t.app.ledgerConsentCancel}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Whole-book cost consent (3 options; blocks the send until chosen) */}
       {chatLLM.wholeBookConsent && (
         <div className="whole-book-consent glass-panel" style={{

@@ -229,6 +229,99 @@ describe('useChatLLM — normal completion', () => {
   })
 })
 
+describe('useChatLLM — cache-first prompt layout', () => {
+  // The acceptance criterion from docs/features/cache_first_context.md: two
+  // consecutive turns must share every message before the volatile tail. No
+  // model is needed to check it — assemble twice and compare the strings.
+  const prefixOf = (callIndex: number) =>
+    calls[callIndex].slice(0, -1).map(m => `${m.role}:${m.content}`).join('\n---\n')
+
+  beforeEach(() => {
+    useAppStore.setState({
+      documents: [
+        doc('doc-1', 'Chapter 1', '<p>old text</p>'),
+        { ...doc('doc-2', 'Chapter 2', '<p>the betrayal</p>'), summary: 'A betrayal.' },
+        { ...doc('doc-3', 'Chapter 3', '<p>the return</p>'), summary: 'A return.' }
+      ],
+      activeDocumentId: 'doc-1',
+      pinnedReferenceIds: ['doc-2']
+    })
+  })
+
+  it('keeps every message before the tail byte-identical across turns', async () => {
+    responses.push('<canvas><p>a</p></canvas>', '<canvas><p>b</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '第一个问题')
+    const firstTail = calls[0].length
+    await send(harness, '第二个完全不同的问题')
+
+    // The second turn appends history; everything the first turn sent before
+    // its own tail is still there, unchanged, in the same order.
+    expect(calls).toHaveLength(2)
+    expect(prefixOf(1).startsWith(prefixOf(0))).toBe(true)
+    expect(calls[1].length).toBeGreaterThan(firstTail)
+    // …and that shared prefix actually carries the chapter, which is the whole
+    // point. Without this the assertion above passes trivially on a prefix of
+    // nothing but the system prompt.
+    expect(prefixOf(0)).toContain('REFERENCED CHAPTERS')
+    expect(prefixOf(0)).toContain('the betrayal')
+    // The tail is what changed — the request, and nothing before it.
+    expect(finalUserContent(1)).toContain('第二个完全不同的问题')
+    expect(finalUserContent(1)).not.toContain('the betrayal')
+    harness.unmount()
+  })
+
+  it('puts the pinned chapter ahead of the history, not in the final message', async () => {
+    responses.push('<canvas><p>a</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '写下去')
+
+    const ledger = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))
+    expect(ledger).toBeDefined()
+    expect(ledger!.content).toContain('the betrayal')
+    expect(ledger!.cacheHint).toBe(true)
+    // …and the volatile tail carries only the active document and the request.
+    expect(finalUserContent(0)).not.toContain('the betrayal')
+    expect(finalUserContent(0)).toContain('<p>old text</p>')
+    harness.unmount()
+  })
+
+  it('appends a newly attached chapter without disturbing the first one', async () => {
+    responses.push('<canvas><p>a</p></canvas>', '<canvas><p>b</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '第一轮')
+    // Pin a second chapter: it must be APPENDED, never inserted or re-sorted.
+    useAppStore.setState({ pinnedReferenceIds: ['doc-2', 'doc-3'] })
+    await send(harness, '第二轮')
+
+    const before = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    const after = calls[1].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    expect(after.startsWith(before.replace(/\n$/, ''))).toBe(true)
+    expect(after).toContain('the return')
+    harness.unmount()
+  })
+
+  it('drops the chapter the writer switches to, keeping the rest cached', async () => {
+    responses.push('<canvas><p>a</p></canvas>', '<canvas><p>b</p></canvas>')
+    const harness = renderChatHook()
+
+    useAppStore.setState({ pinnedReferenceIds: ['doc-2', 'doc-3'] })
+    await send(harness, '第一轮')
+    // Now edit chapter 2 — it must leave the ledger rather than sit there as a
+    // stale duplicate of the document in the tail.
+    useAppStore.setState({ activeDocumentId: 'doc-2', pinnedReferenceIds: ['doc-3'] })
+    await send(harness, '第二轮')
+
+    const after = calls[1].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    expect(after).not.toContain('the betrayal')
+    expect(after).toContain('the return')
+    harness.unmount()
+  })
+})
+
 describe('useChatLLM — document tools', () => {
   it('applies a tool call to the document, with no tags anywhere', () => {
     // The whole point of the migration: no <canvas>, no <doc_status>, and the

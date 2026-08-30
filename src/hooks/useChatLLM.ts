@@ -16,9 +16,18 @@ import { applyToolCallDelta, finishToolCalls, partialStringArgument, type ToolCa
 import { toolsForTurn, toOpenAITools, toolCallToParsedResponse } from '../utils/documentTools'
 import { resolveDocumentProtocol } from '../utils/protocolChoice'
 import { enqueueStaleSummaryRefreshes } from '../services/chapterSummaries'
-import type { HistorySourceMessage } from './chat/types'
+import type { HistorySourceMessage, LedgerConsentRequest, LedgerConsentChoice } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
-import { buildDynamicContext as assembleDynamicContext, type DynamicContextOptions } from './chat/dynamicContext'
+import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
+import {
+  EMPTY_LEDGER,
+  hashContent,
+  planLedgerTurn,
+  planKeepingRemoved,
+  orderAdmissionsForSwitchCost,
+  type ContextLedger,
+  type LedgerPlan
+} from '../utils/contextLedger'
 import {
   planWholeBook as planWholeBookFlow,
   runWholeBookBatches as runWholeBookBatchesFlow,
@@ -40,6 +49,9 @@ const MAX_HISTORY_CHARS = 80_000
 // Base64 images are only re-sent for the most recent messages — older ones
 // dominate token cost while rarely being referenced again.
 const KEEP_IMAGES_IN_LAST_MESSAGES = 4
+// Per-chapter cap in the ledger. Mirrors the reference-doc cap the renderer
+// applies, so the planner's cost arithmetic matches the bytes actually sent.
+const MAX_LEDGER_DOC_CHARS = 20_000
 // A rejoined stream that produces nothing within this window is treated as
 // dead (expired job, restarted server) rather than left spinning.
 const REJOIN_FIRST_EVENT_TIMEOUT_MS = 20_000
@@ -141,6 +153,22 @@ export function useChatLLM({
   // resets whenever a send happens with the mode off.
   const stickyConsentGivenRef = useRef(false)
 
+  const [ledgerConsent, setLedgerConsent] = useState<LedgerConsentRequest | null>(null)
+  const ledgerConsentResolveRef = useRef<((choice: LedgerConsentChoice) => void) | null>(null)
+
+  const requestLedgerConsent = useCallback((req: LedgerConsentRequest): Promise<LedgerConsentChoice> => {
+    setLedgerConsent(req)
+    return new Promise<LedgerConsentChoice>(resolve => {
+      ledgerConsentResolveRef.current = resolve
+    })
+  }, [])
+
+  const resolveLedgerConsent = useCallback((choice: LedgerConsentChoice) => {
+    setLedgerConsent(null)
+    ledgerConsentResolveRef.current?.(choice)
+    ledgerConsentResolveRef.current = null
+  }, [])
+
   const requestWholeBookConsent = useCallback((req: WholeBookConsentRequest): Promise<WholeBookConsentChoice> => {
     setWholeBookConsent(req)
     return new Promise<WholeBookConsentChoice>(resolve => {
@@ -202,6 +230,14 @@ export function useChatLLM({
   // Chapters attached on the previous turn — feeds the scorer's continuity
   // signal so a chapter under discussion isn't dropped mid-conversation.
   const previousAttachedIdsRef = useRef<string[]>([])
+  // What the model has already been sent, in the order it was sent. Session
+  // scoped: a different book is a different prefix, and the provider's cache
+  // is keyed on the token sequence, not on our bookkeeping.
+  const ledgerRef = useRef<ContextLedger>(EMPTY_LEDGER)
+  // What the ledger's cached prefix belongs to. A different book is different
+  // text, and a different model is a different cache entirely — in both cases
+  // the prefix we think is hot does not exist, so the ledger starts over.
+  const ledgerScopeRef = useRef<string>('')
   // Reasoning display state: a tail (thinking can run to thousands of chars)
   // painted at most a few times a second (it arrives token by token).
   const reasoningTailRef = useRef('')
@@ -276,15 +312,12 @@ export function useChatLLM({
     }
   }, [])
 
-  // Volatile document context (reference docs + active doc). Assembly is pure
-  // and lives in chat/dynamicContext (see there for the prompt-layout
-  // rationale); this wrapper binds the current selection and the per-request
+  // The volatile tail (chapter index + active document). Assembly is pure and
+  // lives in chat/dynamicContext (see there for the prompt-layout rationale);
+  // this wrapper binds the current selection and the per-request
   // image-placeholder registry.
-  const buildDynamicContext = useCallback((
-    finalReferenceIds: string[],
-    opts?: DynamicContextOptions
-  ): string => {
-    return assembleDynamicContext(finalReferenceIds, selectedText, preserveImagesWithPlaceholders, opts)
+  const buildTail = useCallback((opts?: DynamicContextOptions): string => {
+    return buildVolatileTail(selectedText, preserveImagesWithPlaceholders, opts)
   }, [selectedText, preserveImagesWithPlaceholders])
 
   // Whole-book Rung 2 batched read (implementation in chat/wholeBook). The
@@ -980,6 +1013,12 @@ export function useChatLLM({
     }
     const s = useAppStore.getState()
 
+    const ledgerScope = `${s.activeBookId ?? ''}|${s.activeProvider}|${s.providerConfigs[s.activeProvider]?.model ?? ''}`
+    if (ledgerScope !== ledgerScopeRef.current) {
+      ledgerRef.current = EMPTY_LEDGER
+      ledgerScopeRef.current = ledgerScope
+    }
+
     // Layer 1 auto-selection: pinned chapters always attach; the scorer adds
     // relevant ones (title mentions, adjacency, keyword overlap, continuity)
     // under the context budget. Blocked chapters never auto-attach.
@@ -990,7 +1029,8 @@ export function useChatLLM({
       activeDocumentId: s.activeDocumentId,
       pinnedIds: s.pinnedReferenceIds,
       blockedIds: s.blockedReferenceIds,
-      previousAttachedIds: previousAttachedIdsRef.current
+      previousAttachedIds: previousAttachedIdsRef.current,
+      ledgerIds: ledgerRef.current.entries.map(e => e.id)
     })
     previousAttachedIdsRef.current = selection.attachedIds
 
@@ -1022,8 +1062,9 @@ export function useChatLLM({
     const autoIds = selection.autoIds
     let dynamicContext: string
     let attachmentsText: string
-    // Sticky whole-book: the book text joins the stable prompt prefix (see
-    // buildStickyBookPrefix in chat/wholeBook for the caching layout).
+    // The stable block ahead of the history: either the whole-book sticky
+    // prefix or the context ledger. Both are cacheable; they never coexist,
+    // since whole-book already provides every chapter.
     let bookPrefixMessages: LLMMessage[] = []
 
     if (wholeBookPlan) {
@@ -1032,12 +1073,13 @@ export function useChatLLM({
       if (mode === 'full' && sticky) {
         bookPrefixMessages = buildStickyBookPrefix(docs)
         attachedIds = docs.map(d => d.id)
-        dynamicContext = buildDynamicContext([])
+        dynamicContext = buildTail()
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, sticky)]`
       } else if (mode === 'full') {
         // Rung 1: attach every chapter, single call.
         attachedIds = docs.map(d => d.id)
-        dynamicContext = buildDynamicContext(attachedIds, { perDocChars: Number.MAX_SAFE_INTEGER })
+        dynamicContext = buildInlineReferenceBlock(attachedIds, Number.MAX_SAFE_INTEGER) +
+          '\n' + buildTail()
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters)]`
       } else if (mode === 'batched') {
         // Rung 2: map-reduce over book-order batches, then answer from notes.
@@ -1053,17 +1095,57 @@ export function useChatLLM({
           return null
         }
         attachedIds = []
-        dynamicContext = buildDynamicContext([], { notesBlock: notes })
+        dynamicContext = buildTail({ notesBlock: notes })
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, read in ${batches.length} batches)]`
       } else {
         // Rung 0 fast mode: structure + summaries, no full text.
         attachedIds = []
-        dynamicContext = buildDynamicContext([], { includeWholeBookDigest: true })
+        dynamicContext = buildTail({ includeWholeBookDigest: true })
         attachmentsText = '[Attached Context: Whole-book digest (structure + summaries)]'
       }
       previousAttachedIdsRef.current = attachedIds
+      // Whole-book replaces the stable block with its own; whatever the ledger
+      // had cached is no longer in the prefix.
+      ledgerRef.current = EMPTY_LEDGER
     } else {
-      dynamicContext = buildDynamicContext(attachedIds)
+      // Cache-first assembly: chapters go into an append-only block ahead of
+      // the history, so an unchanged set costs nothing to re-send. New
+      // admissions are ordered farthest-first, because switching the active
+      // document truncates the ledger at that chapter's position — the nearer
+      // a chapter is in book order, the likelier it is edited next, and the
+      // later it should sit. See docs/features/cache_first_context.md.
+      const bookOrder = s.documents.map(d => d.id)
+      const desiredIds = orderAdmissionsForSwitchCost(attachedIds, bookOrder, s.activeDocumentId)
+      const docsForPlan = s.documents.map(d => ({
+        id: d.id,
+        chars: Math.min(d.content.length, MAX_LEDGER_DOC_CHARS),
+        hash: hashContent(d.content)
+      }))
+
+      let plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId)
+      if (plan.requiresConsent) {
+        const choice = await requestLedgerConsent({
+          droppedTitles: plan.drops
+            .filter(d => d.reason === 'user-removed')
+            .map(d => s.documents.find(doc => doc.id === d.id)?.title ?? d.id),
+          resendChars: plan.resendChars,
+          resendChapters: plan.resentIds.length + plan.appendedIds.length
+        })
+        if (choice === 'cancel') {
+          s.setStreaming(false)
+          s.setMessages(useAppStore.getState().messages.filter(m => m.id !== assistantMsgId))
+          return null
+        }
+        if (choice === 'keep') {
+          plan = planKeepingRemoved(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId)
+        }
+      }
+
+      attachedIds = plan.ledger.entries.map(e => e.id)
+      bookPrefixMessages = buildLedgerMessages(attachedIds)
+      ledgerRef.current = plan.ledger
+      previousAttachedIdsRef.current = attachedIds
+      dynamicContext = buildTail()
       attachmentsText = buildAttachmentsLabel(attachedIds, s.documents, autoIds)
     }
 
@@ -1080,7 +1162,7 @@ export function useChatLLM({
       attachmentsText,
       estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4)
     }
-  }, [buildSystemPrompt, buildDynamicContext, runWholeBookBatches, forceSave])
+  }, [buildSystemPrompt, buildTail, runWholeBookBatches, forceSave, requestLedgerConsent])
 
   // Send message handler
   const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
@@ -1242,6 +1324,8 @@ export function useChatLLM({
     handleResubmitMessage,
     handleStopGeneration,
     wholeBookConsent,
+    ledgerConsent,
+    resolveLedgerConsent,
     resolveWholeBookConsent
   }
 }

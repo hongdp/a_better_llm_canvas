@@ -1,6 +1,7 @@
 # Cache-first context strategy
 
-Status: **proposed** (design only — no code written yet)
+Status: **implemented** for the layout and the ledger (§4–§7); the history
+windowing changes (breakers 3–5) are **not done** — see §11.
 Supersedes the layout half of the 2026-07-07 "Cache-Friendly Prompt Layout"
 decision; the windowing/trimming helpers in `utils/llmContext.ts` stay.
 
@@ -217,7 +218,55 @@ Measured, not asserted:
 ## 10. Not in scope
 
 - Changing what the scorer *considers* (title/keyword/adjacency signals).
-- The agentic `<lookup>` loop, beyond having it append to the ledger like any
-  other admission.
+- The agentic `<lookup>` loop — removed entirely on 2026-08-17 as dead code,
+  see smart_context_selection.md §5.
 - Roleplay mode, which has its own volatile game-state block and should be
   revisited separately once this lands.
+
+## 11. As built (2026-08-17)
+
+Landed:
+
+- `utils/contextLedger.ts` — the planner, pure and tested 18 ways. Append-only,
+  insertion-ordered, longest-valid-prefix on any removal.
+- `hooks/chat/dynamicContext.ts` — split into `buildLedgerMessages` (the stable
+  block, injected before the history as a `cacheHint` user/assistant pair) and
+  `buildVolatileTail` (chapter index + active document).
+- `utils/contextSelection.ts` — takes `ledgerIds`; ledger members ride free
+  (no budget, no re-scoring), and the continuity bonus applies only to
+  candidates outside the ledger, where it can still change an outcome.
+- `useChatLLM.ts` — assembles `[system][ledger][history][tail]`, plans each
+  turn against `ledgerRef`, and resets the ledger when the book, provider or
+  model changes (a different model is a different cache).
+- Eviction consent — an inline panel in `ChatPanel`, three options, defaulting
+  to "keep it and continue". Reuses the whole-book panel's shape.
+
+Decisions taken during implementation:
+
+1. **Chapter index → volatile tail**, as recommended. It moves with every
+   background summary refresh and is a few hundred bytes.
+2. **An edited chapter is dropped from its position and re-appended at the
+   end**, so the prefix before it survives. Same treatment for the chapter that
+   becomes the active document — with the added reason that a stale duplicate
+   is how an `<edit>` SEARCH block silently stops matching.
+3. **Whole-book stays separate.** It installs its own sticky prefix and now
+   explicitly resets the ledger, since the block the ledger believed was cached
+   is no longer in the prompt.
+4. New admissions are ordered **farthest-first in book order**
+   (`orderAdmissionsForSwitchCost`), because switching the active document
+   truncates the ledger at that chapter's position and the writer's next
+   chapter is usually the adjacent one.
+
+Verified by `useChatLLM.test.ts` ("cache-first prompt layout"), which drives
+the real hook over two turns and asserts the second request's messages start
+with the first request's, that the shared prefix actually contains the chapter
+text, and that a newly pinned chapter appends rather than reorders. Removing
+the ledger block or the prefix-keeping logic turns those red (checked).
+
+### Not done
+
+Breakers 3, 4 and 5 from §3 are untouched: history is still trimmed from the
+front at 80k chars, images are still stripped on a rolling offset, and
+same-role merging still happens at assembly time. Each rewrites history that
+the model has already seen, and each is worth its own change — the ledger was
+the one holding the bulk of the tokens.
