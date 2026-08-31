@@ -38,6 +38,8 @@ export interface BooksSlice {
    */
   lastSeenServerUpdatedAt: string | null
   setLastSeenServerUpdatedAt: (value: string | null) => void
+  /** Record a mutation response's book stamp as seen, keeping the max. */
+  adoptServerUpdatedAt: (stamp: string | null | undefined) => void
 
   // Multi-book state
   activeBookId: string
@@ -352,6 +354,20 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
   lastSyncedAt: null,
   lastSeenServerUpdatedAt: null,
   setLastSeenServerUpdatedAt: (value) => set({ lastSeenServerUpdatedAt: value }),
+
+  adoptServerUpdatedAt: (stamp) => {
+    // Every document mutation (PUT/POST/DELETE/reorder) bumps the book's
+    // server-side updated_at AFTER the metadata PUT whose response we record —
+    // so without adopting these stamps the focus-time check compared a stale
+    // baseline against our own write and reloaded the whole book, resetting
+    // the reader to the top of the chapter (user-reported). Max, not last:
+    // parallel doc PUTs resolve in any order, and ISO-8601 UTC strings order
+    // lexicographically.
+    if (!stamp) return
+    set((state) => (!state.lastSeenServerUpdatedAt || stamp > state.lastSeenServerUpdatedAt)
+      ? { lastSeenServerUpdatedAt: stamp }
+      : {})
+  },
   syncToServer: async () => {
     const state = useAppStore.getState()
     if (!state.user) return
@@ -445,12 +461,16 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
               summary: d.summary ?? null,
               summaryContentHash: d.summaryContentHash ?? null
             })
-          }).then(res => {
+          }).then(async res => {
             if (res.ok) {
               lastPushedDocsById.set(d.id, {
                 title: d.title, content: d.content,
                 summary: d.summary, summaryContentHash: d.summaryContentHash
               })
+              try {
+                const body = await res.clone().json()
+                useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt)
+              } catch { /* older server: no body */ }
             }
             return res
           }).catch(e => {
@@ -476,7 +496,9 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
               body: JSON.stringify({
                 documents: [{ id: doc.id, title: doc.title, content: doc.content, createdAt: doc.createdAt, updatedAt: doc.updatedAt }]
               })
-            }).catch(e => console.error(`Failed to create document ${doc.id}`, e))
+            }).then(res => res.ok ? res.json() : null)
+              .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+              .catch(e => console.error(`Failed to create document ${doc.id}`, e))
           }
         }
       }

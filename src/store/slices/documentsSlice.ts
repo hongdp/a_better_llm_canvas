@@ -149,7 +149,9 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
           body: JSON.stringify({
             documents: [{ id: newDoc.id, title: newDoc.title, content: newDoc.content, createdAt: newDoc.createdAt, updatedAt: newDoc.updatedAt }]
           })
-        }).catch(e => console.error('Failed to sync new document to server', e))
+        }).then(res => res.ok ? res.json() : null)
+          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+          .catch(e => console.error('Failed to sync new document to server', e))
       }
 
       return docId
@@ -198,7 +200,9 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
             'X-CSRF-Token': state.csrfToken || ''
           },
           body: JSON.stringify({ documentIds: docIds })
-        }).catch(e => console.error('Failed to persist document order', e))
+        }).then(res => res.ok ? res.json() : null)
+          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+          .catch(e => console.error('Failed to persist document order', e))
       }
     },
 
@@ -247,7 +251,9 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
           headers: {
             'X-CSRF-Token': state.csrfToken || ''
           }
-        }).catch(e => console.error('Failed to delete document on server', e))
+        }).then(res => res.ok ? res.json() : null)
+          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+          .catch(e => console.error('Failed to delete document on server', e))
       }
     },
 
@@ -334,7 +340,9 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
             'X-CSRF-Token': state.csrfToken || ''
           },
           body: JSON.stringify({ summary, summaryContentHash: contentHash })
-        }).catch(e => console.error('Failed to sync document summary to server', e))
+        }).then(res => res.ok ? res.json() : null)
+          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+          .catch(e => console.error('Failed to sync document summary to server', e))
       }
     },
 
