@@ -513,9 +513,14 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
         } catch { /* older server: no updatedAt in the response */ }
         set({
           serverSaveStatus: 'saved',
-          lastSyncedAt: new Date().toISOString(),
-          ...(ourServerUpdatedAt ? { lastSeenServerUpdatedAt: ourServerUpdatedAt } : {})
+          lastSyncedAt: new Date().toISOString()
         })
+        // Through adopt (max), NOT a direct write: the doc PUTs above already
+        // adopted their (newer) stamps, and this block runs after them — a
+        // direct write here regressed the baseline to the meta PUT's older
+        // stamp and resurrected the exact focus-reload the adoption exists to
+        // prevent. Max semantics make the ordering irrelevant.
+        useAppStore.getState().adoptServerUpdatedAt(ourServerUpdatedAt)
       } else {
         set({ serverSaveStatus: 'failed' })
       }
