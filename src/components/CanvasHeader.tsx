@@ -4,6 +4,7 @@ import { useAppStore } from '../store/useAppStore'
 import type { CanvasDocument } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
 import { exportDocument } from '../utils/export'
+import { contentWithRenamedHeading } from '../utils/titleSync'
 
 interface CanvasHeaderProps {
   activeDoc: Pick<CanvasDocument, 'title' | 'content'>
@@ -64,6 +65,19 @@ export function CanvasHeader({
           onChange={e => {
             triggerUnsaved()
             updateActiveDocument({ title: e.target.value })
+          }}
+          onBlur={() => {
+            // Rename → heading linkage, the other half of title-follows-h1
+            // (utils/titleSync): committing a rename rewrites a leading <h1>
+            // so the two never disagree. On commit, not per keystroke — a
+            // content update re-parses the whole document in the editor.
+            const renamed = contentWithRenamedHeading(activeDoc.content, activeDoc.title)
+            if (renamed !== null) {
+              updateActiveDocument({ content: renamed })
+            }
+          }}
+          onKeyDown={e => {
+            if (e.key === 'Enter') e.currentTarget.blur()
           }}
           className="canvas-title-input"
           placeholder="Untitled Document"
