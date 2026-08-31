@@ -22,14 +22,13 @@ import {
   cjkRatioOf
 } from '../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
-import type { HistorySourceMessage, LedgerConsentRequest, LedgerConsentChoice } from './chat/types'
+import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
 import {
   EMPTY_LEDGER,
   hashContent,
   planLedgerTurn,
-  planKeepingRemoved,
   orderAdmissionsByStability,
   type ContextLedger,
   type LedgerPlan
@@ -151,22 +150,6 @@ export function useChatLLM({
   // Sticky whole-book mode asks for consent only on its first send; the ref
   // resets whenever a send happens with the mode off.
   const stickyConsentGivenRef = useRef(false)
-
-  const [ledgerConsent, setLedgerConsent] = useState<LedgerConsentRequest | null>(null)
-  const ledgerConsentResolveRef = useRef<((choice: LedgerConsentChoice) => void) | null>(null)
-
-  const requestLedgerConsent = useCallback((req: LedgerConsentRequest): Promise<LedgerConsentChoice> => {
-    setLedgerConsent(req)
-    return new Promise<LedgerConsentChoice>(resolve => {
-      ledgerConsentResolveRef.current = resolve
-    })
-  }, [])
-
-  const resolveLedgerConsent = useCallback((choice: LedgerConsentChoice) => {
-    setLedgerConsent(null)
-    ledgerConsentResolveRef.current?.(choice)
-    ledgerConsentResolveRef.current = null
-  }, [])
 
   const requestWholeBookConsent = useCallback((req: WholeBookConsentRequest): Promise<WholeBookConsentChoice> => {
     setWholeBookConsent(req)
@@ -1197,24 +1180,12 @@ export function useChatLLM({
         hash: hashContent(d.content)
       }))
 
-      let plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId)
-      if (plan.requiresConsent) {
-        const choice = await requestLedgerConsent({
-          droppedTitles: plan.drops
-            .filter(d => d.reason === 'user-removed')
-            .map(d => s.documents.find(doc => doc.id === d.id)?.title ?? d.id),
-          resendChars: plan.resendChars,
-          resendChapters: plan.resentIds.length + plan.appendedIds.length
-        })
-        if (choice === 'cancel') {
-          s.setStreaming(false)
-          s.setMessages(useAppStore.getState().messages.filter(m => m.id !== assistantMsgId))
-          return null
-        }
-        if (choice === 'keep') {
-          plan = planKeepingRemoved(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId)
-        }
-      }
+      // Removing a chapter used to raise a consent card here (the drop costs
+      // a re-prefill of everything after it in the cached prefix). Removed by
+      // request: the user's removal is honored silently and the cache pays
+      // the one-turn re-prefill. The planner still reports the cost in
+      // `resendChars` if a UI ever wants to show it non-blockingly.
+      const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId)
 
       attachedIds = plan.ledger.entries.map(e => e.id)
       bookPrefixMessages = buildLedgerMessages(s.documents, attachedIds)
@@ -1237,7 +1208,7 @@ export function useChatLLM({
       attachmentsText,
       estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4)
     }
-  }, [buildSystemPrompt, buildTail, runWholeBookBatches, forceSave, requestLedgerConsent])
+  }, [buildSystemPrompt, buildTail, runWholeBookBatches, forceSave])
 
   // Send message handler
   const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
@@ -1399,8 +1370,6 @@ export function useChatLLM({
     handleResubmitMessage,
     handleStopGeneration,
     wholeBookConsent,
-    ledgerConsent,
-    resolveLedgerConsent,
     resolveWholeBookConsent
   }
 }

@@ -66,7 +66,6 @@ export interface LedgerPlan {
    * the send should stop and ask. An active-document switch or an edit is not
    * a choice the user can reconsider, so neither raises this.
    */
-  requiresConsent: boolean
 }
 
 /** Minimal document shape the planner needs. */
@@ -171,31 +170,8 @@ export function planLedgerTurn(
     resentIds,
     appendedIds,
     drops,
-    resendChars,
-    requiresConsent: drops.some(d => d.reason === 'user-removed')
+    resendChars
   }
-}
-
-/**
- * The same plan with the user-removed chapters kept instead — what the
- * "保留该章并继续 / keep it and continue" button sends. The chapter stays in
- * the ledger (costing budget but no prefill) while no longer being presented
- * as selected.
- */
-export function planKeepingRemoved(
-  current: ContextLedger,
-  desiredIds: string[],
-  docs: LedgerDocLike[],
-  activeDocumentId: string | null
-): LedgerPlan {
-  const stillWanted = current.entries
-    .filter(e => e.id !== activeDocumentId)
-    .map(e => e.id)
-  const union = [...stillWanted]
-  for (const id of desiredIds) {
-    if (!union.includes(id)) union.push(id)
-  }
-  return planLedgerTurn(current, union, docs, activeDocumentId)
 }
 
 /** What the stability ordering needs to know about a document. */
