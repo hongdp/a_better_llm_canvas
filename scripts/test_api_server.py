@@ -21,7 +21,7 @@ def test_extract_various_image_attributes():
         <head><title>Test Page</title></head>
         <body>
             <p>Some text content to create a paragraph.</p>
-            <!-- t66y style -->
+            <!-- forum-style lazy-load attributes -->
             <img ess-data="https://example.com/image.webp" iyl-data="http://a.d/adblo_ck.jpg" referrerpolicy="no-referrer">
             <!-- standard src -->
             <img src="https://example.com/image2.jpg">
