@@ -1232,3 +1232,89 @@ def test_generation_runpod_direct_pod_url_omits_auth_and_stream_options():
 
 def test_runpod_is_a_supported_provider_needing_no_api_key():
     assert "runpod" in server_generation.SUPPORTED_PROVIDERS
+
+
+# --- Focus-check baseline: mutations must return the stamp they wrote --------
+
+def _seed_book(tmp_path, monkeypatch):
+    """One book, one document, one live session for 'alice'. Returns a
+    request factory bound to that session."""
+    monkeypatch.setattr(server_db, "DB_PATH", str(tmp_path / "metadata.db"))
+    monkeypatch.setattr(server_auth, "SESSIONS_FILE", str(tmp_path / "sessions.json"))
+    server_db.init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    conn = server_db.get_db()
+    try:
+        conn.execute(
+            "INSERT INTO books (id, username, title, active_document_id, created_at, updated_at)"
+            " VALUES ('book-1', 'alice', 'My Book', 'doc-1', ?, ?)", (now, now))
+        conn.execute(
+            "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at)"
+            " VALUES ('doc-1', 'alice', 'book-1', 'Chapter 1', 0, ?, ?)", (now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    session = {"sess-1": {"username": "alice", "expiresAt": expires, "csrfToken": "tok-1"}}
+    with open(server_auth.SESSIONS_FILE, "w", encoding="utf-8") as f:
+        _json.dump(session, f)
+
+    def make_request(method, path, body=None):
+        payload = _json.dumps(body or {}).encode()
+        sent = {"done": False}
+        async def receive():
+            if sent["done"]:
+                return {"type": "http.disconnect"}
+            sent["done"] = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        return _StarletteRequest({
+            "type": "http", "method": method, "path": path,
+            "headers": [(b"cookie", b"web_canvas_session=sess-1"),
+                        (b"x-csrf-token", b"tok-1"),
+                        (b"content-type", b"application/json")],
+            "query_string": b"",
+        }, receive)
+    return make_request
+
+
+def _book_stamp():
+    conn = server_db.get_db()
+    try:
+        return conn.execute(
+            "SELECT updated_at FROM books WHERE id = 'book-1'").fetchone()["updated_at"]
+    finally:
+        conn.close()
+
+
+def test_document_put_returns_the_book_stamp_it_wrote(tmp_path, monkeypatch):
+    """The focus-time check compares the client's last-seen stamp against
+    GET /api/books. The doc PUT bumps that stamp AFTER the metadata PUT whose
+    response the client records — so unless the doc PUT returns its own stamp,
+    every post-sync focus event looks like another device's write and reloads
+    the book (resetting the reader to the top of the chapter)."""
+    make_request = _seed_book(tmp_path, monkeypatch)
+    monkeypatch.setattr(api_server, "save_document_content", lambda *a: None)
+
+    result = asyncio.run(api_server.update_document(
+        make_request("PUT", "/api/books/book-1/documents/doc-1",
+                     {"title": "Renamed", "content": "<p>x</p>"}),
+        "book-1", "doc-1"))
+
+    assert result["success"] is True
+    assert result["updatedAt"] == _book_stamp()
+
+
+def test_delete_and_reorder_return_the_book_stamp(tmp_path, monkeypatch):
+    make_request = _seed_book(tmp_path, monkeypatch)
+    monkeypatch.setattr(api_server, "delete_document_content", lambda *a: None)
+
+    reordered = asyncio.run(api_server.reorder_documents(
+        make_request("PUT", "/api/books/book-1/documents/reorder",
+                     {"documentIds": ["doc-1"]}),
+        "book-1"))
+    assert reordered["updatedAt"] == _book_stamp()
+
+    deleted = asyncio.run(api_server.delete_document_endpoint(
+        make_request("DELETE", "/api/books/book-1/documents/doc-1"),
+        "book-1", "doc-1"))
+    assert deleted["updatedAt"] == _book_stamp()

@@ -521,7 +521,11 @@ async def update_document(request: Request, book_id: str, doc_id: str):
     if "content" in body:
         save_document_content(username, safe_book_id, safe_doc_id, body["content"])
 
-    return {"success": True}
+    # The write bumped the book's updated_at; return the stamp so the client
+    # can adopt it as "seen". Without this every focus-time check after a
+    # document sync compared a stale baseline against our own write and
+    # reloaded the whole book — resetting the reader to the top of the chapter.
+    return {"success": True, "updatedAt": now}
 
 
 # ── Batch Create/Replace Documents ─────────────────────────────────────────────
@@ -596,7 +600,7 @@ async def create_documents(request: Request, book_id: str):
         )
 
         conn.commit()
-        return {"success": True, "ids": created_ids}
+        return {"success": True, "ids": created_ids, "updatedAt": now}
     finally:
         conn.close()
 
@@ -624,7 +628,7 @@ async def delete_document_endpoint(request: Request, book_id: str, doc_id: str):
         conn.close()
 
     delete_document_content(username, safe_book_id, safe_doc_id)
-    return {"success": True}
+    return {"success": True, "updatedAt": now}
 
 
 # ── Reorder Documents ──────────────────────────────────────────────────────────
@@ -656,7 +660,7 @@ async def reorder_documents(request: Request, book_id: str):
             (now, username, safe_book_id)
         )
         conn.commit()
-        return {"success": True}
+        return {"success": True, "updatedAt": now}
     finally:
         conn.close()
 
