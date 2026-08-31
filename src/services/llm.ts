@@ -104,7 +104,7 @@ export async function streamLLM(
       }
     }
 
-    if (provider === 'openai' || provider === 'ollama' || provider === 'grok') {
+    if (provider === 'openai' || provider === 'ollama' || provider === 'runpod' || provider === 'grok') {
       await streamOpenAI(messages, config, debugCallbacks)
     } else if (provider === 'gemini') {
       await streamGemini(messages, config, debugCallbacks)
@@ -195,9 +195,14 @@ async function streamOpenAI(
     body['tools'] = config.tools
   }
 
-  // Check if Ollama by checking baseUrl or apiKey
-  const isOllama = config.apiKey === 'ollama-no-key' || config.baseUrl.includes('localhost') || config.baseUrl.includes('127.0.0.1');
-  if (!isOllama) {
+  // llama.cpp rejects stream_options. It sits behind both `ollama` and
+  // `runpod`, and a RunPod endpoint addressed directly is neither loopback nor
+  // keyless — so the provider has to be part of the test, not just the URL.
+  const isLlamaCpp = config.provider === 'runpod'
+    || config.apiKey === 'ollama-no-key'
+    || config.baseUrl.includes('localhost')
+    || config.baseUrl.includes('127.0.0.1');
+  if (!isLlamaCpp) {
     body['stream_options'] = { include_usage: true }
   }
 

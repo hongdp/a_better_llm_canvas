@@ -33,6 +33,7 @@ An advanced, LLM-powered document editing workspace. Inspired by OpenAI Canvas, 
     *   **Anthropic Claude** (Claude 3.5 Sonnet / Haiku, Opus)
     *   **Grok** by xAI (Grok-3, Grok-2)
     *   **Ollama** (llama3, mistral, gemma2, phi3)
+    *   **RunPod** — a rented cloud GPU serving llama.cpp, in its own config slot so a local model and a pod stay configured at once
 *   Dynamic local model detection and custom base API URLs.
 
 ### 6. **Multi-Document & Version History**

@@ -287,11 +287,11 @@ export const mergeProviderConfigs = (
 
 export const loadSavedProvider = (): LLMProvider => {
   const saved = localStorage.getItem('web_canvas_active_provider')
-  if (saved && ['openai', 'gemini', 'anthropic', 'ollama', 'grok'].includes(saved)) {
+  if (saved && ['openai', 'gemini', 'anthropic', 'ollama', 'runpod', 'grok'].includes(saved)) {
     return saved as LLMProvider
   }
   const cookieSaved = getCookie('__Secure-web_canvas_active_provider')
-  if (cookieSaved && ['openai', 'gemini', 'anthropic', 'ollama', 'grok'].includes(cookieSaved)) {
+  if (cookieSaved && ['openai', 'gemini', 'anthropic', 'ollama', 'runpod', 'grok'].includes(cookieSaved)) {
     localStorage.setItem('web_canvas_active_provider', cookieSaved)
     return cookieSaved as LLMProvider
   }

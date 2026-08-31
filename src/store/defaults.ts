@@ -37,6 +37,18 @@ export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     baseUrl: import.meta.env.VITE_OLLAMA_BASE_URL || 'http://localhost:11434/v1',
     maxOutputTokens: 16384,
   },
+  // A remote llama.cpp on a rented GPU. Separate from `ollama` on purpose:
+  // both are OpenAI-compatible servers with no auth, and keeping one slot for
+  // each is what lets the local model and the pod stay configured at once.
+  // The default points at the SSH tunnel (scripts/cloud_endpoint/tunnel.sh)
+  // rather than a pod address, because a tunnel's port survives a pod restart
+  // while RunPod's own port mapping does not.
+  runpod: {
+    apiKey: import.meta.env.VITE_RUNPOD_API_KEY || 'ollama-no-key',
+    model: import.meta.env.VITE_RUNPOD_MODEL || 'qwen3.8-IQ4_XS',
+    baseUrl: import.meta.env.VITE_RUNPOD_BASE_URL || 'http://127.0.0.1:8100/v1',
+    maxOutputTokens: 16384,
+  },
   grok: {
     apiKey: import.meta.env.VITE_GROK_API_KEY || '',
     model: import.meta.env.VITE_GROK_MODEL || 'grok-3',

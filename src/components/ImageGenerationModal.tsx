@@ -172,7 +172,7 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
       setEnhanceError('Enter a prompt first.')
       return
     }
-    if (!providerConfigs[activeProvider].apiKey && activeProvider !== 'ollama') {
+    if (!providerConfigs[activeProvider].apiKey && activeProvider !== 'ollama' && activeProvider !== 'runpod') {
       setEnhanceError(`No API key for the active LLM (${activeProvider}). Configure it in Settings.`)
       return
     }

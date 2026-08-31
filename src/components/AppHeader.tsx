@@ -31,6 +31,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     availableGeminiModels,
     availableGrokModels,
     availableOllamaModels,
+    availableRunpodModels,
     customSystemPrompts,
     activeSystemPromptId,
     setActiveSystemPromptId,
@@ -61,6 +62,9 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     // actually use to switch models — Settings is not the only place.
     if (activeProvider === 'ollama' && availableOllamaModels.length > 0) {
       return availableOllamaModels
+    }
+    if (activeProvider === 'runpod' && availableRunpodModels.length > 0) {
+      return availableRunpodModels
     }
     return PROVIDER_MODELS[activeProvider] || []
   }
@@ -101,6 +105,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
             <option value="openai">OpenAI</option>
             <option value="anthropic">Anthropic</option>
             <option value="ollama">Ollama</option>
+            <option value="runpod">RunPod</option>
             <option value="grok">Grok (xAI)</option>
           </select>
         </div>

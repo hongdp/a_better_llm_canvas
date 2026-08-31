@@ -109,6 +109,7 @@ export function useModelFetcher(
     setAvailableGeminiModels,
     setAvailableGrokModels,
     setAvailableOllamaModels,
+    setAvailableRunpodModels,
     updateProviderConfig
   } = useAppStore()
 
@@ -118,6 +119,9 @@ export function useModelFetcher(
 
   const ollamaConfig = providerConfigs.ollama
   const ollamaBaseUrl = ollamaConfig.baseUrl
+
+  const runpodConfig = providerConfigs.runpod
+  const runpodBaseUrl = runpodConfig.baseUrl
 
   const grokConfig = providerConfigs.grok
   const grokApiKey = grokConfig.apiKey
@@ -264,4 +268,40 @@ export function useModelFetcher(
     }
     fetchOllamaModels()
   }, [enabled, ollamaBaseUrl, setAvailableOllamaModels, updateProviderConfig, ollamaConfig.model])
+
+  // Same discovery for the RunPod endpoint, against its own config slot.
+  //
+  // Two routes, and which one works depends on how the pod is addressed. A
+  // tunnelled endpoint is plain http, so the browser blocks it as mixed
+  // content and only the backend can answer. A pod addressed directly at
+  // *.proxy.runpod.net is https, so the direct fetch succeeds (llama.cpp
+  // serves CORS *) — and the backend can answer that one too, because
+  // LOCAL_HOSTNAMES was widened to admit exactly that host suffix.
+  useEffect(() => {
+    if (!enabled) return
+
+    const fetchRunpodModels = async () => {
+      try {
+        let listed = await listLocalModelsDirect(runpodBaseUrl)
+        if (listed.names.length === 0) {
+          listed = await listLocalModelsViaBackend(runpodBaseUrl)
+        }
+        const list = listed.names
+        if (list.length === 0) return
+        setAvailableRunpodModels(list)
+        // The pod's llama.cpp states its n_ctx (262144 here) the same way the
+        // local one does, and the context budgeter should believe it.
+        if (Object.keys(listed.windows).length > 0) {
+          useAppStore.getState().setDiscoveredContextWindows(listed.windows)
+        }
+        // A stale name from a previous pod would 404 on every send.
+        if (!list.includes(runpodConfig.model)) {
+          updateProviderConfig('runpod', { model: list[0] })
+        }
+      } catch {
+        // A stopped pod is the normal case, not an error worth showing.
+      }
+    }
+    fetchRunpodModels()
+  }, [enabled, runpodBaseUrl, setAvailableRunpodModels, updateProviderConfig, runpodConfig.model])
 }

@@ -23,6 +23,7 @@ import { useDiffHandlers } from './hooks/useDiffHandlers'
 import { useModelFetcher } from './hooks/useModelFetcher'
 import { useTranslation } from './i18n'
 import { htmlToPlainText } from './utils/convert'
+import { titleFollowingHeading } from './utils/titleSync'
 
 // Stable no-op callbacks for the app-level model fetch (the Settings modal
 // passes its own real error/loading setters). Must be module-scoped so their
@@ -308,26 +309,15 @@ function App() {
   const handleEditorChangeFor = useCallback((id: string, html: string) => {
     triggerUnsaved()
     const updates: Partial<CanvasDocument> = { content: html }
-    // Sync the title when the document starts with an <h1>.
-    // Problem: this used to do `tempDiv.innerHTML = html` on EVERY editor
-    //   update. Setting innerHTML materializes <img> elements, and an <img>
-    //   starts loading/decoding as soon as its src is set — even detached
-    //   from the document. On a large imported chapter (55MB HTML, 200
-    //   base64 images ≈ 440MB of decoded surfaces) every keystroke and every
-    //   delete re-decoded all of them; the surfaces live in shared memory,
-    //   which is what drove Firefox on Android to multi-GB RSS, a 5s
-    //   main-thread stall and an ANR kill (desktops and Chrome absorbed it).
-    // Fix: match the leading heading with a bounded regex — no DOM, no image
-    //   materialization, O(1) in document size.
-    const headingMatch = /^\s*<h1[^>]*>([\s\S]{0,2000}?)<\/h1>/i.exec(html.slice(0, 4096))
-    if (headingMatch) {
-      const extractedTitle = htmlToPlainText(headingMatch[1]).trim()
-      const currentTitle = useAppStore.getState().documents.find(
-        d => d.id === id
-      )?.title
-      if (extractedTitle && extractedTitle !== currentTitle) {
-        updates.title = extractedTitle
-      }
+    // Title follows a leading <h1> — but only when the HEADING changed in
+    // this edit. The unconditional version overwrote a chapter rename on the
+    // next body keystroke whenever an h1 was present (any h1 ≠ title lost).
+    // Decision logic and the original bounded-regex perf contract (no DOM,
+    // no <img> materialization on 55MB imports) live in utils/titleSync.
+    const prevDoc = useAppStore.getState().documents.find(d => d.id === id)
+    const followedTitle = titleFollowingHeading(prevDoc?.content ?? '', html, prevDoc?.title)
+    if (followedTitle !== null) {
+      updates.title = followedTitle
     }
     updateDocument(id, updates)
   }, [triggerUnsaved, updateDocument])
