@@ -18,6 +18,8 @@ export interface ImageGenConfig {
   baseUrl?: string
   width?: number
   height?: number
+  /** The user's preset as a ratio string ("16:9") — what xAI's API takes. */
+  aspectRatio?: string
   steps?: number
   style?: string
   styleSystemPrompt?: string
@@ -178,12 +180,17 @@ async function generateWithGrok(prompt: string, config: ImageGenConfig): Promise
     response_format: 'b64_json',
   }
 
-  // Aurora supports aspect ratios via size-like params; fall back to 1024x1024
-  const w = config.width || 1024
-  const h = config.height || 1024
-  // xAI image API accepts width/height directly for Aurora
-  body.width = w
-  body.height = h
+  // xAI's images/generations has NO width/height parameters — this used to
+  // send them anyway (behind a comment claiming Aurora accepts them), and the
+  // API silently ignored unknown fields, so the aspect-ratio picker did
+  // nothing (user-reported). The documented control is `aspect_ratio` with
+  // ratio strings; checked against docs.x.ai (model-capabilities/images) on
+  // 2026-08-30. Legacy grok-2-image predates the parameter and may still
+  // ignore it — that is the model's limitation, not a request-shape bug.
+  // No derivation fallback from width/height: "1344:768" is not a member of
+  // the API's ratio enum, and an invalid value is worse than omitting the
+  // field (which just gets the API default).
+  if (config.aspectRatio) body.aspect_ratio = config.aspectRatio
 
   const response = await fetch(`${baseUrl}/images/generations`, {
     method: 'POST',

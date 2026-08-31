@@ -230,6 +230,7 @@ export const ImageGenerationModal: React.FC<ImageGenerationModalProps> = ({
         baseUrl: imageGenConfig.baseUrl,
         width: selectedAspect.w,
         height: selectedAspect.h,
+        aspectRatio: selectedAspect.value,
         style: provider === 'openai' ? style : undefined,
       })
       setGeneratedImage(result.dataUrl)
