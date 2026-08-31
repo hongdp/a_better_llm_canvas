@@ -131,27 +131,24 @@ Rules:
 5. The ledger resets on: switching books, switching the active chapter, a
    provider/model change, or an explicit user reset.
 
-## 6. When the user's request would evict — confirm
+## 6. When the user's request would evict — proceed silently (revised 2026-08-30)
 
-Per the request that motivated this design: when the context the user asks for
-would *remove* something already in the ledger, stop and ask. Reuse the
-existing inline consent panel (`ChatPanel.tsx:389`, the whole-book cost panel):
-same 3-option shape, blocks the send until answered, no new modal component.
+The original design stopped and asked here: an inline 3-option consent panel
+("仍然移除 / 保留该章并继续 / 取消") blocked the send whenever removing a
+chapter would invalidate part of the cached prefix. **Removed by user request**
+— being interrupted about cache internals when deleting a chapter was worse
+than the re-prefill it warned about. A user removal now takes effect
+immediately; the plan pays the one-turn re-prefill without comment.
 
-Triggers:
+What remains of the mechanism:
 
-- The user un-pins or blocks a chapter already in the ledger.
-- The budget cannot fit a newly required chapter without dropping an old one.
-- The user switches to a chapter set that is not a superset of the ledger.
-
-The panel states the real cost, not a vague warning:
-
-> 移除《第三章》会使已缓存的前缀失效。下一次请求需要重新读入 6 章约 68,000
-> 字符（本地端约 40 秒）。
-> [ 仍然移除 ] [ 保留该章并继续 ] [ 取消 ]
-
-"保留该章并继续" is the default: the chapter stays in the ledger (costing
-budget but no prefill), while ceasing to be *presented* as user-selected.
+- `planLedgerTurn` still *prices* every drop (`resendChars`, `resentIds`) —
+  the arithmetic is tested and available should a non-blocking indicator ever
+  want to show it.
+- `planKeepingRemoved` (the "keep it anyway" branch) and the `requiresConsent`
+  flag were deleted with the panel.
+- The whole-book consent panel (a different gate, about attaching an entire
+  book's cost) is unchanged.
 
 ## 7. Selection algorithm changes
 
@@ -184,7 +181,9 @@ Measured, not asserted:
 2. Attaching one new chapter changes only the tail of the ledger block.
 3. Reordering scores (different prompt wording, same chapter set) produces a
    byte-identical ledger block.
-4. An eviction cannot happen without the consent panel firing.
+4. ~~An eviction cannot happen without the consent panel firing.~~ (panel
+   removed 2026-08-30 — evictions proceed silently; the plan's pricing of
+   them stays tested.)
 5. On the local endpoint, turn 2 of a session reports a first-token time at
    least 5× lower than turn 1 for an unchanged chapter set (`api-server.log`
    already logs exactly this).
@@ -204,7 +203,8 @@ Measured, not asserted:
    there (honest, expensive) or append a correction block ("chapter B has been
    revised; the authoritative text follows") and leave the stale copy in
    place, which costs tokens and risks the model reading the old version.
-   Recommendation: invalidate, and surface it in the same consent panel.
+   Recommendation: invalidate. (Originally: surface it in the consent panel;
+   the panel is gone, so surfacing would need a non-blocking indicator.)
 3. **Does the sticky whole-book path merge into the ledger** or stay separate?
    It is the same mechanism with a different admission rule; merging them is
    tempting but the whole-book path also disables lookup and reshapes the
@@ -238,8 +238,8 @@ Landed:
 - `useChatLLM.ts` — assembles `[system][ledger][history][tail]`, plans each
   turn against `ledgerRef`, and resets the ledger when the book, provider or
   model changes (a different model is a different cache).
-- Eviction consent — an inline panel in `ChatPanel`, three options, defaulting
-  to "keep it and continue". Reuses the whole-book panel's shape.
+- ~~Eviction consent panel~~ — removed 2026-08-30 by user request; removals
+  proceed silently and the planner still prices them.
 
 Decisions taken during implementation:
 

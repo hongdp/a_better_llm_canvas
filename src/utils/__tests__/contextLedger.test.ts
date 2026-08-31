@@ -3,7 +3,6 @@ import {
   EMPTY_LEDGER,
   hashContent,
   planLedgerTurn,
-  planKeepingRemoved,
   orderAdmissionsByStability,
   type ContextLedger,
   type LedgerDocLike
@@ -61,7 +60,6 @@ describe('planLedgerTurn — the append-only invariant', () => {
     expect(plan.cachedPrefixChars).toBe(3000)
     expect(plan.resendChars).toBe(0)
     expect(plan.drops).toEqual([])
-    expect(plan.requiresConsent).toBe(false)
   })
 })
 
@@ -77,7 +75,6 @@ describe('planLedgerTurn — switching the active document', () => {
     expect(plan.resendChars).toBe(0)
     expect(plan.drops).toEqual([{ id: 'c', reason: 'now-active' }])
     // Not a choice the user can reconsider — no consent panel.
-    expect(plan.requiresConsent).toBe(false)
   })
 
   it('re-sends only the suffix when the new active chapter was in the middle', () => {
@@ -133,34 +130,23 @@ describe('planLedgerTurn — an edited chapter invalidates from its position', (
     expect(plan.drops).toEqual([{ id: 'b', reason: 'edited' }])
     expect(plan.appendedIds).toEqual(['b'])
     expect(plan.resentIds).toEqual(['c'])
-    expect(plan.requiresConsent).toBe(false)
   })
 })
 
-describe('planLedgerTurn — user removal needs consent', () => {
-  it('flags a user removal that costs cached chapters', () => {
+describe('planLedgerTurn — user removal', () => {
+  // The consent gate that used to block this case is gone (removed by
+  // request): a removal proceeds silently. The plan still prices it, so
+  // these assertions keep the cost arithmetic honest.
+  it('prices a user removal that costs cached chapters', () => {
     const docs = makeDocs()
     const before = ledgerOf(['a', 'b', 'c'], docs)
 
     const plan = planLedgerTurn(before, ['a', 'c'], docs, null)
 
-    expect(plan.requiresConsent).toBe(true)
     expect(plan.drops).toEqual([{ id: 'b', reason: 'user-removed' }])
     expect(plan.cachedPrefixCount).toBe(1)
     expect(plan.resentIds).toEqual(['c'])
     expect(plan.resendChars).toBe(1000)
-  })
-
-  it('planKeepingRemoved preserves the whole prefix instead', () => {
-    const docs = makeDocs()
-    const before = ledgerOf(['a', 'b', 'c'], docs)
-
-    const plan = planKeepingRemoved(before, ['a', 'c'], docs, null)
-
-    expect(ids(plan.ledger)).toEqual(['a', 'b', 'c'])
-    expect(plan.cachedPrefixCount).toBe(3)
-    expect(plan.resendChars).toBe(0)
-    expect(plan.requiresConsent).toBe(false)
   })
 
   it('treats a chapter deleted from the book as a removal, not a crash', () => {
