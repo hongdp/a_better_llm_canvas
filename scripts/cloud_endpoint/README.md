@@ -133,6 +133,24 @@ serverless question below turns on.
 Output was checked for coherence, not just speed — the model returns
 well-formed Chinese prose, so the rates above are measuring real work.
 
+### The verdict — quality loses to grok, and that ends it (2026-08-30)
+
+A second pod ($3.4, deleted) served IQ3_XXS, IQ4_XS and Q4_K_M side by side
+through the app's new RunPod provider tab, and the user wrote with them
+against grok. **Even Q4_K_M — the largest quant a 96 GB card holds — is far
+below grok's quality, and the economics don't survive that.** $79–174/month
+buys prose worse than a per-token frontier model; the two things the pod
+does win, uncensored output and first-token latency (0.69 s on a cache hit
+against grok's measured 45–199 s), are covered well enough by the free local
+27B for the one and not worth the delta for the other.
+
+Speed and fit were measured before renting; quality could only be judged by
+writing with it, and it failed there. The split in `local_model/README.md`
+stands: local model for uncensored single-chapter work, grok for structure
+and quality. Revisit only if a materially better uncensored model ships in
+under ~90 GiB — the validation script and this README make the re-test a
+~$2, one-hour question.
+
 ### Why it fits so easily: the PLE table never goes to the GPU
 
 The 96 GB card is not holding 79 GiB of weights. It is holding 52.5.
