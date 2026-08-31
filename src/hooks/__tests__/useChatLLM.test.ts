@@ -401,6 +401,61 @@ describe('useChatLLM — document tools', () => {
   })
 })
 
+describe('useChatLLM — edits against a pending diff', () => {
+  // The reported case: the PREVIOUS turn rewrote a paragraph and its diff is
+  // still unresolved, so the document holds <del>old</del><ins>new</ins>
+  // markup. The model is shown the stripped "accepted" reading and copies its
+  // SEARCH from that — a clean needle that can never match the markup-laden
+  // haystack. Deleting the rewritten paragraph silently did nothing.
+  it('applies a deletion whose target is still wrapped in diff markup', async () => {
+    const { diffHtml, stripDiffMarkup } = await import('../../utils/diff')
+    // Build the pending state with the real diff machinery, not hand-rolled
+    // markup: previous turn rewrote "old dup" into "dup para".
+    const pending = diffHtml(
+      '<p>intro</p><p>old dup</p><p>tail</p>',
+      '<p>intro</p><p>dup para</p><p>tail</p>'
+    )
+    expect(pending).toContain('diff-addition') // precondition: diff is live
+    useAppStore.setState({
+      documents: [doc('doc-1', 'Chapter 1', pending)],
+      activeDocumentId: 'doc-1'
+    })
+    responses.push(
+      '删掉重复段。\n<edit>\n<<<<<<< SEARCH\n<p>dup para</p>\n=======\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'
+    )
+    const harness = renderChatHook()
+
+    await send(harness, '删掉重复的那段')
+
+    // The pending diff folds in as accepted (what the model was told the
+    // document says) and the deletion lands as a fresh reviewable diff.
+    const content = activeContent()
+    expect(stripDiffMarkup(content)).toBe('<p>intro</p><p>tail</p>')
+    expect(content).toContain('diff-deletion')
+    harness.unmount()
+  })
+
+  it('bases a full <canvas> rewrite on the accepted reading, not the markup', async () => {
+    const { diffHtml, stripDiffMarkup } = await import('../../utils/diff')
+    const pending = diffHtml('<p>alpha</p>', '<p>beta</p>')
+    useAppStore.setState({
+      documents: [doc('doc-1', 'Chapter 1', pending)],
+      activeDocumentId: 'doc-1'
+    })
+    responses.push('<canvas><p>gamma</p></canvas>\n<doc_status>updated</doc_status>')
+    const harness = renderChatHook()
+
+    await send(harness, '重写')
+
+    // A diff of clean-vs-markup would nest <del> inside <del>; the accepted
+    // reading yields exactly one proposal: beta -> gamma.
+    const content = activeContent()
+    expect(stripDiffMarkup(content)).toBe('<p>gamma</p>')
+    expect(content).not.toContain('alpha') // the rejected-side text is gone
+    harness.unmount()
+  })
+})
+
 describe('useChatLLM — no-action retry', () => {
   it('retries once with a corrective instruction and applies the recovered update', async () => {
     responses.push('已按大纲接上第二章，直接落笔。')            // tag-free: writes nothing

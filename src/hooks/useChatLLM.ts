@@ -7,7 +7,7 @@ import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration, clearP
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
-import { diffHtml } from '../utils/diff'
+import { diffHtml, stripDiffMarkup } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel } from '../utils/llmContext'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
@@ -608,7 +608,19 @@ export function useChatLLM({
         let editDiffedDoc: string | null = null
         let editFailedCount = 0
         if (parsed.kind === 'edits') {
-          const placeholderOriginal = preserveImagesWithPlaceholders(originalDocContent)
+          // Match against the SAME reading of the document the model was
+          // shown. The context strips pending diff markup (dynamicContext
+          // sends the "accepted" reading), so the model's SEARCH text is
+          // clean — but this content still carries any unresolved diff from
+          // the previous turn, and a clean needle never matches a haystack
+          // full of <ins>/<del> wrappers: every edit "fails" with no visible
+          // cause (user-reported: deleting a paragraph the previous turn had
+          // rewritten did nothing). Stripping here folds the pending diff in
+          // as accepted, which is exactly what the model was told the
+          // document says; the new turn's changes then land as a fresh
+          // reviewable diff on top.
+          const acceptedOriginal = stripDiffMarkup(originalDocContent)
+          const placeholderOriginal = preserveImagesWithPlaceholders(acceptedOriginal)
           const { html: newPlaceholderDoc, failed } = applyEditBlocks(placeholderOriginal, parsed.editBlocks)
           editFailedCount = failed.length
           if (failed.length > 0) {
@@ -621,7 +633,7 @@ export function useChatLLM({
           }
           if (parsed.editBlocks.length - failed.length > 0) {
             const newDoc = stripBlankParagraphs(restoreImagesFromPlaceholders(newPlaceholderDoc))
-            editDiffedDoc = diffHtml(originalDocContent, newDoc)
+            editDiffedDoc = diffHtml(acceptedOriginal, newDoc)
           }
         }
 
@@ -719,7 +731,10 @@ export function useChatLLM({
           // if no edit could be located.
           s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
         } else if (parsed.kind === 'canvas' && canvasDoc !== null) {
-          const diffed = diffHtml(originalDocContent, canvasDoc)
+          // Same accepted-reading base as the edits path: diffing the
+          // model's clean rewrite against markup-laden content nests diff
+          // inside diff.
+          const diffed = diffHtml(stripDiffMarkup(originalDocContent), canvasDoc)
           s.updateActiveDocument({ content: diffed })
         } else if (canvasIssue) {
           // Ensure the document is left exactly as it was before streaming.
