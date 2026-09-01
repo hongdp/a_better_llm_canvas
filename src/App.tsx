@@ -137,6 +137,31 @@ function App() {
     setSaveStatus('saved')
   }, [activeDocumentId])
 
+  // Portrait hands the document to the PAGE scroller instead of a nested
+  // overflow div. Verified on-device (Firefox/Android): a pure-static control
+  // page scrolled smoothly with root scroll and janked inside a nested
+  // scroller with identical content — Gecko does not async-composite this
+  // subscroller, so every tuning probe (will-change, contain, layerization)
+  // failed. The class lives on <html> because html/body cannot be selected
+  // from a descendant's layout class.
+  useEffect(() => {
+    document.documentElement.classList.toggle('root-scroll', layoutMode === 'portrait')
+    return () => document.documentElement.classList.remove('root-scroll')
+  }, [layoutMode])
+
+  // Portrait hands the document to the PAGE scroller. The whole canvas column
+  // is otherwise built as a fixed-height shell — every level sets height:100%
+  // and overflow:hidden so that ONE inner div scrolls. Under a page scroller
+  // each of those is a nested scroll container: it clips the grown content and
+  // re-anchors `position: sticky` to itself. Rather than fight six inline
+  // declarations with !important from CSS (which is how this was first tried,
+  // and it leaked one layer at a time), the shell styles are simply NOT
+  // EMITTED in portrait. See responsive.css for the CSS half.
+  const rootScroll = layoutMode === 'portrait'
+  const shellBox = rootScroll
+    ? { height: 'auto' as const, overflow: 'visible' as const }
+    : { height: '100%' as const, overflow: 'hidden' as const }
+
   // Track window size for mobile responsive layouts
   useEffect(() => {
     const handleResize = () => {
@@ -445,8 +470,13 @@ function App() {
         )}
 
         {/* Right Side: Document Canvas Panel */}
-        <section className="canvas-panel" style={{ display: 'flex', flexDirection: 'row', width: '100%', height: '100%', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, height: '100%', overflow: 'hidden' }}>
+        <section className="canvas-panel" style={{ display: 'flex', flexDirection: 'row', width: '100%', ...shellBox }}>
+            {/* flex:1 in BOTH modes — .canvas-panel is a ROW flex container, so
+                the main axis here is HORIZONTAL and `flex: none` would size
+                this column to its max-content width (the toolbar's ~740px
+                button row), dragging every descendant past a 450px viewport.
+                Only height/overflow are mode-dependent. */}
+            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, ...shellBox }}>
               <CanvasHeader
                 activeDoc={activeDoc}
                 layoutMode={layoutMode}
@@ -512,10 +542,11 @@ function App() {
                   return (
                     <div 
                       key={doc.id} 
-                      style={{ height: '100%', width: '100%' }}
+                      style={{ height: rootScroll ? 'auto' : '100%', width: '100%' }}
                     >
                       <Editor 
                         isActive={true}
+                        rootScroll={rootScroll}
                         documentId={doc.id}
                         content={doc.content} 
                         onChange={(html) => handleEditorChangeFor(doc.id, html)}
