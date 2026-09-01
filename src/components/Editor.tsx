@@ -39,6 +39,11 @@ interface EditorProps {
   onChange: (html: string) => void
   placeholder?: string
   isActive?: boolean
+  /**
+   * Portrait: the PAGE scrolls, so this component must not build its own
+   * fixed-height shell (root box + inner scroller). See App.tsx.
+   */
+  rootScroll?: boolean
   /** Chapter id — keys the per-chapter scroll memory. */
   documentId?: string
 }
@@ -48,7 +53,8 @@ export const Editor: React.FC<EditorProps> = ({
   documentId, 
   onChange, 
   placeholder = 'Start writing your document here or let the assistant draft it...',
-  isActive = true
+  isActive = true,
+  rootScroll = false
 }) => {
   const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
 
@@ -203,26 +209,32 @@ export const Editor: React.FC<EditorProps> = ({
   const scrollRef = useRef<HTMLDivElement>(null)
   const restoredForRef = useRef<string | null>(null)
 
+  // In portrait the PAGE scrolls (see App.tsx / responsive.css for the
+  // Firefox/Android rationale); everywhere else the inner div does. Both
+  // effects below must read and drive whichever scroller is actually live.
   useEffect(() => {
     const el = scrollRef.current
     if (!el || !documentId) return
+    const rootMode = rootScroll
+    const readTop = () => rootMode ? window.scrollY : el.scrollTop
+    const target: Window | HTMLElement = rootMode ? window : el
     let timer: number | null = null
     const onScroll = () => {
       if (timer !== null) return
       // Trailing throttle: scrolling fires continuously, persisting must not.
       timer = window.setTimeout(() => {
         timer = null
-        saveScrollPosition(documentId, el.scrollTop)
+        saveScrollPosition(documentId, readTop())
       }, 400)
     }
-    el.addEventListener('scroll', onScroll, { passive: true })
+    target.addEventListener('scroll', onScroll, { passive: true })
     return () => {
       if (timer !== null) window.clearTimeout(timer)
-      el.removeEventListener('scroll', onScroll)
+      target.removeEventListener('scroll', onScroll)
       // Capture the final position the throttle may have skipped.
-      saveScrollPosition(documentId, el.scrollTop)
+      saveScrollPosition(documentId, readTop())
     }
-  }, [documentId])
+  }, [documentId, rootScroll])
 
   useEffect(() => {
     const el = scrollRef.current
@@ -239,7 +251,13 @@ export const Editor: React.FC<EditorProps> = ({
     let raf2 = 0
     const raf1 = requestAnimationFrame(() => {
       raf2 = requestAnimationFrame(() => {
-        if (el.scrollHeight > target) {
+        if (rootScroll) {
+          const scroller = document.scrollingElement
+          if (scroller && scroller.scrollHeight > target) {
+            window.scrollTo(0, target)
+            restoredForRef.current = documentId
+          }
+        } else if (el.scrollHeight > target) {
           el.scrollTop = target
           restoredForRef.current = documentId
         }
@@ -249,7 +267,7 @@ export const Editor: React.FC<EditorProps> = ({
       cancelAnimationFrame(raf1)
       if (raf2) cancelAnimationFrame(raf2)
     }
-  }, [documentId, content])
+  }, [documentId, content, rootScroll])
 
   // Cancel a pending selection publish on unmount.
   useEffect(() => {
@@ -300,7 +318,14 @@ export const Editor: React.FC<EditorProps> = ({
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
+    <div className="editor-root" style={{
+      display: 'flex',
+      flexDirection: 'column',
+      width: '100%',
+      height: rootScroll ? 'auto' : '100%',
+      overflow: rootScroll ? 'visible' : 'hidden',
+      position: 'relative',
+    }}>
       {/* Fixed Formatting Toolbar */}
       {editor && (
         <div className="editor-toolbar" style={{
@@ -674,7 +699,11 @@ export const Editor: React.FC<EditorProps> = ({
       )}
 
       {/* Editor Content Area */}
-      <div ref={scrollRef} className="editor-content-scroll" style={{ flex: 1, overflowY: 'auto', outline: 'none' }}>
+      <div ref={scrollRef} className="editor-content-scroll" style={{
+        flex: rootScroll ? 'none' : 1,
+        overflowY: rootScroll ? 'visible' : 'auto',
+        outline: 'none',
+      }}>
         <EditorContent editor={editor} />
       </div>
     </div>

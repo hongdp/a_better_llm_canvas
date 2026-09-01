@@ -1,5 +1,9 @@
 /* Editor Styling (ProseMirror Customizations) */
+/* Containment measurably reduced scroll jank on Firefox/Android (probe-
+   verified); paint containment is safe here because every decoration the
+   editor draws lives inside this element. */
 .ProseMirror {
+  contain: layout style paint;
   font-family: var(--font-editor);
   font-size: 1.15rem;
   line-height: 1.75;

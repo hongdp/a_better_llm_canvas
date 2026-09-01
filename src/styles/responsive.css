@@ -103,6 +103,31 @@
 
 .layout-portrait .app-logo {
   font-size: 1.1rem;
+  /* The header is a flex row whose children default to min-width:auto, so the
+     logo refused to shrink below its text and pushed the button group past
+     the right edge (the logout button ended up off-screen). Let the wordmark
+     collapse; the sparkle keeps the brand present. */
+  min-width: 0;
+  overflow: hidden;
+}
+
+.layout-portrait .app-header-left {
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+}
+
+/* Below ~420px there is no room for the wordmark at all. */
+@media (max-width: 420px) {
+  .layout-portrait .app-logo {
+    font-size: 0;   /* drops the text nodes, keeps the 20px icon */
+    gap: 0;
+  }
+}
+
+/* The controls must never be the ones to shrink. */
+.layout-portrait .app-header-right {
+  flex-shrink: 0;
 }
 
 .layout-portrait .app-header-right {
@@ -365,4 +390,119 @@
 .layout-tablet-square .reference-budget-chip {
   margin-left: 0.25rem;
   flex: 0 0 auto;
+}
+
+/* ------------------------------------------ */
+/* PORTRAIT ROOT SCROLL (Firefox/Android jank fix)
+   Problem: 7000-character chapters visibly janked while scrolling on mobile
+     Firefox; Chrome was smooth with identical content.
+   Root cause: the document scrolled inside a nested overflow div, which Gecko
+     does not async-composite. Proven on-device with two static control pages
+     carrying the same text — root scroll smooth, nested div janky — after
+     will-change / contain / layerization probes all measurably failed.
+   Fix: in portrait the PAGE scrolls.
+
+   The shell styles that App.tsx/Editor.tsx set INLINE (height:100% +
+   overflow:hidden at six levels) are not emitted in portrait at all — see the
+   `rootScroll` flag there. This file only handles what CSS owns: class-defined
+   shells, and the sticky/fixed repositioning.
+
+   TWO TRAPS, both hit during development, both worth keeping in mind:
+   1. An ancestor must not be a scroll container, and `overflow-x: hidden;
+      overflow-y: visible` DOES create one — per CSS Overflow 3, when one axis
+      is visible and the other is not, visible computes to `auto`. Use `clip`
+      (which creates no scroll container) with an explicit `overflow-y`.
+   2. `position: sticky` resolves against the NEAREST scroll container. Every
+      stray one re-anchors the headers — that is what put 56px of blank above
+      the canvas header and stranded the formatting toolbar mid-page.        */
+/* ------------------------------------------ */
+html.root-scroll {
+  height: auto;
+  /* clip, not hidden: hidden would make the root a scroll container on both
+     axes (trap 1) and, with height:auto, the page would not scroll at all. */
+  overflow-x: clip;
+  overflow-y: visible;
+}
+html.root-scroll body,
+html.root-scroll #root {
+  height: auto;
+  overflow: visible;
+}
+html.root-scroll .app-container {
+  height: auto;
+  min-height: 100vh;
+  overflow: visible;
+  max-width: 100%;
+}
+html.root-scroll .app-header {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+}
+html.root-scroll .app-main {
+  height: auto;
+  overflow: visible;
+  max-width: 100%;
+  /* column-reverse ordered children for the fixed-height shell; with the chat
+     dock fixed, natural top-down order is what reads correctly. */
+  flex-direction: column;
+}
+html.root-scroll .canvas-panel {
+  /* clearance so the last lines clear the fixed chat dock */
+  padding-bottom: 88px;
+  max-width: 100%;
+}
+/* Class-defined shell (chat.css): flex:1 + overflow:hidden. */
+html.root-scroll .canvas-editor-container {
+  flex: none;
+  overflow: visible;
+  max-width: 100%;
+}
+html.root-scroll .canvas-header {
+  position: sticky;
+  top: 56px; /* directly below the sticky app header */
+  z-index: 15;
+  background-color: var(--bg-secondary);
+}
+html.root-scroll .editor-toolbar {
+  /* Below both sticky headers (56 + 56); the inline style says top:0, which
+     would park it behind them. */
+  top: 112px !important;
+  z-index: 14;
+  /* Opaque on purpose: a backdrop blur pinned over scrolling text repaints
+     every frame — exactly the cost this change set exists to remove. */
+  background-color: var(--bg-secondary) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+html.root-scroll .chat-panel {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  background-color: var(--bg-secondary);
+}
+html.root-scroll .chat-panel.expanded {
+  height: 50vh;
+}
+html.root-scroll .sidebar-backdrop,
+html.root-scroll .chapters-sidebar,
+html.root-scroll .history-sidebar {
+  position: fixed;
+}
+/* A CLOSED drawer must be gone, not merely transparent and parked off-screen.
+   The collapsed state slides out with translateX(±100%) and opacity:0, which
+   was fine while the drawers were `absolute` inside .app-main's overflow:hidden
+   — that clipped them. Fixed elements take the VIEWPORT as their containing
+   block, so no ancestor overflow (not even the root's overflow-x: clip) can
+   clip them: the right-hand drawer sat 280px past a 450px viewport and read as
+   horizontal overflow (probe-confirmed: right=730, pos=fixed).
+   `visibility` is delayed by the slide duration so the animation still plays,
+   and it takes the box out of painting and hit-testing when it lands. */
+html.root-scroll .chapters-sidebar.collapsed,
+html.root-scroll .history-sidebar.collapsed {
+  visibility: hidden;
+  transition: transform var(--transition-md), opacity var(--transition-md),
+              visibility 0s linear var(--transition-md);
 }
