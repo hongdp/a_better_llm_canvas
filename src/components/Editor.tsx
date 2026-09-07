@@ -82,7 +82,9 @@ export const Editor: React.FC<EditorProps> = ({
     let prompt = ''
     switch (action) {
       case 'rewrite':
-        prompt = 'Rewrite the selected text to make it flow better and sound more professional.'
+        // Fiction polish, not business prose: the old wording asked for
+        // "more professional", which flattened narrative voice.
+        prompt = 'Polish the selected passage as fiction: keep the voice, point of view, tense, and meaning intact; improve rhythm, word choice, and imagery; vary sentence length; cut clichés and filler; prefer showing over telling. Do not add new plot or summarize.'
         break
       case 'shorten':
         prompt = 'Make the selected text more concise and to the point.'
@@ -196,10 +198,25 @@ export const Editor: React.FC<EditorProps> = ({
     }
   }, [content, editor])
 
-  // Disable user editing (make it read-only) while LLM is streaming to avoid sync issues
+  // Disable user editing (make it read-only) while LLM is streaming to avoid sync issues.
+  //
+  // Problem: stopping a generation mid-stream rolled the editor back to the
+  //   pre-stream document, yet a reload showed the half-streamed draft — the
+  //   screen and the store disagreed.
+  // Root cause: TipTap's setEditable(editable, emitUpdate = true) EMITS a
+  //   synthetic `update` event by default, and onUpdate above publishes
+  //   editor.getHTML() to the store. The live LLM preview is written with
+  //   emitUpdate:false precisely so it never reaches the store — but the Stop
+  //   button flips isStreaming, this effect called setEditable(true), and the
+  //   preview leaked into the store (then IndexedDB and the server) through
+  //   that emit, just before the abort path reset the editor. The same emit
+  //   fired on every mount and every stream start, writing the editor's
+  //   normalized HTML back over the store each time.
+  // Fix: pass emitUpdate=false. Toggling read-only changes no content, so it
+  //   must publish none; only real transactions reach the store.
   useEffect(() => {
     if (editor) {
-      editor.setEditable(!isStreaming)
+      editor.setEditable(!isStreaming, false)
     }
   }, [editor, isStreaming])
 
@@ -662,7 +679,7 @@ export const Editor: React.FC<EditorProps> = ({
                   <button
                     onClick={() => handleQuickAction('rewrite')}
                       className="btn-icon"
-                      title="Rewrite selection"
+                      title="Polish selection"
                       type="button"
                     >
                       <Sparkles size={16} style={{ color: 'var(--accent)' }} />

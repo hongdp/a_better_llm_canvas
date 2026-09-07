@@ -96,6 +96,9 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
   const performSync = async () => {
     // 2. Fetch current session status in the background
     let loggedInUser: string | null = null
+    // The account's last active book, as the server recorded it (see
+    // server_db.record_last_active_book). Null for a brand-new account.
+    let serverLastActiveBookId: string | null = null
     try {
       const sessionRes = await fetch('/api/auth/session')
       if (sessionRes.ok) {
@@ -105,6 +108,9 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
         if (sessionData.loggedIn) {
           loggedInUser = sessionData.username
           useAppStore.setState({ user: { username: sessionData.username as string } })
+          if (typeof sessionData.lastActiveBookId === 'string' && sessionData.lastActiveBookId) {
+            serverLastActiveBookId = sessionData.lastActiveBookId
+          }
         } else {
           useAppStore.setState({ user: null })
         }
@@ -119,8 +125,24 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
       return
     }
 
-    // 4. Continue initialization for logged-in user: fetch book state from server
-    const activeBookId = localStorage.getItem('web_canvas_active_book_id') || 'default'
+    // 4. Continue initialization for logged-in user: fetch book state from server.
+    //
+    // Problem: a new device (or a browser whose cache was cleared, or an
+    //   account switch, which clears the same keys) always opened the book
+    //   with id 'default' — the choice came from localStorage alone, and the
+    //   server kept no per-user pointer to the book last worked in.
+    // Fix: the session reports the account's last active book, recorded by
+    //   every book write on the server. It wins over the local pointer,
+    //   because "the book I was last editing" belongs to the account, not to
+    //   the browser; the local key stays the fallback when the server has
+    //   nothing to say (a brand-new account), and 'default' the last resort.
+    const activeBookId = serverLastActiveBookId
+      || localStorage.getItem('web_canvas_active_book_id')
+      || 'default'
+    if (useAppStore.getState().activeBookId !== activeBookId) {
+      useAppStore.setState({ activeBookId })
+    }
+    localStorage.setItem('web_canvas_active_book_id', activeBookId)
 
     useAppStore.setState({ serverSaveStatus: 'saving' })
     try {

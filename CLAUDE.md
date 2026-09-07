@@ -175,6 +175,11 @@ A `contentFromEditorRef` tracks editor-originated HTML; `setContent` is skipped
 when incoming content matches, otherwise user edits "roll back" after a paste.
 This is a performance-critical, fragile pattern — see `Editor.tsx` and
 SKILL.md §2.2/§3.2 before touching the editor↔store loop.
+TipTap's `setEditable()` emits a synthetic `update` by default; `Editor.tsx`
+passes `emitUpdate=false`, or the live preview leaks into the store when
+`isStreaming` flips (the Stop button). Stop keeps the half-streamed draft as
+ONE undo step (`keepCanvasPreview` in `useChatLLM.ts`) and writes the same
+HTML to the store — screen, persistence, and Undo must always agree.
 
 ### LLM integration
 `services/llm.ts` exposes `streamLLM(messages, config, callbacks)`, dispatching
@@ -229,6 +234,10 @@ and versions, legacy `/api/storage`, and scraping (`/api/import-url`,
 `/api/import-file`). **Performance**: list endpoints extract metadata by regex
 over the first few KB of large JSON files rather than full-parsing; the save
 endpoint reorders JSON keys so `bookTitle`/`updatedAt` stay within that window.
+A `user_state` table holds each account's **last active book**: every
+book write records it, `/api/auth/session` returns it as
+`lastActiveBookId`, and the client's init opens that book ahead of the
+localStorage pointer — a new device must land in the book last worked in.
 
 ## Conventions
 

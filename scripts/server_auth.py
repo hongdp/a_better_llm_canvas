@@ -20,6 +20,7 @@ from fastapi import APIRouter, Request, Response, HTTPException
 from fastapi.responses import JSONResponse
 
 from server_config import USERS_FILE, SESSIONS_FILE, load_json_file, save_json_file
+from server_db import lookup_last_active_book_id
 
 router = APIRouter()
 
@@ -81,7 +82,15 @@ async def get_session(request: Request, response: Response):
         try:
             expires_at = datetime.fromisoformat(session["expiresAt"].replace("Z", "+00:00"))
             if datetime.now(timezone.utc) <= expires_at:
-                return {"loggedIn": True, "username": session["username"], "csrfToken": csrf_token}
+                return {
+                    "loggedIn": True,
+                    "username": session["username"],
+                    "csrfToken": csrf_token,
+                    # The book to open on a device with no local state
+                    # (see server_db.record_last_active_book). None until the
+                    # account has a book.
+                    "lastActiveBookId": lookup_last_active_book_id(session["username"]),
+                }
         except Exception:
             pass
 
