@@ -266,6 +266,36 @@ export function useChatLLM({
     }
   }, [])
 
+  /**
+   * Keep the half-streamed draft after a stop, as ONE undo step, and return
+   * it so the caller can write the same HTML to the store.
+   *
+   * Every preview write carried addToHistory:false, so the editor's history
+   * knows nothing about the draft: left as is, Undo would step back through
+   * the user's edits from BEFORE the turn while the draft stayed on screen.
+   * Rebuild the transition instead — put the pre-stream document back outside
+   * history, then apply the draft as a single recorded transaction. Undo now
+   * returns exactly the pre-stream document (which the version snapshot taken
+   * before the send also holds).
+   *
+   * Returns null when no preview reached the editor: nothing to keep.
+   */
+  const keepCanvasPreview = useCallback((originalHtml: string): string | null => {
+    if (!canvasPreviewActiveRef.current) return null
+    canvasPreviewActiveRef.current = false
+    lastCanvasPreviewRef.current = 0
+    const editor = activeEditorRef.current
+    if (!editor) return null
+    const draft = editor.getHTML()
+    if (draft === originalHtml) return null
+    editor.chain().setMeta('addToHistory', false).setContent(originalHtml, { emitUpdate: false }).run()
+    // No emitUpdate: the caller writes the store explicitly, as every other
+    // terminal path does, and Editor.tsx's content sync then sees matching
+    // HTML on both sides.
+    editor.commands.setContent(draft, { emitUpdate: false })
+    return draft
+  }, [])
+
   // Image preservation during LLM streaming: swap base64 <img> tags for
   // small tokens before sending, restore them (tolerantly) on the way back.
   // Pure logic lives in utils/imagePreservation; the registry is per-request.
@@ -739,9 +769,29 @@ export function useChatLLM({
         
         const isAbort = err.name === 'AbortError' || err.message.includes('abort') || err.message.includes('cancel')
         if (isAbort) {
-          // Stopping mid-stream discards the partial draft — the store was
-          // never updated, so the editor must be rolled back explicitly.
-          settleCanvasPreview(originalDocContent)
+          // Stop keeps what was written. This used to roll the editor back
+          // on the premise that the store had never seen the draft — but the
+          // store HAD captured it (see the setEditable note in Editor.tsx),
+          // so a reload contradicted the screen. Committing the draft makes
+          // the two identical, and keepCanvasPreview makes it one undo step.
+          const draft = keepCanvasPreview(originalDocContent)
+          if (draft !== null) s.updateActiveDocument({ content: draft })
+          // A selection rewrite previews through real transactions, so its
+          // partial text is already in the store; only the note differs.
+          const keptDraft = draft !== null || lastSelectionPreviewRef.current > 0
+
+          // The bubble was last painted mid-stream ("Updating document..." or
+          // a half sentence); say what happened rather than leaving it there.
+          const { chatText } = splitStreamingResponse(accumulatedTextRef.current)
+          const stoppedNote = keptDraft
+            ? '⏹️ Stopped. The partial draft was kept in the document — Undo (Ctrl+Z) restores the previous version.'
+            : '⏹️ Stopped.'
+          const stoppedText = chatText.trim() ? `${chatText.trim()}\n\n${stoppedNote}` : stoppedNote
+          s.setMessages(useAppStore.getState().messages.map(m =>
+            m.id === assistantMsgId
+              ? { ...m, content: attachmentsText ? `${attachmentsText}\n\n${stoppedText}` : stoppedText }
+              : m
+          ))
           forceSave()
           return
         }
@@ -770,7 +820,7 @@ export function useChatLLM({
     // selectionRefs is a ref's `.current`, so it never changes identity — it is
     // listed only to satisfy exhaustive-deps, and adding it cannot destabilise
     // these callbacks (which must stay stable; see the timeout note in CLAUDE.md).
-  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, settleCanvasPreview, selectionRefs])
+  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, setSaveStatus, settleCanvasPreview, keepCanvasPreview, selectionRefs])
 
   // Shared LLM Streaming engine.
   const startLLMStreaming = useCallback(async (

@@ -7,6 +7,7 @@ here, which reads this module's global).
 
 import os
 import sqlite3
+from typing import Optional
 
 # SQLite DB is stored locally (not on network mounts like SMB/NFS)
 # because SQLite requires proper file locking which network filesystems don't support.
@@ -99,6 +100,13 @@ def init_db():
                 sort_order INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (username, book_id, id)
             );
+
+            -- The book to reopen on the next device (see record_last_active_book).
+            CREATE TABLE IF NOT EXISTS user_state (
+                username TEXT PRIMARY KEY,
+                last_active_book_id TEXT,
+                updated_at TEXT NOT NULL
+            );
         """)
 
         # Migrate per-book settings to global settings if not done yet
@@ -140,3 +148,60 @@ def init_db():
         conn.commit()
     finally:
         conn.close()
+
+
+# ── Per-user state: the book to reopen on the next device ─────────────────────
+# Problem: a new device (or a browser whose cache was cleared, or an account
+#   switch, which clears the same keys) always opened the book with id
+#   'default'. The client chose the book from localStorage alone, and the
+#   server kept no per-user pointer to the book last worked in — only a
+#   per-book active_document_id.
+# Fix: every write to a book (metadata PUT, create, legacy save) records it as
+#   the user's last active book, and /api/auth/session hands the pointer back
+#   so the client can open that book before it has any local state.
+
+def record_last_active_book(conn: sqlite3.Connection, username: str, book_id: str, now: str) -> None:
+    """Upsert the pointer inside the caller's transaction."""
+    conn.execute(
+        """INSERT INTO user_state (username, last_active_book_id, updated_at)
+           VALUES (?, ?, ?)
+           ON CONFLICT(username) DO UPDATE SET
+           last_active_book_id = excluded.last_active_book_id, updated_at = excluded.updated_at""",
+        (username, book_id, now),
+    )
+
+
+def clear_last_active_book(conn: sqlite3.Connection, username: str, book_id: str) -> None:
+    """Forget the pointer when the book it names is deleted."""
+    conn.execute(
+        "UPDATE user_state SET last_active_book_id = NULL WHERE username = ? AND last_active_book_id = ?",
+        (username, book_id),
+    )
+
+
+def lookup_last_active_book_id(username: str) -> Optional[str]:
+    """The recorded book if it still exists; otherwise the most recently
+    updated book, so accounts that predate the pointer (and pointers left
+    behind by a deletion) still get a sensible answer; None for an account
+    with no books. Never raises — a session check must not fail over this."""
+    try:
+        conn = get_db()
+        try:
+            row = conn.execute(
+                """SELECT b.id FROM user_state s
+                   JOIN books b ON b.username = s.username AND b.id = s.last_active_book_id
+                   WHERE s.username = ?""",
+                (username,),
+            ).fetchone()
+            if row:
+                return row["id"]
+            row = conn.execute(
+                "SELECT id FROM books WHERE username = ? ORDER BY updated_at DESC LIMIT 1",
+                (username,),
+            ).fetchone()
+            return row["id"] if row else None
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[user_state] last-active-book lookup failed for {username!r}: {e}")
+        return None

@@ -118,19 +118,29 @@ function renderChatHook(editor: unknown = null): Harness {
 function stubEditor() {
   const writes: string[] = []
   const meta: unknown[] = []
+  /** Per write: whether the undo history recorded it (no addToHistory:false). */
+  const recorded: boolean[] = []
   let html = '<p>old text</p>'
+  let pendingAddToHistory: unknown = undefined
   const chain = {
-    setMeta: (_k: string, v: unknown) => { meta.push(v); return chain },
-    setContent: (c: string) => { writes.push(c); html = c; return chain },
+    setMeta: (_k: string, v: unknown) => { meta.push(v); pendingAddToHistory = v; return chain },
+    setContent: (c: string) => {
+      writes.push(c)
+      recorded.push(pendingAddToHistory !== false)
+      pendingAddToHistory = undefined
+      html = c
+      return chain
+    },
     run: () => true
   }
   return {
     writes,
     meta,
+    recorded,
     editor: {
       chain: () => chain,
       getHTML: () => html,
-      commands: { setContent: (c: string) => { writes.push(c); html = c } },
+      commands: { setContent: (c: string) => { writes.push(c); recorded.push(true); html = c } },
       state: { selection: { from: 0, to: 0 } }
     }
   }
@@ -645,6 +655,64 @@ describe('useChatLLM — live <canvas> streaming into the editor', () => {
     await send(harness, '继续写第三章')
 
     expect(editor.getHTML()).toBe('<p>old text</p>')
+    harness.unmount()
+  })
+})
+
+describe('useChatLLM — stopping mid-stream', () => {
+  // Both transports report a stop as an error that names the abort
+  // (readSSEDataLines throws 'Stream aborted by user'; a cancelled fetch
+  // rejects with an AbortError). The script does the same.
+  const streamThenStop = (chunks: string[]) => {
+    responses.push({ chunks, error: 'Stream aborted by user' })
+  }
+
+  it('keeps the half-streamed draft on screen AND in the store', async () => {
+    const { editor } = stubEditor()
+    streamThenStop(['<canvas><h1>Ch3</h1>', '<p>第一段</p><p>第二段'])
+    const harness = renderChatHook(editor)
+
+    await send(harness, '继续写第三章')
+
+    // Not rolled back: the draft stays on screen…
+    expect(editor.getHTML()).toContain('第一段')
+    // …and the store holds the very same HTML, so a reload shows the screen.
+    expect(activeContent()).toBe(editor.getHTML())
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(assistantBubble()[0]).toContain('⏹️')
+    expect(assistantBubble()[0]).toContain('Undo')
+    harness.unmount()
+  })
+
+  it('commits the draft as ONE undo step that returns to the pre-stream document', async () => {
+    const { editor, writes, recorded } = stubEditor()
+    streamThenStop(['<canvas><h1>Ch3</h1>', '<p>第一段</p><p>第二段'])
+    const harness = renderChatHook(editor)
+
+    await send(harness, '继续写第三章')
+
+    // The previews never entered history. The last two writes rebuild the
+    // transition: the pre-stream document outside history, then the draft
+    // as the only recorded write — so Undo lands on the pre-stream document.
+    const draft = editor.getHTML()
+    expect(writes.filter((_, i) => recorded[i])).toEqual([draft])
+    expect(writes.slice(-2)).toEqual(['<p>old text</p>', draft])
+    expect(recorded.slice(-2)).toEqual([false, true])
+    harness.unmount()
+  })
+
+  it('leaves the document alone when the stop came before any draft', async () => {
+    const { editor, writes } = stubEditor()
+    streamThenStop(['Let me think about the structure first'])
+    const harness = renderChatHook(editor)
+
+    await send(harness, '继续写第三章')
+
+    expect(writes).toEqual([])
+    expect(editor.getHTML()).toBe('<p>old text</p>')
+    expect(activeContent()).toBe('<p>old text</p>')
+    // The bubble keeps what was said and reports the stop — not "Thinking...".
+    expect(assistantBubble()[0]).toBe('Let me think about the structure first\n\n⏹️ Stopped.')
     harness.unmount()
   })
 })

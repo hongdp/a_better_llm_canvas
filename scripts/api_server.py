@@ -32,7 +32,7 @@ import server_db
 import server_scrape
 import server_generation
 from server_config import sanitize_id
-from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID
+from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID, record_last_active_book, clear_last_active_book
 from server_auth import get_authenticated_username
 from server_content import (
     _get_content_dir,
@@ -130,6 +130,8 @@ async def create_book(request: Request):
                 "UPDATE books SET active_document_id = ? WHERE username = ? AND id = ?",
                 (active_doc_id, username, book_id)
             )
+
+        record_last_active_book(conn, username, book_id, now)
 
         # Save settings to global (upsert — settings are user-level)
         settings_fields = ["activeProvider", "providerConfigs", "customSystemPrompts",
@@ -336,6 +338,9 @@ async def update_book(request: Request, book_id: str):
             f"UPDATE books SET {', '.join(updates)} WHERE username = ? AND id = ?",
             params
         )
+        # This PUT is what every debounced save sends for the book on screen, so
+        # it is the natural place to remember which book the user is in.
+        record_last_active_book(conn, username, safe_book_id, now)
 
         # Update global settings (upsert) — settings are user-level, shared across all books
         settings_fields = ["activeProvider", "providerConfigs", "customSystemPrompts",
@@ -422,6 +427,7 @@ async def delete_book_endpoint(request: Request, book_id: str):
         conn.execute("DELETE FROM books WHERE username = ? AND id = ?", (username, safe_book_id))
         conn.execute("DELETE FROM book_settings WHERE username = ? AND book_id = ?", (username, safe_book_id))
         conn.execute("DELETE FROM messages WHERE username = ? AND book_id = ?", (username, safe_book_id))
+        clear_last_active_book(conn, username, safe_book_id)
         # documents and versions cascade-deleted via FK
         conn.commit()
     finally:
@@ -885,6 +891,7 @@ async def save_storage_legacy(request: Request, bookId: str = "default"):
                title = excluded.title, active_document_id = excluded.active_document_id, updated_at = excluded.updated_at""",
             (safe_book_id, username, book_title, active_doc_id, now, now)
         )
+        record_last_active_book(conn, username, safe_book_id, now)
 
         # Full replace documents
         if "documents" in body:

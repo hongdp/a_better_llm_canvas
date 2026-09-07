@@ -22,7 +22,8 @@ What the design is actually worth, all verified rather than assumed:
   work in flight — the job keeps running on the backend.
 - **Stop actually stops.** The stop button used to drop the local reader while
   the provider kept generating and billing; it now cancels the upstream
-  request.
+  request. The draft streamed so far stays in the document as a single undo
+  step, identical on screen and in the store (Decision Log, 2026-09-05).
 - **Cross-device.** A generation started on the phone can be watched on the
   desktop.
 

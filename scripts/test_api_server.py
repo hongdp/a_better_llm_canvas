@@ -1318,3 +1318,167 @@ def test_delete_and_reorder_return_the_book_stamp(tmp_path, monkeypatch):
         make_request("DELETE", "/api/books/book-1/documents/doc-1"),
         "book-1", "doc-1"))
     assert deleted["updatedAt"] == _book_stamp()
+
+
+# ==============================================================================
+# Per-user last active book (Decision Log 2026-09-06)
+#
+# A new device has no localStorage, so the session must say which book to
+# open. The pointer is written by every book write and read back with a JOIN
+# so it can never name a book that no longer exists.
+# ==============================================================================
+
+def _session_request(method, path, body=None, cookie="web_canvas_session=sess-1"):
+    """A Request with a JSON body, addressed to the handler directly (no ASGI app)."""
+    import json as _json
+    from starlette.requests import Request
+    payload = _json.dumps(body).encode() if body is not None else b""
+    scope = {
+        "type": "http",
+        "method": method,
+        "path": path,
+        "headers": [(b"cookie", cookie.encode()), (b"content-type", b"application/json")],
+        "query_string": b"",
+    }
+
+    async def receive():
+        return {"type": "http.request", "body": payload, "more_body": False}
+
+    return Request(scope, receive)
+
+
+def _isolated_db_with_alice(tmp_path, monkeypatch, books):
+    """Fresh DB + session file; `books` is a list of (id, updated_at) for alice."""
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr(server_db, "DB_PATH", str(tmp_path / "metadata.db"))
+    monkeypatch.setattr(server_auth, "SESSIONS_FILE", str(tmp_path / "sessions.json"))
+    server_db.init_db()
+    conn = server_db.get_db()
+    try:
+        for book_id, updated_at in books:
+            conn.execute(
+                "INSERT INTO books (id, username, title, active_document_id, created_at, updated_at)"
+                " VALUES (?, 'alice', ?, '', ?, ?)",
+                (book_id, f"Title {book_id}", updated_at, updated_at),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    expires = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    with open(server_auth.SESSIONS_FILE, "w", encoding="utf-8") as f:
+        _json.dump({"sess-1": {"username": "alice", "expiresAt": expires}}, f)
+
+
+def _bump_updated_at(book_id, stamp):
+    """A write that bypasses the pointer (a chapter PUT from another device, a
+    background summary save): only the book's timestamp moves."""
+    conn = server_db.get_db()
+    try:
+        conn.execute("UPDATE books SET updated_at = ? WHERE username = 'alice' AND id = ?", (stamp, book_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _session_last_book():
+    import asyncio as _asyncio
+    from starlette.responses import Response
+    result = _asyncio.run(server_auth.get_session(_session_request("GET", "/api/auth/session"), Response()))
+    assert result["loggedIn"] is True
+    return result["lastActiveBookId"]
+
+
+def test_session_reports_the_book_last_written(tmp_path, monkeypatch):
+    import asyncio as _asyncio
+    _isolated_db_with_alice(tmp_path, monkeypatch, [
+        ("book-a", "2026-09-01T00:00:00Z"),
+        ("book-b", "2026-09-02T00:00:00Z"),
+    ])
+
+    # Nothing recorded yet (an account that predates the pointer): the most
+    # recently updated book stands in, so the feature works on first login.
+    assert _session_last_book() == "book-b"
+
+    # The metadata PUT every debounced save sends records the book on screen.
+    _asyncio.run(api_server.update_book(
+        _session_request("PUT", "/api/books/book-a", body={"bookTitle": "Title book-a"}), "book-a"))
+    assert _session_last_book() == "book-a"
+
+    _asyncio.run(api_server.update_book(
+        _session_request("PUT", "/api/books/book-b", body={"activeDocumentId": "doc-x"}), "book-b"))
+    assert _session_last_book() == "book-b"
+
+    # The pointer decides, not recency: a later stamp on another book must not
+    # move it. (Without this the recency fallback alone passes every check
+    # above, because the PUT also bumps the book it writes.)
+    _bump_updated_at("book-a", "2099-01-01T00:00:00Z")
+    assert _session_last_book() == "book-b"
+
+
+def test_session_never_points_at_a_deleted_book(tmp_path, monkeypatch):
+    import asyncio as _asyncio
+    _isolated_db_with_alice(tmp_path, monkeypatch, [
+        ("book-a", "2026-09-01T00:00:00Z"),
+        ("book-b", "2026-09-02T00:00:00Z"),
+    ])
+    _asyncio.run(api_server.update_book(_session_request("PUT", "/api/books/book-a", body={}), "book-a"))
+    assert _session_last_book() == "book-a"
+
+    # The book vanishes underneath the pointer (deleted from another device,
+    # or by a path that never went through the endpoint).
+    conn = server_db.get_db()
+    try:
+        conn.execute("DELETE FROM books WHERE username = 'alice' AND id = 'book-a'")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Fall through to the newest surviving book — never hand the client a 404.
+    assert _session_last_book() == "book-b"
+
+
+def test_creating_a_book_makes_it_the_last_active_one(tmp_path, monkeypatch):
+    import asyncio as _asyncio
+    _isolated_db_with_alice(tmp_path, monkeypatch, [("book-a", "2026-09-01T00:00:00Z")])
+
+    _asyncio.run(api_server.create_book(
+        _session_request("POST", "/api/books", body={"id": "book-c", "title": "C", "documents": []})))
+
+    assert _session_last_book() == "book-c"
+    # Pointer over recency here too.
+    _bump_updated_at("book-a", "2099-01-01T00:00:00Z")
+    assert _session_last_book() == "book-c"
+
+
+def test_session_has_no_book_for_an_empty_account(tmp_path, monkeypatch):
+    _isolated_db_with_alice(tmp_path, monkeypatch, [])
+    assert _session_last_book() is None
+
+
+def test_init_db_adds_user_state_to_an_existing_database(tmp_path, monkeypatch):
+    """Upgrading a live DB must create the table, not only fresh installs."""
+    import sqlite3
+    db_file = tmp_path / "metadata.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE books (
+            id TEXT NOT NULL, username TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT 'Untitled Book',
+            active_document_id TEXT,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (username, id)
+        );
+    """)
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(server_db, "DB_PATH", str(db_file))
+    server_db.init_db()
+
+    conn = server_db.get_db()
+    try:
+        tables = {r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    finally:
+        conn.close()
+    assert "user_state" in tables
