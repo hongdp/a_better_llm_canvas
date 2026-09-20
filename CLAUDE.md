@@ -180,6 +180,11 @@ passes `emitUpdate=false`, or the live preview leaks into the store when
 `isStreaming` flips (the Stop button). Stop keeps the half-streamed draft as
 ONE undo step (`keepCanvasPreview` in `useChatLLM.ts`) and writes the same
 HTML to the store — screen, persistence, and Undo must always agree.
+A streamed selection rewrite touches the editor only through
+`replaceSelectionWithHtml` (`hooks/chat/selectionReplace.ts`). Never derive an
+inserted range's end from `slice.size`: ProseMirror wraps an open slice
+inserted at document level (Ctrl+A selects from position 0), so the real
+insert is longer — read the end from `tr.mapping.map(to, 1)`.
 
 ### LLM integration
 `services/llm.ts` exposes `streamLLM(messages, config, callbacks)`, dispatching

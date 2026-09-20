@@ -1,6 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react'
 import { Editor } from '@tiptap/react'
-import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
 import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration, clearPersistedJob as clearPersistedGenerationJob } from '../services/remoteGeneration'
@@ -23,8 +22,9 @@ import {
 } from '../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, clampSelectionRange, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
+import { replaceSelectionWithHtml } from './chat/selectionReplace'
 import {
   EMPTY_LEDGER,
   hashContent,
@@ -411,17 +411,11 @@ export function useChatLLM({
 
           const { from } = selectionRangeRef.current
           const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
-          const range = clampSelectionRange(from, currentEnd, editor.state.doc.content.size)
-          if (!range) return
-
-          const tempDiv = document.createElement('div')
-          tempDiv.innerHTML = restoreImagesFromPlaceholders(trimIncompleteHtmlTail(partial))
-          const slice = ProseMirrorDOMParser.fromSchema(editor.state.schema).parseSlice(tempDiv)
-
-          const tr = editor.state.tr
-          tr.replace(range.from, range.to, slice)
-          editor.view.dispatch(tr)
-          selectionEndRef.current = range.from + slice.size
+          const end = replaceSelectionWithHtml(
+            editor, from, currentEnd, restoreImagesFromPlaceholders(trimIncompleteHtmlTail(partial))
+          )
+          if (end === null) return
+          selectionEndRef.current = end
           setSaveStatus('unsaved')
         }
       },
@@ -488,19 +482,12 @@ export function useChatLLM({
             const { from } = selectionRangeRef.current
             const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
-            const restoredText = restoreImagesFromPlaceholders(cleanedText)
-            const tempDiv = document.createElement('div')
-            tempDiv.innerHTML = restoredText
-            const slice = ProseMirrorDOMParser.fromSchema(selectionEditor.state.schema).parseSlice(tempDiv)
-
-            // The document may have moved on since the selection was taken.
-            const range = clampSelectionRange(from, currentEnd, selectionEditor.state.doc.content.size)
-            if (range) {
-              const tr = selectionEditor.state.tr
-              tr.replace(range.from, range.to, slice)
-              selectionEditor.view.dispatch(tr)
-
-              selectionEndRef.current = range.from + slice.size
+            // Null when the document has moved on since the selection was taken.
+            const end = replaceSelectionWithHtml(
+              selectionEditor, from, currentEnd, restoreImagesFromPlaceholders(cleanedText)
+            )
+            if (end !== null) {
+              selectionEndRef.current = end
               setSaveStatus('unsaved')
             }
           }
@@ -721,16 +708,7 @@ export function useChatLLM({
             const { from } = selectionRangeRef.current
             const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
 
-            const tempDiv = document.createElement('div')
-            tempDiv.innerHTML = diffed
-            const slice = ProseMirrorDOMParser.fromSchema(finalEditor.state.schema).parseSlice(tempDiv)
-
-            const range = clampSelectionRange(from, currentEnd, finalEditor.state.doc.content.size)
-            if (range) {
-              const tr = finalEditor.state.tr
-              tr.replace(range.from, range.to, slice)
-              finalEditor.view.dispatch(tr)
-
+            if (replaceSelectionWithHtml(finalEditor, from, currentEnd, diffed) !== null) {
               s.updateActiveDocument({ content: finalEditor.getHTML() })
             } else {
               // The selection is gone (chapter switched, document shortened).
