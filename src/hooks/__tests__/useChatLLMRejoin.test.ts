@@ -72,8 +72,14 @@ function makeFakeEditor(initialDocText = '') {
   const setContentCalls: string[] = []
   // Replacements applied through the selection preview path.
   const replacements: Array<{ from: number; to: number; html: string }> = []
+  // Mirrors the real Transaction shape the selection helper relies on:
+  // replace() chains, and mapping.map() reports where a position ended up.
   const tr = {
-    replace: (from: number, to: number, slice: { html: string }) => { replacements.push({ from, to, html: slice.html }) }
+    mapping: { map: (pos: number) => pos },
+    replace(from: number, to: number, slice: { html: string }): unknown {
+      replacements.push({ from, to, html: slice.html })
+      return tr
+    }
   }
   const chain = {
     setMeta: () => chain,
