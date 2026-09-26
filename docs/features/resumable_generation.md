@@ -106,17 +106,26 @@ clients can keep the partial text.
 
 ```jsonc
 [{ "jobId": "…", "status": "running|done|error|aborted",
-   "meta": { … }, "length": 1234, "createdAt": "…", "updatedAt": "…" }]
+   "meta": { … }, "length": 1234, "createdAt": "…", "updatedAt": "…",
+   "delivered": false }]
 ```
 
-Used on page load to find a generation that outlived the tab.
+Used on page load to find a generation that outlived the tab. `meta` is echoed
+back verbatim, which is what lets a client with no local record find the job
+behind a chat bubble by `meta.assistantMessageId` (§5). `delivered` is true
+once some reader has been sent the terminal event (§4).
 
 ## 4. Retention and limits
 
-- Jobs live in memory, keyed per user. Finished jobs are kept **10 minutes**
-  so a reload right after completion still gets the result.
-- At most **20 jobs per user**; the oldest finished job is evicted first, and
-  a running job is never evicted.
+- Jobs live in memory, keyed per user. A finished job whose result **reached a
+  reader** is kept **10 minutes**, so a reload right after completion still
+  gets it. One that finished with **nobody reading** (phone locked, tab
+  discarded, laptop closed) is kept **24 hours**: until someone receives the
+  terminal event, the reply exists nowhere else. A user Stop counts as
+  delivered — that result was discarded on purpose.
+- At most **20 jobs per user**; delivered results are evicted first, then the
+  oldest unread one, and a running job is never evicted. The cap counts jobs,
+  so the longer unread window does not raise the memory bound.
 - Buffer cap **4 MB** per job; past that the job keeps streaming to
   subscribers but stops growing the buffer and marks `truncatedBuffer: true`
   (a whole-book batch answer is far below this).
@@ -137,10 +146,31 @@ unchanged. Internally it picks a transport:
 - **direct** (not logged in, or the remote start fails): today's code path,
   untouched, so the app still works fully offline from the backend.
 
-Rejoin on load: if the persisted job is still `running` (or finished within
-the retention window and its text was never fully rendered), the client
-re-attaches from the stored offset and streams into the same assistant
-message, so a reloaded tab visibly continues where it left off.
+Rejoin on load, in two steps:
+
+1. **The local record, as a fast path.** If localStorage names a job the server
+   still has — running *or finished* — the client re-attaches and streams into
+   the same assistant message. The record is cleared by the terminal event,
+   before the completion path runs, so a record that survived proves the turn
+   was never completed here, even if every character had been rendered.
+2. **The server, as the source of truth.** With no usable record, the client
+   looks for assistant bubbles that never received a reply (the placeholder, or
+   a notice written in its place) and asks `/api/generate/active` for a job
+   whose `meta.assistantMessageId` matches. A match is rejoined exactly like
+   (1) and gets a local record of its own; a bubble with no job anywhere is
+   retired with an "Interrupted" notice. If the server **cannot be asked**,
+   nothing is touched — "could not ask" is never read as "no job". No
+   unfinished bubble means no request at all.
+
+The record is one localStorage slot on one origin, so it is a hint only: a turn
+sent from another device, or over the LAN address instead of localhost, or
+followed by any other generation, has none.
+
+The rejoin watchdog (20 s) bounds how long it takes to **attach** — to receive
+any frame, the server's immediate `attached` included. It says nothing about
+the model, whose first token can be minutes away. If it does fire, the bubble
+says the reconnect failed and the record is kept for the next load; it is never
+reported as a user stop.
 
 Abort: the stop button calls the abort endpoint as well as dropping the
 reader, so stopping on one device stops the actual generation.
@@ -192,6 +222,22 @@ Shipped as specified, with these deliberate decisions and known gaps:
   paths.
 - **Buffer cap counts CHARACTERS**, matching the character offsets in the
   event contract; a byte cap would make the offset semantics ambiguous.
+- **Reliability pass, 2026-09-20.** Found from one live turn (grok, 230 s to
+  first token) that was reloaded while the model was still reasoning. The
+  rejoin attached, received only `attached` and `reasoning` frames, and was
+  aborted by a watchdog that counted `onChunk`/`onDone`/`onError` alone; the
+  abort reached the normal error path as an `AbortError`, so the bubble read
+  "Stopped." for a job nobody stopped, which went on to finish with no reader
+  left. Fixed together with what the same investigation turned up: bubbles
+  retired on the absence of a *local* record (§5 step 2), a failed lookup read
+  as "no job", a finished-and-fully-rendered job forgotten although its
+  completion never ran, a connection that died by *throwing* getting no
+  re-attach while one that died by *ending* did (a refused stream — 404 — is
+  still not retried), and unread results expiring after ten minutes (§4).
+- **Gap — no stall detection.** The server sends a keep-alive comment every
+  15 s, but the client does not watch for its absence, so a connection that
+  goes silent without closing leaves the reader waiting until the page is
+  reloaded (which then rejoins). Not observed in practice yet.
 - **Gap — roleplay cannot rejoin.** Its stop button now aborts the
   server-side job, but roleplay sends no `remoteMeta`, so a roleplay
   generation that outlives its tab completes on the server without the UI

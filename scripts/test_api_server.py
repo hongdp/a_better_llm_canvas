@@ -643,6 +643,9 @@ def test_generation_finished_jobs_expire_after_retention_window():
 
     fresh.finish("done")
     stale.finish("done")
+    # The short window applies to results somebody has received; an unread one
+    # is kept far longer (see the undelivered-result tests below).
+    stale.result_delivered = True
     stale.finished_at -= server_generation.FINISHED_JOB_TTL_SECONDS + 1
 
     server_generation.registry.prune()
@@ -689,6 +692,101 @@ def test_generation_never_evicts_a_running_job():
     assert finished.job_id not in ids
     assert extra.job_id in ids
     assert all(j.job_id in ids for j in running[1:])
+
+
+# ── Undelivered results ───────────────────────────────────────────────────────
+# A job whose only reader was gone when it finished (phone locked, tab
+# discarded) used to be deleted ten minutes later, read or not: the tokens were
+# spent and the reply existed nowhere. Retention now asks whether the result
+# ever reached a reader, not only when the job finished.
+
+def test_generation_keeps_an_unread_result_past_the_short_window():
+    reg = server_generation.registry
+    unread = reg.create("alice", {})
+    unread.finish("done")
+    unread.finished_at -= server_generation.FINISHED_JOB_TTL_SECONDS + 1
+
+    reg.prune()
+    assert unread.job_id in {j.job_id for j in reg.list_for_user("alice")}
+
+    # ...but not forever: memory is bounded in time as well as by the cap.
+    unread.finished_at -= server_generation.UNDELIVERED_JOB_TTL_SECONDS
+    reg.prune()
+    assert unread.job_id not in {j.job_id for j in reg.list_for_user("alice")}
+
+
+def test_generation_marks_a_result_delivered_once_a_reader_gets_the_terminal_event():
+    async def scenario():
+        replayed = server_generation.registry.create("alice", {})
+        replayed.append("answer")
+        replayed.finish("done")
+        assert replayed.result_delivered is False
+        _ = [ev async for ev in server_generation._job_event_stream(replayed, 0)]
+
+        live = server_generation.registry.create("alice", {})
+        stream = server_generation._job_event_stream(live, 0)
+        await anext(stream)                      # attached
+        live.append("answer")
+        live.finish("done")
+        _ = [ev async for ev in stream]          # delta + terminal, read to the end
+        return replayed, live
+
+    replayed, live = asyncio.run(scenario())
+    assert replayed.result_delivered is True     # replay of a finished job
+    assert live.result_delivered is True         # terminal event seen live
+    assert live.summary()["delivered"] is True
+
+
+def test_generation_reader_that_leaves_early_does_not_count_as_delivery():
+    """The flag is set on the line after the terminal yield, which a vanished
+    reader never reaches — its generator is closed AT the yield."""
+    async def scenario():
+        job = server_generation.registry.create("alice", {})
+        stream = server_generation._job_event_stream(job, 0)
+        await anext(stream)                      # attached
+        job.append("half an ans")
+        await anext(stream)                      # the delta
+        await stream.aclose()                    # tab discarded mid-turn
+        job.append("wer")
+        job.finish("done")                       # finishes with nobody reading
+        return job
+
+    job = asyncio.run(scenario())
+    assert job.status == "done"
+    assert job.result_delivered is False
+    assert job.summary()["delivered"] is False
+
+
+def test_generation_abort_does_not_leave_an_unread_result_behind():
+    """Stop drops the reader before the terminal event exists, so no reader
+    ever receives it — yet the result was discarded on purpose and must not be
+    kept a day as unread."""
+    job = _new_job()
+    job.append("partial")
+    job.abort()
+    assert job.result_delivered is True
+
+
+def test_generation_evicts_delivered_results_before_unread_ones():
+    reg = server_generation.registry
+    base = server_generation._monotonic()
+
+    unread = reg.create("alice", {"n": "unread"})
+    unread.finish("done")
+    unread.finished_at = base - 100              # the OLDEST finished job
+
+    for i in range(server_generation.MAX_JOBS_PER_USER - 1):
+        job = reg.create("alice", {"n": i})
+        job.finish("done")
+        job.result_delivered = True
+        job.finished_at = base + i * 0.001
+
+    reg.create("alice", {"n": "new"})            # pushes the user over the cap
+
+    ids = {j.job_id for j in reg.list_for_user("alice")}
+    assert len(ids) == server_generation.MAX_JOBS_PER_USER
+    # Age alone would have evicted it; a copy of the others exists on a client.
+    assert unread.job_id in ids
 
 
 # ── Per-user isolation ────────────────────────────────────────────────────────

@@ -46,6 +46,17 @@ router = APIRouter()
 
 # ── Retention and limits (spec §4) ────────────────────────────────────────────
 FINISHED_JOB_TTL_SECONDS = 10 * 60
+# Problem: every finished job expired after ten minutes, read or not. A turn
+#   whose only reader was gone when it finished (phone locked, tab discarded,
+#   laptop closed) was deleted before anyone could come back for it — the
+#   tokens were spent and the reply no longer existed anywhere. With first
+#   tokens measured at 230s, "gone for ten minutes" is an ordinary turn.
+# Root Cause: retention was keyed on WHEN the job finished, not on whether its
+#   result had reached anybody.
+# Fix: a result no reader has received the terminal event for is kept a day.
+#   Memory stays bounded by the per-user cap below, exactly as before — the
+#   cap counts jobs, not minutes — and delivered results still go in ten.
+UNDELIVERED_JOB_TTL_SECONDS = 24 * 60 * 60
 MAX_JOBS_PER_USER = 20
 # The offset contract is expressed in characters (the client resumes from the
 # number of characters it has rendered), so the buffer cap is measured in
@@ -167,6 +178,9 @@ class GenerationJob:
         self.created_monotonic = _monotonic()
         self.first_delta_latency: Optional[float] = None
         self.finished_at: Optional[float] = None  # monotonic, drives retention
+        #: True once some reader has been sent the terminal event. Until then
+        #: the result exists nowhere but here (see UNDELIVERED_JOB_TTL_SECONDS).
+        self.result_delivered = False
         self.abort_requested = False
         self.task: Optional[asyncio.Task] = None
         #: Prompt size in characters, for reading the latency line in context.
@@ -292,6 +306,10 @@ class GenerationJob:
         if self.status != "running":
             return False
         self.abort_requested = True
+        # Whoever stopped the turn has already dropped their reader, so the
+        # terminal event usually reaches nobody — but this result was thrown
+        # away on purpose and must not be kept a day as "unread".
+        self.result_delivered = True
         # Flip the status synchronously so the endpoint's response and the
         # terminal SSE event cannot race the task's own cancellation handling.
         self.finish("aborted")
@@ -325,6 +343,7 @@ class GenerationJob:
             "createdAt": self.created_at,
             "updatedAt": self.updated_at,
             "truncatedBuffer": self.truncated_buffer,
+            "delivered": self.result_delivered,
         }
 
     # ── internals ────────────────────────────────────────────────────────────
@@ -361,10 +380,13 @@ class JobRegistry:
         return jobs
 
     def prune(self) -> None:
-        """Drop finished jobs past the retention window."""
+        """Drop finished jobs past their retention window (delivered or not)."""
         now = _monotonic()
         for job_id, job in list(self._jobs.items()):
-            if job.finished_at is not None and now - job.finished_at > FINISHED_JOB_TTL_SECONDS:
+            if job.finished_at is None:
+                continue
+            ttl = FINISHED_JOB_TTL_SECONDS if job.result_delivered else UNDELIVERED_JOB_TTL_SECONDS
+            if now - job.finished_at > ttl:
                 del self._jobs[job_id]
 
     def clear(self) -> None:
@@ -375,11 +397,12 @@ class JobRegistry:
         excess = len(user_jobs) - MAX_JOBS_PER_USER
         if excess <= 0:
             return
-        # Oldest finished job goes first; a running job is never evicted, so a
-        # user with 20 live generations simply exceeds the cap for a while.
+        # Delivered results go first (a copy exists on some client), then the
+        # oldest unread one; a running job is never evicted, so a user with 20
+        # live generations simply exceeds the cap for a while.
         finished = sorted(
             (j for j in user_jobs if j.finished_at is not None),
-            key=lambda j: j.finished_at,
+            key=lambda j: (not j.result_delivered, j.finished_at),
         )
         for job in finished[:excess]:
             self._jobs.pop(job.job_id, None)
@@ -1018,6 +1041,9 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
 
         if terminal is not None:
             yield _sse(terminal)
+            # Reached only once the frame was written: a reader that vanished
+            # cancels this generator AT the yield, leaving the flag unset.
+            job.result_delivered = True
             return
 
         while True:
@@ -1034,6 +1060,7 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
                 sent_offset = event["offset"]
             elif event["type"] in TERMINAL_EVENT_TYPES:
                 yield _sse(event)
+                job.result_delivered = True  # same rule as the replay above
                 return
             else:
                 # Informational (reasoning, and anything added later). Passing

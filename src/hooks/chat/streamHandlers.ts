@@ -20,6 +20,27 @@ import { stripDocStatus } from '../../utils/text'
  */
 export const ASSISTANT_PLACEHOLDER = 'Thinking...'
 
+/** Written over a placeholder once the server confirms no job can fill it. */
+export const INTERRUPTED_NOTICE =
+  '⚠️ Interrupted before the model replied (the page reloaded). Send again to retry.'
+
+/**
+ * Written when a rejoin could not even attach. Deliberately not "Stopped":
+ * nobody stopped anything, and the job is very likely still generating.
+ */
+export const RECONNECT_FAILED_NOTICE =
+  '⚠️ Could not reconnect to this generation — it may still be running on the server. Reload the page to try again.'
+
+/**
+ * A bubble that never received its reply: still the placeholder, or a notice
+ * this client wrote in its place. Notices count because they are verdicts
+ * reached without the server's say (or before it could be asked) — if a job
+ * for the bubble turns up after all, the reply must still be able to land.
+ * A user's "Stopped" is NOT here: that turn was ended on purpose.
+ */
+export const isUnfinishedBubble = (content: string): boolean =>
+  content === ASSISTANT_PLACEHOLDER || content === INTERRUPTED_NOTICE || content === RECONNECT_FAILED_NOTICE
+
 /** How much of the model's thinking to keep on screen. */
 export const REASONING_TAIL_CHARS = 240
 /** Minimum gap between reasoning repaints — deltas arrive far faster. */

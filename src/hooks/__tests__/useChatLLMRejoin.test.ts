@@ -13,10 +13,12 @@ import { createRoot, type Root } from 'react-dom/client'
 import type { StreamCallbacks } from '../../types/llm'
 
 const findResumableJob = vi.fn()
+const findJobsForBubbles = vi.fn()
 const resumeRemoteGeneration = vi.fn()
 
 vi.mock('../../services/remoteGeneration', () => ({
   findResumableJob: (...a: unknown[]) => findResumableJob(...a),
+  findJobsForBubbles: (...a: unknown[]) => findJobsForBubbles(...a),
   resumeRemoteGeneration: (...a: unknown[]) => resumeRemoteGeneration(...a),
   abortRemoteGeneration: vi.fn(),
   clearPersistedJob: vi.fn()
@@ -37,6 +39,16 @@ vi.mock('@tiptap/pm/model', () => ({
 import { useState } from 'react'
 import { useChatLLM } from '../useChatLLM'
 import { useAppStore } from '../../store/useAppStore'
+import { INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE } from '../chat/streamHandlers'
+
+// One case replaces this store ACTION through setState. Resetting state does
+// not undo that, so without the restore in beforeEach its stub leaked into
+// every later test and quietly rewrote their document.
+const realEnsureDocumentContents = useAppStore.getState().ensureDocumentContents
+
+/** What the server says about the jobs behind a set of bubbles. */
+const serverKnows = (jobs: Record<string, { jobId: string; status?: string; meta?: Record<string, unknown> }>) =>
+  ({ known: true, jobs: new Map(Object.entries(jobs).map(([id, j]) => [id, { status: 'running', ...j }])) })
 
 function renderChatHook() {
   const container = document.createElement('div')
@@ -156,8 +168,12 @@ const activeContent = () => {
 beforeEach(() => {
   findResumableJob.mockReset()
   resumeRemoteGeneration.mockReset()
+  // Default: the server can be asked, and holds no job for any bubble.
+  findJobsForBubbles.mockReset()
+  findJobsForBubbles.mockResolvedValue(serverKnows({}))
   vi.spyOn(console, 'error').mockImplementation(() => {})
   useAppStore.setState({
+    ensureDocumentContents: realEnsureDocumentContents,
     documents: [{
       id: 'doc-1',
       title: 'Chapter 1',
@@ -520,7 +536,7 @@ describe('rejoin failure handling', () => {
     await settle()
 
     expect(useAppStore.getState().isStreaming).toBe(false)
-    expect(bubble('a1')).toContain('could not be resumed')
+    expect(bubble('a1')).toBe(RECONNECT_FAILED_NOTICE)
     unmount()
   })
 
@@ -537,6 +553,169 @@ describe('rejoin failure handling', () => {
 
     expect(useAppStore.getState().isStreaming).toBe(false)
     expect(bubble('a2')).toBe('partial answer so far')
+    unmount()
+  })
+})
+
+
+// ── the server is the source of truth, not this browser's record ─────────────
+// The job record is one localStorage slot on one origin. A turn sent from
+// another device — or over the LAN address instead of localhost, or followed
+// by any other generation — has none here. It used to be declared
+// "Interrupted" while its job was running, and the reply then landed nowhere.
+describe('reconciling unfinished bubbles with the server', () => {
+  it('rejoins a running job this browser holds no record of', async () => {
+    findResumableJob.mockResolvedValue(null)
+    findJobsForBubbles.mockResolvedValue(serverKnows({
+      'a-1': { jobId: 'gen-elsewhere', meta: { assistantMessageId: 'a-1', kind: 'chat', bookId: 'book-test' } }
+    }))
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      callbacks.onChunk('From the other device.')
+      callbacks.onDone('From the other device.')
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(findJobsForBubbles).toHaveBeenCalledWith(['a-1'], 'book-test')
+    expect(resumeRemoteGeneration.mock.calls[0][0]).toBe('gen-elsewhere')
+    // The meta is handed over so the transport can write a record of its own.
+    expect(resumeRemoteGeneration.mock.calls[0][4]).toMatchObject({ assistantMessageId: 'a-1' })
+    expect(bubble('a-1')).toBe('From the other device.')
+    unmount()
+  })
+
+  it('never retires a bubble when the server could not be asked', async () => {
+    // "Could not ask" is not "no job": the backend may be restarting, the
+    // phone may be between networks. Guessing here destroyed live turns.
+    findResumableJob.mockResolvedValue(null)
+    findJobsForBubbles.mockResolvedValue({ known: false })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(bubble('a-1')).toBe('Thinking...')
+    expect(resumeRemoteGeneration).not.toHaveBeenCalled()
+    unmount()
+  })
+
+  it('lets the reply land in a bubble an earlier load had already written off', async () => {
+    useAppStore.setState({
+      messages: [{ id: 'a-1', role: 'assistant', content: INTERRUPTED_NOTICE, timestamp: 't' }]
+    })
+    findResumableJob.mockResolvedValue(null)
+    findJobsForBubbles.mockResolvedValue(serverKnows({
+      'a-1': { jobId: 'gen-late', status: 'done', meta: { assistantMessageId: 'a-1', kind: 'chat' } }
+    }))
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      callbacks.onChunk('It finished after all.')
+      callbacks.onDone('It finished after all.')
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(bubble('a-1')).toBe('It finished after all.')
+    unmount()
+  })
+
+  it('asks the server nothing when no bubble is unfinished', async () => {
+    useAppStore.setState({
+      messages: [{ id: 'a-1', role: 'assistant', content: 'A complete reply.', timestamp: 't' }]
+    })
+    findResumableJob.mockResolvedValue(null)
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(findJobsForBubbles).not.toHaveBeenCalled()
+    expect(bubble('a-1')).toBe('A complete reply.')
+    unmount()
+  })
+
+  it('falls back to the server when the local record names a non-chat job', async () => {
+    findResumableJob.mockResolvedValue({ jobId: 'gen-rp', meta: { kind: 'roleplay' }, offset: 0 })
+    findJobsForBubbles.mockResolvedValue(serverKnows({
+      'a-1': { jobId: 'gen-chat', meta: { assistantMessageId: 'a-1', kind: 'chat' } }
+    }))
+
+    const unmount = renderChatHook()
+    await settle()
+
+    expect(resumeRemoteGeneration.mock.calls[0][0]).toBe('gen-chat')
+    unmount()
+  })
+})
+
+// ── the watchdog measured the model, not the connection ──────────────────────
+// Reported from a live turn (grok, 230s to first token): the rejoin attached
+// fine, received `attached` and `reasoning` frames and nothing else, and was
+// aborted at 20s as "dead". The abort surfaced as an AbortError — which reads
+// as a USER stop — so the bubble said "Stopped." for a job nobody stopped,
+// which then finished (9406 chars) with no reader left to render it.
+describe('rejoin watchdog', () => {
+  const liveJob = { jobId: 'gen-slow', meta: { assistantMessageId: 'a-1', kind: 'chat' as const }, offset: 0 }
+
+  it('does not mistake a turn that is still reasoning for a dead one', async () => {
+    vi.useFakeTimers()
+    findResumableJob.mockResolvedValue(liveJob)
+    let finish: () => void = () => {}
+    let signal: AbortSignal | undefined
+    resumeRemoteGeneration.mockImplementation((_id: string, _from: number, callbacks: StreamCallbacks, sig: AbortSignal) => {
+      signal = sig
+      callbacks.onAttached?.()
+      callbacks.onReasoning?.('weighing the options')
+      return new Promise<void>(resolve => {
+        finish = () => { callbacks.onChunk('Worth the wait.'); callbacks.onDone('Worth the wait.'); resolve() }
+      })
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+    // Four minutes of thinking — eleven times the old 20s verdict.
+    await act(async () => { vi.advanceTimersByTime(240_000) })
+    await settle()
+
+    expect(signal?.aborted).toBe(false)
+    expect(bubble('a-1')).not.toContain('Stopped')
+    expect(useAppStore.getState().isStreaming).toBe(true)
+
+    await act(async () => { finish() })
+    await settle()
+    expect(bubble('a-1')).toBe('Worth the wait.')
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    vi.useRealTimers()
+    unmount()
+  })
+
+  it('reports a rejoin that cannot attach as a reconnect failure, never as a user stop', async () => {
+    vi.useFakeTimers()
+    findResumableJob.mockResolvedValue(liveJob)
+    // A fetch that hangs: no frame ever arrives. When aborted, the transport
+    // reports the AbortError through onError, exactly as attachToJob does.
+    resumeRemoteGeneration.mockImplementation((_id: string, _from: number, callbacks: StreamCallbacks, sig: AbortSignal) =>
+      new Promise<void>(resolve => {
+        sig.addEventListener('abort', () => {
+          const err = new Error('The operation was aborted.')
+          err.name = 'AbortError'
+          callbacks.onError(err)
+          resolve()
+        })
+      }))
+
+    const unmount = renderChatHook()
+    await settle()
+    const before = activeContent()
+    await act(async () => { vi.advanceTimersByTime(20_001) })
+    await settle()
+
+    expect(bubble('a-1')).toBe(RECONNECT_FAILED_NOTICE)
+    expect(bubble('a-1')).not.toContain('Stopped')
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    // The document is untouched: nothing was "kept as a draft" on the user's behalf.
+    expect(activeContent()).toBe(before)
+    expect(before).toBe('<p>old text</p>')
+    vi.useRealTimers()
     unmount()
   })
 })
