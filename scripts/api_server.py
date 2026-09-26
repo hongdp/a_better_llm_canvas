@@ -438,6 +438,44 @@ async def delete_book_endpoint(request: Request, book_id: str):
     return {"success": True}
 
 
+# ── Reorder Documents ──────────────────────────────────────────────────────────
+# Registered BEFORE the `/documents/{doc_id}` routes on purpose: FastAPI matches
+# in registration order, so `PUT /documents/reorder` would otherwise be captured
+# by `PUT /documents/{doc_id}` as doc_id="reorder" and 404 — which silently broke
+# chapter reordering (the client swallows a non-OK response). Keep it ahead.
+@app.put("/api/books/{book_id}/documents/reorder")
+async def reorder_documents(request: Request, book_id: str):
+    username = get_authenticated_username(request)
+    safe_book_id = sanitize_id(book_id, "bookId")
+
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body.")
+
+    doc_ids = body.get("documentIds", [])
+    if not doc_ids:
+        raise HTTPException(status_code=400, detail="documentIds is required.")
+
+    conn = get_db()
+    try:
+        for idx, doc_id in enumerate(doc_ids):
+            safe_doc_id = sanitize_id(doc_id, "docId")
+            conn.execute(
+                "UPDATE documents SET sort_order = ? WHERE username = ? AND book_id = ? AND id = ?",
+                (idx, username, safe_book_id, safe_doc_id)
+            )
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        conn.execute(
+            "UPDATE books SET updated_at = ? WHERE username = ? AND id = ?",
+            (now, username, safe_book_id)
+        )
+        conn.commit()
+        return {"success": True, "updatedAt": now}
+    finally:
+        conn.close()
+
+
 # ── Get Document Content ───────────────────────────────────────────────────────
 @app.get("/api/books/{book_id}/documents/{doc_id}")
 async def get_document(request: Request, book_id: str, doc_id: str):
@@ -573,6 +611,17 @@ async def create_documents(request: Request, book_id: str):
                 (username, safe_book_id)
             )
 
+        # Problem: a batch append landed documents at 14, 16, 19, 23, 28, ...
+        #   instead of 14, 15, 16, ... — one 26-chapter import ended at 364.
+        # Root Cause: MAX(sort_order) was re-read on every iteration, so it
+        #   already counted the rows this same request had just inserted, and
+        #   the `+ idx` term then counted them a second time.
+        # Fix: read the append base once, before inserting anything.
+        max_order = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) as m FROM documents WHERE username = ? AND book_id = ?",
+            (username, safe_book_id)
+        ).fetchone()["m"]
+
         created_ids = []
         for idx, doc in enumerate(documents):
             doc_id = sanitize_id(doc.get("id", f"doc-{int(datetime.now().timestamp() * 1000)}-{idx}"), "docId")
@@ -581,15 +630,8 @@ async def create_documents(request: Request, book_id: str):
             doc_created = doc.get("createdAt", now)
             doc_updated = doc.get("updatedAt", now)
 
-            # Determine sort order
-            if replace_all:
-                sort_order = idx
-            else:
-                max_order = conn.execute(
-                    "SELECT COALESCE(MAX(sort_order), -1) as m FROM documents WHERE username = ? AND book_id = ?",
-                    (username, safe_book_id)
-                ).fetchone()["m"]
-                sort_order = max_order + 1 + idx
+            # replace_all wiped the table above, so the base is -1 either way.
+            sort_order = idx if replace_all else max_order + 1 + idx
 
             conn.execute(
                 "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, summary, summary_content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -635,40 +677,6 @@ async def delete_document_endpoint(request: Request, book_id: str, doc_id: str):
 
     delete_document_content(username, safe_book_id, safe_doc_id)
     return {"success": True, "updatedAt": now}
-
-
-# ── Reorder Documents ──────────────────────────────────────────────────────────
-@app.put("/api/books/{book_id}/documents/reorder")
-async def reorder_documents(request: Request, book_id: str):
-    username = get_authenticated_username(request)
-    safe_book_id = sanitize_id(book_id, "bookId")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
-
-    doc_ids = body.get("documentIds", [])
-    if not doc_ids:
-        raise HTTPException(status_code=400, detail="documentIds is required.")
-
-    conn = get_db()
-    try:
-        for idx, doc_id in enumerate(doc_ids):
-            safe_doc_id = sanitize_id(doc_id, "docId")
-            conn.execute(
-                "UPDATE documents SET sort_order = ? WHERE username = ? AND book_id = ? AND id = ?",
-                (idx, username, safe_book_id, safe_doc_id)
-            )
-        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        conn.execute(
-            "UPDATE books SET updated_at = ? WHERE username = ? AND id = ?",
-            (now, username, safe_book_id)
-        )
-        conn.commit()
-        return {"success": True, "updatedAt": now}
-    finally:
-        conn.close()
 
 
 # ── Get Version Content ────────────────────────────────────────────────────────

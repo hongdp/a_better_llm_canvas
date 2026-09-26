@@ -1482,3 +1482,101 @@ def test_init_db_adds_user_state_to_an_existing_database(tmp_path, monkeypatch):
     finally:
         conn.close()
     assert "user_state" in tables
+
+
+# ==============================================================================
+# Document ordering regressions (found by a 27-chapter URL import, 2026-09-20)
+#
+# Two independent bugs let a batch import land chapters at 14, 16, 19, 23, ...
+# and left chapter reordering silently unsaved on the server:
+#   1. create_documents re-read MAX(sort_order) inside its insert loop.
+#   2. PUT /documents/reorder was registered AFTER PUT /documents/{doc_id}, so
+#      FastAPI matched the latter with doc_id="reorder" and 404'd.
+# The pre-existing reorder test calls the handler directly, which cannot see (2)
+# — the test below goes through the real ASGI router on purpose.
+# ==============================================================================
+
+def _seed_documents(book_id, username, doc_ids):
+    """Append documents to an already-seeded book, numbered from 0."""
+    conn = server_db.get_db()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        for idx, doc_id in enumerate(doc_ids):
+            conn.execute(
+                "INSERT OR REPLACE INTO documents"
+                " (id, username, book_id, title, sort_order, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, username, book_id, f"Chapter {idx + 1}", idx, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _sort_orders(book_id="book-1", username="alice"):
+    conn = server_db.get_db()
+    try:
+        return [(r["id"], r["sort_order"]) for r in conn.execute(
+            "SELECT id, sort_order FROM documents WHERE username = ? AND book_id = ?"
+            " ORDER BY sort_order", (username, book_id)).fetchall()]
+    finally:
+        conn.close()
+
+
+def test_reorder_route_is_not_shadowed_by_the_document_id_route(tmp_path, monkeypatch):
+    """PUT /documents/reorder must reach reorder_documents through the real
+    router. Registered after /documents/{doc_id} it was captured as a document
+    id and 404'd, and the client swallows a non-OK response — so chapter
+    reordering looked fine locally and never persisted."""
+    from fastapi.testclient import TestClient
+
+    _seed_book(tmp_path, monkeypatch)
+    _seed_documents("book-1", "alice", ["doc-1", "doc-2", "doc-3"])
+
+    client = TestClient(api_server.app)
+    client.cookies.update({"web_canvas_session": "sess-1", "csrf_token": "tok-1"})
+    res = client.put(
+        "/api/books/book-1/documents/reorder",
+        json={"documentIds": ["doc-3", "doc-1", "doc-2"]},
+        headers={"x-csrf-token": "tok-1"},
+    )
+
+    assert res.status_code == 200, f"reorder route did not resolve: {res.status_code} {res.text}"
+    assert res.json()["success"] is True
+    assert _sort_orders() == [("doc-3", 0), ("doc-1", 1), ("doc-2", 2)]
+
+
+def test_batch_append_assigns_contiguous_sort_orders(tmp_path, monkeypatch):
+    """A batch append continues the existing numbering one step at a time."""
+    make_request = _seed_book(tmp_path, monkeypatch)
+    _seed_documents("book-1", "alice", ["doc-1", "doc-2"])
+    monkeypatch.setattr(api_server, "save_document_content", lambda *a: None)
+
+    body = {"documents": [
+        {"id": f"doc-new-{n}", "title": f"Chapter {n}", "content": "<h1>x</h1>"}
+        for n in range(3)
+    ]}
+    result = asyncio.run(api_server.create_documents(
+        make_request("POST", "/api/books/book-1/documents", body), "book-1"))
+
+    assert result["success"] is True
+    assert _sort_orders() == [
+        ("doc-1", 0), ("doc-2", 1),
+        ("doc-new-0", 2), ("doc-new-1", 3), ("doc-new-2", 4),
+    ]
+
+
+def test_replace_all_numbers_documents_from_zero(tmp_path, monkeypatch):
+    """replaceAll still restarts numbering at 0 after the hoisted base query."""
+    make_request = _seed_book(tmp_path, monkeypatch)
+    _seed_documents("book-1", "alice", ["doc-1", "doc-2", "doc-3"])
+    monkeypatch.setattr(api_server, "save_document_content", lambda *a: None)
+    monkeypatch.setattr(api_server, "delete_document_content", lambda *a: None)
+
+    body = {"replaceAll": True, "documents": [
+        {"id": f"doc-fresh-{n}", "title": f"Chapter {n}", "content": "<h1>x</h1>"}
+        for n in range(2)
+    ]}
+    asyncio.run(api_server.create_documents(
+        make_request("POST", "/api/books/book-1/documents", body), "book-1"))
+
+    assert _sort_orders() == [("doc-fresh-0", 0), ("doc-fresh-1", 1)]
