@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { Editor } from '@tiptap/react'
 import { useAppStore } from '../store/useAppStore'
 import { streamLLM, type LLMMessage } from '../services/llm'
-import { findResumableJob, resumeRemoteGeneration, abortRemoteGeneration, clearPersistedJob as clearPersistedGenerationJob } from '../services/remoteGeneration'
+import { findResumableJob, findJobsForBubbles, resumeRemoteGeneration, abortRemoteGeneration, type PersistedGenerationJob } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
 import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
@@ -22,7 +22,7 @@ import {
 } from '../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, MAX_NO_ACTION_RETRIES, relocateResumedSelection, NO_ACTION_RETRY_INSTRUCTION, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
 import {
@@ -50,8 +50,10 @@ export type { WholeBookConsentRequest, WholeBookConsentChoice }
 // Per-chapter cap in the ledger. Mirrors the reference-doc cap the renderer
 // applies, so the planner's cost arithmetic matches the bytes actually sent.
 const MAX_LEDGER_DOC_CHARS = 20_000
-// A rejoined stream that produces nothing within this window is treated as
-// dead (expired job, restarted server) rather than left spinning.
+// How long a rejoin may take to ATTACH — to hear anything at all from the
+// stream, the server's immediate `attached` frame included. It is not a bound
+// on the model: grok-4.6 was measured at 230s to its first token, and a bound
+// on "first text" aborted every rejoin of a turn that was merely thinking.
 const REJOIN_FIRST_EVENT_TIMEOUT_MS = 20_000
 
 /**
@@ -99,24 +101,47 @@ const waitForMessage = (messageId: string, timeoutMs = 15_000) =>
   waitForStore(state => state.messages.some(m => m.id === messageId), timeoutMs)
 
 /**
- * A turn whose page died before the model answered leaves its bubble on the
- * placeholder forever: the rejoin only revives bubbles whose job still exists,
- * and every other path that clears it died with the tab. Rewrite them once,
- * on load, so a dead turn cannot pass for one in progress.
+ * Settle every bubble that never received its reply — by asking the server,
+ * which is the only party that knows whether a job can still fill it.
+ *
+ * Problem: this used to retire every placeholder whenever THIS browser held no
+ *   job record. The record is one localStorage slot on one origin, so a turn
+ *   sent from another device (or over the LAN address instead of localhost, or
+ *   followed by any other generation) had none — and was declared
+ *   "Interrupted" while its job was running, the reply then arriving nowhere.
+ *   A failed lookup was read the same way: "could not ask" became "no job".
+ * Fix: a bubble is retired only on the server's word. One the server still has
+ *   a job for is handed back to be rejoined; when the server cannot be asked,
+ *   nothing is touched and the next load asks again.
+ *
+ * Costs nothing in the common case: no unfinished bubble, no request.
  */
-async function markInterruptedPlaceholders(): Promise<void> {
+async function reconcileUnfinishedBubbles(): Promise<PersistedGenerationJob | null> {
   // The history arrives with the server sync, typically after this runs.
   await waitForStore(state => state.messages.length > 0, 15_000)
   const s = useAppStore.getState()
-  const staleIds = new Set(
-    s.messages.filter(m => m.role === 'assistant' && m.content === ASSISTANT_PLACEHOLDER).map(m => m.id)
+  const unfinished = s.messages.filter(m => m.role === 'assistant' && isUnfinishedBubble(m.content))
+  if (unfinished.length === 0) return null
+
+  const lookup = await findJobsForBubbles(unfinished.map(m => m.id), s.activeBookId)
+  if (!lookup.known) return null
+
+  // No job anywhere: the turn is dead, and must not pass for one in progress.
+  const orphaned = new Set(
+    unfinished.filter(m => !lookup.jobs.has(m.id) && m.content !== INTERRUPTED_NOTICE).map(m => m.id)
   )
-  if (staleIds.size === 0) return
-  s.setMessages(s.messages.map(m =>
-    staleIds.has(m.id)
-      ? { ...m, content: '⚠️ Interrupted before the model replied (the page reloaded). Send again to retry.' }
-      : m
-  ))
+  if (orphaned.size > 0) {
+    const latest = useAppStore.getState()
+    latest.setMessages(latest.messages.map(m => orphaned.has(m.id) ? { ...m, content: INTERRUPTED_NOTICE } : m))
+  }
+
+  // One reader at a time, so the newest claimed bubble wins; an older one
+  // keeps its job on the server and is picked up by a later load.
+  const claimed = unfinished.filter(m => lookup.jobs.has(m.id))
+  const target = claimed[claimed.length - 1]
+  const job = target && lookup.jobs.get(target.id)
+  if (!target || !job) return null
+  return { jobId: job.jobId, meta: { ...(job.meta || {}), assistantMessageId: target.id }, offset: 0 }
 }
 
 interface UseChatLLMProps {
@@ -915,15 +940,18 @@ export function useChatLLM({
     rejoinAttemptedRef.current = true
 
     void (async () => {
-      // Cheap short-circuit: no persisted job means no network call at all.
-      const job = await findResumableJob()
-      if (!job) return void markInterruptedPlaceholders()
+      // The record in this browser is the fast path: it names the job without
+      // waiting for the history. Only chat jobs stream into a bubble; anything
+      // else is left alone to expire on its own retention timer.
+      let job = await findResumableJob()
+      if (job && ((job.meta.kind && job.meta.kind !== 'chat') || !job.meta.assistantMessageId)) job = null
+      // No usable record HERE says nothing about the server — ask it before
+      // declaring any turn dead (see reconcileUnfinishedBubbles).
+      if (!job) job = await reconcileUnfinishedBubbles()
+      if (!job) return
 
       const assistantMsgId = job.meta.assistantMessageId
-      // Only chat jobs stream into a bubble. Anything else is left alone to
-      // expire on its own retention timer.
-      if (job.meta.kind && job.meta.kind !== 'chat') return void markInterruptedPlaceholders()
-      if (!assistantMsgId) return void markInterruptedPlaceholders()
+      if (!assistantMsgId) return
       // The chat history arrives with the server sync, which typically lands
       // AFTER this effect runs — waiting for the bubble is what makes the
       // rejoin work on a cold reload rather than only on a warm remount.
@@ -967,9 +995,23 @@ export function useChatLLM({
       // Watchdog: if the job is gone or the stream never produces an event,
       // the UI must not sit on "generating" forever. Any terminal callback
       // clears this; firing it aborts the reader so the finally below runs.
+      //
+      // Problem: only onChunk/onDone/onError counted as an event. A rejoined
+      //   turn that was still reasoning delivers `attached` and `reasoning`
+      //   frames and nothing else — for minutes — so the watchdog aborted a
+      //   perfectly live stream at 20s. The abort then reached onError as an
+      //   AbortError, which reports a USER stop: the bubble read "Stopped."
+      //   for a job nobody stopped, that went on to finish (9406 chars,
+      //   measured) with no reader left to render it.
+      // Fix: every frame is a sign of life, and an abort this watchdog caused
+      //   is reported as what it is (see onError below).
       let sawEvent = false
+      let watchdogFired = false
+      const alive = () => { sawEvent = true }
       const watchdog = window.setTimeout(() => {
-        if (!sawEvent) abortControllerRef.current?.abort()
+        if (sawEvent) return
+        watchdogFired = true
+        abortControllerRef.current?.abort()
       }, REJOIN_FIRST_EVENT_TIMEOUT_MS)
 
       // Re-attach from 0 rather than from the persisted offset: the render
@@ -999,10 +1041,31 @@ export function useChatLLM({
           // the same mistake the debug wrapper in llm.ts made with the same
           // consequence.
           ...baseCallbacks,
-          onChunk: (chunk) => { sawEvent = true; baseCallbacks.onChunk(chunk) },
-          onDone: (text, usage) => { sawEvent = true; baseCallbacks.onDone(text, usage) },
-          onError: (err) => { sawEvent = true; baseCallbacks.onError(err) }
-        }, abortControllerRef.current.signal)
+          onAttached: () => { alive() },
+          onReasoning: (text) => { alive(); baseCallbacks.onReasoning?.(text) },
+          onToolCallDelta: (delta) => { alive(); baseCallbacks.onToolCallDelta?.(delta) },
+          onChunk: (chunk) => { alive(); baseCallbacks.onChunk(chunk) },
+          onDone: (text, usage) => { alive(); baseCallbacks.onDone(text, usage) },
+          onError: (err) => {
+            if (watchdogFired) {
+              // Our abort, not the user's: baseCallbacks.onError would call it
+              // "Stopped" and commit a draft. The job record is left in place
+              // (the transport keeps it on any non-terminal exit), so the next
+              // load attaches again instead of finding nothing.
+              useAppStore.getState().setStreaming(false)
+              useAppStore.setState((st) => ({
+                messages: st.messages.map(m =>
+                  m.id === assistantMsgId && isUnfinishedBubble(m.content)
+                    ? { ...m, content: RECONNECT_FAILED_NOTICE }
+                    : m
+                )
+              }))
+              return
+            }
+            alive()
+            baseCallbacks.onError(err)
+          }
+        }, abortControllerRef.current.signal, job.meta)
       } catch (e) {
         // Problem: setStreaming(true) sat before an unguarded await. When the
         //   job had expired (or the server restarted, or the stream 404'd),
@@ -1013,12 +1076,15 @@ export function useChatLLM({
         console.warn('[Rejoin] could not resume generation', message)
         useAppStore.setState((st) => ({
           messages: st.messages.map(m =>
-            m.id === assistantMsgId && (!m.content || m.content === 'Thinking...')
-              ? { ...m, content: '⚠️ The generation could not be resumed after the page reloaded — it may have finished or expired on the server. Please resend if the reply is missing.' }
+            m.id === assistantMsgId && (!m.content || isUnfinishedBubble(m.content))
+              ? { ...m, content: RECONNECT_FAILED_NOTICE }
               : m
           )
         }))
-        clearPersistedGenerationJob()
+        // The job record is deliberately NOT cleared. This used to throw the
+        // way back away on any failure, including ones the job survived; the
+        // next load validates the record against the server and forgets it
+        // only once the job is really gone.
       } finally {
         window.clearTimeout(watchdog)
         // The terminal callbacks normally clear this; do it unconditionally so

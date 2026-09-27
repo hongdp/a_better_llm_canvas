@@ -13,6 +13,7 @@ import {
   resumeRemoteGeneration,
   abortRemoteGeneration,
   findResumableJob,
+  findJobsForBubbles,
   readPersistedJob,
   clearPersistedJob,
   RemoteStartError
@@ -256,6 +257,83 @@ describe('startRemoteGeneration', () => {
     expect(rec.done[0].text).toBe('Hello')
   })
 
+  it('re-attaches when the connection dies by throwing, not only by ending', async () => {
+    // A thawed mobile tab finds its socket gone: read() rejects. That used to
+    // go straight to onError — reverting the document and showing an error
+    // for a job that was still generating.
+    const streamCalls: string[] = []
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-thaw' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamCalls.push(url)
+        if (streamCalls.length > 1) {
+          return streamingResponse(sse([{ type: 'delta', text: 'lo', offset: 5 }, { type: 'done', offset: 5 }]))
+        }
+        let reads = 0
+        const encoder = new TextEncoder()
+        return {
+          ok: true, status: 200, statusText: 'OK',
+          body: { getReader: () => ({
+            read: async () => {
+              if (reads++ === 0) return { value: encoder.encode(sse([{ type: 'delta', text: 'Hel', offset: 3 }])[0]), done: false }
+              throw new TypeError('network error')
+            }
+          }) }
+        } as unknown as Response
+      }
+    ]
+    const rec = recorder()
+
+    await startRemoteGeneration(messages, config, {}, rec.callbacks)
+
+    expect(streamCalls[1]).toContain('from=3')
+    expect(rec.errors).toEqual([])
+    expect(rec.done[0].text).toBe('Hello')
+  })
+
+  it('does not re-ask a stream the server refused', async () => {
+    // 404 means the job is gone; asking again only asks twice.
+    let streamAttempts = 0
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-404' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamAttempts++
+        return jsonResponse({ detail: 'Generation job not found.' }, false, 404)
+      }
+    ]
+    const rec = recorder()
+
+    await startRemoteGeneration(messages, config, {}, rec.callbacks)
+
+    expect(streamAttempts).toBe(1)
+    expect(rec.errors[0]).toContain('404')
+  })
+
+  it('does not re-attach a stream the caller aborted', async () => {
+    // Stop must stop: the re-attach is for connections that died on their own.
+    let streamAttempts = 0
+    const controller = new AbortController()
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-stop' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamAttempts++
+        controller.abort()
+        const err = new Error('The operation was aborted.')
+        err.name = 'AbortError'
+        throw err
+      }
+    ]
+    const rec = recorder()
+
+    await startRemoteGeneration(messages, config, {}, rec.callbacks, controller.signal)
+
+    expect(streamAttempts).toBe(1)
+    expect(rec.errors).toEqual(['The operation was aborted.'])
+  })
+
   it('gives up after the single re-attach when the job is really gone', async () => {
     let streamAttempts = 0
     routes = [
@@ -423,6 +501,92 @@ describe('resumeRemoteGeneration', () => {
   })
 })
 
+describe('adopting a job this browser holds no record of', () => {
+  it('writes a record from the adopted meta so Stop and the next reload can find it', async () => {
+    routes = [url => url.includes('/stream')
+      ? streamingResponse(sse([{ type: 'delta', text: 'Hi', offset: 2 }]))   // still running
+      : undefined]
+    const rec = recorder()
+
+    await resumeRemoteGeneration('gen-adopt', 0, rec.callbacks, undefined, { assistantMessageId: 'a-9', kind: 'chat' })
+
+    expect(readPersistedJob()).toEqual({ jobId: 'gen-adopt', meta: { assistantMessageId: 'a-9', kind: 'chat' }, offset: 2 })
+  })
+})
+
+describe('findJobsForBubbles', () => {
+  const active = (jobs: unknown[]): Route => url => url.endsWith('/api/generate/active') ? jsonResponse(jobs) : undefined
+
+  it('finds the job behind a bubble with no local record at all', async () => {
+    // The turn was sent from another device (or another origin): localStorage
+    // here is empty, and the server is the only one who knows.
+    routes = [active([
+      { jobId: 'gen-a', status: 'running', length: 0, createdAt: '2026-09-21T06:09:57Z',
+        meta: { assistantMessageId: 'a-1', bookId: 'book-1', kind: 'chat' } }
+    ])]
+
+    const found = await findJobsForBubbles(['a-1'], 'book-1')
+
+    expect(found.known).toBe(true)
+    expect(found.known && found.jobs.get('a-1')?.jobId).toBe('gen-a')
+    expect(readPersistedJob()).toBeNull()   // looking is not adopting
+  })
+
+  it('takes the newest job when a retry re-issued the turn into the same bubble', async () => {
+    routes = [active([
+      { jobId: 'gen-old', status: 'done', createdAt: '2026-09-21T06:00:00Z', meta: { assistantMessageId: 'a-1' } },
+      { jobId: 'gen-new', status: 'running', createdAt: '2026-09-21T06:05:00Z', meta: { assistantMessageId: 'a-1' } }
+    ])]
+
+    const found = await findJobsForBubbles(['a-1'])
+    expect(found.known && found.jobs.get('a-1')?.jobId).toBe('gen-new')
+  })
+
+  it('ignores jobs for other bubbles, other books, and non-chat kinds', async () => {
+    routes = [active([
+      { jobId: 'gen-other-bubble', status: 'running', meta: { assistantMessageId: 'a-2' } },
+      { jobId: 'gen-other-book', status: 'running', meta: { assistantMessageId: 'a-1', bookId: 'book-2' } },
+      { jobId: 'gen-roleplay', status: 'running', meta: { assistantMessageId: 'a-1', kind: 'roleplay' } }
+    ])]
+
+    const found = await findJobsForBubbles(['a-1'], 'book-1')
+    expect(found.known && found.jobs.size).toBe(0)
+  })
+
+  it('offers a finished or failed job too — its replay beats a guess', async () => {
+    routes = [active([
+      { jobId: 'gen-done', status: 'done', length: 9406, meta: { assistantMessageId: 'a-1' } },
+      { jobId: 'gen-err', status: 'error', length: 0, meta: { assistantMessageId: 'a-2' } }
+    ])]
+
+    const found = await findJobsForBubbles(['a-1', 'a-2'])
+    expect(found.known && [...found.jobs.keys()].sort()).toEqual(['a-1', 'a-2'])
+  })
+
+  it('says "unknown", not "none", when the server cannot be asked', async () => {
+    routes = [url => url.endsWith('/api/generate/active') ? jsonResponse({}, false, 503) : undefined]
+    expect(await findJobsForBubbles(['a-1'])).toEqual({ known: false })
+
+    routes = []   // fetch itself rejects: the network is down
+    expect(await findJobsForBubbles(['a-1'])).toEqual({ known: false })
+  })
+
+  it('treats a logged-out session as a definite "no jobs"', async () => {
+    // Nothing can be running remotely for this browser, so a dead placeholder
+    // from the direct transport may still be retired.
+    routes = [url => url.endsWith('/api/generate/active') ? jsonResponse({}, false, 401) : undefined]
+
+    const found = await findJobsForBubbles(['a-1'])
+    expect(found.known && found.jobs.size).toBe(0)
+  })
+
+  it('makes no request when there is nothing to look up', async () => {
+    const found = await findJobsForBubbles([])
+    expect(found.known).toBe(true)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('findResumableJob', () => {
   const persist = (offset: number) =>
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ jobId: 'gen-7', meta: { assistantMessageId: 'a-7' }, offset }))
@@ -445,14 +609,19 @@ describe('findResumableJob', () => {
     expect((await findResumableJob())?.offset).toBe(4)
   })
 
-  it('forgets a finished job that was fully rendered', async () => {
+  it('resumes a finished job even when every character was already rendered', async () => {
+    // The record is cleared by the terminal event, BEFORE the completion path
+    // runs. One that survived proves this client never completed the turn: no
+    // document edit applied, no final bubble. "Fully rendered" used to be
+    // forgotten here, which dropped a finished <canvas> rewrite whenever the
+    // tab died between the last chunk and `done`.
     persist(40)
     routes = [url => url.endsWith('/api/generate/active')
       ? jsonResponse([{ jobId: 'gen-7', status: 'done', length: 40 }])
       : undefined]
 
-    expect(await findResumableJob()).toBeNull()
-    expect(readPersistedJob()).toBeNull()
+    expect((await findResumableJob())?.jobId).toBe('gen-7')
+    expect(readPersistedJob()?.jobId).toBe('gen-7')
   })
 
   it('forgets a job the server no longer knows about', async () => {

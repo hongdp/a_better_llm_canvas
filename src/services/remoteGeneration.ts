@@ -66,6 +66,18 @@ export class RemoteStartError extends Error {
   }
 }
 
+/**
+ * The stream endpoint ANSWERED, and the answer was no (404: the job is gone,
+ * 401: the session is). Kept apart from a transport failure because only the
+ * latter is worth a re-attach — retrying a refusal just asks twice.
+ */
+class StreamRefusedError extends Error {
+  constructor(status: number, statusText: string) {
+    super(`Generation stream failed (${status}): ${statusText}`)
+    this.name = 'StreamRefusedError'
+  }
+}
+
 // The job this tab is currently reading. Module-level (single owner) so the
 // stop button can abort it without threading the id through the UI.
 let activeJobId: string | null = null
@@ -152,7 +164,7 @@ async function attachToJob(
       { signal }
     )
     if (!response.ok) {
-      throw new Error(`Generation stream failed (${response.status}): ${response.statusText}`)
+      throw new StreamRefusedError(response.status, response.statusText)
     }
 
     await readSSEDataLines(response, (dataString) => {
@@ -231,9 +243,20 @@ async function attachToJob(
       callbacks.onError(new Error('Generation stream disconnected before completion'))
     }
   } catch (error) {
-    if (!terminal) {
-      callbacks.onError(error instanceof Error ? error : new Error(String(error)))
+    if (terminal) return
+    // Problem: a connection that died by THROWING (a thawed mobile tab finds
+    //   its socket gone: "network error") went straight to onError, while one
+    //   that died by ENDING got a re-attach. Same event, opposite outcomes —
+    //   and the throwing kind reverted the document and showed an error for a
+    //   job that was still generating on the server.
+    // Fix: both take the re-attach. Not when the caller aborted (Stop must
+    //   stop), and not when the server refused (a 404 will 404 again).
+    const retryable = !signal?.aborted && !(error instanceof StreamRefusedError)
+    if (retryable && reconnectsLeft > 0) {
+      await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
+      return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText)
     }
+    callbacks.onError(error instanceof Error ? error : new Error(String(error)))
   }
 }
 
@@ -317,15 +340,18 @@ export async function resumeRemoteGeneration(
   jobId: string,
   fromOffset: number,
   callbacks: StreamCallbacks,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Job description for a job found on the server rather than in localStorage. */
+  adoptedMeta?: RemoteJobMeta
 ): Promise<void> {
   activeJobId = jobId
   const persisted = readPersistedJob()
   // Keep the record in sync so the offset keeps advancing from the right base
-  // even when the resume was driven by a caller-supplied offset.
+  // even when the resume was driven by a caller-supplied offset. An adopted
+  // job gets a record of its own here, so Stop and the next reload can find it.
   writePersistedJob({
     jobId,
-    meta: persisted?.jobId === jobId ? persisted.meta : {},
+    meta: persisted?.jobId === jobId ? persisted.meta : (adoptedMeta ?? {}),
     offset: fromOffset
   })
   await attachToJob(jobId, fromOffset, callbacks, signal)
@@ -370,11 +396,14 @@ export async function fetchActiveGenerations(): Promise<RemoteJobInfo[]> {
 /**
  * Decide whether the persisted job is still worth re-attaching to.
  *
- * Resumable when it is still `running`, or when it finished inside the
- * retention window with a buffer longer than what this client rendered (the
- * tab died between the last chunk and the terminal event). Anything else is
- * forgotten. A failed lookup leaves the record alone — the backend may just
- * be starting up.
+ * Resumable whenever the server still has it — running or finished. The record
+ * is cleared by the terminal event and BEFORE the completion path runs (see
+ * attachToJob), so a record that survived proves this client never completed
+ * the turn: no document edit applied, no final bubble, no usage. That holds
+ * even when every character had already been rendered; "fully rendered" used
+ * to be forgotten here, which dropped a finished <canvas> rewrite whenever the
+ * tab died between the last chunk and the `done` event. A failed lookup leaves
+ * the record alone — the backend may just be starting up.
  */
 export async function findResumableJob(): Promise<PersistedGenerationJob | null> {
   const persisted = readPersistedJob()
@@ -394,15 +423,67 @@ export async function findResumableJob(): Promise<PersistedGenerationJob | null>
     return null
   }
 
-  const hasUnrenderedText = typeof job.length === 'number' && job.length > persisted.offset
-  if (job.status !== 'running' && !hasUnrenderedText) {
-    clearPersistedJob()
-    return null
-  }
-
   return {
     jobId: job.jobId,
     meta: persisted.meta && Object.keys(persisted.meta).length > 0 ? persisted.meta : (job.meta || {}),
     offset: persisted.offset
   }
+}
+
+/**
+ * What the server knows about the jobs behind a set of chat bubbles.
+ * `known: false` means the question could not be asked — NOT that the answer
+ * was "nothing": callers must not retire a bubble on it.
+ */
+export type BubbleJobLookup =
+  | { known: false }
+  | { known: true; jobs: Map<string, RemoteJobInfo> }
+
+/**
+ * Find the job that can still fill each of these assistant bubbles, keyed by
+ * message id.
+ *
+ * The localStorage record is a hint, not the truth: it lives in ONE browser on
+ * ONE origin, in a single slot any other generation overwrites. A turn sent
+ * from the desktop and opened on the phone — or over the LAN address instead
+ * of localhost — has no record at all, and used to be declared "Interrupted"
+ * while its job was running. The server echoes `meta.assistantMessageId` for
+ * every job it holds, which is enough to find the way back without one.
+ *
+ * Any status qualifies: a finished job replays its answer, an errored one its
+ * real error — both better than a guess. The no-action retry re-issues a turn
+ * into the SAME bubble, so the newest job per bubble wins.
+ */
+export async function findJobsForBubbles(messageIds: string[], bookId?: string | null): Promise<BubbleJobLookup> {
+  if (messageIds.length === 0) return { known: true, jobs: new Map() }
+
+  let listed: RemoteJobInfo[]
+  try {
+    const response = await fetch('/api/generate/active')
+    if (response.status === 401 || response.status === 403) {
+      // Logged out: nothing can be running remotely for this browser, so the
+      // answer is a definite "no jobs" and dead placeholders may be retired.
+      return { known: true, jobs: new Map() }
+    }
+    if (!response.ok) return { known: false }
+    const data = await response.json()
+    listed = Array.isArray(data) ? (data as RemoteJobInfo[]) : []
+  } catch {
+    return { known: false }
+  }
+
+  const wanted = new Set(messageIds)
+  const jobs = new Map<string, RemoteJobInfo>()
+  for (const job of listed) {
+    const meta = job.meta || {}
+    const messageId = meta.assistantMessageId
+    if (!messageId || !wanted.has(messageId)) continue
+    if (meta.kind && meta.kind !== 'chat') continue
+    // Message ids are timestamps, unique per account in practice — but a job
+    // that names another book is not this bubble's job.
+    if (bookId && meta.bookId && meta.bookId !== bookId) continue
+    const current = jobs.get(messageId)
+    if (!current || (job.createdAt || '') > (current.createdAt || '')) jobs.set(messageId, job)
+  }
+  return { known: true, jobs }
 }

@@ -643,6 +643,9 @@ def test_generation_finished_jobs_expire_after_retention_window():
 
     fresh.finish("done")
     stale.finish("done")
+    # The short window applies to results somebody has received; an unread one
+    # is kept far longer (see the undelivered-result tests below).
+    stale.result_delivered = True
     stale.finished_at -= server_generation.FINISHED_JOB_TTL_SECONDS + 1
 
     server_generation.registry.prune()
@@ -689,6 +692,101 @@ def test_generation_never_evicts_a_running_job():
     assert finished.job_id not in ids
     assert extra.job_id in ids
     assert all(j.job_id in ids for j in running[1:])
+
+
+# ── Undelivered results ───────────────────────────────────────────────────────
+# A job whose only reader was gone when it finished (phone locked, tab
+# discarded) used to be deleted ten minutes later, read or not: the tokens were
+# spent and the reply existed nowhere. Retention now asks whether the result
+# ever reached a reader, not only when the job finished.
+
+def test_generation_keeps_an_unread_result_past_the_short_window():
+    reg = server_generation.registry
+    unread = reg.create("alice", {})
+    unread.finish("done")
+    unread.finished_at -= server_generation.FINISHED_JOB_TTL_SECONDS + 1
+
+    reg.prune()
+    assert unread.job_id in {j.job_id for j in reg.list_for_user("alice")}
+
+    # ...but not forever: memory is bounded in time as well as by the cap.
+    unread.finished_at -= server_generation.UNDELIVERED_JOB_TTL_SECONDS
+    reg.prune()
+    assert unread.job_id not in {j.job_id for j in reg.list_for_user("alice")}
+
+
+def test_generation_marks_a_result_delivered_once_a_reader_gets_the_terminal_event():
+    async def scenario():
+        replayed = server_generation.registry.create("alice", {})
+        replayed.append("answer")
+        replayed.finish("done")
+        assert replayed.result_delivered is False
+        _ = [ev async for ev in server_generation._job_event_stream(replayed, 0)]
+
+        live = server_generation.registry.create("alice", {})
+        stream = server_generation._job_event_stream(live, 0)
+        await anext(stream)                      # attached
+        live.append("answer")
+        live.finish("done")
+        _ = [ev async for ev in stream]          # delta + terminal, read to the end
+        return replayed, live
+
+    replayed, live = asyncio.run(scenario())
+    assert replayed.result_delivered is True     # replay of a finished job
+    assert live.result_delivered is True         # terminal event seen live
+    assert live.summary()["delivered"] is True
+
+
+def test_generation_reader_that_leaves_early_does_not_count_as_delivery():
+    """The flag is set on the line after the terminal yield, which a vanished
+    reader never reaches — its generator is closed AT the yield."""
+    async def scenario():
+        job = server_generation.registry.create("alice", {})
+        stream = server_generation._job_event_stream(job, 0)
+        await anext(stream)                      # attached
+        job.append("half an ans")
+        await anext(stream)                      # the delta
+        await stream.aclose()                    # tab discarded mid-turn
+        job.append("wer")
+        job.finish("done")                       # finishes with nobody reading
+        return job
+
+    job = asyncio.run(scenario())
+    assert job.status == "done"
+    assert job.result_delivered is False
+    assert job.summary()["delivered"] is False
+
+
+def test_generation_abort_does_not_leave_an_unread_result_behind():
+    """Stop drops the reader before the terminal event exists, so no reader
+    ever receives it — yet the result was discarded on purpose and must not be
+    kept a day as unread."""
+    job = _new_job()
+    job.append("partial")
+    job.abort()
+    assert job.result_delivered is True
+
+
+def test_generation_evicts_delivered_results_before_unread_ones():
+    reg = server_generation.registry
+    base = server_generation._monotonic()
+
+    unread = reg.create("alice", {"n": "unread"})
+    unread.finish("done")
+    unread.finished_at = base - 100              # the OLDEST finished job
+
+    for i in range(server_generation.MAX_JOBS_PER_USER - 1):
+        job = reg.create("alice", {"n": i})
+        job.finish("done")
+        job.result_delivered = True
+        job.finished_at = base + i * 0.001
+
+    reg.create("alice", {"n": "new"})            # pushes the user over the cap
+
+    ids = {j.job_id for j in reg.list_for_user("alice")}
+    assert len(ids) == server_generation.MAX_JOBS_PER_USER
+    # Age alone would have evicted it; a copy of the others exists on a client.
+    assert unread.job_id in ids
 
 
 # ── Per-user isolation ────────────────────────────────────────────────────────
@@ -1482,3 +1580,101 @@ def test_init_db_adds_user_state_to_an_existing_database(tmp_path, monkeypatch):
     finally:
         conn.close()
     assert "user_state" in tables
+
+
+# ==============================================================================
+# Document ordering regressions (found by a 27-chapter URL import, 2026-09-20)
+#
+# Two independent bugs let a batch import land chapters at 14, 16, 19, 23, ...
+# and left chapter reordering silently unsaved on the server:
+#   1. create_documents re-read MAX(sort_order) inside its insert loop.
+#   2. PUT /documents/reorder was registered AFTER PUT /documents/{doc_id}, so
+#      FastAPI matched the latter with doc_id="reorder" and 404'd.
+# The pre-existing reorder test calls the handler directly, which cannot see (2)
+# — the test below goes through the real ASGI router on purpose.
+# ==============================================================================
+
+def _seed_documents(book_id, username, doc_ids):
+    """Append documents to an already-seeded book, numbered from 0."""
+    conn = server_db.get_db()
+    try:
+        now = datetime.now(timezone.utc).isoformat()
+        for idx, doc_id in enumerate(doc_ids):
+            conn.execute(
+                "INSERT OR REPLACE INTO documents"
+                " (id, username, book_id, title, sort_order, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, username, book_id, f"Chapter {idx + 1}", idx, now, now))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _sort_orders(book_id="book-1", username="alice"):
+    conn = server_db.get_db()
+    try:
+        return [(r["id"], r["sort_order"]) for r in conn.execute(
+            "SELECT id, sort_order FROM documents WHERE username = ? AND book_id = ?"
+            " ORDER BY sort_order", (username, book_id)).fetchall()]
+    finally:
+        conn.close()
+
+
+def test_reorder_route_is_not_shadowed_by_the_document_id_route(tmp_path, monkeypatch):
+    """PUT /documents/reorder must reach reorder_documents through the real
+    router. Registered after /documents/{doc_id} it was captured as a document
+    id and 404'd, and the client swallows a non-OK response — so chapter
+    reordering looked fine locally and never persisted."""
+    from fastapi.testclient import TestClient
+
+    _seed_book(tmp_path, monkeypatch)
+    _seed_documents("book-1", "alice", ["doc-1", "doc-2", "doc-3"])
+
+    client = TestClient(api_server.app)
+    client.cookies.update({"web_canvas_session": "sess-1", "csrf_token": "tok-1"})
+    res = client.put(
+        "/api/books/book-1/documents/reorder",
+        json={"documentIds": ["doc-3", "doc-1", "doc-2"]},
+        headers={"x-csrf-token": "tok-1"},
+    )
+
+    assert res.status_code == 200, f"reorder route did not resolve: {res.status_code} {res.text}"
+    assert res.json()["success"] is True
+    assert _sort_orders() == [("doc-3", 0), ("doc-1", 1), ("doc-2", 2)]
+
+
+def test_batch_append_assigns_contiguous_sort_orders(tmp_path, monkeypatch):
+    """A batch append continues the existing numbering one step at a time."""
+    make_request = _seed_book(tmp_path, monkeypatch)
+    _seed_documents("book-1", "alice", ["doc-1", "doc-2"])
+    monkeypatch.setattr(api_server, "save_document_content", lambda *a: None)
+
+    body = {"documents": [
+        {"id": f"doc-new-{n}", "title": f"Chapter {n}", "content": "<h1>x</h1>"}
+        for n in range(3)
+    ]}
+    result = asyncio.run(api_server.create_documents(
+        make_request("POST", "/api/books/book-1/documents", body), "book-1"))
+
+    assert result["success"] is True
+    assert _sort_orders() == [
+        ("doc-1", 0), ("doc-2", 1),
+        ("doc-new-0", 2), ("doc-new-1", 3), ("doc-new-2", 4),
+    ]
+
+
+def test_replace_all_numbers_documents_from_zero(tmp_path, monkeypatch):
+    """replaceAll still restarts numbering at 0 after the hoisted base query."""
+    make_request = _seed_book(tmp_path, monkeypatch)
+    _seed_documents("book-1", "alice", ["doc-1", "doc-2", "doc-3"])
+    monkeypatch.setattr(api_server, "save_document_content", lambda *a: None)
+    monkeypatch.setattr(api_server, "delete_document_content", lambda *a: None)
+
+    body = {"replaceAll": True, "documents": [
+        {"id": f"doc-fresh-{n}", "title": f"Chapter {n}", "content": "<h1>x</h1>"}
+        for n in range(2)
+    ]}
+    asyncio.run(api_server.create_documents(
+        make_request("POST", "/api/books/book-1/documents", body), "book-1"))
+
+    assert _sort_orders() == [("doc-fresh-0", 0), ("doc-fresh-1", 1)]
