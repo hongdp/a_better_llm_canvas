@@ -150,6 +150,24 @@ describe('a selection rewrite with an edit beside it', () => {
     h.unmount(); editor.destroy()
   })
 
+  it('applies two continuity edits that land in the same paragraph', async () => {
+    // The second used to be refused: the first had marked that paragraph.
+    const { editor, selectedText } = setup()
+    const later = '<p>后面需要衔接的一句话。</p>'
+    responses.push({ chunks: [
+      `好的。\n<selection_replace>${SEL_NEW}</selection_replace>\n` +
+      editMarkup('后面需要', '后面已经') + '\n' + editMarkup('一句话。', '一个句子。') +
+      `\n<doc_status>updated</doc_status>`
+    ] })
+
+    const h = await send(editor, selectedText)
+
+    expect(accepted(stored())).toBe(normalize('<p>开头的一段话。</p>' + SEL_NEW + '<p>中间保持不变的一段。</p><p>后面已经衔接的一个句子。</p>'))
+    expect(stored()).not.toContain(later)
+    expect(bubble()).toBe('好的。')
+    h.unmount(); editor.destroy()
+  })
+
   it('applies both through the tool protocol (replace_selection + edit_document)', async () => {
     const { editor, selectedText } = setup()
     responses.push({

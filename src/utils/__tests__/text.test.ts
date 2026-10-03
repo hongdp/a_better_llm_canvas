@@ -583,10 +583,82 @@ describe('applyEditBlocksLocally', () => {
     expect(stripDiffMarkup(r.html)).toBe('<p>first added earlier</p><p>middle stays</p><p>the target sentence rewritten</p><p>last</p>')
   })
 
-  it('refuses an edit whose block already carries pending markup', () => {
-    // Diffing over markup would nest one diff inside another.
-    const doc = '<p>alpha <ins class="diff-addition">beta</ins> gamma delta</p>'
+  // A block that already carries a pending diff is diffed at the changed span.
+  // Refusing it outright skipped two ordinary cases: a continuity fix right
+  // after a selection that ended mid-paragraph, and a second fix in the same
+  // paragraph (user-reported: "1 suggested change could not be located").
+  it('applies an edit to unmarked text in a block that already carries a pending diff', () => {
+    const PENDING_INS = '<ins class="diff-addition">beta</ins>'
+    const doc = `<p>alpha ${PENDING_INS} gamma delta epsilon</p>`
     const r = applyEditBlocksLocally(doc, [{ search: 'gamma delta', replace: 'GAMMA DELTA' }])
+    expect(r.failed).toHaveLength(0)
+    expect(r.html.startsWith(`<p>alpha ${PENDING_INS} `)).toBe(true)   // pending diff byte-identical
+    expect(stripDiffMarkup(r.html)).toBe('<p>alpha beta GAMMA DELTA epsilon</p>')
+  })
+
+  it('applies two edits to the same paragraph', () => {
+    const doc = '<p>first spot here, the middle stays, second spot here.</p>'
+    const r = applyEditBlocksLocally(doc, [
+      { search: 'first spot here', replace: 'first spot changed' },
+      { search: 'second spot here', replace: 'second spot changed' }
+    ])
+    expect(r.failed).toHaveLength(0)
+    expect(stripDiffMarkup(r.html)).toBe('<p>first spot changed, the middle stays, second spot changed.</p>')
+  })
+
+  it('applies two edits to the same Chinese paragraph', () => {
+    // A whole-block diff marks the ENTIRE paragraph in Chinese (no word
+    // boundaries), so the second edit used to land inside the first's diff.
+    const doc = '<p>第一处还写着旧的，中间这句不动，第二处也还是旧的。</p>'
+    const r = applyEditBlocksLocally(doc, [
+      { search: '第一处还写着旧的', replace: '第一处改成新的' },
+      { search: '第二处也还是旧的', replace: '第二处也改好了' }
+    ])
+    expect(r.failed).toHaveLength(0)
+    expect(stripDiffMarkup(r.html)).toBe('<p>第一处改成新的，中间这句不动，第二处也改好了。</p>')
+    expect(r.html).toContain('中间这句不动')   // the untouched middle carries no markup
+  })
+
+  it('diffs Latin text in whole words, not mid-word', () => {
+    const r = applyEditBlocksLocally('<p>keep the word here please</p>', [{ search: 'here', replace: 'hear' }])
+    expect(stripDiffMarkup(r.html)).toBe('<p>keep the word hear please</p>')
+    expect(r.html).toMatch(/>here<\/del>/)
+    expect(r.html).toMatch(/>hear<\/ins>/)
+  })
+
+  it('refuses a change that overlaps pending markup', () => {
+    const doc = '<p>alpha <ins class="diff-addition">beta</ins> gamma</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'alpha <ins class="diff-addition">beta</ins> gamma', replace: 'alpha BETA gamma' }])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe(doc)
+  })
+
+  it('refuses a change inside a pending insertion — a diff nested in a diff', () => {
+    const doc = '<p>keep <ins class="diff-addition">brand new words here</ins> end</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'new words', replace: 'fresh words' }])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe(doc)
+  })
+
+  it('never cuts a tag apart', () => {
+    const doc = '<p><ins class="diff-addition">x</ins> keep <em>word</em> end</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: '<em>word</em>', replace: '<strong>word</strong>' }])
+    expect(r.failed).toHaveLength(0)
+    expect(stripDiffMarkup(r.html)).toBe('<p>x keep <strong>word</strong> end</p>')
+    expect(r.html).not.toMatch(/<(?:ins|del)[^>]*>[a-z]+>/)   // no "<del>em>" style fragments
+  })
+
+  it('never cuts an entity apart', () => {
+    const doc = '<p><ins class="diff-addition">x</ins> salt &amp; pepper</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'salt &amp; pepper', replace: 'salt &lt; pepper' }])
+    expect(r.failed).toHaveLength(0)
+    expect(stripDiffMarkup(r.html)).toBe('<p>x salt &lt; pepper</p>')
+    expect(r.html).not.toMatch(/&(?:<|[a-z]*<)/)   // no "&<del>amp" or "&am<ins>"
+  })
+
+  it('refuses a change that would split a paragraph carrying pending markup', () => {
+    const doc = '<p><ins class="diff-addition">x</ins> keep this. change this one.</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'change this one.', replace: 'one.</p><p>two.' }])
     expect(r.failed).toHaveLength(1)
     expect(r.html).toBe(doc)
   })
