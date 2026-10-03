@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, parseAssistantResponse, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
+import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, applyEditBlocksLocally, parseAssistantResponse, stripStrayDocumentMarkup, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
+import { stripDiffMarkup } from '../diff'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
 describe('getTimestampId', () => {
@@ -493,6 +494,137 @@ describe('applyEditBlocks', () => {
 })
 
 // ── parseAssistantResponse ────────────────────────────────────────────────────
+// ── a reply that uses more than one document channel ─────────────────────────
+// Reported: an <edit> written beside a <selection_replace> appeared raw in the
+// chat bubble, unapplied — the channels were exclusive, so everything around
+// the selection was treated as chat.
+describe('parseAssistantResponse — a selection rewrite with edits beside it', () => {
+  const SEL = '<selection_replace><p>new selection text</p></selection_replace>'
+  const EDIT = '<edit>\n<<<<<<< SEARCH\n<p>a later sentence</p>\n=======\n<p>a later sentence, smoothed</p>\n>>>>>>> REPLACE\n</edit>'
+
+  it('keeps the selection and parses the edit instead of leaving it in the chat', () => {
+    const r = parseAssistantResponse(`Done.\n${SEL}\n${EDIT}\n<doc_status>updated</doc_status>`)
+    expect(r.kind).toBe('selection')
+    expect(r.selectionText).toBe('<p>new selection text</p>')
+    expect(r.editBlocks).toEqual([{ search: '<p>a later sentence</p>', replace: '<p>a later sentence, smoothed</p>' }])
+    expect(r.chatText).toBe('Done.')
+    expect(r.strayMarkup).toBe(0)
+  })
+
+  it('also finds an edit placed before the selection block', () => {
+    const r = parseAssistantResponse(`Done.\n${EDIT}\n${SEL}`)
+    expect(r.kind).toBe('selection')
+    expect(r.editBlocks).toHaveLength(1)
+    expect(r.chatText).toBe('Done.')
+  })
+})
+
+describe('parseAssistantResponse — markup no channel took never reaches the chat', () => {
+  it('drops a canvas written beside a selection, and counts it', () => {
+    const r = parseAssistantResponse('Done.\n<selection_replace><p>x</p></selection_replace>\n<canvas><p>whole doc</p></canvas>')
+    expect(r.kind).toBe('selection')
+    expect(r.chatText).toBe('Done.')
+    expect(r.strayMarkup).toBe(1)
+  })
+
+  it('drops a canvas written beside edits, and counts it', () => {
+    const r = parseAssistantResponse('Ok.\n<edit>\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>\n<canvas><p>whole doc</p></canvas>')
+    expect(r.kind).toBe('edits')
+    expect(r.chatText).toBe('Ok.')
+    expect(r.strayMarkup).toBe(1)
+  })
+
+  it('drops an unterminated SEARCH block from a chat reply', () => {
+    const r = parseAssistantResponse('Here:\n<<<<<<< SEARCH\n<p>x</p>\n=======\n<p>y</p>')
+    expect(r.kind).toBe('chat')
+    expect(r.chatText).toBe('Here:')
+    expect(r.strayMarkup).toBe(1)
+  })
+
+  it('leaves an ordinary chat reply untouched', () => {
+    const r = parseAssistantResponse('Just talking about the plot, with 3 < 5 and a >>> arrow.')
+    expect(r.chatText).toBe('Just talking about the plot, with 3 < 5 and a >>> arrow.')
+    expect(r.strayMarkup).toBe(0)
+  })
+})
+
+describe('stripStrayDocumentMarkup', () => {
+  it('removes wrapped and bare edit blocks, canvas, a second selection, and lone tags', () => {
+    const text = [
+      'Before.',
+      '<edit>\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>',
+      '<<<<<<< SEARCH\n<p>c</p>\n=======\n<p>d</p>\n>>>>>>> REPLACE',
+      '<canvas><p>doc</p></canvas>',
+      '<selection_replace><p>sel</p></selection_replace>',
+      'After. </edit>'
+    ].join('\n')
+    const r = stripStrayDocumentMarkup(text)
+    expect(r.text).toBe('Before.\n\nAfter.')
+    expect(r.removed).toBe(4)
+  })
+
+  it('removes an unclosed canvas through the end of the text', () => {
+    expect(stripStrayDocumentMarkup('Intro\n<canvas><p>cut off')).toEqual({ text: 'Intro', removed: 1 })
+  })
+})
+
+// ── edits applied on top of a document that already carries pending diffs ───
+describe('applyEditBlocksLocally', () => {
+  const PENDING = '<p>first <ins class="diff-addition">added earlier</ins></p>'
+
+  it('marks only the block the edit changes and leaves pending diffs byte-identical', () => {
+    const head = PENDING + '<p>middle stays</p>'
+    const doc = head + '<p>the target sentence here</p><p>last</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: '<p>the target sentence here</p>', replace: '<p>the target sentence rewritten</p>' }])
+    expect(r.failed).toHaveLength(0)
+    expect(r.html.startsWith(head)).toBe(true)
+    expect(r.html.endsWith('<p>last</p>')).toBe(true)
+    expect(r.html.slice(head.length, r.html.length - '<p>last</p>'.length)).toMatch(/diff-(?:addition|deletion)/)
+    expect(stripDiffMarkup(r.html)).toBe('<p>first added earlier</p><p>middle stays</p><p>the target sentence rewritten</p><p>last</p>')
+  })
+
+  it('refuses an edit whose block already carries pending markup', () => {
+    // Diffing over markup would nest one diff inside another.
+    const doc = '<p>alpha <ins class="diff-addition">beta</ins> gamma delta</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'gamma delta', replace: 'GAMMA DELTA' }])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe(doc)
+  })
+
+  it('reports an edit it cannot locate and changes nothing', () => {
+    const doc = PENDING + '<p>real text</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: '<p>not in the document</p>', replace: '<p>x</p>' }])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe(doc)
+  })
+
+  it('applies several edits, each as its own local diff', () => {
+    const doc = '<p>one alpha</p><p>two</p><p>three gamma</p>'
+    const r = applyEditBlocksLocally(doc, [
+      { search: '<p>one alpha</p>', replace: '<p>one ALPHA</p>' },
+      { search: '<p>three gamma</p>', replace: '<p>three GAMMA</p>' }
+    ])
+    expect(r.failed).toHaveLength(0)
+    expect(r.html).toContain('<p>two</p>')
+    expect(stripDiffMarkup(r.html)).toBe('<p>one ALPHA</p><p>two</p><p>three GAMMA</p>')
+  })
+
+  it('handles a pure insertion and a deletion', () => {
+    const ins = applyEditBlocksLocally('<p>a</p><p>b</p>', [{ search: '<p>a</p>', replace: '<p>a</p><p>inserted</p>' }])
+    expect(stripDiffMarkup(ins.html)).toBe('<p>a</p><p>inserted</p><p>b</p>')
+    const del = applyEditBlocksLocally('<p>a</p><p>gone</p><p>b</p>', [{ search: '<p>gone</p>', replace: '' }])
+    expect(stripDiffMarkup(del.html)).toBe('<p>a</p><p>b</p>')
+  })
+
+  it('treats a list as one node, so a change inside it stays balanced', () => {
+    const doc = '<ul><li><p>one</p></li><li><p>two item</p></li></ul><p>after</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: '<p>two item</p>', replace: '<p>two items</p>' }])
+    expect(r.failed).toHaveLength(0)
+    expect(r.html.endsWith('<p>after</p>')).toBe(true)
+    expect(stripDiffMarkup(r.html)).toBe('<ul><li><p>one</p></li><li><p>two items</p></li></ul><p>after</p>')
+  })
+})
+
 describe('parseAssistantResponse', () => {
   it('classifies a plain chat response', () => {
     const r = parseAssistantResponse('Sure, here is my advice about pacing.')

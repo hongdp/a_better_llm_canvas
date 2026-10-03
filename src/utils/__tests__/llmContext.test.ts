@@ -183,6 +183,11 @@ describe('stripChatDisplayArtifacts', () => {
     expect(stripChatDisplayArtifacts(single)).toBe('Done!')
   })
 
+  it('strips the note about document changes no channel could take', () => {
+    const input = 'Done!\n\n⚠️ This reply also contained 2 document changes that could not be applied alongside the main one, so they were left out of this message. Ask again if they matter.'
+    expect(stripChatDisplayArtifacts(input)).toBe('Done!')
+  })
+
   it('reduces a pure stream-error message to empty', () => {
     expect(stripChatDisplayArtifacts('⚠️ Error during stream: Anthropic API error (500): overloaded')).toBe('')
     expect(stripChatDisplayArtifacts('⚠️ Error: network down')).toBe('')

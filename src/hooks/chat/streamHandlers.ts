@@ -195,6 +195,14 @@ export function clampSelectionRange(
  * markup. Called on every chunk with the FULL text so far — it must tolerate
  * tags that have opened but not yet closed.
  */
+// Where document markup begins in text that is otherwise chat. Hidden while
+// streaming; the final parse applies it or reports it, and never shows it.
+const MARKUP_START_RE = /<edits?\b|<{5,}\s*SEARCH|<canvas>|<selection_replace>/i
+const chatPart = (text: string): string => {
+  const at = text.search(MARKUP_START_RE)
+  return (at === -1 ? text : text.slice(0, at)).trim()
+}
+
 export function splitStreamingResponse(raw: string): StreamingSplit {
   let chatText: string
   let canvasText = ''
@@ -213,12 +221,12 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
 
   if (selectionIdx !== -1) {
     isSelectionEdit = true
-    chatText = raw.substring(0, selectionIdx).trim()
+    chatText = chatPart(raw.substring(0, selectionIdx))
     const rest = raw.substring(selectionIdx + selectionStart.length)
     const endIdx = rest.indexOf(selectionEndTag)
     if (endIdx !== -1) {
       selectionReplaceText = rest.substring(0, endIdx)
-      chatText += '\n\n' + rest.substring(endIdx + selectionEndTag.length).trim()
+      chatText += '\n\n' + chatPart(rest.substring(endIdx + selectionEndTag.length))
     } else {
       selectionReplaceText = rest
     }
@@ -232,7 +240,7 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
     const endIdx = rest.indexOf(canvasEnd)
     if (endIdx !== -1) {
       canvasText = rest.substring(0, endIdx)
-      chatText += '\n\n' + rest.substring(endIdx + canvasEnd.length).trim()
+      chatText += '\n\n' + chatPart(rest.substring(endIdx + canvasEnd.length))
     } else {
       canvasText = rest
     }
@@ -260,9 +268,11 @@ export function buildCompletionWarnings(params: {
   unretriableFailedUpdate?: boolean
   /** A document tool was called but its arguments yielded nothing to apply. */
   toolCallProducedNothing?: boolean
+  /** Document-markup regions no channel could take, dropped from the bubble. */
+  strayMarkup?: number
   reinsertedImages: number
 }): string {
-  const { canvasIssue, editFailedCount, exhaustedNoActionRetries, selectionGone, unretriableFailedUpdate, toolCallProducedNothing, reinsertedImages } = params
+  const { canvasIssue, editFailedCount, exhaustedNoActionRetries, selectionGone, unretriableFailedUpdate, toolCallProducedNothing, strayMarkup, reinsertedImages } = params
 
   let warningNote = canvasIssue === 'truncated'
     ? '\n\n⚠️ The response was cut off before the document update finished, so no changes were applied (your document is unchanged). Please retry — for long documents, try editing a smaller selection at a time.'
@@ -271,6 +281,12 @@ export function buildCompletionWarnings(params: {
     : ''
   if (editFailedCount > 0) {
     warningNote += `\n\n⚠️ ${editFailedCount} suggested change${editFailedCount > 1 ? 's' : ''} could not be located in the current document and ${editFailedCount > 1 ? 'were' : 'was'} skipped. The text to change may have moved or differ from what was matched.`
+  }
+  // Markup that no channel took is never shown raw; say it existed. Not when a
+  // louder note already explains that the reply's update failed as a whole.
+  if (strayMarkup && strayMarkup > 0 && !exhaustedNoActionRetries && !unretriableFailedUpdate) {
+    const many = strayMarkup > 1
+    warningNote += `\n\n⚠️ This reply also contained ${strayMarkup} document change${many ? 's' : ''} that could not be applied alongside the main one, so ${many ? 'they were' : 'it was'} left out of this message. Ask again if ${many ? 'they matter' : 'it matters'}.`
   }
   // The recovery round also came back without tags: say so instead
   // of letting "已改好" stand over an unchanged document.

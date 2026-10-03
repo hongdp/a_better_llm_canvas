@@ -1,4 +1,5 @@
 import type { ParsedAssistantResponse, EditBlock } from './text'
+import { stripStrayDocumentMarkup } from './text'
 
 /**
  * The document tools, in one internal shape, with adapters per provider.
@@ -175,13 +176,16 @@ export function toolCallToParsedResponse(
   call: { name: string; args: Record<string, unknown> | null },
   chatText: string
 ): ParsedAssistantResponse {
+  // Markup-protocol tags written beside a tool call took no channel either.
+  const stray = stripStrayDocumentMarkup(chatText)
   const base: ParsedAssistantResponse = {
     kind: 'chat',
-    chatText,
+    chatText: stray.text,
     selectionText: '',
     editBlocks: [],
     canvasText: '',
-    canvasClosed: false
+    canvasClosed: false,
+    strayMarkup: stray.removed
   }
 
   // Unparseable arguments mean the model was cut off mid-call. Reported as an
