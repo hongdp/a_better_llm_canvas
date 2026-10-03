@@ -407,15 +407,17 @@ function htmlToComparableText(html: string): string {
 const EDIT_BLOCK_SPLIT_RE = /<\/(?:p|h[1-6]|blockquote|pre|ul|ol|table|figure|div)>/gi
 
 /**
- * Last-resort match: if the SEARCH's *plain text* equals the plain text of a
- * contiguous run of whole blocks (paragraphs/headings/lists), replace those
- * whole blocks. This survives the model dropping or altering inline tags
- * (<strong>, <em>, attributes) in its SEARCH copy, and can never produce
- * unbalanced HTML because only complete blocks are swapped.
+ * Every contiguous run of whole blocks whose text, as `normalize` reads it,
+ * equals the SEARCH's — at most `limit` of them, in document order.
  */
-function replaceByBlockText(haystack: string, search: string, replace: string): string | null {
-  const searchText = htmlToComparableText(search)
-  if (!searchText) return null
+function blockTextRuns(
+  haystack: string,
+  search: string,
+  normalize: (html: string) => string,
+  limit: number
+): Array<{ start: number; end: number }> {
+  const searchText = normalize(search)
+  if (!searchText) return []
 
   // Split the haystack into block segments, each ending at a closing block tag.
   const segments: { start: number; end: number; text: string }[] = []
@@ -424,26 +426,57 @@ function replaceByBlockText(haystack: string, search: string, replace: string): 
   let m: RegExpExecArray | null
   while ((m = EDIT_BLOCK_SPLIT_RE.exec(haystack)) !== null) {
     const end = m.index + m[0].length
-    segments.push({ start: segStart, end, text: htmlToComparableText(haystack.slice(segStart, end)) })
+    segments.push({ start: segStart, end, text: normalize(haystack.slice(segStart, end)) })
     segStart = end
   }
   if (segStart < haystack.length) {
-    segments.push({ start: segStart, end: haystack.length, text: htmlToComparableText(haystack.slice(segStart)) })
+    segments.push({ start: segStart, end: haystack.length, text: normalize(haystack.slice(segStart)) })
   }
 
-  // Find a contiguous run of blocks whose concatenated text equals searchText.
-  for (let i = 0; i < segments.length; i++) {
+  const runs: Array<{ start: number; end: number }> = []
+  for (let i = 0; i < segments.length && runs.length < limit; i++) {
     if (!segments[i].text) continue
     let acc = ''
     for (let j = i; j < segments.length; j++) {
       if (segments[j].text) acc = acc ? acc + ' ' + segments[j].text : segments[j].text
       if (acc === searchText) {
-        return haystack.slice(0, segments[i].start) + replace + haystack.slice(segments[j].end)
+        runs.push({ start: segments[i].start, end: segments[j].end })
+        break
       }
       if (acc.length > searchText.length) break
     }
   }
-  return null
+  return runs
+}
+
+/** Comparable text with every quote mark removed, not just straightened. */
+function quoteBlindText(html: string): string {
+  return htmlToComparableText(html).replace(/["'“”‘’「」『』]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Last-resort match: if the SEARCH's *plain text* equals the plain text of a
+ * contiguous run of whole blocks (paragraphs/headings/lists), replace those
+ * whole blocks. This survives the model dropping or altering inline tags
+ * (<strong>, <em>, attributes) in its SEARCH copy, and can never produce
+ * unbalanced HTML because only complete blocks are swapped.
+ *
+ * Problem: a 31-paragraph SEARCH that was verbatim except for four closing
+ *   quotes (”) the model left out was skipped whole — "1 suggested change
+ *   could not be located". The quotes were balanced in the document; the copy
+ *   simply dropped them, near the end of each paragraph.
+ * Root Cause: quotes were treated as an equivalence class (“ ” " are one
+ *   character), which covers a SUBSTITUTED quote but not a MISSING one.
+ * Fix: a second pass that ignores quote marks entirely. Still whole blocks
+ *   only, and only when exactly ONE run matches — it is the more lenient pass,
+ *   so an ambiguous hit is left unapplied rather than guessed.
+ */
+function replaceByBlockText(haystack: string, search: string, replace: string): string | null {
+  const splice = (run: { start: number; end: number }) => haystack.slice(0, run.start) + replace + haystack.slice(run.end)
+  const exact = blockTextRuns(haystack, search, htmlToComparableText, 1)
+  if (exact.length > 0) return splice(exact[0])
+  const quoteBlind = blockTextRuns(haystack, search, quoteBlindText, 2)
+  return quoteBlind.length === 1 ? splice(quoteBlind[0]) : null
 }
 
 // Shortest excerpt, in comparable characters, the excerpt level will place.
@@ -664,6 +697,60 @@ function splitTopLevelNodes(html: string): string[] {
   return nodes
 }
 
+// A pending diff element's opening tag, or any closing </ins>/</del>.
+const DIFF_ELEMENT_EDGE_RE = /<(?:ins|del)\b[^>]*class="[^"]*diff-(?:addition|deletion)[^"]*"[^>]*>|<\/(?:ins|del)>/gi
+
+/** True when `index` lies inside a pending <ins>/<del> diff element. */
+function isInsidePendingDiff(html: string, index: number): boolean {
+  let inside = false
+  DIFF_ELEMENT_EDGE_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = DIFF_ELEMENT_EDGE_RE.exec(html)) !== null && m.index < index) {
+    inside = !m[0].startsWith('</')
+  }
+  return inside
+}
+
+/**
+ * Diff only the characters an edit changed inside `oldPart` → `newPart`. The
+ * span is widened so it never cuts a word, a tag or an entity apart. Null when
+ * the change overlaps pending diff markup, sits inside a pending <ins>/<del>
+ * (a diff nested in a diff), or is not balanced on its own (it splits or joins
+ * blocks).
+ */
+function diffChangedSpan(oldPart: string, newPart: string): string | null {
+  const max = Math.min(oldPart.length, newPart.length)
+  let start = 0
+  while (start < max && oldPart[start] === newPart[start]) start++
+  let tail = 0
+  while (tail < max - start && oldPart[oldPart.length - 1 - tail] === newPart[newPart.length - 1 - tail]) tail++
+
+  // Latin text is diffed in whole words, as diffHtml would; CJK has no word
+  // boundaries, so a character is the unit there (\w excludes it).
+  while (start > 0 && /\w/.test(oldPart[start - 1]) && (/\w/.test(oldPart[start] ?? '') || /\w/.test(newPart[start] ?? ''))) start--
+  while (
+    tail > 0 && /\w/.test(oldPart[oldPart.length - tail]) &&
+    (/\w/.test(oldPart[oldPart.length - tail - 1] ?? '') || /\w/.test(newPart[newPart.length - tail - 1] ?? ''))
+  ) tail--
+  // Never start inside a tag or an entity: move back to its first character.
+  if (oldPart.lastIndexOf('<', start - 1) > oldPart.lastIndexOf('>', start - 1)) start = oldPart.lastIndexOf('<', start - 1)
+  const amp = oldPart.lastIndexOf('&', start - 1)
+  if (amp !== -1 && /^&[a-zA-Z0-9#]*$/.test(oldPart.slice(amp, start))) start = amp
+  // Never end inside one either: the shared suffix must start on a boundary.
+  const suffix = oldPart.slice(oldPart.length - tail)
+  const gt = suffix.indexOf('>')
+  if (gt !== -1 && (suffix.indexOf('<') === -1 || gt < suffix.indexOf('<'))) tail -= gt + 1
+  const semi = /^[a-zA-Z0-9#]*;/.exec(oldPart.slice(oldPart.length - tail))
+  if (semi && /&[a-zA-Z0-9#]*$/.test(oldPart.slice(0, oldPart.length - tail))) tail -= semi[0].length
+
+  const oldMid = oldPart.slice(start, oldPart.length - tail)
+  const newMid = newPart.slice(start, newPart.length - tail)
+  if (DIFF_MARKUP_RE.test(oldMid)) return null
+  if (isInsidePendingDiff(oldPart, start)) return null
+  if (!isBalancedHtml(oldMid) || !isBalancedHtml(newMid)) return null
+  return oldPart.slice(0, start) + diffHtml(oldMid, newMid) + oldPart.slice(oldPart.length - tail)
+}
+
 /**
  * Apply edit blocks to a document that already carries pending diff markup,
  * marking up ONLY the top-level blocks each edit changes.
@@ -674,8 +761,20 @@ function splitTopLevelNodes(html: string): string[] {
  * already accepted. Here everything an edit does not touch stays
  * byte-identical — pending hunks and the selection's diff included.
  *
- * An edit whose changed blocks already carry diff markup is left unapplied:
- * diffing over markup would nest one diff inside another.
+ * Each edit is diffed at the span it changed, not as a whole block.
+ *
+ * Problem: a block that already carried markup was refused outright, and two
+ *   ordinary cases produce one — a selection that ends mid-paragraph leaves its
+ *   fresh diff sharing a block with untouched text, and an earlier edit in the
+ *   same batch marks its block. Worse, for Chinese a whole-block diff marks the
+ *   ENTIRE paragraph (no word boundaries), so a second fix in that paragraph
+ *   always landed inside the first one's diff. Both surfaced as "could not be
+ *   located" (user-reported: 1 of several continuity edits after a selection
+ *   rewrite).
+ * Fix: diff only the changed span; refuse only when that span itself touches
+ *   pending markup (see diffChangedSpan). A change that splits or joins blocks
+ *   is not balanced as a span, and falls back to a whole-block diff where the
+ *   block carries no markup.
  */
 export function applyEditBlocksLocally(html: string, blocks: EditBlock[]): ApplyEditsResult {
   let current = html
@@ -697,11 +796,12 @@ export function applyEditBlocksLocally(html: string, blocks: EditBlock[]): Apply
     ) tail++
     const oldPart = before.slice(head, before.length - tail).join('')
     const newPart = after.slice(head, after.length - tail).join('')
-    if (DIFF_MARKUP_RE.test(oldPart)) {
+    const replacement = diffChangedSpan(oldPart, newPart) ?? (DIFF_MARKUP_RE.test(oldPart) ? null : diffHtml(oldPart, newPart))
+    if (replacement === null) {
       failed.push(block)
       continue
     }
-    current = before.slice(0, head).join('') + diffHtml(oldPart, newPart) + before.slice(before.length - tail).join('')
+    current = before.slice(0, head).join('') + replacement + before.slice(before.length - tail).join('')
   }
   return { html: current, failed }
 }
