@@ -5,7 +5,7 @@ import { streamLLM, type LLMMessage } from '../services/llm'
 import { findResumableJob, findJobsForBubbles, resumeRemoteGeneration, abortRemoteGeneration, type PersistedGenerationJob } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
-import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, stripBlankParagraphs, validateCanvasReplacement, applyEditBlocks, applyEditBlocksLocally, parseAssistantResponse, detectFailedDocumentUpdate, trimIncompleteHtmlTail } from '../utils/text'
 import { diffHtml, stripDiffMarkup } from '../utils/diff'
 import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel } from '../utils/llmContext'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../utils/imagePreservation'
@@ -563,15 +563,27 @@ export function useChatLLM({
         // stays behind them for models with no tool support, and for a turn
         // that answered in prose — deleting it would strand those.
         const toolCalls = finishToolCalls(toolCallsRef.current)
-        const documentCall = toolCalls.find(c =>
+        const documentCalls = toolCalls.filter(c =>
           c.name === 'update_document' || c.name === 'edit_document' || c.name === 'replace_selection'
         )
+        // A selection rewrite leads when there is one — the markup protocol's
+        // priority — and edit_document calls beside it are applied after it.
+        // Only the first document call used to count; the rest were dropped
+        // without a word.
+        const documentCall = documentCalls.find(c => c.name === 'replace_selection') ?? documentCalls[0]
 
         // Classify the completed response (pure, tested in utils/text).
         // Priority: selection_replace > localized edits > full-doc canvas.
-        const parsed = documentCall
+        const primary = documentCall
           ? toolCallToParsedResponse(documentCall, fullText)
           : parseAssistantResponse(fullText)
+        const extraCalls = documentCalls.filter(c => c !== documentCall)
+        const mergeable = primary.kind === 'selection' ? extraCalls.filter(c => c.name === 'edit_document') : []
+        const parsed = extraCalls.length === 0 ? primary : {
+          ...primary,
+          editBlocks: [...primary.editBlocks, ...mergeable.flatMap(c => toolCallToParsedResponse(c, '').editBlocks)],
+          strayMarkup: primary.strayMarkup + extraCalls.length - mergeable.length
+        }
         const finalChatText = parsed.chatText
 
         // Whether the document needed changing is the MODEL's call, not ours —
@@ -682,11 +694,76 @@ export function useChatLLM({
           }
         }
 
+        let selectionEditFailedCount = 0
+        if (parsed.kind === 'selection') {
+          const cleanedText = stripIncompleteEndTag(parsed.selectionText)
+          const finalEditor = activeEditorRef.current
+          if (finalEditor) relocateResumedSelection(finalEditor, selectionRefs)
+          let selectionApplied = false
+          if (cleanedText && finalEditor && selectionRangeRef.current) {
+            const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
+            const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
+            const { from } = selectionRangeRef.current
+            const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
+
+            if (replaceSelectionWithHtml(finalEditor, from, currentEnd, diffed) !== null) {
+              s.updateActiveDocument({ content: finalEditor.getHTML() })
+              selectionApplied = true
+            } else {
+              // The selection is gone (chapter switched, document shortened).
+              // Say so rather than throwing the turn away: the text is right
+              // there in the chat for the user to place themselves.
+              selectionGoneRef.current = true
+            }
+          }
+          // Edits that came with the rewrite target text OUTSIDE the
+          // selection. They land on the rewritten document as local diffs, so
+          // the selection's own diff stays pending for review. Without a placed
+          // selection there is no trustworthy document to apply them to (the
+          // chapter may have been switched) — they are reported instead.
+          if (parsed.editBlocks.length > 0) {
+            if (selectionApplied && finalEditor) {
+              const local = applyEditBlocksLocally(preserveImagesWithPlaceholders(finalEditor.getHTML()), parsed.editBlocks)
+              selectionEditFailedCount = local.failed.length
+              if (local.failed.length > 0) {
+                console.warn(
+                  `[edit-apply] ${local.failed.length}/${parsed.editBlocks.length} edit block(s) beside the selection failed to match.`,
+                  local.failed.map(f => ({ search: f.search }))
+                )
+              }
+              if (local.failed.length < parsed.editBlocks.length) {
+                s.updateActiveDocument({ content: restoreImagesFromPlaceholders(local.html) })
+              }
+            } else {
+              selectionEditFailedCount = parsed.editBlocks.length
+            }
+          }
+        } else if (parsed.kind === 'edits') {
+          // Apply the locally-rebuilt diff, or leave the document untouched
+          // if no edit could be located.
+          s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
+        } else if (parsed.kind === 'canvas' && canvasDoc !== null) {
+          // Same accepted-reading base as the edits path: diffing the
+          // model's clean rewrite against markup-laden content nests diff
+          // inside diff.
+          const diffed = diffHtml(stripDiffMarkup(originalDocContent), canvasDoc)
+          s.updateActiveDocument({ content: diffed })
+        } else if (canvasIssue) {
+          // Ensure the document is left exactly as it was before streaming.
+          s.updateActiveDocument({ content: originalDocContent })
+        }
+
         // Message text lives in chat/streamHandlers; only the exhausted-
         // retries condition needs hook-local state to compute.
+        //
+        // Built AFTER the document writes, not before. Two inputs are only
+        // known once they ran: edits that came with a selection and could not
+        // land, and selectionGoneRef — which used to be read here before the
+        // selection branch set it, so "the selection is gone" never showed.
         const warningNote = buildCompletionWarnings({
           canvasIssue,
-          editFailedCount,
+          editFailedCount: editFailedCount + selectionEditFailedCount,
+          strayMarkup: parsed.strayMarkup,
           selectionGone: selectionGoneRef.current,
           // The model called a document tool and the call yielded nothing
           // applicable — unusable arguments, or an empty edit list. Without
@@ -722,40 +799,6 @@ export function useChatLLM({
             return m
           })
         )
-
-        if (parsed.kind === 'selection') {
-          const cleanedText = stripIncompleteEndTag(parsed.selectionText)
-          const finalEditor = activeEditorRef.current
-          if (finalEditor) relocateResumedSelection(finalEditor, selectionRefs)
-          if (cleanedText && finalEditor && selectionRangeRef.current) {
-            const restoredText = stripBlankParagraphs(restoreImagesFromPlaceholders(cleanedText))
-            const diffed = diffHtml(originalSelectedTextRef.current, restoredText)
-            const { from } = selectionRangeRef.current
-            const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
-
-            if (replaceSelectionWithHtml(finalEditor, from, currentEnd, diffed) !== null) {
-              s.updateActiveDocument({ content: finalEditor.getHTML() })
-            } else {
-              // The selection is gone (chapter switched, document shortened).
-              // Say so rather than throwing the turn away: the text is right
-              // there in the chat for the user to place themselves.
-              selectionGoneRef.current = true
-            }
-          }
-        } else if (parsed.kind === 'edits') {
-          // Apply the locally-rebuilt diff, or leave the document untouched
-          // if no edit could be located.
-          s.updateActiveDocument({ content: editDiffedDoc ?? originalDocContent })
-        } else if (parsed.kind === 'canvas' && canvasDoc !== null) {
-          // Same accepted-reading base as the edits path: diffing the
-          // model's clean rewrite against markup-laden content nests diff
-          // inside diff.
-          const diffed = diffHtml(stripDiffMarkup(originalDocContent), canvasDoc)
-          s.updateActiveDocument({ content: diffed })
-        } else if (canvasIssue) {
-          // Ensure the document is left exactly as it was before streaming.
-          s.updateActiveDocument({ content: originalDocContent })
-        }
 
         // Converge the editor with whatever the store ended up holding.
         // Required after a live preview: on the paths that keep the

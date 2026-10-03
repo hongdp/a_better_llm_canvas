@@ -117,7 +117,7 @@ export function trimHistoryForContext(
 export function stripChatDisplayArtifacts(content: string): string {
   let out = content.replace(/^(?:\[Attached Context: [^\]\n]*\]\n?)+\n*/, '')
   out = out.replace(
-    /(?:^|\n+)⚠️ (?:Error(?: during stream)?:|The response was cut off|The response abbreviated|The model answered without|\d+ suggested changes? could not be located)[\s\S]*$/,
+    /(?:^|\n+)⚠️ (?:Error(?: during stream)?:|The response was cut off|The response abbreviated|The model answered without|\d+ suggested changes? could not be located|This reply also contained \d+ document changes?)[\s\S]*$/,
     ''
   )
   out = out.replace(/^[📚🔁] [^\n]*\n?/gmu, '')

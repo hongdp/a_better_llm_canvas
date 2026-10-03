@@ -2,6 +2,7 @@
  * Text utility functions.
  * Pure helpers for text processing — no React dependencies.
  */
+import { diffHtml } from './diff'
 
 /**
  * Generate a timestamp-based unique ID with the given prefix.
@@ -240,6 +241,12 @@ export interface ParsedAssistantResponse {
   canvasText: string
   /** kind === 'canvas': whether the closing tag arrived (guards truncation). */
   canvasClosed: boolean
+  /**
+   * Document-markup regions removed from `chatText` because no channel took
+   * them (a second channel's block, or markup too broken to parse). Never
+   * shown raw — the bubble reports the count instead.
+   */
+  strayMarkup: number
 }
 
 /**
@@ -247,6 +254,33 @@ export interface ParsedAssistantResponse {
  * the caller decides how to apply the action (diffing, editor transactions,
  * warnings).
  */
+// Document markup that must never reach the chat bubble. Order matters: an
+// <edit> wrapper contains conflict markers, so wrappers are removed first.
+const STRAY_MARKUP_PATTERNS: RegExp[] = [
+  /<edits?>[\s\S]*?(?:<\/edits?>|$)/gi,
+  /<{5,}\s*SEARCH[\s\S]*?(?:>{5,}\s*REPLACE[^\n]*|$)/gi,
+  /<canvas>[\s\S]*?(?:<\/canvas>|$)/gi,
+  /<selection_replace>[\s\S]*?(?:<\/selection_replace>|$)/gi
+]
+const LONE_MARKUP_TAG_RE = /<\/?(?:edits?|canvas|selection_replace)>/gi
+
+/**
+ * Remove document markup that no channel consumed, so it can never be shown
+ * as chat. Returns the cleaned text and how many regions were removed.
+ */
+export function stripStrayDocumentMarkup(text: string): { text: string; removed: number } {
+  let removed = 0
+  let out = text
+  for (const re of STRAY_MARKUP_PATTERNS) {
+    out = out.replace(re, () => {
+      removed++
+      return '\n\n'
+    })
+  }
+  out = out.replace(LONE_MARKUP_TAG_RE, '')
+  return { text: out.replace(/\n{3,}/g, '\n\n').trim(), removed }
+}
+
 export function parseAssistantResponse(fullText: string): ParsedAssistantResponse {
   // The status trailer is protocol; it never reaches the bubble or the doc.
   fullText = stripDocStatus(fullText)
@@ -256,7 +290,8 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
     selectionText: '',
     editBlocks: [],
     canvasText: '',
-    canvasClosed: false
+    canvasClosed: false,
+    strayMarkup: 0
   }
 
   const joinAround = (before: string, after: string): string => {
@@ -274,7 +309,18 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
   if (selectionBlock.found) {
     result.kind = 'selection'
     result.selectionText = selectionBlock.inner
-    result.chatText = joinAround(selectionBlock.before, selectionBlock.after)
+    // Problem: a selection rewrite that came with an <edit> for text OUTSIDE
+    //   the selection showed that edit raw in the chat bubble, unapplied.
+    // Root Cause: the channels were exclusive — once <selection_replace> was
+    //   found, everything around it was chat. The protocol forbids putting
+    //   surrounding text in the tag, so a model that also smooths what follows
+    //   has no other way to say it.
+    // Fix: parse edits out of what surrounds the selection; the hook applies
+    //   them after the selection (applyEditBlocksLocally).
+    const rest = joinAround(selectionBlock.before, selectionBlock.after)
+    const restEdits = parseEditBlocks(rest)
+    result.editBlocks = restEdits.blocks
+    result.chatText = restEdits.blocks.length > 0 ? joinAround(restEdits.before, restEdits.after) : rest
   } else if (parsedEdits.blocks.length > 0) {
     result.kind = 'edits'
     result.editBlocks = parsedEdits.blocks
@@ -286,6 +332,10 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
     result.chatText = joinAround(canvasBlock.before, canvasBlock.after)
   }
 
+  // Whatever no channel took is dropped from the bubble and counted.
+  const stray = stripStrayDocumentMarkup(result.chatText)
+  result.chatText = stray.text
+  result.strayMarkup = stray.removed
   return result
 }
 
@@ -582,6 +632,78 @@ export function applyEditBlocks(originalHtml: string, blocks: EditBlock[]): Appl
     }
   }
   return { html, failed }
+}
+
+const DIFF_MARKUP_RE = /class="[^"]*diff-(?:addition|deletion)/
+
+/**
+ * Split HTML into its top-level nodes, each balanced on its own — a
+ * `<ul>…</ul>` stays whole instead of breaking at a `</p>` inside a `<li>`.
+ * Concatenating the result gives back the input exactly.
+ */
+function splitTopLevelNodes(html: string): string[] {
+  const nodes: string[] = []
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(\/?)>/g
+  let depth = 0
+  let start = 0
+  let m: RegExpExecArray | null
+  while ((m = tagRe.exec(html)) !== null) {
+    const name = m[2].toLowerCase()
+    if (VOID_TAGS.has(name) || m[3] === '/') continue
+    if (m[1]) {
+      depth = Math.max(0, depth - 1)
+      if (depth === 0) {
+        nodes.push(html.slice(start, tagRe.lastIndex))
+        start = tagRe.lastIndex
+      }
+    } else {
+      depth++
+    }
+  }
+  if (start < html.length) nodes.push(html.slice(start))
+  return nodes
+}
+
+/**
+ * Apply edit blocks to a document that already carries pending diff markup,
+ * marking up ONLY the top-level blocks each edit changes.
+ *
+ * The edits path folds every pending diff into its base before diffing, which
+ * is right for a NEW turn. Inside one turn it is not: after a selection rewrite
+ * has just been placed, folding would mark the freshly rewritten passage as
+ * already accepted. Here everything an edit does not touch stays
+ * byte-identical — pending hunks and the selection's diff included.
+ *
+ * An edit whose changed blocks already carry diff markup is left unapplied:
+ * diffing over markup would nest one diff inside another.
+ */
+export function applyEditBlocksLocally(html: string, blocks: EditBlock[]): ApplyEditsResult {
+  let current = html
+  const failed: EditBlock[] = []
+  for (const block of blocks) {
+    const next = applyOneEdit(current, block.search, stripBlankParagraphs(block.replace))
+    if (next === null) {
+      failed.push(block)
+      continue
+    }
+    const before = splitTopLevelNodes(current)
+    const after = splitTopLevelNodes(next)
+    let head = 0
+    while (head < before.length && head < after.length && before[head] === after[head]) head++
+    let tail = 0
+    while (
+      tail < before.length - head && tail < after.length - head &&
+      before[before.length - 1 - tail] === after[after.length - 1 - tail]
+    ) tail++
+    const oldPart = before.slice(head, before.length - tail).join('')
+    const newPart = after.slice(head, after.length - tail).join('')
+    if (DIFF_MARKUP_RE.test(oldPart)) {
+      failed.push(block)
+      continue
+    }
+    current = before.slice(0, head).join('') + diffHtml(oldPart, newPart) + before.slice(before.length - tail).join('')
+  }
+  return { html: current, failed }
 }
 
 /**
