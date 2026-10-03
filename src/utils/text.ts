@@ -407,15 +407,17 @@ function htmlToComparableText(html: string): string {
 const EDIT_BLOCK_SPLIT_RE = /<\/(?:p|h[1-6]|blockquote|pre|ul|ol|table|figure|div)>/gi
 
 /**
- * Last-resort match: if the SEARCH's *plain text* equals the plain text of a
- * contiguous run of whole blocks (paragraphs/headings/lists), replace those
- * whole blocks. This survives the model dropping or altering inline tags
- * (<strong>, <em>, attributes) in its SEARCH copy, and can never produce
- * unbalanced HTML because only complete blocks are swapped.
+ * Every contiguous run of whole blocks whose text, as `normalize` reads it,
+ * equals the SEARCH's — at most `limit` of them, in document order.
  */
-function replaceByBlockText(haystack: string, search: string, replace: string): string | null {
-  const searchText = htmlToComparableText(search)
-  if (!searchText) return null
+function blockTextRuns(
+  haystack: string,
+  search: string,
+  normalize: (html: string) => string,
+  limit: number
+): Array<{ start: number; end: number }> {
+  const searchText = normalize(search)
+  if (!searchText) return []
 
   // Split the haystack into block segments, each ending at a closing block tag.
   const segments: { start: number; end: number; text: string }[] = []
@@ -424,26 +426,57 @@ function replaceByBlockText(haystack: string, search: string, replace: string): 
   let m: RegExpExecArray | null
   while ((m = EDIT_BLOCK_SPLIT_RE.exec(haystack)) !== null) {
     const end = m.index + m[0].length
-    segments.push({ start: segStart, end, text: htmlToComparableText(haystack.slice(segStart, end)) })
+    segments.push({ start: segStart, end, text: normalize(haystack.slice(segStart, end)) })
     segStart = end
   }
   if (segStart < haystack.length) {
-    segments.push({ start: segStart, end: haystack.length, text: htmlToComparableText(haystack.slice(segStart)) })
+    segments.push({ start: segStart, end: haystack.length, text: normalize(haystack.slice(segStart)) })
   }
 
-  // Find a contiguous run of blocks whose concatenated text equals searchText.
-  for (let i = 0; i < segments.length; i++) {
+  const runs: Array<{ start: number; end: number }> = []
+  for (let i = 0; i < segments.length && runs.length < limit; i++) {
     if (!segments[i].text) continue
     let acc = ''
     for (let j = i; j < segments.length; j++) {
       if (segments[j].text) acc = acc ? acc + ' ' + segments[j].text : segments[j].text
       if (acc === searchText) {
-        return haystack.slice(0, segments[i].start) + replace + haystack.slice(segments[j].end)
+        runs.push({ start: segments[i].start, end: segments[j].end })
+        break
       }
       if (acc.length > searchText.length) break
     }
   }
-  return null
+  return runs
+}
+
+/** Comparable text with every quote mark removed, not just straightened. */
+function quoteBlindText(html: string): string {
+  return htmlToComparableText(html).replace(/["'“”‘’「」『』]/g, '').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Last-resort match: if the SEARCH's *plain text* equals the plain text of a
+ * contiguous run of whole blocks (paragraphs/headings/lists), replace those
+ * whole blocks. This survives the model dropping or altering inline tags
+ * (<strong>, <em>, attributes) in its SEARCH copy, and can never produce
+ * unbalanced HTML because only complete blocks are swapped.
+ *
+ * Problem: a 31-paragraph SEARCH that was verbatim except for four closing
+ *   quotes (”) the model left out was skipped whole — "1 suggested change
+ *   could not be located". The quotes were balanced in the document; the copy
+ *   simply dropped them, near the end of each paragraph.
+ * Root Cause: quotes were treated as an equivalence class (“ ” " are one
+ *   character), which covers a SUBSTITUTED quote but not a MISSING one.
+ * Fix: a second pass that ignores quote marks entirely. Still whole blocks
+ *   only, and only when exactly ONE run matches — it is the more lenient pass,
+ *   so an ambiguous hit is left unapplied rather than guessed.
+ */
+function replaceByBlockText(haystack: string, search: string, replace: string): string | null {
+  const splice = (run: { start: number; end: number }) => haystack.slice(0, run.start) + replace + haystack.slice(run.end)
+  const exact = blockTextRuns(haystack, search, htmlToComparableText, 1)
+  if (exact.length > 0) return splice(exact[0])
+  const quoteBlind = blockTextRuns(haystack, search, quoteBlindText, 2)
+  return quoteBlind.length === 1 ? splice(quoteBlind[0]) : null
 }
 
 // Shortest excerpt, in comparable characters, the excerpt level will place.

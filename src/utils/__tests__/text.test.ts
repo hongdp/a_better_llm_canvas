@@ -377,6 +377,33 @@ describe('applyEditBlocks', () => {
     expect(r.failed).toHaveLength(0)
   })
 
+  // Reported: a 31-paragraph SEARCH, verbatim except for four closing quotes
+  // the model left out, was skipped whole. A quote is an equivalence class for
+  // SUBSTITUTION; a MISSING one needs the quote-blind pass.
+  it('matches a run of whole blocks when the SEARCH dropped closing quotes', () => {
+    const doc = '<p>开头。</p><p>她说：“先别挂。”然后停了一下。</p><p>他答：“好。”</p><p>结尾。</p>'
+    const r = applyEditBlocks(doc, [{
+      search: '<p>她说：“先别挂。然后停了一下。</p><p>他答：“好。</p>',
+      replace: '<p>改写后的两段合成了一段。</p>'
+    }])
+    expect(r.failed).toHaveLength(0)
+    expect(r.html).toBe('<p>开头。</p><p>改写后的两段合成了一段。</p><p>结尾。</p>')
+  })
+
+  it('leaves a quote-blind match unapplied when it is not unique', () => {
+    const doc = '<p>“同一句话。”</p><p>中间。</p><p>同一句话。“”</p>'
+    const r = applyEditBlocks(doc, [{ search: '<p>同一句话。</p>', replace: '<p>X</p>' }])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe(doc)
+  })
+
+  it('still requires every other character to match', () => {
+    const doc = '<p>她说：“先别挂。”然后停了一下。</p>'
+    const r = applyEditBlocks(doc, [{ search: '<p>她说：“先别挂。然后停了两下。</p>', replace: '<p>X</p>' }])
+    expect(r.failed).toHaveLength(1)
+    expect(r.html).toBe(doc)
+  })
+
   it('block-text match replaces whole blocks only — partial-paragraph text does not match', () => {
     const doc = '<p>alpha beta gamma</p>'
     const r = applyEditBlocks(doc, [{ search: 'beta', replace: 'BETA' }])
