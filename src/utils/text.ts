@@ -396,12 +396,137 @@ function replaceByBlockText(haystack: string, search: string, replace: string): 
   return null
 }
 
+// Shortest excerpt, in comparable characters, the excerpt level will place.
+// A short fragment recurs too easily for a heuristic to know which was meant.
+const MIN_EXCERPT_CHARS = 8
+// Window used to spot a REPLACE that re-states text left over in the block.
+const DUPLICATION_WINDOW = 10
+// Outer wrapper a model puts around SEARCH/REPLACE text.
+const OUTER_OPEN_RE = /^<(p|h[1-6])(?:\s[^>]*)?>/i
+const OUTER_CLOSE_RE = /<\/(p|h[1-6])>$/i
+// Block boundaries, for measuring what is left of the block around a match.
+const BLOCK_OPEN_RE = /<(?:p|h[1-6]|li|blockquote)(?:\s[^>]*)?>/gi
+const BLOCK_CLOSE_RE = /<\/(?:p|h[1-6]|li|blockquote)>/i
+const VOID_TAGS = new Set(['br', 'img', 'hr', 'input', 'meta', 'link', 'source', 'wbr', 'col', 'area', 'base', 'embed', 'param', 'track'])
+
+/** True when every non-void tag in `html` is closed, in order. */
+function isBalancedHtml(html: string): boolean {
+  const stack: string[] = []
+  const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)\b[^>]*?(\/?)>/g
+  let m: RegExpExecArray | null
+  while ((m = tagRe.exec(html)) !== null) {
+    const name = m[2].toLowerCase()
+    if (VOID_TAGS.has(name) || m[3] === '/') continue
+    if (m[1]) {
+      if (stack.pop() !== name) return false
+    } else {
+      stack.push(name)
+    }
+  }
+  return stack.length === 0
+}
+
+/** True when `index` falls inside a tag (`<a title="…|…">`), not in text. */
+function isInsideTag(html: string, index: number): boolean {
+  if (index <= 0) return false
+  return html.lastIndexOf('<', index - 1) > html.lastIndexOf('>', index - 1)
+}
+
+/** Every place `needle` occurs: exact occurrences, or failing that, fuzzy ones. */
+function findAllMatches(haystack: string, needle: string): Array<{ start: number; end: number }> {
+  const exact: Array<{ start: number; end: number }> = []
+  for (let i = haystack.indexOf(needle); i !== -1; i = haystack.indexOf(needle, i + 1)) {
+    exact.push({ start: i, end: i + needle.length })
+  }
+  if (exact.length > 0) return exact
+  try {
+    const re = new RegExp(buildFuzzyPattern(needle), 'g')
+    const fuzzy: Array<{ start: number; end: number }> = []
+    let m: RegExpExecArray | null
+    while ((m = re.exec(haystack)) !== null) {
+      if (m[0].length === 0) { re.lastIndex++; continue }
+      fuzzy.push({ start: m.index, end: m.index + m[0].length })
+    }
+    return fuzzy
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Excerpt match: SEARCH is wrapped in block tags (`<p>…</p>`) but quotes only
+ * PART of the block — the model edited one sentence and put the paragraph's
+ * tags around it.
+ *
+ * Problem: reported as "2 suggested changes could not be located". Replaying
+ *   the turn showed both SEARCHes in the document VERBATIM — each was the tail
+ *   of a paragraph, wrapped in `<p>…</p>`. Levels 1–4 look for the tags too,
+ *   and `<p>tail` is not in the document; level 5 compares whole blocks, and
+ *   the text is only part of one. The protocol asks SEARCH to start at a block
+ *   boundary, which is likely what invites a `<p>` in front of a sentence.
+ * Fix: drop the wrapper from both halves and place the excerpt in its own
+ *   span, leaving the rest of the block where it was.
+ *
+ * Every guard below ends in "leave it unapplied", which is the old outcome:
+ * - the excerpt must occur exactly ONCE (two hits: no telling which), and not
+ *   inside a tag;
+ * - REPLACE must be wrapped the same way, or not at all — anything else would
+ *   change the block's type in mid-block;
+ * - REPLACE must not re-state text left over in the block: if it does, the
+ *   model rewrote the WHOLE block from a misremembered copy, and an in-place
+ *   swap would duplicate the rest;
+ * - the result must be balanced HTML (a multi-paragraph REPLACE cannot land
+ *   inside <strong>).
+ */
+function replaceByUnwrappedExcerpt(haystack: string, search: string, replace: string): string | null {
+  const open = OUTER_OPEN_RE.exec(search)
+  const close = OUTER_CLOSE_RE.exec(search)
+  if (!open && !close) return null
+  const needle = search.slice(open ? open[0].length : 0, close ? close.index : search.length)
+  if (htmlToComparableText(needle).length < MIN_EXCERPT_CHARS) return null
+
+  let payload = replace.trim()
+  const rOpen = OUTER_OPEN_RE.exec(payload)
+  if (rOpen) {
+    if (!open || rOpen[1].toLowerCase() !== open[1].toLowerCase()) return null
+    payload = payload.slice(rOpen[0].length)
+  }
+  const rClose = OUTER_CLOSE_RE.exec(payload)
+  if (rClose) {
+    if (!close || rClose[1].toLowerCase() !== close[1].toLowerCase()) return null
+    payload = payload.slice(0, rClose.index)
+  }
+
+  const hits = findAllMatches(haystack, needle)
+  if (hits.length !== 1) return null
+  const { start, end } = hits[0]
+  if (isInsideTag(haystack, start)) return null
+
+  // What stays of the enclosing block(s) once the excerpt is swapped out.
+  let blockStart = 0
+  BLOCK_OPEN_RE.lastIndex = 0
+  let bo: RegExpExecArray | null
+  while ((bo = BLOCK_OPEN_RE.exec(haystack)) !== null && bo.index < start) {
+    blockStart = bo.index + bo[0].length
+  }
+  const closeAfter = BLOCK_CLOSE_RE.exec(haystack.slice(end))
+  const blockEnd = closeAfter ? end + closeAfter.index : haystack.length
+  const leftover = htmlToComparableText(haystack.slice(blockStart, start) + ' ' + haystack.slice(end, blockEnd))
+  const payloadText = htmlToComparableText(payload)
+  for (let i = 0; i + DUPLICATION_WINDOW <= leftover.length; i++) {
+    if (payloadText.includes(leftover.slice(i, i + DUPLICATION_WINDOW))) return null
+  }
+
+  const result = haystack.slice(0, start) + payload + haystack.slice(end)
+  return isBalancedHtml(result) ? result : null
+}
+
 /**
  * Locate `search` in `haystack` and return the string with it replaced by
  * `replace`, or `null` if it cannot be found. Tries progressively fuzzier
  * matches so a model that doesn't reproduce the document byte-for-byte still
  * applies: exact ⇒ trimmed ⇒ whitespace-insensitive ⇒ entity/quote-insensitive
- * ⇒ whole-block plain-text match.
+ * ⇒ whole-block plain-text match ⇒ excerpt wrapped in tags it does not span.
  */
 function applyOneEdit(haystack: string, search: string, replace: string): string | null {
   // 1. Exact substring.
@@ -432,7 +557,11 @@ function applyOneEdit(haystack: string, search: string, replace: string): string
   }
 
   // 5. Whole-block plain-text match (tolerates dropped/altered inline tags).
-  return replaceByBlockText(haystack, trimmed, replace)
+  const byBlock = replaceByBlockText(haystack, trimmed, replace)
+  if (byBlock !== null) return byBlock
+
+  // 6. Part of a block, wrapped as if it were the whole block.
+  return replaceByUnwrappedExcerpt(haystack, trimmed, replace)
 }
 
 /**

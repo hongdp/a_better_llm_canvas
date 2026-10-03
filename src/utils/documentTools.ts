@@ -74,7 +74,7 @@ export const DOCUMENT_TOOLS: DocumentTool[] = [
               search: {
                 type: 'string',
                 description:
-                  'HTML copied EXACTLY from the current document — same tags, entities, punctuation. Start at a block boundary and include enough context to be unique. Any difference and the edit cannot be located.'
+                  'HTML copied EXACTLY from the current document — same tags, entities, punctuation. Include enough context to be unique. Any difference and the edit cannot be located.'
               },
               replace: {
                 type: 'string',

@@ -90,7 +90,7 @@ PROTOCOL RULES:
    >>>>>>> REPLACE
    </edit>
    - The SEARCH text MUST be copied EXACTLY, character-for-character, from the CURRENT ACTIVE DOCUMENT CONTENT: same tags (including inline tags like <strong>/<em> and their attributes), same HTML entities (&nbsp;, &amp;, ...), same punctuation and quote characters. Do NOT paraphrase, re-wrap, or "clean up" the copied HTML — any difference prevents the edit from being located.
-   - Prefer starting SEARCH at a block boundary (e.g. from the opening <p> or <h2> tag) and spanning whole blocks. Include enough surrounding context to make it unique.
+   - Include enough surrounding context to make SEARCH unique.
    - Emit multiple <edit> blocks for multiple separate changes.
    - To delete content, leave the REPLACE section empty. To insert, SEARCH for an existing nearby element and REPLACE it with itself plus the new content.
 5. Use <canvas>...</canvas> ONLY for brand-new documents, full rewrites, or heavy restructuring where most of the document changes. When using <canvas>, output the ENTIRE updated document content inside the tags — never abbreviate or use placeholders like "<!-- unchanged -->".

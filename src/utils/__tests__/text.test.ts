@@ -381,10 +381,12 @@ describe('applyEditBlocks', () => {
     const r = applyEditBlocks(doc, [{ search: 'beta', replace: 'BETA' }])
     // 'beta' matches as a plain substring (level 1), so it applies directly…
     expect(r.html).toBe('<p>alpha BETA gamma</p>')
-    // …but a *paragraph-wrapped* partial text must not swap the whole block.
+    // …and a *paragraph-wrapped* partial text must never swap the whole block,
+    // which would delete "gamma". It is placed in its own span instead (the
+    // excerpt level, tested below).
     const r2 = applyEditBlocks(doc, [{ search: '<p>alpha beta</p>', replace: '<p>X</p>' }])
-    expect(r2.failed).toHaveLength(1)
-    expect(r2.html).toBe(doc)
+    expect(r2.failed).toHaveLength(0)
+    expect(r2.html).toBe('<p>X gamma</p>')
   })
 
   it('still fails cleanly when the text genuinely is not in the document', () => {
@@ -393,6 +395,100 @@ describe('applyEditBlocks', () => {
     ])
     expect(r.failed).toHaveLength(1)
     expect(r.html).toBe('<p>real content</p>')
+  })
+
+  // ── level 6: an excerpt wrapped in block tags it does not span ─────────────
+  // Reported as "2 suggested changes could not be located". Replaying the turn
+  // showed both SEARCHes in the document verbatim: each was the TAIL of a
+  // paragraph, wrapped in <p>…</p>. No earlier level could see it — the text
+  // was in the document, the tags were not.
+  describe('excerpt wrapped in tags it does not span', () => {
+    it('applies a paragraph tail the model wrapped in <p> tags', () => {
+      const doc = '<p>one</p><p>Lead-in clause, then the tail sentence to change.</p><p>three</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>then the tail sentence to change.</p>', replace: '<p>then a better tail.</p>' }])
+      expect(r.failed).toHaveLength(0)
+      expect(r.html).toBe('<p>one</p><p>Lead-in clause, then a better tail.</p><p>three</p>')
+    })
+
+    it('applies a paragraph head, and a middle, the same way', () => {
+      const doc = '<p>Opening words here, and the rest of it stays.</p>'
+      const head = applyEditBlocks(doc, [{ search: '<p>Opening words here,</p>', replace: '<p>New opening,</p>' }])
+      expect(head.html).toBe('<p>New opening, and the rest of it stays.</p>')
+      const middle = applyEditBlocks(doc, [{ search: '<p>and the rest of it</p>', replace: '<p>while the remainder</p>' }])
+      expect(middle.html).toBe('<p>Opening words here, while the remainder stays.</p>')
+    })
+
+    it('splits the block when the excerpt becomes several paragraphs — balanced', () => {
+      const doc = '<p>Keep this sentence. Rewrite this part please.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>Rewrite this part please.</p>', replace: '<p>First new.</p><p>Second new.</p>' }])
+      expect(r.html).toBe('<p>Keep this sentence. First new.</p><p>Second new.</p>')
+    })
+
+    it('deletes just the excerpt when REPLACE is empty', () => {
+      const doc = '<p>Keep this sentence. Remove this one please.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>Remove this one please.</p>', replace: '' }])
+      expect(r.html).toBe('<p>Keep this sentence. </p>')
+    })
+
+    it('handles an excerpt that spans a paragraph boundary', () => {
+      const doc = '<p>Alpha one. Alpha two.</p><p>Beta one. Beta two.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>Alpha two.</p><p>Beta one.</p>', replace: '<p>Joined text.</p>' }])
+      expect(r.html).toBe('<p>Alpha one. Joined text. Beta two.</p>')
+    })
+
+    it('works inside an inline element for a single-paragraph REPLACE', () => {
+      const doc = '<p>Lead <strong>bold excerpt text</strong> end.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>bold excerpt text</p>', replace: '<p>new excerpt words</p>' }])
+      expect(r.html).toBe('<p>Lead <strong>new excerpt words</strong> end.</p>')
+    })
+
+    // ── every guard falls back to the old outcome: left unapplied ────────────
+    it('refuses an excerpt that occurs more than once', () => {
+      const doc = '<p>First: same phrase here.</p><p>Second: same phrase here.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>same phrase here.</p>', replace: '<p>X</p>' }])
+      expect(r.failed).toHaveLength(1)
+      expect(r.html).toBe(doc)
+    })
+
+    it('refuses a REPLACE that re-states the rest of the block (a whole-block rewrite)', () => {
+      // The model rewrote the WHOLE paragraph from a copy it remembered short.
+      // An in-place swap would print the opening clause twice.
+      const doc = '<p>The opening clause stays here. The closing clause.</p>'
+      const r = applyEditBlocks(doc, [{
+        search: '<p>The closing clause.</p>',
+        replace: '<p>The opening clause stays here, joined with the closing clause.</p>'
+      }])
+      expect(r.failed).toHaveLength(1)
+      expect(r.html).toBe(doc)
+    })
+
+    it('refuses a multi-paragraph REPLACE that would land inside an inline element', () => {
+      const doc = '<p>Lead <strong>bold excerpt text</strong> end.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>bold excerpt text</p>', replace: '<p>A.</p><p>B.</p>' }])
+      expect(r.failed).toHaveLength(1)
+      expect(r.html).toBe(doc)
+    })
+
+    it('refuses a REPLACE wrapped in a different block type', () => {
+      const doc = '<p>Some lead text, then the excerpt to retitle.</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>then the excerpt to retitle.</p>', replace: '<h2>A heading</h2>' }])
+      expect(r.failed).toHaveLength(1)
+      expect(r.html).toBe(doc)
+    })
+
+    it('refuses an excerpt too short to place with confidence', () => {
+      const doc = '<p>a big dog ran far</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>dog</p>', replace: '<p>cat</p>' }])
+      expect(r.failed).toHaveLength(1)
+      expect(r.html).toBe(doc)
+    })
+
+    it('refuses a match that lies inside a tag attribute, not in text', () => {
+      const doc = '<p><a title="hidden tooltip words">link</a> rest</p>'
+      const r = applyEditBlocks(doc, [{ search: '<p>hidden tooltip words</p>', replace: '<p>X</p>' }])
+      expect(r.failed).toHaveLength(1)
+      expect(r.html).toBe(doc)
+    })
   })
 })
 
