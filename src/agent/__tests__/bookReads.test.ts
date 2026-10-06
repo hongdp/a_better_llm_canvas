@@ -191,6 +191,21 @@ describe('grep', () => {
     expect(r.content).toContain('#2 "Lazy"')
   })
 
+  it('names what it searched in the trace: the whole book, or the chapters given', async () => {
+    const whole = await run(grepTool.invoke(call('grep', { pattern: '阿[青红]' }), book().ctx))
+    expect(whole.trace).toBe('🔎 grep /阿[青红]/ in the whole book → 2 matches in 2 chapter(s)')
+    const one = await run(grepTool.invoke(call('grep', { pattern: '阿青', chapters: [3] }), book().ctx))
+    expect(one.trace).toBe('🔎 grep /阿青/ in #3 → 1 match')
+  })
+
+  it('says which chapters it could not load, instead of reporting no match in them', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: 'Lazy', content: '' }], lazy: { 'doc-2': '<p>hidden word</p>' } })
+    f.ensureLoaded.mockImplementation(async () => {})
+    const r = await run(grepTool.invoke(call('grep', { pattern: 'hidden' }), f.ctx))
+    expect(r.content).toContain('Not searched — their text could not be loaded: #2 "Lazy"')
+    expect(r.trace).toContain('1 not loaded')
+  })
+
   it('stops at a zero-width match instead of looping', async () => {
     const r = await run(grepTool.invoke(call('grep', { pattern: 'x*' }), fakeContext('<p>abc</p>').ctx))
     expect(r.content).toContain('No matches')
