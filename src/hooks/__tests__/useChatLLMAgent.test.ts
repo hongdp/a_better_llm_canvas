@@ -340,6 +340,22 @@ describe('a change still under review (user-reported 2026-10-06)', () => {
   })
 })
 
+describe('a rewrite of the open chapter beside an outline edit (reported 2026-10-06)', () => {
+  it('writes both in one reply, instead of losing the rewrite and writing it again', async () => {
+    responses.push({ text: '', toolCalls: [{ index: 0, id: 'r1', name: 'read_chapter', argumentsText: '{"chapters":[3],"format":"html"}' }] })
+    responses.push(`写好了，大纲也补上。\n<canvas><p>序章的新稿。</p></canvas>\n<edit chapter="3">\n<<<<<<< SEARCH\n${OUTLINE}\n=======\n<p>大纲：第一章，主角离开村子，回头看了一眼；第二章，进城。</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>`)
+    const h = renderChatHook()
+    await send(h, '扩写序章，大纲也跟着改')
+
+    expect(stripDiffMarkup(content('doc-1'))).toBe('<p>序章的新稿。</p>')
+    expect(stripDiffMarkup(content('doc-2'))).toContain('回头看了一眼')
+    // One write of the chapter, not two: the closing step writes nothing.
+    expect(calls).toHaveLength(3)
+    expect(bubble()?.content).not.toContain('could not')
+    h.unmount()
+  })
+})
+
 describe('writing another chapter (D2)', () => {
   it('refuses an edit on a chapter the model has not read, then lets it through after a read', async () => {
     const edit = '<edit chapter="3">\n<<<<<<< SEARCH\n<p>大纲：第一章，主角离开村子；第二章，进城。</p>\n=======\n<p>大纲：第一章，主角离家。</p>\n>>>>>>> REPLACE\n</edit>'

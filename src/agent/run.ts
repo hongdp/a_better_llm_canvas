@@ -135,6 +135,8 @@ export class AgentRun {
   private stray = 0
   /** A write succeeded in this run (see detectStepFailure's wroteThisRun). */
   private wrote = false
+  /** Document blocks the current step's reply lost (stray markup, dropped writes). */
+  private stepDropped = 0
   private readonly effects: RunSummary['effects'] = {
     canvasIssue: null, failedEdits: 0, reinsertedImages: 0, selectionGone: false, producedNothing: false
   }
@@ -209,6 +211,7 @@ export class AgentRun {
       ...collected.invocations.filter(last)
     ]
     this.stray += collected.strayMarkup + dropped
+    this.stepDropped = collected.strayMarkup + dropped
     if (collected.chatText.trim()) {
       this.chatTexts.push(collected.chatText.trim())
       this.timeline.push({ type: 'text', text: collected.chatText.trim() })
@@ -362,10 +365,16 @@ export class AgentRun {
     for (const { inv, result } of native) {
       messages.push({ role: 'tool', toolCallId: inv.id, name: inv.name, content: result.content })
     }
-    if (markup.length > 0) {
+    // Blocks the reply lost never reached the document. Unsaid, the model
+    // believes they did — it found out only by reading the chapter, and wrote
+    // a whole chapter twice (2026-10-06).
+    const lost = this.stepDropped > 0
+      ? `- NOT APPLIED: ${this.stepDropped} document block(s) in your reply did not reach the document — a full rewrite beside <edit> blocks for the same chapter, a rewrite beside a selection rewrite, or markup that could not be read. Write what you still want changed in a reply of its own.`
+      : ''
+    if (markup.length > 0 || lost) {
       messages.push({
         role: 'user',
-        content: 'RESULT OF YOUR DOCUMENT CHANGES:\n' + markup.map(({ inv, result }) => `- ${inv.name}: ${result.content}`).join('\n')
+        content: 'RESULT OF YOUR DOCUMENT CHANGES:\n' + [...markup.map(({ inv, result }) => `- ${inv.name}: ${result.content}`), ...(lost ? [lost] : [])].join('\n')
       })
     }
     return messages
