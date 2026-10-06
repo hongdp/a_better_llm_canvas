@@ -1,6 +1,10 @@
 # Agentic chat loop with document tools (grok-first)
 
 Status: **phases 0–2 implemented** (2026-10-05/06); phases 2b–4 proposed.
+**Direction change (2026-10-06):** the loop moves to the server, in Python,
+with the server as the single source of truth —
+[backend_authority.md](backend_authority.md). This spec stays the
+behavioral specification the port must match.
 §0 is the design as it stands. §4 records why each part is the way it is,
 and the implementation history below records how it got there.
 
