@@ -269,9 +269,11 @@ describe('a selection that disappeared while the reply streamed', () => {
 
 // Switching chapters mid-turn is allowed (agentic loop, D2). A selection
 // preview writes REAL transactions at the selection's offsets, so it must stop
-// the moment the editor shows another chapter.
+// the moment the editor shows another chapter — and the rewrite still lands in
+// the selection's own chapter, placed by its text (2026-10-06: it used to be
+// dropped as "the selection is gone").
 describe('the user switching chapters during a selection rewrite', () => {
-  it('stops previewing into the chapter now open, and reports the selection as gone', async () => {
+  it('stops previewing into the chapter now open, and places the rewrite in the selection\'s chapter', async () => {
     const { editor, selectedText } = setup()
     // Longer than the selection's offsets, so a stray preview WOULD land in it.
     const OTHER = '<p>第二章第一段，是一段比较长的文字，足够容纳原来选区的位置。</p><p>第二章第二段，同样足够长，不会让写入因为越界而落空。</p><p>第二章第三段。</p>'
@@ -290,9 +292,15 @@ describe('the user switching chapters during a selection rewrite', () => {
 
     const h = await send(editor, selectedText)
 
+    // The chapter the user opened is untouched…
     expect(editor.getHTML()).toBe(normalize(OTHER))
     expect(useAppStore.getState().documents.find(d => d.id === 'doc-2')?.content).toBe(OTHER)
-    expect(bubble()).toContain('no longer where it was')
+    // …and the selection's chapter has the whole rewrite as one pending diff —
+    // not the half that streamed in before the switch.
+    const first = useAppStore.getState().documents.find(d => d.id === 'doc-1')?.content ?? ''
+    expect(accepted(first)).toBe(normalize('<p>开头的一段话。</p>' + SEL_NEW + '<p>中间保持不变的一段。</p><p>后面需要衔接的一句话。</p>'))
+    expect(first).toMatch(/diff-addition/)
+    expect(bubble()).not.toContain('no longer where it was')
     h.unmount(); editor.destroy()
   })
 })

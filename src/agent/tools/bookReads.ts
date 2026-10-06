@@ -75,7 +75,10 @@ function parseRange(raw: unknown): ParagraphRange | null | string {
     const [a, b] = raw.map(Number)
     return a >= 1 && (b === undefined || b >= a) ? { from: a, to: b ?? a } : `paragraph range ${JSON.stringify(raw)} is not valid`
   }
-  const m = /^\s*¶?(\d+)\s*(?:(-|–|~)\s*¶?(\d+)?)?\s*$/.exec(String(raw))
+  // grok has sent the range quoted twice ("\"50-80\"") — the value is plain,
+  // only its wrapping is wrong, so it is read rather than refused.
+  const value = String(raw).trim().replace(/^["'“”「」]+|["'“”「」]+$/g, '')
+  const m = /^\s*¶?(\d+)\s*(?:(-|–|~)\s*¶?(\d+)?)?\s*$/.exec(value)
   if (!m) return `paragraphs must look like "40-60", "45" or "81-", not ${JSON.stringify(raw)}`
   const from = Number(m[1])
   const to = m[3] !== undefined ? Number(m[3]) : m[2] ? null : from

@@ -171,6 +171,18 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   "empty"). A chapter with text is the user's to delete; the loop cannot ask
   for confirmation yet (`approval`, phase 3), so the tool says to ask the
   user. The result tells the model the chapters after it moved up.
+- **A selection rewrite survives the user leaving its chapter.** When the
+  selection's chapter is no longer on screen at placement, the rewrite is
+  placed in the stored chapter by its text, starting from the turn's
+  original. The chapter is locked for the turn, so only the run has changed
+  it, and starting from the original also replaces a half-streamed preview.
+  `alignSelectionBlocks` lines up the block structure: a selection inside a
+  paragraph serializes as inline text while its rewrite is a `<p>`. A
+  rewrite that cannot be placed reverts any half-streamed preview and is
+  reported. On screen, a range that no longer fits is still reported and is
+  never forced in from the original. Edits beside the selection read the
+  selection chapter's stored text when another chapter is open; they used
+  to read the editor, which then held the other chapter.
 - **Correcting a selection rewrite in the same turn.** An edit that lands
   inside unreviewed inserted text (the selection's fresh rewrite, or any
   pending addition) changes that text in place. It is a proposal nobody has

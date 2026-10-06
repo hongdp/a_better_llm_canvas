@@ -397,9 +397,14 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
     // selection there is no trustworthy document to apply them to (the
     // chapter may have been switched) — they are reported instead.
     if (target.isStart && ctx.run.selectionAttempted) {
+      if (!ctx.run.selectionApplied) return { ...report(edits, ' beside the selection'), retryable: false }
+      // The chapter as it is now: the live editor when it shows this chapter,
+      // the stored text when the user has opened another one. The editor then
+      // holds THAT chapter — editing its HTML and committing it here would
+      // write one chapter's text over another.
       const editor = ctx.editor.current()
-      if (!ctx.run.selectionApplied || !editor) return { ...report(edits, ' beside the selection'), retryable: false }
-      const local = applyEditBlocksLocally(ctx.images.preserve(editor.getHTML()), edits)
+      const current = editor && ctx.document.openId() === target.id ? editor.getHTML() : storedContent(ctx, target.id)
+      const local = applyEditBlocksLocally(ctx.images.preserve(current), edits)
       if (local.failed.length < edits.length) commitHtml(ctx, target.id, ctx.images.restore(local.html))
       return report(local.failed, ' beside the selection', undefined, local.underReview)
     }
@@ -421,6 +426,29 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
 })
 
 // ── replace_selection ───────────────────────────────────────────────────────
+
+const BLOCK_START_RE = /^\s*<(?:p|h[1-6]|blockquote|ul|ol|li|div)\b/i
+const SINGLE_P_RE = /^\s*<p(?:\s[^>]*)?>((?:(?!<\/?p\b)[\s\S])*)<\/p>\s*$/i
+
+/**
+ * A selection's text and its rewrite as one stored-HTML edit. The editor
+ * places an open slice itself; in stored HTML the block structure has to
+ * line up by hand. A selection inside one paragraph serializes as inline
+ * text while its rewrite comes back as `<p>…</p>`, and swapping one for
+ * the other nests a paragraph in a paragraph. So:
+ *  - a selection that is a whole paragraph's text is replaced as that block;
+ *  - one that is part of a paragraph takes a single-paragraph rewrite's
+ *    inner HTML;
+ *  - a multi-paragraph rewrite of part of a paragraph cannot be placed
+ *    cleanly (null).
+ */
+function alignSelectionBlocks(base: string, search: string, replace: string): EditBlock | null {
+  if (!search.trim() || BLOCK_START_RE.test(search)) return { search, replace }
+  if (base.includes(`<p>${search}</p>`)) return { search: `<p>${search}</p>`, replace }
+  const single = SINGLE_P_RE.exec(replace)
+  if (single) return { search, replace: single[1] }
+  return BLOCK_START_RE.test(replace) ? null : { search, replace }
+}
 
 export const replaceSelectionTool = defineTool<{ html: string }>({
   ...schemaOf('replace_selection'),
@@ -445,33 +473,57 @@ export const replaceSelectionTool = defineTool<{ html: string }>({
     const editor = ctx.editor.current()
     if (editor) ctx.selection.relocate()
     const range = ctx.selection.range()
-    if (!editor || !range) {
-      return { ok: false, retryable: false, content: 'The selection could not be found in the editor.', trace: '⚠️ selection rewrite: no selection' }
+    const target = resolveTarget(undefined, ctx)
+    const gone: ToolResult = {
+      ok: false,
+      retryable: false,
+      content: 'The selected text is no longer where it was, so nothing was written.',
+      trace: '⚠️ selection rewrite: the selection is gone',
+      effects: { selectionGone: true }
+    }
+    if (typeof target === 'string') return gone
+
+    const restored = stripBlankParagraphs(ctx.images.restore(cleaned))
+    const done = (): ToolResult => {
+      ctx.run.selectionApplied = true
+      touch(ctx, target, 'selection', 1, 0)
+      return { ok: true, content: 'The selection was rewritten.', trace: '✏️ rewrote the selection' }
     }
 
-    const target = resolveTarget(undefined, ctx)
-    const restored = stripBlankParagraphs(ctx.images.restore(cleaned))
-    const diffed = diffHtml(ctx.selection.originalText(), restored)
-    // The selection lives in the chapter the turn started on; if another one
-    // is open now, the range points into the wrong document.
-    const placed = typeof target !== 'string' && ctx.document.openId() === target.id &&
-      ctx.editor.replaceRange(range.from, ctx.selection.end() ?? range.to, diffed) !== null
-    if (!placed || typeof target === 'string') {
-      // The selection is gone (chapter switched, document shortened). Say so
-      // rather than throwing the turn away: the text is in the chat for the
-      // user to place themselves.
-      return {
-        ok: false,
-        retryable: false,
-        content: 'The selected text is no longer where it was, so nothing was written.',
-        trace: '⚠️ selection rewrite: the selection is gone',
-        effects: { selectionGone: true }
+    // On screen: through the editor, at the captured range. A range that no
+    // longer fits means the document changed under the reply — reported, not
+    // forced in from the turn's original over whatever is there now.
+    if (ctx.document.openId() === target.id) {
+      if (!editor || !range) {
+        return { ok: false, retryable: false, content: 'The selection could not be found in the editor.', trace: '⚠️ selection rewrite: no selection' }
       }
+      if (ctx.editor.replaceRange(range.from, ctx.selection.end() ?? range.to, diffHtml(ctx.selection.originalText(), restored)) === null) return gone
+      commitHtml(ctx, target.id, editor.getHTML())
+      return done()
     }
-    commitHtml(ctx, target.id, editor.getHTML())
-    ctx.run.selectionApplied = true
-    touch(ctx, target, 'selection', 1, 0)
-    return { ok: true, content: 'The selection was rewritten.', trace: '✏️ rewrote the selection' }
+    if (!ctx.selection.originalText()) return gone
+
+    /*
+     * Problem: the user may open another chapter while the run works, and
+     *   then the range points into a document no longer on screen. The
+     *   rewrite was dropped as "the selection is gone" (2026-10-06: 2510
+     *   characters lost) — and a selection preview that had already
+     *   streamed part of it into the store stayed there, half-written.
+     * Fix: place it in the stored chapter by its text instead, from the
+     *   turn's original. The selection's chapter is locked for the whole
+     *   turn, so nothing but this run has changed it since — and starting
+     *   from the original also replaces any half-streamed preview.
+     */
+    const base = ctx.images.preserve(ctx.document.original)
+    const aligned = alignSelectionBlocks(base, ctx.images.preserve(ctx.selection.originalText()), ctx.images.preserve(restored))
+    const placed = aligned ? applyEditBlocksLocally(base, [aligned]) : null
+    if (placed && placed.failed.length === 0) {
+      commitHtml(ctx, target.id, ctx.images.restore(placed.html))
+      return done()
+    }
+    // Not found either: say so, and take back a half-streamed preview.
+    if (storedContent(ctx, target.id) !== ctx.document.original) commitHtml(ctx, target.id, ctx.document.original)
+    return gone
   }
 })
 

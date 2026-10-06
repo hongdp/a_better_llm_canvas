@@ -118,6 +118,13 @@ describe('read_chapter', () => {
     expect(repeat.content).toContain('already returned in step 1')
   })
 
+  it('reads a range that arrives wrapped in an extra pair of quotes (grok, 2026-10-06)', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: 'x', content: '<p>一</p><p>二</p><p>三</p>' }] })
+    const r = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2], paragraphs: '"2-3"' }), f.ctx))
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('¶2–¶3 of 3')
+  })
+
   it('states the size of a paragraph range, so a length can be planned from a number, not a guess', async () => {
     const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '原文', content: '<p>一二三</p><p>四五六七</p><p>八九</p>' }] })
     const r = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2], paragraphs: '2-3' }), f.ctx))

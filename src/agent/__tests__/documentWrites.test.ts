@@ -317,3 +317,41 @@ describe('write results state the chapter\'s length (counted like a read)', () =
     expect(e.content).toContain('It now has 9 characters.')
   })
 })
+
+describe('a selection rewrite while the user is in another chapter (2026-10-06)', () => {
+  const book = (original: string, selected: string) => {
+    const f = fakeContext(original, {
+      editorHtml: '<p>THE OTHER CHAPTER</p>',
+      selection: { from: 1, to: 5 },
+      selectedText: selected,
+      chapters: [{ id: 'doc-2', title: 'other', content: '<p>THE OTHER CHAPTER</p>' }]
+    })
+    f.userOpens('doc-2')
+    return f
+  }
+
+  it('places it in its own chapter by its text, without nesting a paragraph', () => {
+    const f = book('<p>开头。被选中的半句，后面还有。</p>', '被选中的半句')
+    const r = replaceSelectionTool.invoke(call('replace_selection', { html: '<p>被选中而且扩写了的半句</p>' }), f.ctx) as ToolResult
+    expect(r.ok).toBe(true)
+    expect(stripDiffMarkup(f.lastWrite('doc-1') ?? '')).toBe('<p>开头。被选中而且扩写了的半句，后面还有。</p>')
+    expect(f.lastWrite('doc-2')).toBeUndefined()
+  })
+
+  it('cannot place several paragraphs into part of one: reports it, and takes back a half-streamed preview', () => {
+    const f = book('<p>开头。被选中的半句，后面还有。</p>', '被选中的半句')
+    f.userEdits('doc-1', '<p>开头。被选中的半…（预览写了一半）</p>')
+    const r = replaceSelectionTool.invoke(call('replace_selection', { html: '<p>第一段</p><p>第二段</p>' }), f.ctx) as ToolResult
+    expect(r).toMatchObject({ ok: false, effects: { selectionGone: true } })
+    expect(f.lastWrite('doc-1')).toBe('<p>开头。被选中的半句，后面还有。</p>')
+  })
+
+  it('edits beside it read the selection chapter\'s stored text, never the chapter on screen', () => {
+    const f = book('<p>被选中的一段。</p><p>后面一句。</p>', '<p>被选中的一段。</p>')
+    expect((replaceSelectionTool.invoke(call('replace_selection', { html: '<p>改写后的一段。</p>' }), f.ctx) as ToolResult).ok).toBe(true)
+    const e = editDocumentTool.invoke(call('edit_document', edit('<p>后面一句。</p>', '<p>后面衔接的一句。</p>')), f.ctx) as ToolResult
+    expect(e.ok).toBe(true)
+    expect(stripDiffMarkup(f.lastWrite('doc-1') ?? '')).toBe('<p>改写后的一段。</p><p>后面衔接的一句。</p>')
+    expect(f.lastWrite('doc-2')).toBeUndefined()
+  })
+})
