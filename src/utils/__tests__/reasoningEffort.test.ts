@@ -16,6 +16,21 @@ describe('supportedReasoningEfforts', () => {
     expect(supportedReasoningEfforts('grok', 'grok-3-mini')).toEqual(['default', 'low', 'high'])
   })
 
+  it('follows what api.x.ai actually accepted when probed (2026-10-05)', () => {
+    // grok-4.7 and grok-4.3 took every level; they were missing from the
+    // table, so the UI offered only the provider default for them.
+    expect(supportedReasoningEfforts('grok', 'grok-4.7')).toEqual(['default', 'low', 'medium', 'high', 'xhigh'])
+    expect(supportedReasoningEfforts('grok', 'grok-4.3')).toEqual(['default', 'low', 'medium', 'high', 'xhigh'])
+    expect(supportedReasoningEfforts('grok', 'grok-4.3-latest')).toEqual(['default', 'low', 'medium', 'high', 'xhigh'])
+    // grok-4.20 rejects the parameter, so offering levels only cost a 400
+    // and a retry per turn. Every 4.20 id shares that, whatever its suffix.
+    expect(supportedReasoningEfforts('grok', 'grok-4.20-0309-reasoning')).toEqual(['default'])
+    expect(supportedReasoningEfforts('grok', 'grok-4.20')).toEqual(['default'])
+    expect(resolveReasoningEffort('grok', 'grok-4.20-0309-reasoning', 'high')).toBeNull()
+    // A two-digit minor must not be mistaken for its first digit.
+    expect(supportedReasoningEfforts('grok', 'grok-4.35')).toEqual(['default'])
+  })
+
   it('offers nothing but the provider default for a model with no such control', () => {
     // An unknown model is not assumed to accept the parameter — sending it
     // would 400 a turn for a setting the user cannot benefit from.
@@ -73,7 +88,9 @@ describe('isReasoningEffortRejection', () => {
       'Unsupported parameter: reasoning_effort',
       '{"error":"reasoning_effort is not supported for this model"}',
       'Unknown field: thinking',
-      'invalid value for reasoning_effort'
+      'invalid value for reasoning_effort',
+      // api.x.ai's wording for grok-4.20, observed 2026-10-05
+      '{"code":"invalid-argument","error":"Model grok-4.20-0309-reasoning does not support parameter reasoningEffort."}'
     ]) expect(isReasoningEffortRejection(msg), msg).toBe(true)
   })
 
