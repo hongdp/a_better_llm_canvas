@@ -9,16 +9,10 @@ import { loadSavedActiveDocId } from '../settingsPersistence'
 // bodies, which run long after both modules have finished evaluating.
 import { useAppStore } from '../useAppStore'
 
-/**
- * "Nothing there" as the editor writes it: an empty string, or the empty
- * paragraph ProseMirror keeps because a document must contain one block.
- */
-export function isBlankContent(html: string): boolean {
-  // Media carries no text but is very much content — a chapter holding only a
-  // generated illustration must not read as empty to the guard below.
-  if (/<(img|video|audio|iframe)\b/i.test(html)) return false
-  return !html.replace(/<[^>]+>/g, '').replace(/&nbsp;|\s/g, '')
-}
+// Pure, so it lives with the other HTML helpers; re-exported for the guard's
+// existing callers and tests.
+import { isBlankContent } from '../../utils/text'
+export { isBlankContent }
 
 export interface DocumentsSlice {
   // Multi-document state
@@ -40,7 +34,12 @@ export interface DocumentsSlice {
   setWholeBookMode: (mode: 'off' | 'once' | 'sticky') => void
 
   setActiveDocumentId: (id: string) => void
-  addDocument: (title?: string, content?: string) => string
+  /**
+   * Append a chapter and return its id. `activate: false` leaves the open
+   * chapter alone — the agent creates a chapter first and opens it only when
+   * its first write starts (agentic_chat_loop.md D6).
+   */
+  addDocument: (title?: string, content?: string, options?: { activate?: boolean }) => string
   importAllDocuments: (docs: { title: string; content: string }[]) => void
   reorderDocuments: (newDocs: CanvasDocument[]) => void
   deleteDocument: (id: string) => void
@@ -111,9 +110,11 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
       })
     },
 
-    addDocument: (title = 'New Chapter', content = '<p>Start writing...</p>') => {
+    addDocument: (title = 'New Chapter', content = '<p>Start writing...</p>', options) => {
+      const activate = options?.activate !== false
       const newDoc: CanvasDocument = {
-        id: `doc-${Date.now()}`,
+        // Suffixed: the agent can create two chapters in one millisecond.
+        id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         title,
         content,
         contentLoaded: true,
@@ -127,8 +128,9 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
       set((state) => {
         const updatedDocs = [...state.documents, newDoc]
         saveDocumentsToIndexedDB(updatedDocs, true)
-        localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         docId = newDoc.id
+        if (!activate) return { documents: updatedDocs }
+        localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         return {
           documents: updatedDocs,
           activeDocumentId: newDoc.id,
@@ -259,6 +261,16 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
 
     updateDocument: (id, updates) => {
       set((state) => {
+        // The same backstop as updateActiveDocument: the agentic loop writes
+        // chapters that are not open, and this is the path those writes take.
+        const target = state.documents.find(d => d.id === id)
+        if (target && updates.content !== undefined && isBlankContent(updates.content) && !isBlankContent(target.content)) {
+          console.error(
+            '[documents] Refused to blank a non-empty chapter.',
+            { documentId: target.id, hadChars: target.content.length }
+          )
+          return {}
+        }
         const updatedDocs = state.documents.map((d) => {
           if (d.id === id) {
             return {

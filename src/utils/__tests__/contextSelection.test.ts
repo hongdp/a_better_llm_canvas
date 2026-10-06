@@ -54,6 +54,22 @@ describe('extractKeywords', () => {
 
 // ── selectReferenceChapters: signals ──────────────────────────────────────────
 describe('selectReferenceChapters signals', () => {
+  it('admits a chapter the model read with a tool last turn, where continuity alone would not', () => {
+    // 'd' is not adjacent to the active 'b': the read is its only signal.
+    const continuityOnly = selectReferenceChapters(baseInput({ previousAttachedIds: ['d'] }))
+    expect(continuityOnly.autoIds).not.toContain('d')
+
+    const readByModel = selectReferenceChapters(baseInput({ modelReadIds: ['d'] }))
+    expect(readByModel.autoIds).toContain('d')
+    expect(readByModel.scores['d']).toBe(60)
+  })
+
+  it('does not re-score a model-read chapter that is already in the ledger', () => {
+    const result = selectReferenceChapters(baseInput({ modelReadIds: ['d'], ledgerIds: ['d'] }))
+    expect(result.attachedIds).toContain('d')
+    expect(result.autoIds).not.toContain('d')
+  })
+
   it('attaches a chapter whose title is mentioned in the prompt', () => {
     const result = selectReferenceChapters(baseInput({ promptText: 'Compare this with Chapter 3: Ashfall' }))
     expect(result.autoIds).toContain('c')

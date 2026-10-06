@@ -17,6 +17,7 @@ export type { DocumentVersion, CanvasDocument } from '../types/document'
 // (e.g. main.tsx, SettingsModal) keep working unchanged.
 export { DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from './defaults'
 export { initializeStoreFromServer } from './serverSync'
+export { isEditLocked } from './slices/chatSlice'
 
 import type { LLMProvider, ProviderConfig, SystemPromptTemplate } from '../types/llm'
 import type { ChatMessage } from '../types/chat'

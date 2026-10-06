@@ -29,7 +29,7 @@ import {
   Undo2,
   Redo2,
 } from 'lucide-react'
-import { useAppStore } from '../store/useAppStore'
+import { useAppStore, isEditLocked } from '../store/useAppStore'
 // TipTap extension definitions live in editorExtensions.ts so this file only
 // exports components (react-refresh/only-export-components).
 import { IndentExtension, DiffAddition, DiffDeletion, CustomImage, BlurredSelection, ParagraphsFromLineBreaks } from './editorExtensions'
@@ -56,7 +56,10 @@ export const Editor: React.FC<EditorProps> = ({
   isActive = true,
   rootScroll = false
 }) => {
-  const { setSelectedText, setActiveEditor, isStreaming } = useAppStore()
+  const { setSelectedText, setActiveEditor } = useAppStore()
+  // Read-only only while the assistant is writing into THIS chapter; the
+  // rest of the book stays editable during a turn (agentic_chat_loop.md §0.4).
+  const editLocked = useAppStore(s => isEditLocked(s, documentId ?? s.activeDocumentId))
 
   // Track content strings that originated FROM this editor's onUpdate.
   // When the content prop changes because of our own edit (user typed/pasted → onUpdate
@@ -198,7 +201,8 @@ export const Editor: React.FC<EditorProps> = ({
     }
   }, [content, editor])
 
-  // Disable user editing (make it read-only) while LLM is streaming to avoid sync issues.
+  // Read-only while the assistant writes into this chapter, to avoid sync
+  // issues (a live preview paints over it).
   //
   // Problem: stopping a generation mid-stream rolled the editor back to the
   //   pre-stream document, yet a reload showed the half-streamed draft — the
@@ -216,9 +220,9 @@ export const Editor: React.FC<EditorProps> = ({
   //   must publish none; only real transactions reach the store.
   useEffect(() => {
     if (editor) {
-      editor.setEditable(!isStreaming, false)
+      editor.setEditable(!editLocked, false)
     }
-  }, [editor, isStreaming])
+  }, [editor, editLocked])
 
   // ── Per-chapter scroll memory ────────────────────────────────────────────
   // Mobile Firefox discards a backgrounded tab and reloads it on return, so

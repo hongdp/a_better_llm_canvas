@@ -16,8 +16,9 @@ import { DOMSerializer } from '@tiptap/pm/model'
 import type { LLMMessage } from '../../types/llm'
 
 type ToolDelta = { index: number; name?: string; argumentsText: string }
-type Scripted = { chunks: string[]; toolCalls?: ToolDelta[]; beforeDone?: () => void }
+type Scripted = { chunks: string[]; toolCalls?: ToolDelta[]; beforeDone?: () => void; afterChunk?: (index: number) => void }
 const responses: Scripted[] = []
+const requests: LLMMessage[][] = []
 vi.mock('../../services/llm', () => ({
   streamLLM: async (
     _m: LLMMessage[],
@@ -28,13 +29,15 @@ vi.mock('../../services/llm', () => ({
       onToolCallDelta?: (d: ToolDelta) => void
     }
   ) => {
+    requests.push(_m)
     const r = responses.shift() ?? { chunks: [] }
     let full = ''
-    for (const ch of r.chunks) {
+    r.chunks.forEach((ch, i) => {
       full += ch
       cb.onChunk(ch)
       vi.setSystemTime(Date.now() + 300)   // past the preview throttle
-    }
+      r.afterChunk?.(i)
+    })
     for (const d of r.toolCalls ?? []) cb.onToolCallDelta?.(d)
     r.beforeDone?.()
     cb.onDone(full, { promptTokens: 10, completionTokens: 20 })
@@ -46,6 +49,7 @@ import { useChatLLM } from '../useChatLLM'
 import { useAppStore } from '../../store/useAppStore'
 import { CustomImage, DiffAddition, DiffDeletion } from '../../components/editorExtensions'
 import { stripDiffMarkup } from '../../utils/diff'
+import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 
 const extensions = [StarterKit.configure({ strike: false }), DiffAddition, DiffDeletion, CustomImage]
 const realEditor = (content: string) => new Editor({ element: document.createElement('div'), extensions, content })
@@ -114,6 +118,8 @@ const bubble = () => useAppStore.getState().messages.filter(m => m.role === 'ass
 const RAW_MARKUP = /<edit|<{5,}|={5,}|>{5,}|<canvas|<selection_replace/
 
 beforeEach(() => {
+  responses.length = 0
+  requests.length = 0
   vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -185,15 +191,46 @@ describe('a selection rewrite with an edit beside it', () => {
     h.unmount(); editor.destroy()
   })
 
-  it('reports an edit it cannot locate, without showing it, and still applies the selection', async () => {
+  it('hands an edit it cannot locate back to the model, which fixes it, and keeps the selection', async () => {
+    // The agentic loop (spec D3): an unmatched SEARCH is a failure the model
+    // can fix, so it is fed back instead of ending the turn with a warning.
     const { editor, selectedText } = setup()
     responses.push({ chunks: [`好的。\n<selection_replace>${SEL_NEW}</selection_replace>\n${editMarkup('<p>文档里并没有这一句。</p>', EDIT_REPLACE)}`] })
+    responses.push({ chunks: [`改正了衔接句。\n${editMarkup(EDIT_SEARCH, EDIT_REPLACE)}\n<doc_status>updated</doc_status>`] })
 
     const h = await send(editor, selectedText)
+    await act(async () => { await Promise.resolve() })
+
+    // Failed edit, fixed edit, closing reply.
+    expect(requests).toHaveLength(3)
+    // The second step was told exactly which SEARCH text failed.
+    expect(requests[1].at(-1)?.content).toContain('<p>文档里并没有这一句。</p>')
+    expect(accepted(stored())).toBe(EXPECTED)
+    expect(bubble()).not.toMatch(RAW_MARKUP)
+    // Fixed, so nothing to warn about.
+    expect(bubble()).not.toContain('could not be located')
+    h.unmount(); editor.destroy()
+  })
+
+  it('corrects its own selection rewrite in a later step, as one pending diff (reported 2026-10-06)', async () => {
+    // The rewrite came out with a stray English word; the model's edit to
+    // remove it was refused as "a diff nested in a diff" and reported as
+    // "not found", twice. The edit lands inside the unreviewed insertion now.
+    const { editor, selectedText } = setup()
+    const flawed = '<p>被选中的这一段文字， entrained 补上了更多细节。</p>'
+    responses.push({ chunks: [`好的。\n<selection_replace>${flawed}</selection_replace>\n<doc_status>updated</doc_status>`] })
+    responses.push({ chunks: [`删掉混进来的英文词。\n${editMarkup('这一段文字， entrained 补上了', '这一段文字，补上了')}\n<doc_status>updated</doc_status>`] })
+    responses.push({ chunks: ['好了。'] })
+
+    const h = await send(editor, selectedText)
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve() })
 
     expect(accepted(stored())).toBe(normalize('<p>开头的一段话。</p>' + SEL_NEW + '<p>中间保持不变的一段。</p><p>后面需要衔接的一句话。</p>'))
-    expect(bubble()).not.toMatch(RAW_MARKUP)
-    expect(bubble()).toContain('1 suggested change could not be located')
+    // Still under review, and rejecting returns the confirmed text.
+    expect(stored()).toMatch(/diff-addition/)
+    expect(normalize(resolveDiffMarkupInHtml(stored(), 'reject')).replace(/<p><\/p>/g, '')).toBe(normalize(DOC))
+    expect(stored()).not.toContain('entrained')
+    expect(bubble()).not.toContain('could not be located')
     h.unmount(); editor.destroy()
   })
 
@@ -226,6 +263,44 @@ describe('a selection that disappeared while the reply streamed', () => {
     expect(bubble()).toContain('no longer where it was')
     expect(bubble()).toContain('1 suggested change could not be located')
     expect(bubble()).not.toMatch(RAW_MARKUP)
+    h.unmount(); editor.destroy()
+  })
+})
+
+// Switching chapters mid-turn is allowed (agentic loop, D2). A selection
+// preview writes REAL transactions at the selection's offsets, so it must stop
+// the moment the editor shows another chapter — and the rewrite still lands in
+// the selection's own chapter, placed by its text (2026-10-06: it used to be
+// dropped as "the selection is gone").
+describe('the user switching chapters during a selection rewrite', () => {
+  it('stops previewing into the chapter now open, and places the rewrite in the selection\'s chapter', async () => {
+    const { editor, selectedText } = setup()
+    // Longer than the selection's offsets, so a stray preview WOULD land in it.
+    const OTHER = '<p>第二章第一段，是一段比较长的文字，足够容纳原来选区的位置。</p><p>第二章第二段，同样足够长，不会让写入因为越界而落空。</p><p>第二章第三段。</p>'
+    useAppStore.setState(st => ({
+      documents: [...st.documents, { id: 'doc-2', title: '第二章', content: OTHER, contentLoaded: true, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }]
+    }))
+    responses.push({
+      chunks: ['好的。\n<selection_replace><p>被选中的这一段', '文字，补上了更多细节。</p>', '</selection_replace>\n<doc_status>updated</doc_status>'],
+      afterChunk: i => {
+        if (i !== 0) return
+        // The user clicks chapter 2; Editor.tsx loads it into the editor.
+        useAppStore.getState().setActiveDocumentId('doc-2')
+        editor.commands.setContent(OTHER)
+      }
+    })
+
+    const h = await send(editor, selectedText)
+
+    // The chapter the user opened is untouched…
+    expect(editor.getHTML()).toBe(normalize(OTHER))
+    expect(useAppStore.getState().documents.find(d => d.id === 'doc-2')?.content).toBe(OTHER)
+    // …and the selection's chapter has the whole rewrite as one pending diff —
+    // not the half that streamed in before the switch.
+    const first = useAppStore.getState().documents.find(d => d.id === 'doc-1')?.content ?? ''
+    expect(accepted(first)).toBe(normalize('<p>开头的一段话。</p>' + SEL_NEW + '<p>中间保持不变的一段。</p><p>后面需要衔接的一句话。</p>'))
+    expect(first).toMatch(/diff-addition/)
+    expect(bubble()).not.toContain('no longer where it was')
     h.unmount(); editor.destroy()
   })
 })

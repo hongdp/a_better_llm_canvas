@@ -49,7 +49,19 @@ export function getChapterDigest(doc: IndexableDoc, maxChars: number = INDEX_DIG
  * the index churns whenever a summary regenerates, and the system prompt's
  * byte-stability is what provider prompt caching depends on.
  */
-export function buildChapterIndex(documents: IndexableDoc[], activeDocumentId: string | null): string {
+/** Options for the agentic loop (agentic_chat_loop.md D2, D6, D8). */
+export interface ChapterIndexOptions {
+  /** The model can write any chapter, so the active line must not say otherwise. */
+  agentTools?: boolean
+  /** Freshness markers by chapter id, e.g. "in context" (D8). */
+  markers?: Record<string, string>
+}
+
+export function buildChapterIndex(
+  documents: IndexableDoc[],
+  activeDocumentId: string | null,
+  options: ChapterIndexOptions = {}
+): string {
   if (documents.length < 2) return ''
   const digestMax = documents.length > LARGE_BOOK_CHAPTER_THRESHOLD
     ? LARGE_BOOK_DIGEST_MAX_CHARS
@@ -57,9 +69,21 @@ export function buildChapterIndex(documents: IndexableDoc[], activeDocumentId: s
 
   const lines = documents.map((doc, idx) => {
     const active = doc.id === activeDocumentId
-    const marker = active ? ' [ACTIVE — this is the document you can edit]' : ''
-    const digest = active ? '' : ` — ${getChapterDigest(doc, digestMax)}`
-    return `${idx + 1}. "${doc.title}"${marker}${digest}`
+    const marker = active
+      ? options.agentTools
+        ? ' [ACTIVE — open in the editor; writes go here unless you name another chapter]'
+        : ' [ACTIVE — this is the document you can edit]'
+      : ''
+    const freshness = options.markers?.[doc.id] ? ` [${options.markers[doc.id]}]` : ''
+    let digest = ''
+    if (!active) {
+      const text = getChapterDigest(doc, digestMax)
+      // A chapter with no summary yet and no loaded text has nothing to show
+      // but its title; say so, so the model knows the title is all it has
+      // and reads or searches instead of guessing (D6).
+      digest = text ? ` — ${text}` : options.agentTools ? ' — (not summarized yet)' : ' — '
+    }
+    return `${idx + 1}. "${doc.title}"${marker}${freshness}${digest}`
   })
 
   return `CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):

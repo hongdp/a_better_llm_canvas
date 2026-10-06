@@ -5,7 +5,7 @@
  * store — the ref-coupled parts (live previews, editor transactions, the
  * retry re-dispatch) stay in useChatLLM.
  */
-import { stripDocStatus } from '../../utils/text'
+import { stripDocStatus, chapterAttribute } from '../../utils/text'
 
 // Recovery rounds per turn when the model answers a write request without any
 // action tag (nothing reaches the document). Measured against grok-4.5 on a
@@ -61,6 +61,12 @@ export interface StreamingSplit {
   chatText: string
   /** Body of a (possibly still-open) <canvas> block; empty when absent. */
   canvasText: string
+  /**
+   * The chapter the canvas's `chapter="…"` attribute names. The live preview
+   * is routed by it: another chapter's text must never paint over the one
+   * that is open (spec D2).
+   */
+  canvasChapter?: string
   /** Body of a (possibly still-open) <selection_replace> block; empty when absent. */
   selectionReplaceText: string
   isSelectionEdit: boolean
@@ -197,7 +203,7 @@ export function clampSelectionRange(
  */
 // Where document markup begins in text that is otherwise chat. Hidden while
 // streaming; the final parse applies it or reports it, and never shows it.
-const MARKUP_START_RE = /<edits?\b|<{5,}\s*SEARCH|<canvas>|<selection_replace>/i
+const MARKUP_START_RE = /<edits?\b|<{5,}\s*SEARCH|<canvas\b|<selection_replace>/i
 const chatPart = (text: string): string => {
   const at = text.search(MARKUP_START_RE)
   return (at === -1 ? text : text.slice(0, at)).trim()
@@ -206,15 +212,18 @@ const chatPart = (text: string): string => {
 export function splitStreamingResponse(raw: string): StreamingSplit {
   let chatText: string
   let canvasText = ''
+  let canvasChapter: string | undefined
   let selectionReplaceText = ''
   let isSelectionEdit = false
 
-  const canvasStart = '<canvas>'
   const canvasEnd = '</canvas>'
   const selectionStart = '<selection_replace>'
   const selectionEndTag = '</selection_replace>'
 
-  const canvasIdx = raw.indexOf(canvasStart)
+  // The opening tag may carry a chapter attribute; it counts once its `>`
+  // has arrived. Until then chatPart below keeps the half-tag out of the bubble.
+  const canvasOpen = /<canvas\b[^>]*>/i.exec(raw)
+  const canvasIdx = canvasOpen ? canvasOpen.index : -1
   const selectionIdx = raw.indexOf(selectionStart)
   // First sign of an <edit> block (open tag or a SEARCH conflict marker).
   const editMatchIdx = raw.search(/<edit\b|<{5,}\s*SEARCH/i)
@@ -236,7 +245,8 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
     chatText = raw.substring(0, editMatchIdx).trim()
   } else if (canvasIdx !== -1) {
     chatText = raw.substring(0, canvasIdx).trim()
-    const rest = raw.substring(canvasIdx + canvasStart.length)
+    canvasChapter = chapterAttribute((canvasOpen as RegExpExecArray)[0])
+    const rest = raw.substring(canvasIdx + (canvasOpen as RegExpExecArray)[0].length)
     const endIdx = rest.indexOf(canvasEnd)
     if (endIdx !== -1) {
       canvasText = rest.substring(0, endIdx)
@@ -245,10 +255,11 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
       canvasText = rest
     }
   } else {
-    chatText = raw
+    // A tag still arriving (`<canvas chap`) is markup, not chat.
+    chatText = MARKUP_START_RE.test(raw) ? chatPart(raw) : raw
   }
 
-  return { chatText: stripDocStatus(chatText), canvasText, selectionReplaceText, isSelectionEdit }
+  return { chatText: stripDocStatus(chatText), canvasText, canvasChapter, selectionReplaceText, isSelectionEdit }
 }
 
 /**

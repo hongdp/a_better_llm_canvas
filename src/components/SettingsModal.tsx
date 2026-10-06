@@ -2,6 +2,9 @@ import React, { useState } from 'react'
 import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert, Image, RotateCcw } from 'lucide-react'
 import { useAppStore, type LLMProvider, PROVIDER_MODELS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
+import { defaultMaxSteps, defaultContinueAfterWrites } from '../agent/policy'
+import { defaultPolishModel } from '../agent/polish'
+import { DEFAULT_POLISH_PROMPT } from '../store/defaults'
 import { useModelFetcher } from '../hooks/useModelFetcher'
 import { supportsReasoningEffort, supportedReasoningEfforts, DEFAULT_REASONING_EFFORT } from '../utils/reasoningEffort'
 import { autoProtocolFor } from '../utils/protocolChoice'
@@ -17,6 +20,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     setProvider,
     providerConfigs, 
     updateProviderConfig,
+    polishPrompt,
+    setPolishPrompt,
     availableGeminiModels,
     availableGrokModels,
     availableOllamaModels,
@@ -300,6 +305,103 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   {t.settings.documentProtocolHint}
                 </p>
               </div>
+
+              {/* The agentic loop (docs/features/agentic_chat_loop.md), per
+                  provider: what a turn may read and how many steps it takes. */}
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={currentConfig.agentTools !== false}
+                    onChange={(e) => updateProviderConfig(activeTab, { agentTools: e.target.checked })}
+                  />
+                  {t.settings.agentTools}
+                </label>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                  {t.settings.agentToolsHint}
+                </p>
+              </div>
+              <div className="form-group">
+                <label htmlFor="polish-model-input">{t.settings.polishModel}</label>
+                <input
+                  id="polish-model-input"
+                  type="text"
+                  className="form-input"
+                  placeholder={defaultPolishModel(activeTab, currentConfig.model)}
+                  value={currentConfig.polishModel ?? ''}
+                  onChange={(e) => updateProviderConfig(activeTab, { polishModel: e.target.value || undefined })}
+                />
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                  {t.settings.polishModelHint(defaultPolishModel(activeTab, currentConfig.model))}
+                </p>
+                <details style={{ marginTop: '0.5rem' }}>
+                  <summary style={{ cursor: 'pointer', fontSize: '0.85rem' }}>{t.settings.polishPrompt}</summary>
+                  <label htmlFor="polish-system-input" style={{ display: 'block', marginTop: '0.5rem', fontSize: '0.8rem' }}>{t.settings.polishSystem}</label>
+                  <textarea
+                    id="polish-system-input"
+                    className="form-input"
+                    rows={2}
+                    value={polishPrompt.system}
+                    onChange={(e) => setPolishPrompt({ ...polishPrompt, system: e.target.value })}
+                  />
+                  <label htmlFor="polish-template-input" style={{ display: 'block', marginTop: '0.5rem', fontSize: '0.8rem' }}>{t.settings.polishTemplate}</label>
+                  <textarea
+                    id="polish-template-input"
+                    className="form-input"
+                    rows={10}
+                    value={polishPrompt.template}
+                    onChange={(e) => setPolishPrompt({ ...polishPrompt, template: e.target.value })}
+                  />
+                  <button
+                    type="button"
+                    className="btn-secondary"
+                    style={{ marginTop: '0.4rem' }}
+                    onClick={() => setPolishPrompt({ ...DEFAULT_POLISH_PROMPT })}
+                  >
+                    {t.settings.polishReset}
+                  </button>
+                </details>
+              </div>
+
+              {currentConfig.agentTools !== false && (
+                <>
+                  <div className="form-group">
+                    <label htmlFor="agent-max-steps-input">{t.settings.agentMaxSteps}</label>
+                    <input
+                      id="agent-max-steps-input"
+                      type="number"
+                      min={0}
+                      step={1}
+                      className="form-input"
+                      placeholder={String(defaultMaxSteps(activeTab))}
+                      value={currentConfig.agentMaxSteps ?? ''}
+                      onChange={(e) => {
+                        const raw = e.target.value
+                        const n = Number(raw)
+                        updateProviderConfig(activeTab, {
+                          agentMaxSteps: raw === '' || !Number.isFinite(n) || n < 0 ? undefined : Math.floor(n)
+                        })
+                      }}
+                    />
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                      {t.settings.agentMaxStepsHint(defaultMaxSteps(activeTab))}
+                    </p>
+                  </div>
+                  <div className="form-group">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={currentConfig.continueAfterWrites ?? defaultContinueAfterWrites(activeTab)}
+                        onChange={(e) => updateProviderConfig(activeTab, { continueAfterWrites: e.target.checked })}
+                      />
+                      {t.settings.continueAfterWrites}
+                    </label>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                      {t.settings.continueAfterWritesHint}
+                    </p>
+                  </div>
+                </>
+              )}
 
               {/* Debug Mode Checkbox */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>

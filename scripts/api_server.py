@@ -46,6 +46,26 @@ from server_content import (
 from server_migration import migrate_legacy_files
 
 # Initialize FastAPI app
+
+def _agent_json(msg):
+    """An agentic turn's record (AgentTurnRecord), serialized for the messages
+    table — or None for an ordinary message."""
+    agent = msg.get("agent")
+    return json.dumps(agent, ensure_ascii=False) if isinstance(agent, dict) else None
+
+
+def _agent_field(row):
+    """The record back out of a messages row, as the client sent it. A value
+    that no longer parses is dropped rather than failing the whole load."""
+    raw = row["agent"] if "agent" in row.keys() else None
+    if not raw:
+        return {}
+    try:
+        agent = json.loads(raw)
+    except ValueError:
+        return {}
+    return {"agent": agent} if isinstance(agent, dict) else {}
+
 app = FastAPI(title="Web Canvas Backend API", version="2.0.0")
 
 # CORS middleware configuration
@@ -166,8 +186,8 @@ async def create_book(request: Request):
             msg_id = msg.get("id", f"msg-{int(datetime.now().timestamp() * 1000)}-{idx}")
             conn.execute(
                 """INSERT INTO messages (id, username, book_id, role, content, timestamp,
-                   thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order, agent)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     msg_id, username, book_id,
                     msg.get("role", "assistant"),
@@ -178,7 +198,8 @@ async def create_book(request: Request):
                     msg.get("inputTokens"),
                     msg.get("outputTokens"),
                     msg.get("cacheHitTokens"),
-                    idx
+                    idx,
+                    _agent_json(msg)
                 )
             )
 
@@ -269,6 +290,7 @@ async def get_book(request: Request, book_id: str):
                     **({"inputTokens": m["input_tokens"]} if m["input_tokens"] else {}),
                     **({"outputTokens": m["output_tokens"]} if m["output_tokens"] else {}),
                     **({"cacheHitTokens": m["cache_hit_tokens"]} if m["cache_hit_tokens"] else {}),
+                    **_agent_field(m),
                 }
                 for m in msgs
             ],
@@ -380,8 +402,8 @@ async def update_book(request: Request, book_id: str):
                 msg_id = msg.get("id", f"msg-{int(datetime.now().timestamp() * 1000)}-{idx}")
                 conn.execute(
                     """INSERT INTO messages (id, username, book_id, role, content, timestamp,
-                       thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order, agent)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         msg_id, username, safe_book_id,
                         msg.get("role", "assistant"),
@@ -392,7 +414,8 @@ async def update_book(request: Request, book_id: str):
                         msg.get("inputTokens"),
                         msg.get("outputTokens"),
                         msg.get("cacheHitTokens"),
-                        idx
+                        idx,
+                        _agent_json(msg)
                     )
                 )
 
@@ -846,6 +869,7 @@ async def get_storage_legacy(request: Request, bookId: str = "default"):
                     **({"inputTokens": m["input_tokens"]} if m["input_tokens"] else {}),
                     **({"outputTokens": m["output_tokens"]} if m["output_tokens"] else {}),
                     **({"cacheHitTokens": m["cache_hit_tokens"]} if m["cache_hit_tokens"] else {}),
+                    **_agent_field(m),
                 }
                 for m in msgs
             ],
@@ -982,8 +1006,8 @@ async def save_storage_legacy(request: Request, bookId: str = "default"):
                 msg_id = msg.get("id", f"msg-{int(datetime.now().timestamp() * 1000)}-{idx}")
                 conn.execute(
                     """INSERT INTO messages (id, username, book_id, role, content, timestamp,
-                       thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order, agent)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         msg_id, username, safe_book_id,
                         msg.get("role", "assistant"),
@@ -994,7 +1018,8 @@ async def save_storage_legacy(request: Request, bookId: str = "default"):
                         msg.get("inputTokens"),
                         msg.get("outputTokens"),
                         msg.get("cacheHitTokens"),
-                        idx
+                        idx,
+                        _agent_json(msg)
                     )
                 )
 

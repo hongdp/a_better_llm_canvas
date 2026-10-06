@@ -30,7 +30,8 @@ const MAX_VERSIONS_PER_BOOK = 50
 export interface VersionsSlice {
   // Version history state
   versions: DocumentVersion[]
-  createVersionSnapshot: (title?: string) => void
+  /** Snapshot the active document, or `documentId` when given (agentic writes to other chapters). */
+  createVersionSnapshot: (title?: string, documentId?: string) => void
   /**
    * Async because a snapshot's content may live only on the server: the list
    * arrives as metadata with `content: ''` and is fetched on demand.
@@ -74,17 +75,20 @@ export const createVersionsSlice: StateCreator<AppState, [], [], VersionsSlice> 
   // Version history state
   versions: [],
 
-  createVersionSnapshot: (title = 'Manual Snapshot') => {
+  createVersionSnapshot: (title = 'Manual Snapshot', documentId) => {
     // Computed before the update rather than inside it, so the server write can
     // happen outside the reducer — a fetch belongs nowhere near a state update.
     const state = useAppStore.getState()
-    const activeDoc = state.documents.find(d => d.id === state.activeDocumentId)
+    const targetId = documentId ?? state.activeDocumentId
+    const activeDoc = state.documents.find(d => d.id === targetId)
     if (!activeDoc) return
 
     const bookId = state.activeBookId || 'default'
     const newVersion: DocumentVersion = {
-      id: `ver-${Date.now()}`,
-      documentId: state.activeDocumentId,
+      // Two snapshots in one millisecond (a turn writing two chapters) must
+      // not share an id.
+      id: `ver-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      documentId: targetId,
       bookId,
       timestamp: new Date().toISOString(),
       title,

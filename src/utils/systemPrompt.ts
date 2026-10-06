@@ -42,6 +42,70 @@ export interface ChatSystemPromptOptions {
    * editing, so it is required rather than defaulted.
    */
   protocol: 'tools' | 'markup'
+  /**
+   * The agentic loop's read/navigate tools are offered (agentic_chat_loop.md).
+   * Off ⇒ the prompt is byte-identical to the pre-loop one.
+   */
+  agentTools?: boolean
+  /** Writes that succeed are followed by another step (spec D3). */
+  continueAfterWrites?: boolean
+}
+
+/**
+ * How the turn works once the model can read and move around the book. Only
+ * the loop's mechanics — which chapter a write reaches, when a reply ends the
+ * turn — never what to write.
+ */
+function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
+  const write = protocol === 'markup'
+    ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the number from the CHAPTER INDEX.
+- Before an <edit> on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- A new chapter must exist before it is written: call create_chapter, in an earlier reply or in the same reply as its <canvas chapter="its title"> (creation runs first).
+- The <doc_status> line is required only on a reply that calls no tool.`
+    : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its number in the CHAPTER INDEX.
+- Before edit_document on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- A new chapter must exist before it is written: call create_chapter, in an earlier reply or in the same reply as its update_document (creation runs first; name it by its title).`
+  /*
+   * Problem: the rules said "a reply that calls a tool is not your final
+   *   reply" and "a reply with no action ends your turn". A model that wanted
+   *   to announce a rewrite in one reply and write it in the next had exactly
+   *   one way to do that within the rules: call some tool. grok called
+   *   create_chapter("skip") and left an empty chapter behind (2026-10-06).
+   * Fix: say where the work goes — in the reply that announces it — and
+   *   describe continuing as what follows work, not as what a tool call buys.
+   */
+  const sameReply = protocol === 'markup'
+    ? '"Now I\'ll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">'
+    : '"Now I\'ll rewrite chapter 3" goes in the same reply as its update_document call'
+  const ending = continueAfterWrites
+    ? `- Do each piece of work in the reply that says you are doing it: ${sameReply}. After a reply that changes the document or calls a tool, you receive the results and continue. A reply that does neither ends your turn: send it only when the work is done.`
+    : (protocol === 'markup' ? '- A reply that calls a tool is not your final reply: you receive the results and continue.\n' : '') +
+      '- A reply whose only actions are document changes ENDS your turn. If more work remains after a change, ask for what you need (e.g. read the next chapter) in that same reply.'
+  // Measured 2026-10-06: packed into one reply, four chapters lost their live
+  // preview after the first and were squeezed short (902 chars for one).
+  const series = continueAfterWrites
+    // The tip, not a rule (user decision 2026-10-06): measured, a 19-chapter
+    // run spent 21 of its 40 steps on a lone create_chapter, each re-sending
+    // ~90k tokens of context.
+    ? '- Writing several chapters: ONE chapter per reply — you continue after each. Never put two or more chapters into one reply. You can save a step by creating the next chapter in the same reply that writes this one.'
+    : '- Writing several chapters in a row: ONE chapter per reply. In the reply that writes a chapter, also create the next one — that keeps your turn going, and your next reply writes it. The reply that writes the last chapter creates nothing, and ends the turn. Never put two or more chapters into one reply.'
+  // Whether to look again is the model's judgment, not a rule (user decision
+  // 2026-10-06). Measured: a 19-chapter run read its outline and sources once,
+  // in step 2, and never again — the read tools refused repeats, and nothing
+  // said it could. A note on how far back something sits was considered and
+  // dropped: the model sees its own context, and no number says when it has
+  // lost track. The second line is about the plan, not about how to write.
+  const recheck = `- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. In a long turn, what you read many steps ago is easy to lose track of. Re-read only what you need (a paragraph range, or grep), in the same reply as create_chapter when you are creating the chapter.
+- If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.`
+  return `WORKING ACROSS THE BOOK:
+- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read_chapter — or grep the book when no title or summary says where something is. Do not guess at a chapter you have not read.
+- Paragraphs are numbered like lines (¶12). grep reports the ¶ of each hit; to look closer, read only the paragraphs around it (read_chapter with paragraphs="40-60") rather than the whole chapter.
+- Index markers: [in context] — its full text is in this request; [in context — CHANGED since you last saw it…] — the text in this request is a newer version than the one your earlier replies were based on, so plan from it; [changed since you read it] — read it again before relying on it; [read earlier, not in context] — its text is no longer here.
+- The CURRENT ACTIVE DOCUMENT CONTENT is as of the start of this turn; tool results tell you what changed since.
+${write}
+${ending}
+${series}
+${recheck}`
 }
 
 /**
@@ -166,6 +230,7 @@ Every instruction above, including the user's custom writing instructions, gover
 export function buildChatSystemPrompt(options: ChatSystemPromptOptions): string {
   const { customInstructions, protocol } = options
   const sections = [protocol === 'tools' ? TOOL_PROTOCOL_RULES : MARKUP_PROTOCOL_RULES]
+  if (options.agentTools) sections.push(agentRules(protocol, !!options.continueAfterWrites))
 
   if (customInstructions?.trim()) {
     sections.push(

@@ -98,6 +98,7 @@ def init_db():
                 output_tokens INTEGER,
                 cache_hit_tokens INTEGER,
                 sort_order INTEGER NOT NULL DEFAULT 0,
+                agent TEXT,
                 PRIMARY KEY (username, book_id, id)
             );
 
@@ -144,6 +145,15 @@ def init_db():
             conn.execute("ALTER TABLE documents ADD COLUMN summary TEXT")
             conn.execute("ALTER TABLE documents ADD COLUMN summary_content_hash TEXT")
             print("[Init] Migrated documents table: added summary columns.")
+
+        # Schema migration: an agentic turn's record (timeline, chapters it
+        # changed — src/types/chat.ts AgentTurnRecord), stored as JSON. Without
+        # it the bubble lost its tool timeline and "changed this turn" block on
+        # every reload, because only these fixed columns were ever saved.
+        message_columns = {row["name"] for row in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        if "agent" not in message_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN agent TEXT")
+            print("[Init] Migrated messages table: added agent column.")
 
         conn.commit()
     finally:

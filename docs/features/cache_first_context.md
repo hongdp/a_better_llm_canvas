@@ -339,3 +339,52 @@ jumping back to edit it invalidates the rest. The design **self-heals**: that
 chapter leaves the ledger while it is active, and when it returns its timestamp
 is fresh, so it sorts last from then on. One expensive turn, not a recurring
 one.
+
+## 13. Edits append, they do not cut (2026-10-05)
+
+**The measurement.** On a real turn ("继续第六章", grok via the backend job),
+the writer had revised the outline, which sat fourth in a six-entry ledger.
+The planner treated that as §5's edit case: cut at the outline, re-send
+everything after it, and append the outline at the end. Step 1 hit 4,224 of
+46,312 prompt tokens in the cache (9%), and the first token arrived after
+20.4 s. The ledger order confirms the cut: the outline moved from 4th place to
+last.
+
+**The rule now** (`planLedgerTurn` with `options.render`):
+- **Append, don't cut.** An edited chapter keeps its old copy where it is,
+  byte for byte (`LedgerEntry.text` stores the exact block that was sent).
+  Its new version is appended with the header "(UPDATED — this version
+  replaces the earlier copy of this chapter above; disregard that one)". The
+  old copy is marked `stale`; that is metadata only, and its bytes do not
+  change. This is the "append, never mutate" rule Manus describes for
+  KV-cache hits, and Codex uses the same rule for its context updates (see
+  agentic_chat_loop.md, "Prior art").
+- **Only when cheaper.** The append is taken when what sits after the old
+  copy is larger than the chapter itself. Otherwise the cut is cheaper and
+  stays.
+- **A budget.** Outdated copies may total max(20k chars, 30% of the ledger).
+  Past that, the ledger is cut at the first outdated copy and re-sent clean,
+  as one consolidation.
+- **Leaving removes every copy.** A chapter that leaves (opened,
+  deselected, deleted) takes all its copies with it. A chapter re-sent after a
+  cut, with an old copy still above it, carries the UPDATED header.
+
+The model is told in two places: the header on the new copy, and the index
+marker "[in context — CHANGED since you last saw it…]" (agentic_chat_loop.md
+D8).
+
+**A second cache-buster, found on the way.** Chapters were rendered from
+their raw HTML:
+- a pending review diff came out as plain text with the deleted and inserted
+  words run together;
+- accepting that diff changed the bytes, so the chapter counted as edited.
+
+Ledger blocks are now rendered and hashed from the accepted reading
+(`ledgerBlock`), the same reading `read_chapter` and the active document
+give the model. Accepting the agent's own diff no longer costs a re-send;
+rejecting it does, which is correct, because the text changed.
+
+Not done: a chapter that becomes ACTIVE is still dropped from the ledger,
+which cuts there. Keeping its copy as a stale duplicate of the tail would
+follow the same rule, but the active document is edited by the user on every
+keystroke. That trade-off has not been measured.

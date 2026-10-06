@@ -24,6 +24,19 @@ export interface LedgerEntry {
   hash: string
   /** Chars this entry contributes, for quoting the cost of losing it. */
   chars: number
+  /**
+   * The exact block that was sent. Kept so an entry renders the SAME bytes
+   * every turn even after its chapter changed: with append-updates an old
+   * copy stays in place, and only bytes that never change stay cached.
+   * Absent on plans made without a renderer (the pre-append behaviour).
+   */
+  text?: string
+  /**
+   * A later entry with the same id replaces this one (an append-update).
+   * Metadata only — the bytes are untouched; the replacing entry's header is
+   * what tells the model this copy is outdated.
+   */
+  stale?: boolean
 }
 
 export interface ContextLedger {
@@ -62,10 +75,34 @@ export interface LedgerPlan {
   /** Chars that must be prefilled again this turn (resent + appended). */
   resendChars: number
   /**
+   * Ids whose new version was APPENDED while their old copy stayed in place
+   * (append-update) — instead of cutting the ledger at the old copy.
+   */
+  updatedIds: string[]
+  /** Chars held by outdated copies after this plan; consolidated past a budget. */
+  staleChars: number
+  /**
    * True when the user's own selection is what forces cached chapters out, so
    * the send should stop and ask. An active-document switch or an edit is not
    * a choice the user can reconsider, so neither raises this.
    */
+}
+
+/** What a chapter's block says it is: a first copy, or a newer version of one above. */
+export type LedgerRenderKind = 'fresh' | 'update'
+
+export interface LedgerPlanOptions {
+  /**
+   * Render a chapter's block. Supplying it turns on append-updates and makes
+   * every new entry carry its exact bytes (`LedgerEntry.text`).
+   */
+  render?: (id: string, kind: LedgerRenderKind) => string
+  /**
+   * Outdated copies may hold at most this many chars before the ledger is
+   * consolidated (cut at the first outdated copy, re-sent clean). Default:
+   * the larger of 20k chars and 30% of the ledger.
+   */
+  maxStaleChars?: number
 }
 
 /** Minimal document shape the planner needs. */
@@ -99,15 +136,29 @@ export function hashContent(text: string): string {
  * The head of the ledger survives up to the first entry that must leave. That
  * cut point is what makes a chapter switch cheap when the chapter was near the
  * end and expensive when it was near the front.
+ *
+ * Append-updates (with `options.render`). An EDITED chapter used to be a cut:
+ * everything after its old position was re-sent — measured on a real turn,
+ * 4,224 of 46,312 prompt tokens cached (9%) after the writer revised the
+ * outline mid-ledger. Now its old copy stays where it is, byte for byte, and
+ * the new version is appended with a header saying it replaces the copy
+ * above (append, never mutate — the same rule Manus and Codex follow for
+ * their context). It is taken only when it is cheaper: when what sits after
+ * the old copy is larger than the chapter itself. Outdated copies are
+ * consolidated (a cut at the first of them) once they pass a budget, so the
+ * ledger cannot grow without bound.
  */
 export function planLedgerTurn(
   current: ContextLedger,
   desiredIds: string[],
   docs: LedgerDocLike[],
-  activeDocumentId: string | null
+  activeDocumentId: string | null,
+  options: LedgerPlanOptions = {}
 ): LedgerPlan {
   const byId = new Map(docs.map(d => [d.id, d]))
   const desired = new Set(desiredIds)
+  const render = options.render
+  const entries = current.entries
 
   // Why each existing entry would have to leave, if at all.
   const dropReason = (entry: LedgerEntry): DropReason | null => {
@@ -116,62 +167,114 @@ export function planLedgerTurn(
     // A chapter that vanished from the book is treated as user-removed: the
     // user deleted it, and the bytes cannot be re-sent either way.
     if (!doc) return 'user-removed'
-    if (doc.hash !== entry.hash) return 'edited'
     if (!desired.has(entry.id)) return 'user-removed'
+    // An outdated copy is judged by its chapter, not its bytes: it stays
+    // while the chapter stays, whatever the chapter says now.
+    if (entry.stale) return null
+    if (doc.hash !== entry.hash) return 'edited'
     return null
   }
 
-  // 1. The cached prefix runs until the first entry that must go.
-  let cut = current.entries.length
-  for (let i = 0; i < current.entries.length; i++) {
-    if (dropReason(current.entries[i]) !== null) {
-      cut = i
-      break
+  const charsFrom = (i: number) => entries.slice(i).reduce((sum, e) => sum + e.chars, 0)
+
+  // 1. Walk to the cut. An edited chapter becomes an append-update when that
+  //    re-sends less than cutting would.
+  let cut = entries.length
+  const updates: number[] = []
+  for (let i = 0; i < entries.length; i++) {
+    const reason = dropReason(entries[i])
+    if (reason === null) continue
+    if (reason === 'edited' && render && charsFrom(i + 1) > (byId.get(entries[i].id)?.chars ?? 0)) {
+      updates.push(i)
+      continue
     }
+    cut = i
+    break
   }
 
-  const kept = current.entries.slice(0, cut)
-  const cachedPrefixChars = kept.reduce((sum, e) => sum + e.chars, 0)
+  // 2. Consolidate when outdated copies pass the budget: cut at the first of
+  //    them, and everything after is re-sent clean.
+  const ledgerChars = charsFrom(0)
+  const budget = options.maxStaleChars ?? Math.max(20_000, Math.floor(ledgerChars * 0.3))
+  const outdated = (i: number) => entries[i].stale || updates.includes(i)
+  const staleBefore = (limit: number) =>
+    entries.slice(0, limit).reduce((sum, e, i) => sum + (outdated(i) ? e.chars : 0), 0)
+  if (staleBefore(cut) > budget) {
+    const first = entries.findIndex((_, i) => outdated(i))
+    if (first !== -1 && first < cut) cut = first
+  }
+  const activeUpdates = updates.filter(i => i < cut)
 
-  // 2. Everything from the cut on: survivors keep their relative order but
+  const kept = entries.slice(0, cut).map((e, i) => (activeUpdates.includes(i) ? { ...e, stale: true } : e))
+  const cachedPrefixChars = kept.reduce((sum, e) => sum + e.chars, 0)
+  const keptStaleIds = new Set(kept.filter(e => e.stale).map(e => e.id))
+
+  // A block for `id`, marked as a newer version when an older copy of it
+  // sits in the kept prefix.
+  const entryFor = (id: string, doc: LedgerDocLike): LedgerEntry => {
+    const kind: LedgerRenderKind = keptStaleIds.has(id) ? 'update' : 'fresh'
+    return render
+      ? { id, hash: doc.hash, chars: doc.chars, text: render(id, kind) }
+      : { id, hash: doc.hash, chars: doc.chars }
+  }
+
+  // 3. Everything from the cut on: survivors keep their relative order but
   //    move, so they are re-sent; the rest are dropped with their reason.
+  //    Outdated copies past the cut are simply gone — what is re-sent is
+  //    re-sent current.
   const drops: LedgerDrop[] = []
   const resentIds: string[] = []
   const tail: LedgerEntry[] = []
-  for (const entry of current.entries.slice(cut)) {
+  for (const entry of entries.slice(cut)) {
+    if (entry.stale) continue
     const reason = dropReason(entry)
     if (reason !== null) {
       drops.push({ id: entry.id, reason })
       continue
     }
-    const doc = byId.get(entry.id)!
-    tail.push({ id: entry.id, hash: doc.hash, chars: doc.chars })
+    tail.push(entryFor(entry.id, byId.get(entry.id) as LedgerDocLike))
     resentIds.push(entry.id)
   }
 
-  // 3. New admissions append after everything that survived.
-  const present = new Set([...kept, ...tail].map(e => e.id))
+  // 4. Append-updates, then new admissions, after everything that survived.
+  const present = new Set([...kept.filter(e => !e.stale), ...tail].map(e => e.id))
+  const updatedIds: string[] = []
+  for (const i of activeUpdates) {
+    const id = entries[i].id
+    if (present.has(id)) continue
+    tail.push(entryFor(id, byId.get(id) as LedgerDocLike))
+    updatedIds.push(id)
+    present.add(id)
+  }
   const appendedIds: string[] = []
   for (const id of desiredIds) {
     if (present.has(id) || id === activeDocumentId) continue
     const doc = byId.get(id)
     if (!doc) continue
-    tail.push({ id, hash: doc.hash, chars: doc.chars })
+    tail.push(entryFor(id, doc))
     appendedIds.push(id)
     present.add(id)
   }
 
   const resendChars = tail.reduce((sum, e) => sum + e.chars, 0)
+  const all = [...kept, ...tail]
 
   return {
-    ledger: { entries: [...kept, ...tail] },
+    ledger: { entries: all },
     cachedPrefixCount: kept.length,
     cachedPrefixChars,
     resentIds,
     appendedIds,
     drops,
-    resendChars
+    resendChars,
+    updatedIds,
+    staleChars: all.reduce((sum, e) => sum + (e.stale ? e.chars : 0), 0)
   }
+}
+
+/** The ledger's chapters, once each, in the order they first appear. */
+export function ledgerChapterIds(ledger: ContextLedger): string[] {
+  return [...new Set(ledger.entries.map(e => e.id))]
 }
 
 /** What the stability ordering needs to know about a document. */

@@ -1678,3 +1678,52 @@ def test_replace_all_numbers_documents_from_zero(tmp_path, monkeypatch):
         make_request("POST", "/api/books/book-1/documents", body), "book-1"))
 
     assert _sort_orders() == [("doc-fresh-0", 0), ("doc-fresh-1", 1)]
+
+
+def test_book_save_keeps_an_agentic_turns_record(tmp_path, monkeypatch):
+    """The messages table stored only fixed columns, so an agentic turn's
+    record (its tool timeline and the chapters it changed) vanished on every
+    reload — the bubble fell back to plain text. It is now one JSON column."""
+    make_request = _seed_book(tmp_path, monkeypatch)
+    agent = {
+        "status": "done", "steps": 2,
+        "trace": ['📖 read #3 "故事线"'],
+        "touched": [{"documentId": "doc-1", "titleAtRun": "第一章", "kind": "created", "changes": 1, "failed": 0}],
+        "timeline": [{"type": "text", "text": "先看大纲。"}, {"type": "tool", "line": '📖 read #3 "故事线"', "ok": True}],
+    }
+    messages = [
+        {"id": "u1", "role": "user", "content": "写第一章", "timestamp": "2026-10-05T00:00:00Z"},
+        {"id": "a1", "role": "assistant", "content": "先看大纲。", "timestamp": "2026-10-05T00:00:01Z", "agent": agent},
+    ]
+    asyncio.run(api_server.update_book(make_request("PUT", "/api/books/book-1", {"messages": messages}), "book-1"))
+
+    loaded = asyncio.run(api_server.get_book(make_request("GET", "/api/books/book-1"), "book-1"))
+    by_id = {m["id"]: m for m in loaded["messages"]}
+    assert by_id["a1"]["agent"] == agent
+    # An ordinary message gets no agent key at all.
+    assert "agent" not in by_id["u1"]
+
+
+def test_init_db_adds_the_agent_column_to_an_existing_messages_table(tmp_path, monkeypatch):
+    import sqlite3
+    db_file = tmp_path / "metadata.db"
+    monkeypatch.setattr(server_db, "DB_PATH", str(db_file))
+    conn = sqlite3.connect(str(db_file))
+    conn.execute(
+        "CREATE TABLE messages (id TEXT NOT NULL, username TEXT NOT NULL, book_id TEXT NOT NULL,"
+        " role TEXT NOT NULL, content TEXT NOT NULL, timestamp TEXT NOT NULL, thinking TEXT, model TEXT,"
+        " input_tokens INTEGER, output_tokens INTEGER, cache_hit_tokens INTEGER,"
+        " sort_order INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (username, book_id, id))")
+    conn.execute("INSERT INTO messages (id, username, book_id, role, content, timestamp)"
+                 " VALUES ('m1', 'alice', 'b', 'user', 'hi', 'now')")
+    conn.commit()
+    conn.close()
+
+    server_db.init_db()
+    server_db.init_db()  # idempotent
+
+    conn = sqlite3.connect(str(db_file))
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+    assert "agent" in columns
+    assert conn.execute("SELECT content, agent FROM messages WHERE id = 'm1'").fetchone() == ("hi", None)
+    conn.close()

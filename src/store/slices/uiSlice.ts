@@ -29,6 +29,15 @@ export interface UiSlice {
   setSelectedText: (text: string) => void
   activeEditor: Editor | null
   setActiveEditor: (editor: Editor | null) => void
+
+  /**
+   * The Polish button's request (agentic_chat_loop.md D9). The button lives
+   * in the canvas header and the turn machinery in the chat panel's hook, so
+   * the request crosses through the store; the hook clears it when it runs.
+   */
+  polishRequest: { documentId: string; nonce: number } | null
+  requestPolish: (documentId: string) => void
+  clearPolishRequest: () => void
 }
 
 export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => ({
@@ -36,6 +45,10 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => (
 
   streamingReasoning: '',
   setStreamingReasoning: (text) => set({ streamingReasoning: text }),
+
+  polishRequest: null,
+  requestPolish: (documentId) => set({ polishRequest: { documentId, nonce: Date.now() } }),
+  clearPolishRequest: () => set({ polishRequest: null }),
 
   toggleSidebar: () => {
     set((state) => {

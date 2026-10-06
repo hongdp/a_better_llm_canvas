@@ -8,7 +8,7 @@ import { BookOverviewDrawer } from './components/BookOverviewDrawer'
 import { CHAT_WIDTH, loadPersistedSize, savePersistedSize } from './utils/layoutPrefs'
 import { CanvasFooter } from './components/CanvasFooter'
 import { VersionHistorySidebar } from './components/VersionHistorySidebar'
-import { useAppStore } from './store/useAppStore'
+import { useAppStore, isEditLocked } from './store/useAppStore'
 import type { CanvasDocument } from './store/useAppStore'
 import { DOMParser as ProseMirrorDOMParser } from '@tiptap/pm/model'
 
@@ -255,6 +255,9 @@ function App() {
 
   const documentPlainTextContext = useMemo(() => htmlToPlainText(activeDoc.content), [activeDoc.content])
   const hasPendingDiffs = activeDoc.content.includes('data-diff-id')
+  // Accept/reject rewrite the open chapter: not while the assistant is
+  // writing into it (it would commit a half-painted preview).
+  const reviewLocked = useAppStore(s => isEditLocked(s, s.activeDocumentId))
 
   // Handle theme changes
   useEffect(() => {
@@ -502,6 +505,7 @@ function App() {
                       onClick={handleAcceptAllDiffs} 
                       className="diff-banner-btn accept"
                       type="button"
+                      disabled={reviewLocked}
                     >
                       {t.app.diffReview.acceptAll}
                     </button>
@@ -509,6 +513,7 @@ function App() {
                       onClick={handleRejectAllDiffs} 
                       className="diff-banner-btn reject"
                       type="button"
+                      disabled={reviewLocked}
                     >
                       {t.app.diffReview.rejectAll}
                     </button>

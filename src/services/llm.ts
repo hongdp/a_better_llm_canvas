@@ -1,6 +1,7 @@
-import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
+import type { ProviderConfig, LLMMessage, StreamCallbacks, ThinkingBlock } from '../types/llm'
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
-import { DOCUMENT_TOOLS, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
+import { fromOpenAITools, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
+import { toOpenAIMessages, toAnthropicMessages, toGeminiContents } from './providerMessages'
 
 /**
  * A base URL typed with a trailing slash is normal; the resulting `//path`
@@ -141,38 +142,8 @@ async function streamOpenAI(
   }
 
   const url = `${trimBaseUrl(config.baseUrl)}/chat/completions`
-  const openAIMessages = messages.map(m => {
-    if (m.images && m.images.length > 0) {
-      const contentParts: Array<
-        { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
-      > = [
-        {
-          type: 'text',
-          text: m.content
-        }
-      ]
-      m.images.forEach((img, idx) => {
-        contentParts.push({
-          type: 'text',
-          text: `\n[Image ${idx + 1}]:`
-        })
-        contentParts.push({
-          type: 'image_url',
-          image_url: {
-            url: img
-          }
-        })
-      })
-      return {
-        role: m.role,
-        content: contentParts
-      }
-    }
-    return {
-      role: m.role,
-      content: m.content
-    }
-  })
+  // Tool exchanges included — see services/providerMessages.
+  const openAIMessages = toOpenAIMessages(messages)
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -193,6 +164,9 @@ async function streamOpenAI(
   // Already the internal shape — no translation needed for this family.
   if (config.tools?.length) {
     body['tools'] = config.tools
+    // The run's last step (agent/run.ts STEP_LIMIT_NOTE): the tools stay in
+    // the request — earlier calls reference them — but no new call is allowed.
+    if (config.toolChoice === 'none') body['tool_choice'] = 'none'
   }
 
   // llama.cpp rejects stream_options. It sits behind both `ollama` and
@@ -261,29 +235,7 @@ async function streamGemini(
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
-  const contents = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => {
-      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: m.content }]
-      if (m.images && m.images.length > 0) {
-        m.images.forEach((img, idx) => {
-          const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
-          if (match) {
-            parts.push({ text: `\n[Image ${idx + 1}]:` })
-            parts.push({
-              inlineData: {
-                mimeType: match[1],
-                data: match[2]
-              }
-            })
-          }
-        })
-      }
-      return {
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts,
-      }
-    })
+  const contents = toGeminiContents(messages.filter((m) => m.role !== 'system'))
 
   const body: Record<string, unknown> = {
     contents,
@@ -312,10 +264,8 @@ async function streamGemini(
     body['generationConfig'] = geminiGenerationConfig
   }
   if (config.tools?.length) {
-    const requested = config.tools as Array<{ function?: { name?: string } }>
-    body['tools'] = toGeminiTools(
-      DOCUMENT_TOOLS.filter(t => requested.some(x => x.function?.name === t.name))
-    )
+    body['tools'] = toGeminiTools(fromOpenAITools(config.tools))
+    if (config.toolChoice === 'none') body['toolConfig'] = { functionCallingConfig: { mode: 'NONE' } }
   }
 
   // Gemini uses streamGenerateContent for streaming. Support model names with or without 'models/' prefix.
@@ -348,6 +298,9 @@ async function streamGemini(
   let fullText = ''
 
   let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number } | undefined
+  // Each functionCall part is one whole call, so each gets its own index —
+  // parallel calls sharing index 0 would merge into one garbage call.
+  let functionCallIndex = 0
 
   try {
     while (true) {
@@ -419,10 +372,16 @@ async function streamGemini(
                       // Gemini delivers a function call whole rather than in
                       // fragments, so it arrives as one delta carrying the
                       // complete arguments. The accumulator handles both.
+                      // A thinking model may put a thoughtSignature beside the
+                      // call (first of parallel calls only); the replay must
+                      // return it on the same part, so it travels with the call.
                       callbacks.onToolCallDelta?.({
-                        index: 0,
+                        index: functionCallIndex++,
                         name: part.functionCall.name,
-                        argumentsText: JSON.stringify(part.functionCall.args ?? {})
+                        argumentsText: JSON.stringify(part.functionCall.args ?? {}),
+                        ...(typeof part.thoughtSignature === 'string' && part.thoughtSignature
+                          ? { signature: part.thoughtSignature }
+                          : {})
                       })
                     }
                   }
@@ -453,56 +412,14 @@ async function streamGemini(
 /**
  * Anthropic Claude stream handler
  */
-interface AnthropicContentPart {
-  type: string
-  text?: string
-  source?: { type: string; media_type: string; data: string }
-  cache_control?: { type: string }
-}
-
 async function streamAnthropic(
   messages: LLMMessage[],
   config: ProviderConfig & { debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
-  const anthropicMessages: Array<{ role: string; content: string | AnthropicContentPart[] }> = messages
-    .filter((m) => m.role !== 'system')
-    .map(m => {
-      if (m.images && m.images.length > 0) {
-        const content: AnthropicContentPart[] = [
-          {
-            type: 'text',
-            text: m.content
-          }
-        ]
-        m.images.forEach((img, idx) => {
-          const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
-          if (match) {
-            content.push({
-              type: 'text',
-              text: `\n[Image ${idx + 1}]:`
-            })
-            content.push({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: match[1],
-                data: match[2]
-              }
-            })
-          }
-        })
-        return {
-          role: m.role,
-          content
-        }
-      }
-      return {
-        role: m.role,
-        content: m.content
-      }
-    })
+  const nonSystemSources = messages.filter((m) => m.role !== 'system')
+  const { messages: anthropicMessages, sourceIndex } = toAnthropicMessages(nonSystemSources)
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -515,10 +432,8 @@ async function streamAnthropic(
   }
 
   if (config.tools?.length) {
-    const requested = config.tools as Array<{ function?: { name?: string } }>
-    body['tools'] = toAnthropicTools(
-      DOCUMENT_TOOLS.filter(t => requested.some(x => x.function?.name === t.name))
-    )
+    body['tools'] = toAnthropicTools(fromOpenAITools(config.tools))
+    if (config.toolChoice === 'none') body['tool_choice'] = { type: 'none' }
   }
 
   // Anthropic's extended thinking is a budget, and the API requires it to be
@@ -548,11 +463,12 @@ async function streamAnthropic(
   // document context). Anthropic looks back from each breakpoint for hits,
   // so a breakpoint that advances turn-by-turn still reads last turn's cache.
   // Max 3 message-level breakpoints (the system block uses the 4th slot).
+  // Indexed through sourceIndex: merged tool results make input and output
+  // positions differ (see toAnthropicMessages).
   let cacheBreakpoints = 0
-  const nonSystemSources = messages.filter((m) => m.role !== 'system')
   nonSystemSources.forEach((source, idx) => {
     if (!source.cacheHint || cacheBreakpoints >= 3 || !source.content) return
-    const target = anthropicMessages[idx]
+    const target = anthropicMessages[sourceIndex[idx]]
     if (typeof target.content === 'string') {
       target.content = [
         { type: 'text', text: target.content, cache_control: { type: 'ephemeral' } }
@@ -588,10 +504,36 @@ async function streamAnthropic(
     throw new Error(`Anthropic API error (${response.status}): ${errText || response.statusText}`)
   }
 
+  // Reasoning blocks being assembled, by content-block index. With extended
+  // thinking on, a step that called a tool must be replayed with these blocks
+  // verbatim (see providerMessages), so they are kept whole — text plus the
+  // signature_delta that arrives just before content_block_stop — and handed
+  // over once complete. redacted_thinking arrives whole in its start event.
+  const openThinking = new Map<number, ThinkingBlock>()
+
   await readSSEStream(response, (dataString) => {
     try {
       const json = JSON.parse(dataString)
-      if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
+      const blockType = json.content_block?.type
+      if (json.type === 'content_block_start' && (blockType === 'thinking' || blockType === 'redacted_thinking')) {
+        openThinking.set(json.index ?? 0, blockType === 'redacted_thinking'
+          ? { type: 'redacted_thinking', data: String(json.content_block.data ?? '') }
+          : {
+              type: 'thinking',
+              thinking: String(json.content_block.thinking ?? ''),
+              signature: String(json.content_block.signature ?? '')
+            })
+      } else if (json.type === 'content_block_delta' && json.delta?.type === 'thinking_delta') {
+        const block = openThinking.get(json.index ?? 0)
+        if (block?.type === 'thinking') block.thinking += json.delta.thinking ?? ''
+      } else if (json.type === 'content_block_delta' && json.delta?.type === 'signature_delta') {
+        const block = openThinking.get(json.index ?? 0)
+        if (block?.type === 'thinking') block.signature += json.delta.signature ?? ''
+      } else if (json.type === 'content_block_stop' && openThinking.has(json.index ?? 0)) {
+        const block = openThinking.get(json.index ?? 0)!
+        openThinking.delete(json.index ?? 0)
+        callbacks.onThinkingBlock?.(block)
+      } else if (json.type === 'content_block_start' && blockType === 'tool_use') {
         // Anthropic opens a block naming the tool, then streams its input as
         // JSON fragments: the same two parts, a different envelope.
         callbacks.onToolCallDelta?.({

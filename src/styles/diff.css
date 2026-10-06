@@ -85,6 +85,13 @@ del.diff-deletion:hover {
   border-color: var(--diff-remove-text);
 }
 
+/* The assistant is writing into this chapter: review waits until it is done. */
+.diff-banner-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
 @keyframes slideDown {
   from {
     transform: translateY(-100%);

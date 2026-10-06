@@ -20,7 +20,7 @@ import {
 } from '../remoteGeneration'
 import { streamLLM } from '../llm'
 import { useAppStore } from '../../store/useAppStore'
-import type { LLMMessage, StreamCallbacks } from '../../types/llm'
+import type { LLMMessage, StreamCallbacks, ThinkingBlock } from '../../types/llm'
 
 const STORAGE_KEY = 'web_canvas_active_generation'
 
@@ -737,5 +737,132 @@ describe('streamLLM transport selection', () => {
     expect(forced.done[0].text).toBe('direct answer')
 
     expect(calls().every(u => u.startsWith('https://provider.test'))).toBe(true)
+  })
+})
+
+// Reasoning artifacts the next tool-loop step must replay (Anthropic thinking
+// blocks, Gemini thoughtSignature). The backend publishes them as informational
+// events and replays them to every reader that attaches.
+describe('reasoning artifacts over the backend transport', () => {
+  const THINKING: ThinkingBlock = { type: 'thinking', thinking: 'Need chapter 3.', signature: 'EqQB+/==' }
+  const REDACTED: ThinkingBlock = { type: 'redacted_thinking', data: 'EmwKAhgB' }
+
+  function artifactRecorder() {
+    const rec = recorder()
+    const blocks: ThinkingBlock[] = []
+    const deltas: Array<Record<string, unknown>> = []
+    rec.callbacks.onThinkingBlock = b => blocks.push(b)
+    rec.callbacks.onToolCallDelta = d => deltas.push(d as unknown as Record<string, unknown>)
+    return { ...rec, blocks, deltas }
+  }
+
+  it('maps thinking_block events onto onThinkingBlock, in order, outside the text', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-think' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'attached', offset: 0, status: 'running' },
+            { type: 'thinking_block', index: 0, block: THINKING },
+            { type: 'thinking_block', index: 1, block: REDACTED },
+            { type: 'tool_call', index: 2, id: 'toolu_1', name: 'read_chapter', text: '{}' },
+            { type: 'delta', text: 'Reading.', offset: 8 },
+            { type: 'done', offset: 8 }
+          ]))
+        : undefined
+    ]
+    const rec = artifactRecorder()
+
+    await streamLLM(messages, { ...config, provider: 'anthropic' }, rec.callbacks)
+
+    // Through streamLLM's wrapper: an optional callback it rebuilt instead of
+    // spreading would silently drop these.
+    expect(rec.blocks).toEqual([THINKING, REDACTED])
+    expect(rec.done[0].text).toBe('Reading.')
+    // A tool_call without a signature keeps its exact old shape.
+    expect(rec.deltas).toEqual([{ index: 2, id: 'toolu_1', name: 'read_chapter', argumentsText: '{}', replace: false }])
+    expect('signature' in rec.deltas[0]).toBe(false)
+  })
+
+  it("carries a tool_call event's signature onto the delta, live and on replay", async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-sig' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'tool_call', index: 0, id: null, name: 'read_chapter', text: '{"chapter":"三"}', signature: 'CiQB+/sig==', replay: true },
+            { type: 'tool_call', index: 1, id: null, name: 'read_chapter', text: '{"chapter":"四"}' },
+            { type: 'done', offset: 0 }
+          ]))
+        : undefined
+    ]
+    const rec = artifactRecorder()
+
+    await startRemoteGeneration(messages, { ...config, provider: 'gemini' }, {}, rec.callbacks)
+
+    expect(rec.deltas[0]).toMatchObject({ index: 0, signature: 'CiQB+/sig==', replace: true })
+    expect('signature' in rec.deltas[1]).toBe(false)
+  })
+
+  it('does not deliver a block twice when a mid-turn reconnect replays them all', async () => {
+    // Every attach replays the job's blocks from the first. A duplicated
+    // block in the replay is a 400 from Anthropic for the whole next step.
+    const streamCalls: string[] = []
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-rethink' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamCalls.push(url)
+        return streamCalls.length === 1
+          ? streamingResponse(sse([{ type: 'thinking_block', index: 0, block: THINKING }]))   // cut off
+          : streamingResponse(sse([
+              { type: 'thinking_block', index: 0, block: THINKING },   // replay
+              { type: 'thinking_block', index: 1, block: REDACTED },   // new
+              { type: 'done', offset: 0 }
+            ]))
+      }
+    ]
+    const rec = artifactRecorder()
+
+    await startRemoteGeneration(messages, { ...config, provider: 'anthropic' }, {}, rec.callbacks)
+
+    expect(streamCalls).toHaveLength(2)
+    expect(rec.errors).toEqual([])
+    expect(rec.blocks).toEqual([THINKING, REDACTED])
+  })
+
+  it('gives a fresh resume every block from the start', async () => {
+    routes = [
+      url => url.includes('/api/generate/gen-resume/stream')
+        ? streamingResponse(sse([
+            { type: 'thinking_block', index: 0, block: THINKING },
+            { type: 'thinking_block', index: 1, block: REDACTED },
+            { type: 'done', offset: 4 }
+          ]))
+        : undefined
+    ]
+    const rec = artifactRecorder()
+
+    await resumeRemoteGeneration('gen-resume', 4, rec.callbacks)
+
+    expect(rec.blocks).toEqual([THINKING, REDACTED])
+  })
+
+  it('drops a malformed block instead of handing it to the replay', async () => {
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-bad' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'thinking_block', index: 0, block: { type: 'thinking', thinking: 'no signature' } },
+            { type: 'thinking_block', index: 1, block: { type: 'redacted_thinking' } },
+            { type: 'thinking_block', index: 2, block: { ...THINKING, extra: 'stray' } },
+            { type: 'done', offset: 0 }
+          ]))
+        : undefined
+    ]
+    const rec = artifactRecorder()
+
+    await startRemoteGeneration(messages, { ...config, provider: 'anthropic' }, {}, rec.callbacks)
+
+    expect(rec.blocks).toEqual([THINKING])
+    expect(Object.keys(rec.blocks[0])).toEqual(['type', 'thinking', 'signature'])
   })
 })

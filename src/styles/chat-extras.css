@@ -86,3 +86,185 @@
   opacity: 0.9;
   transform: scale(1.02);
 }
+
+/* ── Agentic turn summary (AgentTurnSummary.tsx) ─────────────────────────────
+   Under an assistant reply: the chapters the turn changed, each openable at
+   its first diff, and the steps it took. Theme tokens only, so light and dark
+   both follow tokens.css. */
+.agent-turn {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  white-space: normal;
+}
+
+.agent-touched {
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background-color: var(--bg-secondary);
+  padding: 0.4rem 0.55rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.agent-touched-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-muted);
+}
+
+.agent-touched-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  column-gap: 0.45rem;
+  row-gap: 0.25rem;
+  font-size: 0.82rem;
+  min-width: 0;
+}
+
+.agent-touched-row.deleted {
+  opacity: 0.55;
+}
+
+.agent-touched-icon {
+  flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* Title over what happened. Takes the room that is left, and gives it back:
+   min-width 0 lets the title truncate instead of widening the bubble. */
+.agent-touched-main {
+  flex: 1 1 8rem;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+
+.agent-touched-name {
+  font-weight: 500;
+  color: var(--text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-touched-kind {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  overflow-wrap: anywhere;
+}
+
+/* Status + View travel together: on a narrow bubble they wrap to their own
+   line, right-aligned, rather than one of them falling off the edge. */
+.agent-touched-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.agent-touched-failed {
+  color: var(--diff-remove-text);
+}
+
+.agent-touched-status {
+  font-size: 0.72rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--border-color);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.agent-touched-status.pending {
+  color: var(--diff-add-text);
+  background-color: var(--diff-add-bg);
+  border-color: transparent;
+}
+
+.agent-touched-view {
+  font-size: 0.75rem;
+  padding: 0.15rem 0.55rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--transition-fast);
+}
+
+.agent-touched-view:hover:not(:disabled) {
+  border-color: var(--border-color-hover);
+}
+
+.agent-touched-view:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.agent-trace {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.agent-trace summary {
+  cursor: pointer;
+  user-select: none;
+}
+
+.agent-trace ol {
+  margin: 0.3rem 0 0;
+  padding-left: 1.3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+/* The turn in order: step text, then the calls that step made. */
+.agent-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.agent-timeline-text {
+  white-space: pre-wrap;
+}
+
+.agent-timeline-prefix {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.agent-tool-line {
+  align-self: flex-start;
+  max-width: 100%;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--text-secondary);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 0.2rem 0.5rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.agent-tool-line.failed {
+  color: var(--diff-remove-text);
+  border-color: var(--diff-remove-bg);
+}
+
+.agent-tool-line.pending {
+  color: var(--text-muted);
+  font-style: italic;
+  border-style: dashed;
+}
