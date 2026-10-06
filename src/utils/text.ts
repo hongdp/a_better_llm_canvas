@@ -277,10 +277,12 @@ export interface ParsedAssistantResponse {
   canvasChapter?: string
   /**
    * Further `<canvas chapter="…">` blocks — full rewrites of OTHER chapters
-   * written in the same reply (agentic loop, spec D2). Only attributed blocks
-   * count; a second attribute-less canvas is still stray, as it always was.
+   * written in the same reply (agentic loop, spec D2) — and, when every
+   * `<edit>` of the reply names another chapter, the attribute-less canvas
+   * that rewrites the active one (`chapter` absent). A second attribute-less
+   * canvas is still stray, as it always was.
    */
-  extraCanvases: { text: string; closed: boolean; chapter: string }[]
+  extraCanvases: { text: string; closed: boolean; chapter?: string }[]
   /**
    * Document-markup regions removed from `chatText` because no channel took
    * them (a second channel's block, or markup too broken to parse). Never
@@ -408,6 +410,24 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
   const chapterCanvases = takeChapterCanvases(result.chatText)
   result.extraCanvases = chapterCanvases.blocks
   result.chatText = chapterCanvases.rest
+
+  /*
+   * Problem: edits won over a canvas, so a reply that rewrote the active
+   *   chapter AND edited the outline (`<edit chapter="1">`) lost the rewrite
+   *   as stray — silently: the model had to read the chapter to find its
+   *   text missing, and wrote all 4k characters again (2026-10-06).
+   * Fix: the channels only collide on the same chapter. When every edit
+   *   names a chapter, the attribute-less canvas rewrites the active one
+   *   alongside them. An unnamed edit may target the active chapter, so then
+   *   the old precedence stands (and the run reports what was dropped).
+   */
+  if (result.kind === 'edits' && result.editBlocks.every(b => !!b.chapter)) {
+    const own = extractTaggedBlock(result.chatText, 'canvas')
+    if (own.found && !own.chapter) {
+      result.extraCanvases.push({ text: own.inner, closed: own.closed })
+      result.chatText = joinAround(own.before, own.after)
+    }
+  }
 
   // Whatever no channel took is dropped from the bubble and counted.
   const stray = stripStrayDocumentMarkup(result.chatText)

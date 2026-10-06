@@ -85,6 +85,24 @@ beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 
+describe('what a reply lost is said, not left for the model to discover', () => {
+  it('reports a dropped block in the next step\'s results', async () => {
+    // An unnamed edit and an unnamed canvas collide on the same chapter: the
+    // canvas is dropped (stray), the edit applies, and the model is told.
+    const h = harness({
+      policy: { continueAfterWrites: true },
+      replies: [
+        text('<canvas><p>beta</p></canvas>\n<edit>\n<<<<<<< SEARCH\n<p>alpha</p>\n=======\n<p>gamma</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'),
+        text('好了。')
+      ]
+    })
+    await h.run.start()
+    const results = h.requests[1].at(-1)?.content ?? ''
+    expect(results).toContain('edit_document')
+    expect(results).toContain('NOT APPLIED: 1 document block(s)')
+  })
+})
+
 describe('a deletion runs after the other calls of its reply', () => {
   it('lets a write in the same reply keep the number it was given from the index', async () => {
     // Reply: delete #2 (an empty chapter) and rewrite #3. The model numbered

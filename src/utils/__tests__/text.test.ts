@@ -546,6 +546,24 @@ describe('parseAssistantResponse — a selection rewrite with edits beside it', 
   })
 })
 
+describe('parseAssistantResponse — a rewrite of the active chapter beside edits of another (2026-10-06)', () => {
+  const edit = (chapter: string) => `<edit chapter="${chapter}">\n<<<<<<< SEARCH\n<p>大纲旧</p>\n=======\n<p>大纲新</p>\n>>>>>>> REPLACE\n</edit>`
+
+  it('keeps both when every edit names a chapter', () => {
+    const r = parseAssistantResponse(`写好了。\n<canvas><p>第五章新稿</p></canvas>\n${edit('1')}`)
+    expect(r.kind).toBe('edits')
+    expect(r.extraCanvases).toEqual([{ text: '<p>第五章新稿</p>', closed: true }])
+    expect(r.strayMarkup).toBe(0)
+    expect(r.chatText).toBe('写好了。')
+  })
+
+  it('still drops the canvas when an unnamed edit may target the same chapter', () => {
+    const r = parseAssistantResponse(`<canvas><p>第五章新稿</p></canvas>\n<edit>\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>`)
+    expect(r.extraCanvases).toEqual([])
+    expect(r.strayMarkup).toBe(1)
+  })
+})
+
 describe('parseAssistantResponse — markup no channel took never reaches the chat', () => {
   it('drops a canvas written beside a selection, and counts it', () => {
     const r = parseAssistantResponse('Done.\n<selection_replace><p>x</p></selection_replace>\n<canvas><p>whole doc</p></canvas>')

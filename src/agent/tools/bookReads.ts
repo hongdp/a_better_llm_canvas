@@ -307,12 +307,16 @@ export const grepTool = defineTool<GrepArgs>({
       scope = picked
     }
     await ctx.document.ensureLoaded(scope.map(c => c.id))
+    // A server chapter whose text failed to load reads as '': searching it
+    // would report "no match" for text that is there. Say it was skipped.
+    const loadedNow = ctx.document.chapters()
+    const unloaded = scope.filter(c => loadedNow.find(n => n.id === c.id)?.loaded === false)
     const { re, literal } = compilePattern(pattern)
 
     const hits: string[] = []
     const perChapter: string[] = []
     let total = 0
-    for (const chapter of scope) {
+    for (const chapter of scope.filter(c => !unloaded.includes(c))) {
       let count = 0
       // Paragraph by paragraph, so every hit carries the ¶ number that
       // read_chapter takes as a range — grep, then read around the hit.
@@ -350,10 +354,24 @@ export const grepTool = defineTool<GrepArgs>({
       ? `No matches for /${pattern}/${scopeNote}${literalNote}.`
       : `${total} match(es) in ${perChapter.length} chapter(s)${scopeNote}${literalNote}` +
         (output === 'snippets' && total > hits.length ? `; showing the first ${hits.length}` : '') + ':'
+    const skipped = unloaded.length > 0
+      ? [`Not searched — their text could not be loaded: ${unloaded.map(c => `#${c.number} "${c.title}"`).join(', ')}.`]
+      : []
+    /*
+     * The trace names what was searched. It used to read "→ 30 in 1
+     * chapter(s)" whether the model had searched the whole book or named
+     * one chapter, which read as "grep only searches one chapter" (user
+     * question, 2026-10-06 — the model had in fact limited it to #13).
+     */
+    const where = refs.length === 0 ? 'in the whole book'
+      : scope.length <= 4 ? `in ${scope.map(c => `#${c.number}`).join(', ')}`
+      : `in ${scope.length} chapters`
+    const across = perChapter.length > 1 || (refs.length === 0 && perChapter.length > 0) ? ` in ${perChapter.length} chapter(s)` : ''
     return {
       ok: true,
-      content: [head, ...(output === 'chapters' ? perChapter : hits)].join('\n'),
-      trace: `🔎 grep /${pattern}/ → ${total} in ${perChapter.length} chapter(s)`
+      content: [head, ...(output === 'chapters' ? perChapter : hits), ...skipped].join('\n'),
+      trace: `🔎 grep /${pattern}/ ${where} → ${total} match${total === 1 ? '' : 'es'}${across}` +
+        (unloaded.length > 0 ? ` · ${unloaded.length} not loaded` : '')
     }
   }
 })

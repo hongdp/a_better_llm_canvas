@@ -68,7 +68,7 @@ function markupInvocations(parsed: ParsedAssistantResponse, step: number): ToolI
   }
   // Rewrites of other chapters that rode along (`<canvas chapter="…">`).
   for (const extra of parsed.extraCanvases) {
-    out.push(make('update_document', { html: extra.text, chapter: extra.chapter }, !extra.closed))
+    out.push(make('update_document', { html: extra.text, ...(extra.chapter ? { chapter: extra.chapter } : {}) }, !extra.closed))
   }
   return out
 }
