@@ -37,8 +37,9 @@ export interface ProviderConfig {
   /** Steps one turn may take; 0 = no limit. Absent = the provider default (agent/policy). */
   agentMaxSteps?: number
   /**
-   * Give the model another step after writes that all succeeded (spec D3).
-   * Costs one more first-token wait per turn. Absent = the provider default.
+   * Hand the result of writes that all succeeded back to the model, which
+   * keeps working or ends with a reply that has no action (spec D3). Off: a
+   * write-only reply ends the turn. Absent = the default (on).
    */
   continueAfterWrites?: boolean
   /**

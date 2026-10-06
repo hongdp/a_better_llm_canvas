@@ -79,6 +79,11 @@ interface RunInfo {
   estimatedInputTokens: number
   /** Chapters whose full text the request carries (ledger, inline, active). */
   inContextIds: string[]
+  /**
+   * A rejoined stream (the page reloaded mid-turn): the bubble's record of
+   * the steps before the one being resumed, which this run continues.
+   */
+  rejoined?: { prior: AgentTurnRecord | undefined }
 }
 
 /** Everything one streamed step needs in order to render itself. */
@@ -92,6 +97,38 @@ interface StreamRenderContext extends RunInfo {
  * registry is static, so it can never destabilise a callback's identity.
  */
 const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool])
+
+/** The chat text of a record's finished steps, joined as the bubble shows it. */
+const recordText = (record: AgentTurnRecord | undefined) =>
+  (record?.timeline ?? []).flatMap(item => item.type === 'text' ? [item.text] : []).join('\n\n')
+
+const joinText = (...parts: string[]) => parts.map(t => t.trim()).filter(Boolean).join('\n\n')
+
+/**
+ * The record of a resumed step, added to the record of the steps before it.
+ *
+ * Problem: a page reload mid-turn rejoins the step in flight, and that run
+ *   (one step) wrote its own record over the bubble's — a 19-chapter turn
+ *   was left showing one line and "steps: 1" (2026-10-06).
+ * Fix: the rejoined run continues the record it found on the bubble.
+ */
+function continueRecord(prior: AgentTurnRecord | undefined, next: AgentTurnRecord): AgentTurnRecord {
+  if (!prior) return next
+  const touched = [...prior.touched]
+  for (const t of next.touched) {
+    const i = touched.findIndex(p => p.documentId === t.documentId)
+    if (i === -1) touched.push(t)
+    else touched[i] = { ...touched[i], changes: touched[i].changes + t.changes, failed: touched[i].failed + t.failed }
+  }
+  return {
+    ...next,
+    steps: prior.steps + next.steps,
+    trace: [...prior.trace, ...next.trace],
+    touched,
+    timeline: [...(prior.timeline ?? []), ...(next.timeline ?? [])],
+    prefix: prior.prefix ?? next.prefix
+  }
+}
 
 /**
  * One compact line telling the model what a past turn did with its tools.
@@ -317,6 +354,11 @@ export function useChatLLM({
   // mid-run (agentic_chat_loop.md D2): from then on the editor shows another
   // chapter, and settling or keeping "the preview" must not touch it.
   const previewDocIdRef = useRef<string | null>(null)
+  // What the run locks for the user besides the chapter its preview paints
+  // (agentic_chat_loop.md §0.4): the start chapter of a selection turn, and
+  // a chapter a slow write (polish) is rewriting. Everything else stays
+  // editable while the run works.
+  const editLockRef = useRef<{ start: string | null; writing: string | null }>({ start: null, writing: null })
   // Chat text of the run's finished steps, shown above the step in flight.
   const priorChatRef = useRef('')
   // One live progress line, for a rewrite of a chapter that is not open.
@@ -343,6 +385,20 @@ export function useChatLLM({
   const previewOnScreen = useCallback(() =>
     previewDocIdRef.current === null || previewDocIdRef.current === useAppStore.getState().activeDocumentId, [])
 
+  /**
+   * Tell the editor which chapters the user may not edit right now: the one
+   * the live preview paints (typing there would be painted over) and those
+   * in editLockRef. Only while streaming — the store clears the lock when
+   * streaming stops, and a late publish must not unlock the next streamer.
+   */
+  const publishEditLock = useCallback(() => {
+    const s = useAppStore.getState()
+    if (!s.isStreaming) return
+    const { start, writing } = editLockRef.current
+    const preview = canvasPreviewActiveRef.current ? previewDocIdRef.current : null
+    s.setEditLockedIds([...new Set([start, preview, writing].filter((id): id is string => !!id))])
+  }, [])
+
   const settleCanvasPreview = useCallback((html: string) => {
     if (!canvasPreviewActiveRef.current) return
     canvasPreviewActiveRef.current = false
@@ -350,12 +406,13 @@ export function useChatLLM({
     lastCanvasPreviewRef.current = 0
     const onScreen = previewOnScreen()
     previewDocIdRef.current = null
+    publishEditLock()
     if (!onScreen) return
     const editor = activeEditorRef.current
     if (editor && editor.getHTML() !== html) {
       editor.chain().setMeta('addToHistory', false).setContent(html, { emitUpdate: false }).run()
     }
-  }, [previewOnScreen])
+  }, [previewOnScreen, publishEditLock])
 
   /**
    * Keep the half-streamed draft after a stop, as ONE undo step, and return
@@ -378,6 +435,7 @@ export function useChatLLM({
     lastCanvasPreviewRef.current = 0
     const onScreen = previewOnScreen()
     previewDocIdRef.current = null
+    publishEditLock()
     // The user moved to another chapter: the draft is no longer on screen,
     // so there is nothing to keep — and rebuilding an undo step here would
     // put the previewed chapter's text into the open one's history.
@@ -392,7 +450,7 @@ export function useChatLLM({
     // HTML on both sides.
     editor.commands.setContent(draft, { emitUpdate: false })
     return draft
-  }, [previewOnScreen])
+  }, [previewOnScreen, publishEditLock])
 
   // Image preservation during LLM streaming: swap base64 <img> tags for
   // small tokens before sending, restore them (tolerantly) on the way back.
@@ -512,7 +570,13 @@ export function useChatLLM({
   // The ports the turn's tools work through (src/agent/types). Built once per
   // run; every member reads refs or the store, so a resumed turn whose editor
   // mounts later still reaches the live editor.
-  const buildToolContext = useCallback((info: RunInfo): ToolContext => ({
+  const buildToolContext = useCallback((info: RunInfo): ToolContext => {
+    // Whether the user has opened another chapter during this run: the
+    // chapter the run expects on screen is the start chapter, or the last
+    // one it opened itself. Sticky — once the user has gone elsewhere the
+    // view is theirs for the rest of the run.
+    const view = { expected: info.startId, moved: false }
+    return {
     getState: useAppStore.getState,
     polish: {
       run: (html, onProgress) => {
@@ -538,12 +602,39 @@ export function useChatLLM({
       previewDocument: (html: string) => {
         const editor = activeEditorRef.current
         if (!editor) return
+        /*
+         * Problem: a run writes chapter after chapter (writes continue the
+         *   turn), but the preview's flags were set once, by the first
+         *   chapter. Painting the second left them naming the first: its
+         *   opening frame waited out the throttle, and Stop thought nothing
+         *   was on screen and kept none of the half-written chapter the user
+         *   was looking at.
+         * Fix: the preview is only ever asked to paint the open chapter, so
+         *   a different open chapter means the preview moved — restart it
+         *   there, based on that chapter's stored text (the editor may still
+         *   show the previous one until it re-syncs).
+         */
+        const openId = useAppStore.getState().activeDocumentId
+        const storedOpen = () => useAppStore.getState().documents.find(d => d.id === openId)?.content ?? ''
+        const moved = canvasPreviewActiveRef.current && previewDocIdRef.current !== openId
+        if (moved) {
+          previewBaseRef.current = storedOpen()
+          previewDocIdRef.current = openId
+          lastCanvasPreviewRef.current = 0
+        }
         const now = Date.now()
         if (now - lastCanvasPreviewRef.current < CANVAS_PREVIEW_THROTTLE_MS) return
         lastCanvasPreviewRef.current = now
         if (!canvasPreviewActiveRef.current) {
-          previewBaseRef.current = editor.getHTML()
-          previewDocIdRef.current = useAppStore.getState().activeDocumentId
+          // The stored text, not editor.getHTML(): right after the run opens
+          // a chapter the editor may still be the previous chapter's.
+          previewBaseRef.current = storedOpen()
+          previewDocIdRef.current = openId
+        }
+        if (!canvasPreviewActiveRef.current || moved) {
+          canvasPreviewActiveRef.current = true
+          // Painted over from here on: the user must not type into it.
+          publishEditLock()
         }
         canvasPreviewActiveRef.current = true
         setSaveStatus('unsaved')
@@ -601,6 +692,10 @@ export function useChatLLM({
       original: info.originalDocContent,
       chapters: () => useAppStore.getState().documents.map(d => ({ id: d.id, title: d.title, content: d.content, summary: d.summary })),
       openId: () => useAppStore.getState().activeDocumentId,
+      userMoved: () => {
+        if (!view.moved && useAppStore.getState().activeDocumentId !== view.expected) view.moved = true
+        return view.moved
+      },
       ensureLoaded: (ids: string[]) => useAppStore.getState().ensureDocumentContents(ids),
       // The open chapter goes through updateActiveDocument so Editor.tsx's
       // content sync sees it; any other through updateDocument. Both carry
@@ -610,7 +705,10 @@ export function useChatLLM({
         if (id === st.activeDocumentId) st.updateActiveDocument({ content: html })
         else st.updateDocument(id, { content: html })
       },
-      open: (id: string) => useAppStore.getState().setActiveDocumentId(id),
+      open: (id: string) => {
+        view.expected = id
+        useAppStore.getState().setActiveDocumentId(id)
+      },
       create: (title: string) => useAppStore.getState().addDocument(title, '<p></p>', { activate: false }),
       snapshot: (id: string, label: string) => useAppStore.getState().createVersionSnapshot(label, id)
     },
@@ -620,12 +718,17 @@ export function useChatLLM({
         if (progressLineRef.current === line) return
         progressLineRef.current = line
         paintStreamingBubble(info.assistantMsgId, info.attachmentsText)
+      },
+      writing: (id: string | null) => {
+        editLockRef.current = { ...editLockRef.current, writing: id }
+        publishEditLock()
       }
     },
-    run: createRunState({ startId: info.startId, inContext: info.inContextIds })
+    run: createRunState({ startId: info.startId, inContext: info.inContextIds, startContent: info.originalDocContent })
+    }
     // selectionRefs is a ref's `.current`, so it never changes identity — it is
     // listed only to satisfy exhaustive-deps (see the timeout note in CLAUDE.md).
-  }), [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, setSaveStatus, selectionRefs, settleCanvasPreview, paintStreamingBubble, polishTransport])
+  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, setSaveStatus, selectionRefs, settleCanvasPreview, paintStreamingBubble, polishTransport, publishEditLock])
 
   // The agent record on a bubble (types/chat AgentTurnRecord): trace, steps,
   // chapters changed. Only turns that ran a tool get one.
@@ -792,9 +895,14 @@ export function useChatLLM({
         // an earlier step's write is already a reviewable diff, and an error
         // in a later step must not erase it. A selection preview did write
         // through real transactions, so it is reverted when it never landed.
+        //
+        // Only a selection turn wrote the store before committing: without
+        // one, the stored start chapter is the original or the user's own
+        // edit (it is editable mid-run then), and must not be reset.
         const latest = useAppStore.getState()
         const startKept = !!toolCtx.run.docs.get(toolCtx.document.startId)?.dirty || toolCtx.run.selectionApplied
-        if (latest.activeDocumentId === toolCtx.document.startId && !startKept) {
+        const selectionTurn = !!toolCtx.selection.originalText()
+        if (latest.activeDocumentId === toolCtx.document.startId && !startKept && selectionTurn) {
           settleCanvasPreview(originalDocContent)
           s.updateActiveDocument({ content: originalDocContent })
         } else {
@@ -809,19 +917,29 @@ export function useChatLLM({
   // final bubble once the run is over.
   const buildRunObserver = useCallback((info: RunInfo): RunObserver => ({
     onStepExecuted: (progress) => {
-      priorChatRef.current = progress.chatText
       progressLineRef.current = null
-      setAgentRecord(info.assistantMsgId, {
+      // The step's writes are in the store: its preview is over. Converge the
+      // editor with what was stored (a refused rewrite leaves the old text)
+      // and lift the preview's edit lock for the steps that follow.
+      const st = useAppStore.getState()
+      settleCanvasPreview(st.documents.find(d => d.id === st.activeDocumentId)?.content ?? '')
+      const prior = info.rejoined?.prior
+      priorChatRef.current = joinText(recordText(prior), progress.chatText)
+      setAgentRecord(info.assistantMsgId, continueRecord(prior, {
         status: 'running',
         steps: progress.steps,
         trace: progress.trace,
         touched: progress.touched,
         timeline: progress.timeline,
         prefix: info.attachmentsText || undefined
-      })
+      }))
     },
     onCorrective: (failure, attempt, max) => {
-      settleCanvasPreview(info.originalDocContent)
+      // The stored text of the previewed chapter, not the turn's original:
+      // the preview may be on a chapter the run created, or on one an
+      // earlier step already wrote.
+      const st = useAppStore.getState()
+      settleCanvasPreview(st.documents.find(d => d.id === st.activeDocumentId)?.content ?? info.originalDocContent)
       const s = useAppStore.getState()
       s.setMessages(s.messages.map(m =>
         m.id === info.assistantMsgId
@@ -876,23 +994,31 @@ export function useChatLLM({
         reinsertedImages: summary.effects.reinsertedImages
       })
 
-      const chatText = summary.chatText.trim() || 'Document updated successfully.'
-      const limitNote = summary.endReason === 'step_limit'
-        ? `\n\nℹ️ This turn stopped at its step limit (${summary.steps} steps). Reply "continue" to let it go on, or raise the limit in Settings.`
-        : ''
+      const prior = info.rejoined?.prior
+      const chatText = joinText(recordText(prior), summary.chatText) || 'Document updated successfully.'
+      // A rejoined step cannot continue its run (there is no request to
+      // re-issue). When the run would have gone on, say why it stopped —
+      // otherwise a reload mid-series looks like the model giving up.
+      const wouldContinue = summary.endReason === 'step_limit' ||
+        (summary.endReason === 'writes_done' && resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider]).policy.continueAfterWrites)
+      const limitNote = info.rejoined
+        ? (wouldContinue ? '\n\nℹ️ The page reloaded during this turn, so it stopped after the step that was running. Reply "continue" to go on.' : '')
+        : summary.endReason === 'step_limit'
+          ? `\n\nℹ️ This turn stopped at its step limit (${summary.steps} steps). Reply "continue" to let it go on, or raise the limit in Settings.`
+          : ''
       const displayChatText = (info.attachmentsText ? `${info.attachmentsText}\n\n${chatText}` : chatText) + warningNote + limitNote
       s.setMessages(useAppStore.getState().messages.map(m =>
         m.id === info.assistantMsgId ? { ...m, content: displayChatText } : m
       ))
-      setAgentRecord(info.assistantMsgId, {
-        status,
+      setAgentRecord(info.assistantMsgId, continueRecord(prior, {
+        status: info.rejoined && wouldContinue ? 'stopped' : status,
         steps: summary.steps,
         trace: summary.trace,
         touched: summary.touched,
         timeline: summary.timeline,
         prefix: info.attachmentsText || undefined,
         suffix: (warningNote + limitNote).trim() || undefined
-      })
+      }))
 
       // Converge the editor with whatever the store ended up holding.
       // Required after a live preview: on the paths that keep the original
@@ -952,6 +1078,13 @@ export function useChatLLM({
       selectionEndRef.current = null
       originalSelectedTextRef.current = ''
     }
+    // A selection turn locks its chapter for the whole run (the selection
+    // preview writes it through real transactions); otherwise the start
+    // chapter is locked only while a preview paints it.
+    if (stepIndex === 0) {
+      editLockRef.current = { start: originalSelectedTextRef.current ? rc.startId : null, writing: null }
+      publishEditLock()
+    }
 
     // Offered AFTER the selection capture: replace_selection exists only
     // when there is a selection to replace. On the markup protocol the
@@ -995,7 +1128,7 @@ export function useChatLLM({
       s.setStreaming(false)
       setErrorMsg(err.message || 'Failed to initialize LLM stream.')
     }
-  }, [activeEditor, selectedText, buildStreamCallbacks])
+  }, [activeEditor, selectedText, buildStreamCallbacks, publishEditLock])
 
   /**
    * Build the run for one turn. `canContinue` is false for a reader that has
@@ -1006,8 +1139,13 @@ export function useChatLLM({
     const s = useAppStore.getState()
     const toolCtx = buildToolContext(info)
     const rcRef: { current: StreamRenderContext | null } = { current: null }
+    // Until the first step knows whether there is a selection, the start
+    // chapter is locked. A rejoined stream never runs that step and keeps it.
+    editLockRef.current = { start: info.startId, writing: null }
+    publishEditLock()
     const settings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider], canContinue)
-    priorChatRef.current = ''
+    // A rejoined step shows below the text of the steps before it.
+    priorChatRef.current = recordText(info.rejoined?.prior)
     const run = new AgentRun({
       registry: CHAT_TOOLS,
       ctx: toolCtx,
@@ -1023,7 +1161,7 @@ export function useChatLLM({
     rcRef.current = { ...info, run, toolCtx }
     currentRunRef.current = run
     return rcRef.current
-  }, [buildToolContext, buildRunObserver, streamStep])
+  }, [buildToolContext, buildRunObserver, streamStep, publishEditLock])
 
   // A turn: build the run, stream its first step. Corrective and follow-up
   // steps are started by the run itself.
@@ -1138,7 +1276,8 @@ export function useChatLLM({
           originalDocContent,
           attachmentsText: '',
           estimatedInputTokens: 0,
-          inContextIds: []
+          inContextIds: [],
+          rejoined: { prior: useAppStore.getState().messages.find(m => m.id === assistantMsgId)?.agent }
         },
         [],
         false
@@ -1620,6 +1759,8 @@ export function useChatLLM({
         defaultPolishModel(s.activeProvider, s.providerConfigs[s.activeProvider].model)
     })
     s.setStreaming(true)
+    // Only the chapter being polished is locked; the rest stay editable.
+    s.setEditLockedIds([documentId])
     s.createVersionSnapshot(`Auto-save before polishing "${doc.title}"`, documentId)
     if (abortControllerRef.current) abortControllerRef.current.abort()
     abortControllerRef.current = new AbortController()

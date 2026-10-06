@@ -16,7 +16,10 @@
  *    start chapter stays synchronous; another chapter may need its content
  *    loaded first, so writes to it are async;
  *  - the seen-content rule (D2): an edit is refused on a chapter whose HTML
- *    the model has not seen this run.
+ *    the model has not seen this run;
+ *  - the user-edit rule: the user may edit other chapters while the run
+ *    works, and a write whose chapter they changed meanwhile is refused
+ *    rather than written over their edit (`userEdited`).
  */
 import { defineTool } from '../registry'
 import { citeChapter, resolveChapter, type ResolvedChapter } from '../chapters'
@@ -86,15 +89,59 @@ export function resolveTarget(ref: unknown, ctx: ToolContext): Target | string {
 export function docState(ctx: ToolContext, target: Target): DocState {
   let st = ctx.run.docs.get(target.id)
   if (!st) {
-    const original = target.isStart
+    // A selection preview writes the start chapter through real transactions,
+    // so with a selection its stored content is not the turn's original.
+    const original = target.isStart && selectionTurn(ctx)
       ? ctx.document.original
-      : ctx.document.chapters().find(c => c.id === target.id)?.content ?? ''
+      : storedContent(ctx, target.id)
     const base = stripDiffMarkup(original)
     const reviewBase = base === original ? base : resolveDiffMarkupInHtml(original, 'reject')
     st = { original, base, reviewBase, html: base, dirty: false }
     ctx.run.docs.set(target.id, st)
+    ctx.run.known.set(target.id, original)
   }
   return st
+}
+
+const storedContent = (ctx: ToolContext, id: string) =>
+  ctx.document.chapters().find(c => c.id === id)?.content ?? ''
+
+/** The turn rewrites a selection: its chapter is locked for the whole run. */
+const selectionTurn = (ctx: ToolContext) => !!ctx.selection.originalText()
+
+/**
+ * Has the user changed this chapter since the run last saw or wrote it?
+ *
+ * The user may edit any chapter the run is not painting while it works
+ * (agentic_chat_loop.md §0.4). A write built on the run's copy of a chapter
+ * they changed meanwhile would overwrite their edit — so it is refused, and
+ * the model reads the chapter again. The start chapter of a selection turn
+ * is never edited by the user (it is locked) but is written by the
+ * selection preview, so it is not checked.
+ */
+export function userEdited(ctx: ToolContext, id: string): boolean {
+  if (id === ctx.document.startId && selectionTurn(ctx)) return false
+  const known = ctx.run.known.get(id)
+  return known !== undefined && storedContent(ctx, id) !== known
+}
+
+/** Forget the run's copy of a chapter: the next write starts from what is stored now. */
+export function forgetChapter(ctx: ToolContext, id: string): void {
+  ctx.run.docs.delete(id)
+  ctx.run.htmlShown.delete(id)
+  ctx.run.known.delete(id)
+}
+
+/** The refusal for a write whose chapter the user changed meanwhile. */
+export function editedMeanwhile(ctx: ToolContext, target: Target): ToolResult {
+  forgetChapter(ctx, target.id)
+  return {
+    ok: false,
+    retryable: true,
+    content: `The user edited ${citeChapter(target)} while you were working, so your copy of it is out of date and this change was NOT applied. ` +
+      `Read it again (read_chapter with chapters=[${target.number}] and format="html") and make the change on its current text, keeping the user's edits.`,
+    trace: `⚠️ ${citeChapter(target)} was edited by the user meanwhile — not written`
+  }
 }
 
 /**
@@ -109,7 +156,13 @@ export function commitDoc(ctx: ToolContext, target: Target, st: DocState): void 
     ctx.document.snapshot(target.id, `Auto-save before the assistant changed "${target.title}"`)
     ctx.run.snapshotted.add(target.id)
   }
-  ctx.document.commit(target.id, st.dirty ? diffHtml(st.reviewBase, st.html) : st.original)
+  commitHtml(ctx, target.id, st.dirty ? diffHtml(st.reviewBase, st.html) : st.original)
+}
+
+/** Every store write of the run goes through here: what it stores is the run's own, not a user edit. */
+function commitHtml(ctx: ToolContext, id: string, html: string): void {
+  ctx.document.commit(id, html)
+  ctx.run.known.set(id, storedContent(ctx, id))
 }
 
 /** Record what a chapter received, for the bubble's "changed this turn" block. */
@@ -134,7 +187,10 @@ export function touch(ctx: ToolContext, target: Target, kind: AgentTouchedChapte
  * already existed never moves the user's view.
  */
 function openIfCreated(ctx: ToolContext, target: Target): void {
-  if (ctx.run.created.has(target.id) && ctx.document.openId() !== target.id) ctx.document.open(target.id)
+  // Never once the user has gone to another chapter: they may be typing there.
+  if (ctx.run.created.has(target.id) && ctx.document.openId() !== target.id && !ctx.document.userMoved()) {
+    ctx.document.open(target.id)
+  }
 }
 
 /** Run `fn` once the target's content is loaded — synchronously for the start chapter. */
@@ -157,13 +213,21 @@ const unseen = (target: Target): ToolResult => ({
  * Another chapter's text must never paint over the one that is open: a
  * rewrite of a chapter the user is not looking at shows as a progress line in
  * the bubble instead. A chapter created this run is opened first (D6).
- * An unresolvable target previews nothing — the write itself reports it.
+ * An unresolvable target (typically a chapter created in this same reply)
+ * shows as progress; the write itself resolves it once the reply ends.
  */
 export function previewRewrite(ctx: ToolContext, chapterRef: unknown, html: string): void {
   const target = resolveTarget(chapterRef, ctx)
-  if (typeof target === 'string') return
-  openIfCreated(ctx, target)
-  if (ctx.document.openId() !== target.id) {
+  if (typeof target === 'string') {
+    // A chapter created in this same reply does not exist until the reply
+    // ends (tools run after it). Show the writing as progress, not nothing.
+    ctx.ui.progress(`✍️ "${String(chapterRef)}" … ${htmlToPlainText(html).length.toLocaleString()} chars`)
+    return
+  }
+  // A chapter the user changed meanwhile: this rewrite will be refused, so
+  // it must not paint over what they wrote.
+  if (!userEdited(ctx, target.id)) openIfCreated(ctx, target)
+  if (ctx.document.openId() !== target.id || userEdited(ctx, target.id)) {
     ctx.ui.progress(`✍️ ${citeChapter(target)} … ${htmlToPlainText(html).length.toLocaleString()} chars`)
     return
   }
@@ -217,6 +281,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
     if (ctx.document.openId() !== target.id) ctx.editor.discardPreview()
 
     return withLoaded(ctx, target, () => {
+      if (userEdited(ctx, target.id)) return editedMeanwhile(ctx, target)
       const closed = !argumentsLost && call.unclosed !== true
       if (closed && !html.trim()) {
         return { ok: false, content: 'update_document had an empty html argument; nothing was written.', trace: '⚠️ rewrite: empty', effects: { producedNothing: true } }
@@ -322,11 +387,12 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       const editor = ctx.editor.current()
       if (!ctx.run.selectionApplied || !editor) return { ...report(edits, ' beside the selection'), retryable: false }
       const local = applyEditBlocksLocally(ctx.images.preserve(editor.getHTML()), edits)
-      if (local.failed.length < edits.length) ctx.document.commit(target.id, ctx.images.restore(local.html))
+      if (local.failed.length < edits.length) commitHtml(ctx, target.id, ctx.images.restore(local.html))
       return report(local.failed, ' beside the selection')
     }
 
     return withLoaded(ctx, target, () => {
+      if (userEdited(ctx, target.id)) return editedMeanwhile(ctx, target)
       // Edits whose SEARCH text can't be located are skipped (never
       // destructive) and reported.
       const st = docState(ctx, target)
@@ -389,7 +455,7 @@ export const replaceSelectionTool = defineTool<{ html: string }>({
         effects: { selectionGone: true }
       }
     }
-    ctx.document.commit(target.id, editor.getHTML())
+    commitHtml(ctx, target.id, editor.getHTML())
     ctx.run.selectionApplied = true
     touch(ctx, target, 'selection', 1, 0)
     return { ok: true, content: 'The selection was rewritten.', trace: '✏️ rewrote the selection' }

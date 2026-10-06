@@ -18,7 +18,8 @@ export type { JsonSchema, ToolSpec }
 /**
  * What a tool does, which decides what the loop does after it (D3): a read
  * or navigation means the model asked for something and must see the answer;
- * a successful write may end the turn.
+ * a successful write hands its result back too, unless `continueAfterWrites`
+ * is off — then it ends the turn.
  */
 export type ToolKind = 'read' | 'navigate' | 'write'
 
@@ -132,6 +133,12 @@ export interface DocumentPort {
   chapters(): BookChapter[]
   /** The chapter open in the editor right now. */
   openId(): string
+  /**
+   * The user has opened another chapter during this run. From then on the
+   * run never moves the view: they may be typing there (writes and previews
+   * of other chapters show as progress instead).
+   */
+  userMoved(): boolean
   /** Load chapters whose content has not arrived yet (server books lazy-load). */
   ensureLoaded(ids: string[]): Promise<void>
   /** Store write for one chapter (goes through the blanking guard). */
@@ -148,6 +155,11 @@ export interface DocumentPort {
 export interface UiPort {
   /** One live progress line in the bubble (a rewrite of a chapter that is not open); null clears it. */
   progress(line: string | null): void
+  /**
+   * A chapter a slow write is rewriting right now (a polish), locked for the
+   * user until it lands; null when done. Other chapters stay editable.
+   */
+  writing(id: string | null): void
 }
 
 /** `{{IMAGE_PLACEHOLDER_n}}` tokens, one registry per request. */
@@ -182,7 +194,23 @@ export interface DocState {
 export interface RunState {
   /** Step being executed (0-based); set by the run before each step's tools run. */
   step: number
+  /**
+   * How this model writes (set by the run). Tool results that tell the model
+   * how to write next must name the form it actually uses — describing tags
+   * to a tool-protocol model invites it to mix the two.
+   */
+  writeProtocol?: 'tools' | 'markup'
+  /** Writes hand their result back instead of ending the turn (set by the run). */
+  continuesAfterWrites?: boolean
   docs: Map<string, DocState>
+  /**
+   * Each chapter's stored content as this run last saw or wrote it: when its
+   * HTML was shown (the request, an html read, creation) and after each
+   * commit. The user may edit other chapters while the run works; a stored
+   * content that no longer matches means they did, and a write based on the
+   * run's copy would overwrite their edit (see documentWrites userEdited).
+   */
+  known: Map<string, string>
   /**
    * Chapters whose HTML the model has seen this run — the start chapter (in
    * the request), `read_chapter` with format html, chapters it created. An
@@ -208,10 +236,11 @@ export interface RunState {
   selectionApplied: boolean
 }
 
-export function createRunState(init: { startId: string; inContext?: Iterable<string> }): RunState {
+export function createRunState(init: { startId: string; inContext?: Iterable<string>; startContent?: string }): RunState {
   return {
     step: 0,
     docs: new Map(),
+    known: new Map(init.startContent === undefined ? [] : [[init.startId, init.startContent]]),
     htmlShown: new Set([init.startId]),
     inContext: new Set([init.startId, ...(init.inContext ?? [])]),
     created: new Set(),

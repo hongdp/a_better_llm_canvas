@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { stripDiffMarkup, diffHtml } from '../../utils/diff'
 import { updateDocumentTool, editDocumentTool, replaceSelectionTool } from '../tools/documentWrites'
-import type { ToolInvocation } from '../types'
+import { readChapterTool } from '../tools/bookReads'
+import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 
 const call = (name: string, args: Record<string, unknown> | null, extra: Partial<ToolInvocation> = {}): ToolInvocation =>
@@ -227,5 +228,81 @@ describe('writes to another chapter (D2)', () => {
   it('names a chapter that does not exist as a retryable error', async () => {
     const r = await updateDocumentTool.invoke(call('update_document', { chapter: 9, html: '<p>x</p>' }), twoChapters().ctx)
     expect(r).toMatchObject({ ok: false, retryable: true })
+  })
+})
+
+describe('previewing a chapter created in the same reply', () => {
+  it('shows progress while the chapter does not exist yet, instead of nothing', () => {
+    const f = fakeContext('<p>start</p>')
+    updateDocumentTool.preview?.('{"chapter": "第五章 新的一天", "html": "<p>清晨', f.ctx)
+    expect(f.previewDocument).not.toHaveBeenCalled()
+    expect(f.progress.at(-1)).toContain('✍️ "第五章 新的一天"')
+  })
+})
+
+describe('the user edits other chapters while the run works (§0.4)', () => {
+  const book = () => fakeContext('<p>start</p>', {
+    chapters: [{ id: 'doc-2', title: '人物表', content: '<p>阿青</p><p>阿红</p>' }]
+  })
+  const readHtml = (f: ReturnType<typeof book>, chapter: number) =>
+    readChapterTool.invoke({ id: 'r', name: 'read_chapter', args: { chapters: [chapter], format: 'html' }, source: 'native' }, f.ctx)
+
+  it('refuses an edit built on a copy the user changed since, and applies it after a fresh read — keeping their edit', async () => {
+    const f = book()
+    await readHtml(f, 2)
+    // The user types into chapter 2 while the model is still writing.
+    f.userEdits('doc-2', '<p>阿青（用户补的）</p><p>阿红</p>')
+
+    const refused = await editDocumentTool.invoke(call('edit_document', { chapter: 2, ...edit('<p>阿红</p>', '<p>阿紫</p>') }), f.ctx)
+    expect(refused).toMatchObject({ ok: false, retryable: true })
+    expect(refused.content).toContain('The user edited #2')
+    expect(f.writes).toEqual([])
+    // The model's copy is forgotten: it must read again before editing.
+    expect(f.ctx.run.htmlShown.has('doc-2')).toBe(false)
+
+    await readHtml(f, 2)
+    const applied = await editDocumentTool.invoke(call('edit_document', { chapter: 2, ...edit('<p>阿红</p>', '<p>阿紫</p>') }), f.ctx)
+    expect(applied.ok).toBe(true)
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>阿青（用户补的）</p><p>阿紫</p>')
+  })
+
+  it('refuses a rewrite of the start chapter the user changed (no selection: it is editable mid-run)', () => {
+    const f = fakeContext('<p>alpha</p>')
+    f.userEdits('doc-1', '<p>alpha, edited by the user</p>')
+    const r = updateDocumentTool.invoke(call('update_document', { html: '<p>beta</p>' }), f.ctx) as ToolResult
+    expect(r).toMatchObject({ ok: false, retryable: true })
+    expect(f.writes).toEqual([])
+  })
+
+  it('never takes the run\'s own writes for user edits', async () => {
+    const f = book()
+    await readHtml(f, 2)
+    for (const [a, b] of [['<p>阿红</p>', '<p>阿紫</p>'], ['<p>阿紫</p>', '<p>阿蓝</p>']]) {
+      expect((await editDocumentTool.invoke(call('edit_document', { chapter: 2, ...edit(a, b) }), f.ctx)).ok).toBe(true)
+    }
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>阿青</p><p>阿蓝</p>')
+  })
+
+  it('does not check the start chapter of a selection turn, which its selection preview writes', () => {
+    const f = fakeContext('<p>alpha</p>', { selectedText: 'alpha' })
+    f.userEdits('doc-1', '<p>alp</p>') // a half-streamed selection preview, as stored
+    const r = updateDocumentTool.invoke(call('update_document', { html: '<p>beta</p>' }), f.ctx) as ToolResult
+    expect(r.ok).toBe(true)
+  })
+
+  it('does not paint a rewrite over a chapter the user changed, and does not open a created one after they moved', () => {
+    const f = book()
+    f.userEdits('doc-1', '<p>start, edited</p>')
+    updateDocumentTool.preview?.('{"html": "<p>new', f.ctx)
+    expect(f.previewDocument).not.toHaveBeenCalled()
+    expect(f.progress.at(-1)).toContain('✍️')
+
+    const g = book()
+    const id = g.ctx.document.create('第一章')
+    g.ctx.run.created.add(id)
+    g.userOpens('doc-2')
+    updateDocumentTool.preview?.('{"chapter": 3, "html": "<p>new', g.ctx)
+    expect(g.opened).toEqual([])
+    expect(g.ctx.document.openId()).toBe('doc-2')
   })
 })

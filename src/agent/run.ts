@@ -133,6 +133,8 @@ export class AgentRun {
   private readonly timeline: AgentTimelineItem[] = []
   private readonly trace: string[] = []
   private stray = 0
+  /** A write succeeded in this run (see detectStepFailure's wroteThisRun). */
+  private wrote = false
   private readonly effects: RunSummary['effects'] = {
     canvasIssue: null, failedEdits: 0, reinsertedImages: 0, selectionGone: false, producedNothing: false
   }
@@ -142,6 +144,8 @@ export class AgentRun {
   constructor(options: AgentRunOptions) {
     this.o = options
     this.messages = options.initialMessages
+    options.ctx.run.writeProtocol = options.writeProtocol
+    options.ctx.run.continuesAfterWrites = options.policy.continueAfterWrites
   }
 
   /** Stream the first step. Resolves when that stream returns, not when the run ends. */
@@ -185,7 +189,8 @@ export class AgentRun {
       text: out.text,
       writeProtocol: this.o.writeProtocol,
       hadNativeCalls: out.nativeCalls.length > 0,
-      markupKind: collected.markupKind
+      markupKind: collected.markupKind,
+      wroteThisRun: this.wrote
     })
     if (failure) {
       this.handleProtocolFailure(failure, out.text, collected)
@@ -268,6 +273,7 @@ export class AgentRun {
   private afterExecute(out: StepOutput, ran: ToolInvocation[], results: ToolResult[]): void {
     if (this.finished) return
     const executed: ExecutedCall[] = ran.map((inv, i) => ({ kind: this.kindOf(inv), result: results[i] }))
+    if (executed.some(e => e.kind === 'write' && e.result.ok)) this.wrote = true
     for (const { result } of executed) {
       this.trace.push(result.trace)
       this.timeline.push({ type: 'tool', line: result.trace, ok: result.ok })

@@ -42,12 +42,21 @@ export const DEFAULT_BUDGETS: RunBudgets = { maxSteps: 6, maxCorrective: MAX_NO_
 export const DEFAULT_POLICY: StepPolicy = { continueAfterWrites: false, feedBackFailedWrites: false }
 
 /**
- * Whether a confirmation round after successful writes is worth its cost.
- * Local models pay no per-token price and answer in seconds; grok pays a
- * first-token wait per step (measurement M3 decides whether that changes).
+ * Whether a write hands its result back to the model, like every other tool
+ * call, instead of ending the turn. On for every provider (user decision,
+ * 2026-10-06) — the standard agent loop: the turn ends when the model replies
+ * with no action at all.
+ *
+ * It was off for grok, to spare a confirmation round its first-token wait
+ * (127–199 s measured at high effort). Measured since: a step that only
+ * follows a tool result reaches its first token in 1–6 s. And ending on every
+ * write cost far more — the model created all its chapters up front and
+ * packed several into one reply (squeezed short, one previewed), or ended
+ * with a created chapter still empty.
  */
 export function defaultContinueAfterWrites(provider: string): boolean {
-  return provider === 'ollama' || provider === 'runpod'
+  void provider
+  return true
 }
 
 export interface RunSettings {
@@ -78,7 +87,8 @@ export function resolveRunSettings(
     agentTools,
     budgets: { maxSteps: canContinue ? maxSteps : 1, maxCorrective: MAX_NO_ACTION_RETRIES },
     policy: {
-      continueAfterWrites: agentTools && (config?.continueAfterWrites ?? defaultContinueAfterWrites(provider)),
+      // A rejoined stream has no request to continue from.
+      continueAfterWrites: canContinue && agentTools && (config?.continueAfterWrites ?? defaultContinueAfterWrites(provider)),
       // Feeding a failed edit back is what lets the model fix it; with the
       // agent tools off the turn keeps its pre-loop shape.
       feedBackFailedWrites: agentTools
@@ -102,10 +112,18 @@ export function detectStepFailure(params: {
   writeProtocol: 'tools' | 'markup'
   hadNativeCalls: boolean
   markupKind: string | null
+  /**
+   * An earlier step of this run already changed the document. Its closing
+   * reply ("done — both chapters are written") then refers to those changes:
+   * a missing declaration, or "updated" with no markup of its own, is not a
+   * lost write. Only broken markup still is.
+   */
+  wroteThisRun?: boolean
 }): DocumentUpdateFailure | null {
   if (params.hadNativeCalls || params.markupKind !== 'chat') return null
   const failure = detectFailedDocumentUpdate(params.text)
   if (failure === 'undeclared' && params.writeProtocol === 'tools') return null
+  if (params.wroteThisRun && failure !== 'malformed') return null
   return failure
 }
 
@@ -135,7 +153,9 @@ export function stepsLeft(budgets: RunBudgets, stepsTaken: number): number {
  *     still wanted more);
  *  2. a read or navigation → continue (the model asked for information);
  *  3. a failed write with feed-back on and corrective budget left → continue;
- *  4. writes only, all succeeded → continue if `continueAfterWrites`, else end;
+ *  4. writes only, all succeeded → continue if `continueAfterWrites` (the
+ *     default: the model sees each write's result and decides what is next),
+ *     else end;
  *  5. nothing executed → end (the text is the answer).
  */
 export function decideAfterStep(params: {
@@ -162,7 +182,10 @@ export function decideAfterStep(params: {
     return { action: 'end', reason: failedWrite && policy.feedBackFailedWrites ? 'corrective_exhausted' : 'writes_done' }
   }
   const left = stepsLeft(budgets, stepsTaken)
-  if (left <= 0) return { action: 'end', reason: 'step_limit' }
+  // Out of steps. Only a step that still WANTED something (a read, a fix) was
+  // cut short; one whose writes landed was done — continuing would only have
+  // given the model its results back.
+  if (left <= 0) return { action: 'end', reason: wantsMore || (failedWrite && policy.feedBackFailedWrites) ? 'step_limit' : 'writes_done' }
   // A continuation that exists only to fix a failed write spends the
   // corrective budget; one the model asked for (a read) does not.
   return { action: 'continue', corrective: !wantsMore && failedWrite, final: left === 1 }

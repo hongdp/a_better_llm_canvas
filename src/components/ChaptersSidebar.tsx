@@ -364,8 +364,10 @@ export const ChaptersSidebar: React.FC = () => {
               key={doc.id}
               // Switching is allowed while the assistant writes: every write
               // targets its chapter by id, and the live preview follows the
-              // chapter it belongs to (agentic_chat_loop.md D2). The editor
-              // stays read-only during a turn either way.
+              // chapter it belongs to (agentic_chat_loop.md D2). Only the
+              // chapter it is writing into is read-only; the user may edit
+              // the others, and a write to one they changed meanwhile is
+              // refused and redone (§0.4).
               onClick={() => setActiveDocumentId(doc.id)}
               className={`chapter-item ${isActive ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${dragOverClass}`}
               style={{ cursor: 'pointer' }}

@@ -222,10 +222,54 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     // The bubble is reused, not duplicated, and the document update lands as a
     // reviewable diff through the normal completion path.
     expect(useAppStore.getState().messages).toHaveLength(2)
-    expect(bubble('a-1')).toBe('Continued.')
+    // A write hands its result back, so the turn would have gone on: the
+    // bubble says the reload stopped it rather than ending in silence.
+    expect(bubble('a-1')).toBe('Continued.\n\nℹ️ The page reloaded during this turn, so it stopped after the step that was running. Reply "continue" to go on.')
     expect(activeContent()).toContain('RESUMED_TEXT')
     expect(activeContent()).toContain('diff-addition')
     expect(useAppStore.getState().isStreaming).toBe(false)
+    unmount()
+  })
+
+  it('continues the bubble\'s record of the steps before the reload instead of replacing it', async () => {
+    // Reported 2026-10-06: a reload at chapter 19 left a 19-chapter turn
+    // showing one trace line and "steps: 1".
+    useAppStore.setState({
+      messages: [
+        { id: 'u-1', role: 'user', content: 'write the chapters', timestamp: '2026-07-01T00:00:00.000Z' },
+        {
+          id: 'a-1', role: 'assistant', content: 'Chapter one done.', timestamp: '2026-07-01T00:00:00.000Z',
+          agent: {
+            status: 'running', steps: 2,
+            trace: ['➕ create #2 "Ch1"', '✏️ rewrote #2 "Ch1"'],
+            touched: [{ documentId: 'doc-1', titleAtRun: 'Ch1', kind: 'rewrite', changes: 1, failed: 0 }],
+            timeline: [{ type: 'text', text: 'Chapter one done.' }, { type: 'tool', line: '✏️ rewrote #2 "Ch1"', ok: true }],
+            live: 'half a sentence'
+          }
+        }
+      ]
+    })
+    findResumableJob.mockResolvedValue({ jobId: 'gen-1', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+    resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+      const text = 'Chapter two.\n<canvas><p>RESUMED_TEXT</p></canvas>\n<doc_status>updated</doc_status>'
+      callbacks.onChunk(text)
+      callbacks.onDone(text)
+    })
+
+    const unmount = renderChatHook()
+    await settle()
+
+    const msg = useAppStore.getState().messages.find(m => m.id === 'a-1')
+    expect(msg?.agent).toMatchObject({
+      status: 'stopped',
+      steps: 3,
+      trace: ['➕ create #2 "Ch1"', '✏️ rewrote #2 "Ch1"', expect.stringContaining('rewrote')],
+      touched: [{ documentId: 'doc-1', changes: 2 }]
+    })
+    expect(msg?.agent?.timeline?.map(i => i.type === 'text' ? i.text : 'tool')).toEqual(['Chapter one done.', 'tool', 'Chapter two.', 'tool'])
+    expect(msg?.agent?.live).toBeUndefined()
+    expect(msg?.content).toContain('Chapter one done.\n\nChapter two.')
+    expect(msg?.content).toContain('The page reloaded during this turn')
     unmount()
   })
 

@@ -22,6 +22,8 @@ export interface FakeContextOptions {
   inContext?: string[]
   /** Chapter ids whose content has not "loaded" until ensureLoaded is called. */
   lazy?: Record<string, string>
+  /** The selected text of a selection turn ('' = none). */
+  selectedText?: string
 }
 
 export function fakeContext(original: string, opts: FakeContextOptions = {}) {
@@ -31,6 +33,9 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
   const snapshots: string[] = []
   const opened: string[] = []
   const progress: Array<string | null> = []
+  /** Every ui.writing call: the chapter locked for a slow write, or null. */
+  const writing: Array<string | null> = []
+  let userMoved = false
   let editorHtml = opts.editorHtml === undefined ? null : opts.editorHtml
   let openId = 'doc-1'
   const book: BookChapter[] = [
@@ -68,13 +73,14 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
       relocate: () => {},
       range: () => opts.selection ?? null,
       end: () => opts.selection?.to ?? null,
-      originalText: () => ''
+      originalText: () => opts.selectedText ?? ''
     },
     document: {
       startId: 'doc-1',
       original,
       chapters: () => book.map(c => ({ ...c })),
       openId: () => openId,
+      userMoved: () => userMoved,
       ensureLoaded,
       commit: (id, html) => {
         writes.push({ id, html })
@@ -91,12 +97,19 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
       snapshot: id => { snapshots.push(id) }
     },
     images: { preserve: h => h, restore: h => h },
-    ui: { progress: line => { progress.push(line) } },
-    run: createRunState({ startId: 'doc-1', inContext: opts.inContext })
+    ui: { progress: line => { progress.push(line) }, writing: id => { writing.push(id) } },
+    run: createRunState({ startId: 'doc-1', inContext: opts.inContext, startContent: original })
   }
   return {
-    ctx, commits, writes, snapshots, opened, progress, previewDocument, previewSelection, discardPreview, ensureLoaded,
+    ctx, commits, writes, snapshots, opened, progress, writing, previewDocument, previewSelection, discardPreview, ensureLoaded,
     book: () => book,
+    /** The user types into a chapter (the stored content changes outside the run). */
+    userEdits: (id: string, html: string) => {
+      const chapter = book.find(c => c.id === id)
+      if (chapter) chapter.content = html
+    },
+    /** The user opens another chapter. */
+    userOpens: (id: string) => { openId = id; userMoved = true },
     lastCommit: () => commits[commits.length - 1],
     lastWrite: (id: string) => [...writes].reverse().find(w => w.id === id)?.html
   }

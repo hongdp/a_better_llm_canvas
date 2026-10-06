@@ -129,3 +129,49 @@ describe('buildChatSystemPrompt', () => {
     expect(a).toBe(b)
   })
 })
+
+describe('agent rules: writing several chapters', () => {
+  it('teaches one chapter per reply, creating the next one alongside, on both protocols', async () => {
+    const { buildChatSystemPrompt } = await import('../systemPrompt')
+    for (const protocol of ['markup', 'tools'] as const) {
+      const prompt = buildChatSystemPrompt({ protocol, agentTools: true })
+      expect(prompt).toContain('ONE chapter per reply')
+      expect(prompt).toContain('also create the next one')
+      expect(prompt).toContain('Never put two or more chapters into one reply')
+    }
+    // Off: not a byte of it.
+    expect(buildChatSystemPrompt({ protocol: 'markup' })).not.toContain('ONE chapter per reply')
+  })
+  it('with writes continuing the turn (the default): one chapter per reply, no workaround', async () => {
+    const { buildChatSystemPrompt } = await import('../systemPrompt')
+    const prompt = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
+    expect(prompt).toContain('ONE chapter per reply — you continue after each')
+    expect(prompt).not.toContain('also create the next one')
+    expect(prompt).toContain('A reply that does neither ends your turn')
+  })
+
+  it('puts the work in the reply that announces it, and never sells a tool call as the way to keep going', async () => {
+    // A model told "a reply that calls a tool is not your final reply" and
+    // "a reply with no action ends your turn" announced a rewrite, called
+    // create_chapter("skip") to get another reply, and wrote it there.
+    const { buildChatSystemPrompt } = await import('../systemPrompt')
+    const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
+    expect(markup).toContain('Do each piece of work in the reply that says you are doing it: "Now I\'ll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">')
+    expect(markup).not.toContain('is not your final reply')
+    expect(markup).toContain('The <doc_status> line is required only on a reply that calls no tool')
+    const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
+    expect(tools).toContain('goes in the same reply as its update_document call')
+    expect(tools).not.toContain('doc_status')
+  })
+
+  it('leaves re-reading and revising the outline to the model\'s judgment, on both protocols', async () => {
+    const { buildChatSystemPrompt } = await import('../systemPrompt')
+    for (const protocol of ['markup', 'tools'] as const) {
+      const prompt = buildChatSystemPrompt({ protocol, agentTools: true, continueAfterWrites: true })
+      expect(prompt).toContain('decide whether you need to look again at what it depends on')
+      expect(prompt).toContain('you may update the outline chapter before going on')
+      expect(prompt).toContain('Ask the user before restructuring the plan')
+    }
+    expect(buildChatSystemPrompt({ protocol: 'markup' })).not.toContain('look again')
+  })
+})

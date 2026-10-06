@@ -186,6 +186,10 @@ passes `emitUpdate=false`, or the live preview leaks into the store when
 `isStreaming` flips (the Stop button). Stop keeps the half-streamed draft as
 ONE undo step (`keepCanvasPreview` in `useChatLLM.ts`) and writes the same
 HTML to the store — screen, persistence, and Undo must always agree.
+During a chat turn only the chapters the run is writing into are read-only
+(`isEditLocked`: the previewed one, a selection turn's chapter, one being
+polished); the user may edit the rest, and a write to a chapter they changed
+meanwhile is refused and redone (`RunState.known`, agentic_chat_loop.md §0.4).
 A streamed selection rewrite touches the editor only through
 `replaceSelectionWithHtml` (`hooks/chat/selectionReplace.ts`). Never derive an
 inserted range's end from `slice.size`: ProseMirror wraps an open slice
@@ -212,8 +216,8 @@ Safety failures (403)
 trigger a self-healing retry with local sensitive-word censorship, then an
 interactive Prompt Editor UI (`status === 'prompt_edit'`).
 
-**A turn is a run of steps** (`src/agent/run.ts`, spec
-`docs/features/agentic_chat_loop.md`). Each step is one model call; native
+**A turn is a run of steps** (`src/agent/run.ts`; the design as built is
+§0 of `docs/features/agentic_chat_loop.md`). Each step is one model call; native
 tool calls and markup blocks are normalized into the same tool invocations and
 executed from one registry — add a tool with `defineTool` and register it in
 `useChatLLM`'s `CHAT_TOOLS`. Tools reach the editor and store only through the
@@ -225,7 +229,9 @@ fixed at a run's first step. Writes reach any chapter through `chapter` (a
 `chapter="…"` attribute on grok's markup). An edit on a chapter whose HTML the
 model has not seen this run is refused, and a live preview must never paint
 another chapter's text into the open editor (`previewRewrite`). Per-provider
-settings: `agentTools`, `agentMaxSteps` (0 = unlimited), `continueAfterWrites`.
+settings: `agentTools`, `agentMaxSteps` (0 = unlimited), `continueAfterWrites`
+(default on: a write's result goes back to the model like any tool result,
+and only a reply with no action ends the turn).
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

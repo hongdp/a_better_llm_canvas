@@ -1,10 +1,252 @@
 # Agentic chat loop with document tools (grok-first)
 
-Status: **phases 0–2 implemented** (2026-10-05); phases 2b–4 proposed.
-Revised after user review on 2026-10-05 (D1 decided, D2 and D3 rewritten,
-step limit made a setting).
+Status: **phases 0–2 implemented** (2026-10-05/06); phases 2b–4 proposed.
+§0 is the design as it stands. §4 records why each part is the way it is,
+and the implementation history below records how it got there.
 
-### Implementation status
+## 0. The design as built (2026-10-06)
+
+### 0.1 A turn is a run of steps
+
+Each user message starts one `AgentRun` (`src/agent/run.ts`). A **step** is
+one streamed model call. When a step finishes:
+
+1. `collectStep` turns everything the reply asked for into
+   `ToolInvocation`s. Native tool calls and markup blocks (`<canvas>`,
+   `<edit>`, `<selection_replace>`) come out in the same shape, so one tool
+   implementation serves both protocols.
+2. `detectStepFailure` judges a reply that asked for nothing against the
+   markup protocol (`undeclared` / `claimed` / `malformed`). A failure is
+   answered with a corrective step.
+3. Reads and navigation run first, then the writes in reply order
+   (`planWrites`: a full rewrite beside a selection rewrite is dropped).
+   They run sequentially, synchronously whenever the tools are.
+4. `decideAfterStep` (`src/agent/policy.ts`) continues or ends the run
+   (§0.2).
+5. To continue, the run **appends** the step's assistant message and its
+   results (one `tool` message per native call; one "RESULT OF YOUR DOCUMENT
+   CHANGES" user message for markup writes) and streams the next step.
+
+The run is callback-driven, not a promise loop: a step completes inside the
+transport's `onDone`, so a turn whose tools are synchronous settles in the
+same order as the single-shot turn it replaced.
+
+### 0.2 When the run ends (D3, D5)
+
+| Step produced | Next |
+|---|---|
+| no action | **end**: the text is the answer |
+| a read or navigation call | **continue**: the model asked for something |
+| writes, all succeeded | **continue** (default): the results go back like any tool result. With `continueAfterWrites` off: **end** |
+| a write that failed and can be retried (unmatched SEARCH, unread chapter, bad arguments) | **continue** with the error, as a corrective step |
+| a markup protocol failure | **continue** with `NO_ACTION_RETRY_INSTRUCTION`, as a corrective step |
+
+- **Ending.** The model ends its turn by replying with no action. After a
+  write succeeded in the run, that closing reply is taken at its word: a
+  missing `<doc_status>`, or "updated" with no markup, is not a failure.
+  Only broken markup is (`wroteThisRun`).
+- **Budgets.**
+  - `agentMaxSteps`: 6 for grok and other cloud providers, 10 for local
+    (`ollama`, `runpod`); 0 = no limit.
+  - Corrective steps share one budget of 3 (`MAX_NO_ACTION_RETRIES`).
+  - The last allowed step is sent with `toolChoice: 'none'` and
+    `STEP_LIMIT_NOTE`, so the turn still ends in an answer. A run that ran
+    out while it still wanted something ends as `step_limit`; one whose last
+    step only wrote ends as `writes_done`.
+- **Stop** aborts the step in flight and starts no more. Earlier steps'
+  writes stay, each already a reviewable diff. A half-streamed rewrite of
+  the open chapter is kept as one undo step.
+
+### 0.3 Two protocols, one registry (D1)
+
+The registry (`ToolRegistry` + `defineTool`, `src/agent/registry.ts`) is the
+only list of tools. Offering, provider schemas, live preview and execution
+all go through it. Adding a tool takes two steps: one `defineTool({...})`
+module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
+
+| Tool | Kind | Markup models (grok) | Tool-protocol models (local) |
+|---|---|---|---|
+| `update_document` | write | `<canvas chapter="N">` (live preview) | native |
+| `edit_document` | write | `<edit chapter="N">` SEARCH/REPLACE | native |
+| `replace_selection` | write | `<selection_replace>` | native |
+| `polish_chapter` | write | native (no tag form) | native |
+| `read_chapter`, `grep`, `list_chapters` | read | native | native |
+| `open_chapter`, `create_chapter` | navigate | native | native |
+
+- A tool with a tag form (`markupForm`) is never also offered natively to a
+  markup model; offering a write both ways invites mixing.
+- The offered set is fixed at the run's first step. The tools array is part
+  of every request, so changing it would break the cached prefix.
+- With `agentTools` off, only the tag-form writes remain: the pre-loop
+  one-shot turn.
+
+### 0.4 Writing (D2)
+
+- **Any chapter.** A write names its target with `chapter` (an argument, or
+  an attribute on the tag): a number from the CHAPTER INDEX, or a title.
+  With no `chapter`, it changes the chapter the turn started on.
+- **One working copy per chapter** (`DocState`):
+  - `base`: the accepted reading, which the model sees and SEARCH matches
+    against;
+  - `reviewBase`: the rejected reading, i.e. the last text the user
+    confirmed;
+  - `html`: the copy with every write of this run applied.
+
+  After each write the chapter's stored content becomes
+  `diffHtml(reviewBase, html)`. So several writes in one run compose into
+  one reviewable diff per chapter, and a change still under review stays
+  under review.
+- **Guards.**
+  - Seen-content rule: an `<edit>` on a chapter whose HTML this run has not
+    shown the model is refused, and the refusal tells it to read the chapter
+    with `format: "html"`.
+  - Truncated or elided full rewrites are refused.
+  - Image tokens are preserved and reinserted.
+  - A version snapshot is taken per chapter before its first change.
+- **New chapters.** `create_chapter` makes an empty chapter and opens it at
+  once, unless a selection rewrite is pending. Its result names the next
+  write in the model's own form. Chapters are only ever created explicitly.
+- **Live preview, routed by target.**
+  - The open chapter is painted as the rewrite streams.
+  - A rewrite of a chapter that is not open shows a progress line in the
+    bubble instead. So does one for a chapter created in the same reply.
+  - The preview follows the run from chapter to chapter. A write to a
+    created chapter opens it, and the preview restarts there, so Stop keeps
+    that chapter's partial draft.
+  - The user may switch chapters mid-run. The preview then never paints
+    over the chapter they opened.
+- **The user keeps writing while the run works** (user decision,
+  2026-10-06). Only the chapters the run is writing into are read-only:
+  - the chapter the live preview is painting, until its step ends (the
+    preview is settled at every step boundary);
+  - the start chapter of a selection turn, for the whole run (its selection
+    preview writes through real transactions);
+  - a chapter being polished.
+
+  Every other chapter stays editable. Read-only covers the editor and the
+  review banner's accept/reject buttons (`isEditLocked`,
+  `ChatSlice.editLockedIds`). A streamer that names no chapters (roleplay,
+  whole-book batches) still locks the whole editor.
+
+  Three rules keep the user's edits safe:
+  - **A write never overwrites a user edit.** `RunState.known` holds each
+    chapter's stored content as the run last saw or wrote it. A write to a
+    chapter whose stored content has moved since is refused, as retryable,
+    and the run's copy is forgotten. The model reads the chapter again and
+    redoes the change on the user's text. A polish whose chapter moved is
+    discarded. A read returns what is stored now.
+  - **No preview over a user edit.** A rewrite of a chapter the user
+    changed shows as a progress line, never painted.
+  - **The view is the user's once they move.** After the user opens
+    another chapter during the run, the run stops changing the view:
+    `create_chapter` and a first write no longer open the chapter, and
+    `open_chapter` says it left the chapter for the user
+    (`DocumentPort.userMoved`).
+
+  Found while building it: two paths settled the preview to the turn's
+  original text whichever chapter was painted (a corrective step, and an
+  error). An error also reset the start chapter's stored text, which would
+  have erased a user edit. Both now use the stored text of the open
+  chapter; the reset is kept only for a selection turn.
+- **Series.** The model is taught one chapter per reply; it continues after
+  each.
+- **Pending changes.** A chapter that still carries unreviewed markup is
+  shown to the model as "now / was" pairs (`utils/pendingChanges`). "Keep
+  what it said before" then restores just that paragraph, and every other
+  pending change stays.
+
+### 0.5 Context (D4, D6–D8)
+
+A request is laid out cache-first (cache_first_context.md):
+
+1. **System prompt.** The protocol for this model's write form, plus
+   WORKING ACROSS THE BOOK when the agent tools are on: the index, ¶
+   numbers, the freshness markers, the chapter attribute, the ending rule,
+   and one chapter per reply. It carries no writing guidance.
+2. **Ledger.** `REFERENCED CHAPTERS`, with a cache hint. It is append-only
+   across turns:
+   - a chapter edited since it was sent stays where it was, marked stale,
+     and the new version is appended with an UPDATED header;
+   - past a stale budget the ledger is consolidated.
+3. **History.** Each past turn's chat text, plus one line
+   `[Tools used in this turn: …]`. Tool exchanges are not replayed across
+   turns; the chapters come back through the ledger.
+4. **Volatile tail.**
+   - The CHAPTER INDEX, with D8 markers: `[in context]`, `[in context —
+     CHANGED since you last saw it]`, `[changed since you read it]`,
+     `[read earlier, not in context]`.
+   - The active chapter, its pending changes, and the user's request.
+
+How the context behaves:
+- **Within a run, nothing already sent is rebuilt**, so every follow-up step
+  is an exact-prefix cache hit on grok. Tool-call arguments, Anthropic
+  thinking blocks and Gemini thought signatures are replayed byte-exact.
+- **The model chooses what to read** from the index (D6); the user steers it
+  in the conversation (D7). A chapter the model read is carried into the
+  next turn's ledger (`modelReadIds`, score 60).
+- **Re-reading is the model's call** (user decision, 2026-10-06). A
+  19-chapter run read its outline and sources once, in step 2, and never
+  again. The tools refused repeats, and nothing said it could look again.
+  - The duplicate guard now refuses only a repeat within the same or the
+    previous step. A chapter the request already carries may be read whole
+    again from step 3 on.
+  - The prompt asks the model to judge, before each chapter, whether to look
+    again at what the chapter depends on, reading only what it needs. It may
+    also revise the outline when the outline no longer fits; it says what it
+    changed (the change is a reviewable diff), and asks before restructuring
+    the plan.
+  - Rejected: a note in `create_chapter`'s result saying how far back each
+    source sits ("read in step 2, ~90k chars ago"). The count would be exact,
+    but the model sees its own context, and no number says when it has lost
+    track.
+- **Paragraphs are lines.**
+  - `read_chapter` returns `¶N`-numbered text, or exact HTML for SEARCH.
+  - Long chapters come in whole-paragraph parts, and it accepts
+    `paragraphs="40-60"`.
+  - `grep` reports `¶N` for each hit.
+
+### 0.6 What the user sees
+
+- **The bubble shows the turn in order.** Each step's text is followed by
+  the tool calls it made (`agent.timeline`, `AgentTimeline`). While a run is
+  going, the step in flight shows as `agent.live`.
+- **Below it, "changed this turn"** (本轮修改) lists one row per chapter
+  written. Each row has a live review status and a button that opens the
+  chapter at its diff.
+- **The record is stored** server-side in the `messages.agent` JSON column,
+  as trace lines and counts only, never chapter text.
+- **Polish** (D9) runs only when the user asks: the Polish button in the
+  canvas header, or "润色" in chat, which calls `polish_chapter`. Chunks of
+  about 1000 characters go in parallel to a separate polish model. Each
+  rewrite is checked against measured bounds, and a chunk that fails keeps
+  its draft.
+
+### 0.7 Settings and transports
+
+- **Per-provider settings:**
+
+  | Setting | Default |
+  |---|---|
+  | `agentTools` | on |
+  | `agentMaxSteps` | 6, or 10 for local providers; 0 = no limit |
+  | `continueAfterWrites` | on |
+  | polish model | grok: `grok-4.20-0309-reasoning` |
+
+  The polish prompt is a separate setting.
+- **Transports.** Every step goes through `services/llm.ts` (direct) or a
+  backend generation job (`scripts/server_generation.py`, which grok uses).
+  Both send `toolChoice` and `reasoningEffort`, and both carry the tool
+  messages for every provider shape.
+- **Reload.** A rejoined stream renders the step in flight and applies its
+  writes. It cannot continue the run (`canContinue` false: one step, no
+  continuation after writes). Full resume is phase 3 (§8).
+  - The rejoined step continues the bubble's record (steps, trace, timeline,
+    changed chapters) instead of replacing it.
+  - When the run would have gone on, the bubble says the reload stopped it
+    and that "continue" picks it up. Before, a reload at chapter 19 left the
+    turn showing one trace line, with no reason given.
+
+## Implementation history
 
 **Phase 0 (plumbing), done.**
 - `LLMMessage` carries `toolCalls` / `toolCallId` / `name`, and `role: 'tool'`.
@@ -251,7 +493,7 @@ put it.
 |---|---|---|---|
 | active chapter | the editor, exactly as today (`EditorPort`) | yes | Ctrl+Z, as today |
 | any other chapter | the run working copy (§5.3) → `updateDocument(id, …)` with the review diff | progress line in the chat bubble ("rewriting 《第五章》… 3.2k chars"), never the editor | diff review (reject all) + a per-chapter version snapshot taken before the run's first write to it |
-| a chapter **created in this run** | opened in the editor when its first write starts (D6), then the active-chapter path | yes | as the active chapter |
+| a chapter **created in this run** | opened in the editor when it is created (D6), then the active-chapter path | yes | as the active chapter |
 
 The preview must be routed by target. The current streaming path paints any
 `<canvas>` text into the editor; a `<canvas chapter="第五章">` painted over the
@@ -308,8 +550,8 @@ after executing its invocations:
 | Step contained | Next |
 |---|---|
 | no invocations | **end** (the text is the answer), after the `<doc_status>` check on markup |
+| only writes, all succeeded, `continueAfterWrites` on (the default) | **continue**: the write's result goes back like any tool result; the model keeps working, or ends with a reply that has no action |
 | only writes, all succeeded, `continueAfterWrites` off | **end**; the step's chat text is the reply |
-| only writes, all succeeded, `continueAfterWrites` on | **continue**; the model answers in prose (end) or keeps working |
 | writes **and** any read / navigate call | **continue**. "Edit chapter 3 + read chapter 4" in one step is how the model says "there is more" |
 | any read / navigate call | **continue** (the model asked for information) |
 | any write that failed (unmatched SEARCH, truncated, elided, bad args, seen-content rule) | **continue** with the error as the tool result (§5.3), counted against the corrective budget |
@@ -320,17 +562,40 @@ confirmation round: step 1 reads chapters 3 and 4 in parallel, and step 2
 edits both and ends. The sequential case ("change 3, then adapt 4 to it") is
 step 1 editing 3 while reading 4, then step 2 editing 4.
 
-The gap that remains: a model that edits chapter 3 alone, intending to
-continue, while `continueAfterWrites` is off. Three things cover it:
-- the protocol section of the system prompt states the rule ("a reply whose
-  only actions are document changes ends your turn; if more work remains,
-  request what you need in the same reply");
-- the bubble says so when the run ended this way (the user can reply "继续"
-  (continue));
-- the `continueAfterWrites` setting (per provider, in Settings). Its default
-  for grok is set by M3. If a step-2 first token at `low` effort is short
-  (target ≤ 15 s; its prompt is all cache hits), the default is **on** and the
-  gap closes. Local models default to on.
+**Writes continue the turn** (user decision, 2026-10-06). A write is a tool
+call like any other: its result goes back to the model, and the turn ends
+only on a reply with no action. This is the loop Claude Code and Codex run,
+and `continueAfterWrites` now defaults to **on for every provider** (still a
+setting, per provider). Why "end after a write" was dropped:
+- Its reason was latency: grok at `high` effort was measured at 127–199 s to
+  its first token, so one more step looked expensive. The logs now show a
+  step that follows a tool result and needs no new planning reaching its
+  first token in 1–6 s (5.6 s for step 2 of the last measured run); only steps that plan new
+  work are slow, and that time is spent either way.
+- Ending on a write-only reply produced three measured failures: grok
+  created every chapter first and then packed them into one reply; the
+  chapters came out squeezed short; and a run that had created two chapters
+  ended after writing the first, leaving the second empty (the workaround
+  "create chapter N+1 in the reply that writes chapter N" breaks as soon as
+  the model creates ahead).
+
+Three rules come with it:
+- **The closing reply is taken at its word.** After a write succeeded in the
+  run, the reply that ends it ("both chapters are written") refers to those
+  writes: a missing `<doc_status>`, or `updated` with no markup of its own,
+  is not a failed update (`detectStepFailure`'s `wroteThisRun`). Broken
+  markup still is. Without this every written turn would end in a
+  corrective retry.
+- **A write on the last allowed step is done**, not cut off: the run ends as
+  `writes_done`, not `step_limit` (`decideAfterStep`). A step that still
+  wanted something (a read, a fix) is reported as the limit.
+- **A rejoined stream** (`canContinue` false) has no request to continue
+  from, so the setting is forced off there.
+
+The cost is one closing step per written turn, usually a few seconds. Off
+restores the old behavior: the protocol then says a write-only reply ends
+the turn, and `create_chapter`'s result teaches creating the next chapter in
+the reply that writes this one.
 
 ### D4. One run = one append-only message list
 
@@ -355,8 +620,7 @@ replayed as tool output.
   edited in Settings beside the document protocol). Defaults are 6 for grok
   and 10 for local models. **`0` means no step limit** (user, 2026-10-05).
   With 0, the run still ends on a final answer, Stop, the corrective budget,
-  the duplicate guard and the prompt-token ceiling below. The ceiling is cost
-  protection, not a step count, so it is not lifted by 0. When the limit is
+  and the duplicate guard. When the limit is
   hit, the last step is sent with `tool_choice: "none"` so the turn still
   ends in an answer, and the bubble says the limit was reached
   ("已达步数上限（6）" (step limit reached, 6)). The field is optional:
@@ -365,10 +629,13 @@ replayed as tool output.
   `settingsPersistence` and asserts the default.
 - `maxCorrectiveSteps` = `MAX_NO_ACTION_RETRIES` (3) — shared by markup
   failures and failed writes, so the measured recovery curve is preserved.
-- **Prompt-token ceiling** = `targetPromptTokens(profile, window)` — for grok
-  the 200k cliff minus output headroom. Before each step the loop estimates the
-  next prompt; if it would cross, the step is sent with `tool_choice: "none"`
-  plus a one-line "answer now with what you have" note.
+- **Prompt-token ceiling — dropped (user decision, 2026-10-06).** The plan:
+  as grok's context nears its 200k price cliff, send the next step with
+  `tool_choice: "none"` and an "answer now" note, i.e. end the turn. The
+  user does not want a turn cut short for its size. A long run that nears
+  the cliff should shrink its context instead (compaction, phase 4). It was
+  never implemented. Measured the same day: one run reached 148k tokens
+  while marking up an outline.
 - Per-result caps: `read_chapter` returns at most 20k chars (the same cap as the
   ledger, `MAX_LEDGER_DOC_CHARS`) with `offset` paging; `grep` at most
   N snippets.
@@ -414,11 +681,53 @@ Gaps to close in phase 2 (found in the code):
    Non-write calls run before writes within a step (`AgentRun.stepDone`), and
    a new, empty chapter needs no prior read (D2's seen-content rule).
 
-**Decided (user, 2026-10-05): a chapter created in this run opens in the
-editor when its first write starts,** so a brand-new chapter keeps the live
-preview. It is empty and nobody was editing it, so the switch interrupts
-nothing. Writes to chapters that already existed still never switch the view
-(D2).
+**Decided (user, 2026-10-05; revised 2026-10-06): a chapter created in this
+run opens in the editor as soon as it is created.** It was first opened
+"when its first write starts", but the step after `create_chapter` spends
+20–60 s planning the chapter before its first token, and the user sat on the
+old chapter meanwhile. That wait is reasoning, not cache: the step was
+measured at 94% cached and still took 56.7 s to its first token. A pending
+selection rewrite keeps the view where it is. Writes to chapters that
+already existed still never switch the view (D2).
+
+**Writing a series: one chapter per reply** (user decision, 2026-10-06).
+Measured on "开始逐章节写作一直写完" ("write the chapters one by one until
+done"):
+- Told only that a write-only reply ends the turn, grok created four
+  chapters in four steps. Each step took 28–66 s of reasoning (step 2: 3,542
+  reasoning tokens for 41 output tokens) and produced no text.
+- It then wrote all four in ONE reply. Only the first previewed live, and
+  each chapter was squeezed to fit one output (902 chars for chapter 1).
+
+The rule now taught in the protocol section: **one chapter per reply** —
+the model continues after each (D3, writes continue the turn). Each chapter
+gets its own step, a full output budget, and a live preview: it was opened
+when created, and the preview follows the run from chapter to chapter (it
+restarts on the newly open chapter, so Stop keeps that chapter's partial
+draft). A chapter created in the same reply as its own `<canvas>` cannot be
+previewed until the reply ends, so it shows as a progress line.
+
+First version (same day), superseded: with writes ending the turn, the
+reply that wrote chapter N had to create chapter N+1 to keep the run going.
+A real run broke it at once — grok created two chapters up front, wrote the
+first, and the turn ended with the second empty. A "continue while created
+chapters are empty" safety net was offered and not chosen; making writes
+continue the turn (D3) removed the need for it.
+
+Note the budget: N chapters take up to 2N+1 steps (create, write, …, close),
+more than grok's default `agentMaxSteps` of 6 allows for a long series.
+Raise it, or set 0, for "write until done".
+
+Same day, measured on a real turn: the model refused-created an existing
+chapter, then called `open_chapter` twice before rewriting, which was two
+wasted steps. `open_chapter`'s result had said "read it with format html
+before editing it", which invites exactly that. Results now name the next
+write in the model's own form (`RunState.writeProtocol`: `<canvas
+chapter="N">` on markup, `update_document chapter="N"` with tools), say a
+full rewrite needs no read, and `open_chapter` is described as "only to
+show the user". Creating a chapter from a `<canvas chapter>` that names no
+existing chapter was considered and declined: new chapters stay an explicit
+`create_chapter` (user decision).
 
 ### D7. No manual context selection
 
@@ -435,7 +744,7 @@ Removed, with what replaces each:
 | Whole book, once (attach every chapter) | 📚 toggle, `wholeBookMode: 'once'` | The model reads what it needs, several chapters per step (`read_chapter` takes a list of numbers) |
 | Whole book, sticky (book in the cached prefix) | `wholeBookMode: 'sticky'` | Chapters read this turn enter the ledger next turn (continuity), so a whole-book discussion is cached from its second turn on. The ledger budget comes from the provider (`targetPromptTokens`, i.e. grok's 200k cliff), not from the fixed 60k auto-selection budget |
 | Whole book, fast mode (structure + summaries) | consent card "fast" | A read tool returning `buildWholeBookDigest` (heading tree + summaries) |
-| Batched map-reduce + cost consent card | `runWholeBookBatches`, consent card | The `analyze_book(question)` tool. **No consent card.** Its call count and cost show in the step trace, and D5's token ceiling stops a runaway run |
+| Batched map-reduce + cost consent card | `runWholeBookBatches`, consent card | The `analyze_book(question)` tool. **No consent card.** Its call count and cost show in the step trace, and the step limit stops a runaway run |
 
 What stays automatic (it was never manual):
 - **The prefetch.** The Layer-1 scorer still attaches chapters before the
@@ -696,7 +1005,7 @@ design took from it:
 | How are context changes communicated? | Appended, never rewritten. A per-section snapshot is diffed against what the model last saw, and only the change is appended ("These … instructions replace all previously provided …"). Full context is re-injected only after compaction. | Appended as reminders. | D4 (append-only within a run). Markers live in the per-turn tail, so they never touch the cached prefix. A re-read of a changed chapter says it replaces the earlier copy. |
 | Earlier tool results | Kept in history, truncated when recorded, until compaction drops them all. | Kept until compaction. | Dropped across turns (D4); the chapters read come back through the ledger, which caches them. Chapter text can always be re-read, so carrying stale copies is cost without benefit. |
 | Size of one result | About 10k tokens per output, cut out of the middle (head + tail) with a "…N tokens truncated…" marker and the original size. Files are read with shell ranges (`sed -n 'a,bp'`). | Whole file up to 2000 lines, printed with line numbers (`cat -n`); `offset`/`limit` for a range; "when you know which part you need, read only that part". | **Paragraphs as lines** (user decision, 2026-10-06): text reads are numbered `¶N`, `grep` reports `¶N`, and `read_chapter` takes a paragraph range. The model greps to a hit and reads only around it. Whole-chapter reads stay the default (a chapter is the size of a small source file, and prose needs its context); parts end at whole paragraphs (`READ_CHAPTER_CAP` 20k, `READ_CALL_CAP` 60k per call). No middle cut: it would remove the very passage a writer needs. |
-| Near the context ceiling | Compacts at 90% of the window (hard cap 95%). An optional mode warns the model at about 6k remaining tokens to save notes. | Compacts. | D5's ceiling: the final step gets `tool_choice: "none"`. **Not done yet:** compaction (below). |
+| Near the context ceiling | Compacts at 90% of the window (hard cap 95%). An optional mode warns the model at about 6k remaining tokens to save notes. | Compacts. | Nothing yet. D5's ceiling (end the turn) was dropped by the user; compaction (below) is the answer, not done yet. |
 | Iterations per turn | Unlimited while the model needs a follow-up; an optional session token budget with reminders. | Unlimited. | `agentMaxSteps`, 0 = unlimited (user decision). |
 | Stable cached prefix | Session `prompt_cache_key`; send only the new items when the input strictly extends the last one; stable synthetic call ids; tools array unchanged within a session (new tools arrive through a search tool, not a changed array). | — | xAI's `x-grok-conv-id` per book; byte-exact argument replay; deterministic ids (`call_<step>_<i>`, `markup_<step>_<i>`). **The tools offered stay identical for every step of a run** — `offeredTools` must not depend on anything that changes mid-run. |
 | Progressive disclosure | Skills appear as metadata only (name + description, about 2% of the window); the body is read on demand. | Same pattern for skills. | The CHAPTER INDEX is the metadata, `read_chapter` is the body. `chapterIndex.ts` already named this pattern. |
@@ -711,133 +1020,142 @@ heroine keeps her name", "no epilogue"). Compaction costs one re-prefill of
 the history when it happens, and is cheaper than re-explaining those
 decisions.
 
-## 5. Interfaces
+## 5. Interfaces (as built)
 
-New module tree `src/agent/` — pure TypeScript, no React, testable with a
-scripted transport the way `useChatLLM.test.ts` already scripts `streamLLM`.
+`src/agent/` is pure TypeScript with no React. Tools reach the editor and
+the store only through ports, so they run under a fake context in tests
+(`src/agent/__tests__/fakeContext.ts`). The hook (`useChatLLM`) builds the
+real ports once per run (`buildToolContext`) and the run itself
+(`createRun`).
 
-### 5.1 Tool definition
+### 5.1 Tool definition (`src/agent/types.ts`, `registry.ts`)
 
 ```ts
-// src/agent/types.ts
-export type ToolKind = 'read' | 'navigate' | 'write' | 'external'
+export type ToolKind = 'read' | 'navigate' | 'write'
 
-export interface AgentTool<A = Record<string, unknown>> {
-  name: string
-  description: string
-  parameters: JsonSchema               // existing type from utils/documentTools
+export interface AgentTool<A> extends ToolSpec {   // name, description, parameters (JSON schema)
   kind: ToolKind
-  /** Offered this step? (selection present, book loaded, whole-book sticky…) */
+  /** Has a tag form on the markup protocol; then never offered natively there (D1). */
+  markupForm?: boolean
+  /** Offered this run? (a selection exists, a polish model is configured, …) */
   isAvailable(ctx: ToolContext): boolean
-  /** Validate/coerce raw JSON. A string is an error fed back to the model. */
+  /** Validate the raw arguments; a string is an error the model reads. null = never parsed. */
   parse(raw: Record<string, unknown> | null): A | string
-  /** Optional live rendering from a partial argument string (write tools). */
+  /** Render the call while its arguments are still arriving (write tools). */
   preview?(partialArgumentsText: string, ctx: ToolContext): void
-  execute(args: A, ctx: ToolContext): Promise<ToolResult>
-  /** Needs the user's OK first (cost, destructive). Phase 3. */
-  approval?(args: A, ctx: ToolContext): ApprovalRequest | null
+  /** Synchronous when it can be: it keeps the turn's ordering (§0.1). */
+  execute(args: A, ctx: ToolContext, call: ToolInvocation): ToolResult | Promise<ToolResult>
 }
 
 export interface ToolResult {
   ok: boolean
-  /** What the model reads next step. Plain text, capped by the tool. */
-  content: string
-  /** One line for the chat bubble's trace ("📖 Read 第三章 (8.2k chars)"). */
-  trace: string
-  /** Chat-visible warning, if any (re-uses buildCompletionWarnings text). */
-  warning?: string
+  /** Can the model fix this by trying again? Default `!ok`. */
+  retryable?: boolean
+  content: string        // what the model reads next step
+  trace: string          // one line in the bubble's timeline
+  effects?: WriteEffects // what the completion note reports (truncated, failed edits, …)
 }
 ```
 
-Adding a tool = write one `AgentTool`, call `registry.register(tool)`. The
-provider adapters (`toOpenAITools` / `toAnthropicTools` / `toGeminiTools`) must
-translate **whatever schemas they are given**. Today the Anthropic and Gemini
-paths in `services/llm.ts` filter `DOCUMENT_TOOLS` by name, so any new tool
-would be silently dropped on those providers — fix that in phase 0.
+`defineTool(tool)` erases the argument type and wraps parse + execute into
+one `invoke`. An argument error becomes a failed, retryable result. A new
+tool is one `defineTool` module plus one entry in `CHAT_TOOLS`. The provider
+adapters (`toOpenAITools` / `fromOpenAITools`) translate any schema.
 
-### 5.2 Context the tools run in
+### 5.2 Ports (`ToolContext`)
 
 ```ts
-export interface ToolContext {
-  getState: () => AppState                 // fresh store reads (stale-closure rule)
-  editor: EditorPort                       // the only way tools touch TipTap
-  images: { preserve(html: string): string; restore(html: string): string }
-  run: RunState                            // turn base per doc, selection, budgets, step index
-  signal: AbortSignal
-  ui: { setSaveStatus(s: 'saved' | 'unsaved'): void; requestApproval(r: ApprovalRequest): Promise<boolean> }
-}
-
-/** Wraps the fragile editor rules (see CLAUDE.md "Editor sync") in one place. */
-export interface EditorPort {
-  previewHtml(html: string): void          // addToHistory:false, emitUpdate:false, throttled
-  settle(html: string): void               // settleCanvasPreview
-  keepPreview(original: string): string | null // keepCanvasPreview (Stop)
-  replaceSelection(from: number, to: number, html: string): number | null // replaceSelectionWithHtml
-  getHtml(): string
+interface ToolContext {
+  getState: () => AppState     // fresh store reads (stale-closure rule)
+  editor: EditorPort           // previewDocument, discardPreview, previewSelection, replaceRange, current
+  selection: SelectionPort     // the turn's selection: range, end, originalText, relocate (rejoin)
+  document: DocumentPort       // startId, original, chapters(), openId(), userMoved(), ensureLoaded, commit, open, create, snapshot
+  images: ImagePort            // {{IMAGE_PLACEHOLDER_n}} preserve / restore
+  ui: UiPort                   // progress(line | null): one live line in the bubble; writing(id | null): lock a chapter for a slow write
+  polish?: PolishPort          // the polish model (D9); absent when none is configured
+  run: RunState                // state the run's tools share (§5.3)
 }
 ```
 
-`useChatLLM` builds the `ToolContext` from its refs once per run; the refs that
-exist today (`canvasPreviewActiveRef`, `selectionRangeRef`, …) move behind
-`EditorPort` and `RunState`.
+`EditorPort` holds every rule in CLAUDE.md "Editor sync":
+- previews never enter the undo history and never write the store;
+- the run's end settles them.
 
-### 5.3 Write tools against a run working copy
+`DocumentPort.commit` goes through the store's blanking guard.
+`DocumentPort.create` appends a chapter without switching to it;
+`create_chapter` then opens it.
 
-`RunState.docs: Map<docId, { base: string; working: string; htmlShown: boolean }>`.
-It is keyed by chapter, because writes may target any chapter (D2):
-- `base` = the **accepted reading** (`stripDiffMarkup`) of the document the
-  first time this run touches it — the same base the edits path uses today.
-  The chapter's content is loaded first (`ensureDocumentContents`), so a lazy,
-  still-empty chapter can never become the base; that is the data-loss bug
-  the rejoin path already hit once.
-- `working` = clean HTML with every write of this run applied.
-- `htmlShown` = this run has sent the model the chapter's HTML (the volatile
-  tail for the active chapter, or `read_chapter` with `format: "html"`). This
-  is what D2's seen-content rule checks.
-- After each write the target chapter's stored content becomes the review
-  rendering of `base → working`, built with the existing diff functions
-  (`diffHtml` / span-level diffs). The user sees one reviewable diff per
-  chapter per turn. The active chapter goes through `EditorPort`; any other
-  chapter goes through `updateDocument`.
-- The run keeps ONE image-placeholder registry across all steps and chapters
-  (today it is reset per request), so `{{IMAGE_PLACEHOLDER_n}}` stays unique
-  when several chapters are read in one run.
-
-`edit_document.execute` matches SEARCH against `working`, so step 3 can edit
-text that step 2 wrote. Unmatched blocks return `ok:false` with each failed
-SEARCH (`applyEditBlocks` already returns them in `failed`) plus the closest
-block of `working` by text overlap (new helper) — the model can correct itself, which today ends in a
-"N changes could not be located" warning and nothing else.
-
-### 5.4 The loop
+### 5.3 Run state and working copies
 
 ```ts
-// src/agent/loop.ts
-export async function runAgentLoop(opts: {
-  initialMessages: LLMMessage[]
-  registry: ToolRegistry
-  protocol: ProtocolPlan            // per tool kind: 'native' | 'markup' | 'off'
-  transport: StepTransport          // one streamed model call
-  ctx: ToolContext
-  budgets: RunBudgets
-  observer: RunObserver             // bubble text, reasoning, trace, step status
-}): Promise<RunOutcome>
+interface RunState {
+  step: number
+  writeProtocol?: 'tools' | 'markup'   // set by the run: results name the next write in this form
+  continuesAfterWrites?: boolean       // set by the run
+  docs: Map<string, DocState>          // one working copy per chapter written
+  known: Map<string, string>           // stored content as the run last saw or wrote it (user-edit rule)
+  htmlShown: Set<string>               // chapters whose HTML the model saw this run (seen-content rule)
+  inContext: Set<string>               // chapters whose full text this request carries
+  created: Set<string>                 // chapters created this run (no snapshot; opened)
+  snapshotted: Set<string>
+  readIds: Set<string>                 // fed to the next turn's context selection
+  reads: Map<string, number>           // duplicate-read guard
+  touched: Map<string, AgentTouchedChapter>  // the "changed this turn" rows
+  selectionAttempted: boolean
+  selectionApplied: boolean
+}
+
+interface DocState {
+  original: string    // the chapter as the run found it (may carry a pending diff)
+  base: string        // accepted reading: what the model saw, what SEARCH matches
+  reviewBase: string  // rejected reading: what the user last confirmed
+  html: string        // every write of this run applied
+  dirty: boolean
+}
 ```
 
-Per step: offer `registry.available(ctx, protocol)` → stream via `transport`
-(chunks → observer + markup preview; tool deltas → `tool.preview`) → collect
-`ToolInvocation[]` from `NativeToolSource` + `MarkupToolSource` → execute
-sequentially (writes are never parallel; reads may be) → apply D3 → append
-`assistant{content, toolCalls}` + `tool{toolCallId, content}` messages → next.
+- Every write matches against `html`, so step 3 can edit text that step 2
+  wrote.
+- After each write the store receives `diffHtml(reviewBase, html)` through
+  `commitDoc`.
+- Chapter contents are loaded before their first use (`withLoaded`), so a
+  lazy, still-empty chapter never becomes a base.
+- Unmatched edit blocks return `ok: false`, retryable, with each failed
+  SEARCH quoted.
 
-`StepTransport` is `streamLLM` with the run's step id in `remoteMeta`. Writes
-coming from markup have no native call id, so their results are not sent back
-as `tool` messages; if the loop continues after one (a failure), the result
-goes into the corrective user message instead.
+### 5.4 The run (`src/agent/run.ts`)
+
+```ts
+type StepDriver = (messages: LLMMessage[], stepIndex: number, opts: { final: boolean }) => Promise<void>
+
+new AgentRun({
+  registry, ctx,
+  writeProtocol: 'tools' | 'markup',  // utils/protocolChoice
+  driver,                             // streams one step; ends in run.stepDone(out) or the error path
+  observer,                           // onCorrective, onStepExecuted(progress), onFinish(summary)
+  budgets, policy,                    // policy.resolveRunSettings(provider, config, canContinue)
+  canContinue,                        // false on a rejoined stream
+  agentTools,
+  initialMessages
+})
+run.start()             // streams step 0
+run.offeredTools()      // fixed at the first step
+run.stepDone({ text, nativeCalls, thinking })
+run.cancel()            // Stop: start no more steps
+```
+
+`RunSummary` (to `onFinish`) carries everything the hook needs:
+- the joined chat text and the timeline;
+- the trace and `touched`;
+- `readIds` and the summed write effects;
+- the protocol-failure flags;
+- `endReason`: `answered`, `writes_done`, `step_limit`,
+  `corrective_exhausted`, `protocol_failure` or `cancelled`.
 
 ### 5.5 Message shape
 
-`LLMMessage` gains optional fields (additive, existing callers untouched):
+`LLMMessage` has optional tool fields; they are additive, so existing callers
+are untouched:
 
 ```ts
 interface LLMMessage {
@@ -845,11 +1163,15 @@ interface LLMMessage {
   content: string
   images?: string[]
   cacheHint?: boolean
-  toolCalls?: { id: string; name: string; argumentsText: string }[] // assistant
-  toolCallId?: string                                                  // tool
-  name?: string                                                        // tool
+  toolCalls?: { id: string; name: string; argumentsText: string; signature?: string }[] // assistant
+  thinking?: ThinkingBlock[]   // assistant, Anthropic: replayed before text and tool_use
+  toolCallId?: string          // tool
+  name?: string                // tool (Gemini keys results by name)
 }
 ```
+
+`argumentsText` is the argument string exactly as received, and
+`signature` is Gemini's `thoughtSignature`. Neither is ever re-serialized.
 
 Adapters, both transports, with parity tests:
 
@@ -857,49 +1179,52 @@ Adapters, both transports, with parity tests:
 |---|---|---|---|
 | assistant call | `tool_calls[{id,type:'function',function:{name,arguments}}]` | `tool_use` content block | `functionCall` part |
 | result | `{role:'tool', tool_call_id, content}` | user `tool_result` block | `functionResponse` part |
-| ids | provider's | provider's | synthesized `s<step>_<i>` |
+| ids | provider's | provider's | none from the provider; results matched by name |
 
-For grok the one that matters is `server_generation.build_openai_request`
-(fact 6): it must copy `tool_calls`, `tool_call_id` and `name`, and accept
-`role: "tool"`. Add a test that feeds a tool exchange through it and asserts
-the body, mirroring the TS adapter test.
+Browser side: `services/providerMessages.ts`. Backend:
+`scripts/server_generation.py` (`build_openai_request`, `build_anthropic_request`
+and `build_gemini_request`). Parity tests are `providerMessages.test.ts` and
+`test_server_generation_tools.py`.
 
 ### 5.6 Chat bubble data
 
 ```ts
 interface ChatMessage {
   // … existing fields
-  agent?: {
-    runId: string
-    status: 'running' | 'done' | 'stopped' | 'step_limit' | 'interrupted'
-    steps: { jobId?: string; invocations: { id: string; name: string; trace: string; ok: boolean }[] }[]
-    /** D2's "changed this turn" block — one entry per chapter written. */
-    touched: {
-      documentId: string
-      titleAtRun: string           // shown if the chapter is later renamed/deleted
-      kind: 'edits' | 'rewrite' | 'selection' | 'created'
-      changes: number
-      failed: number
-    }[]
-  }
+  agent?: AgentTurnRecord
+}
+
+interface AgentTurnRecord {
+  status: 'running' | 'done' | 'stopped' | 'step_limit'
+  steps: number
+  trace: string[]                    // one line per executed call, in order
+  touched: AgentTouchedChapter[]     // D2's "changed this turn" rows
+  timeline?: AgentTimelineItem[]     // each step's text, then its calls: { type: 'text' } | { type: 'tool', line, ok }
+  prefix?: string                    // bubble text before the timeline (attached-context label)
+  suffix?: string                    // after it (completion warnings, the step-limit note)
+  live?: string                      // while running: the step in flight
+}
+
+interface AgentTouchedChapter {
+  documentId: string
+  titleAtRun: string                 // shown if the chapter is later renamed or deleted
+  kind: 'edits' | 'rewrite' | 'selection' | 'created' | 'polished'
+  changes: number
+  failed: number
 }
 ```
 
-Trace lines and counts only, never chapter text. The review status per row is
-**not** stored; it is computed from the chapter's live content, so it cannot
-go stale. Optional and additive, so stored messages need no migration. Add a
-test that an old message (no `agent`) renders unchanged.
+- **No chapter text.** The record holds trace lines and counts only. The
+  review status of each row is not stored; it is computed from the
+  chapter's live content, so it cannot go stale.
+- **Old messages are unchanged.** The field is optional, so a message with
+  no `agent` renders exactly as before.
+- **`content` keeps the joined text**, for history and older clients.
+- **Storage.** The record lives in the JSON `agent` column of `messages`,
+  added by the `server_db.init_db` migration. Before that column existed,
+  only fixed columns were saved and the record vanished on reload.
 
-The bubble renders the turn **in the order it happened**: each step's text,
-then the tool calls that step made, where it made them (`agent.timeline`,
-`AgentTimeline`). While the turn runs, the step in flight follows (`live`).
-The **本轮修改** (changed this turn) block (D2) comes after. `content` keeps
-the joined text for history and older clients. The record is stored
-server-side in a JSON `agent` column of `messages` (`server_db.init_db`
-migration). Before that column existed, only fixed columns were saved and
-the record vanished on reload.
-
-## 6. Initial tool set
+## 6. Tool set
 
 | Tool | Kind | grok delivery | Notes |
 |---|---|---|---|
@@ -907,64 +1232,95 @@ the record vanished on reload.
 | `edit_document` | write | markup `<edit chapter="…">` | optional `chapter` (D2); seen-content rule; failures fed back (§5.3) |
 | `replace_selection` | write | markup `<selection_replace>` | always the chapter the selection was made in; once per run |
 | `list_chapters` | read | native | index + summaries + char counts. Cheap; the volatile tail already has the index, so this mostly serves long books whose index is digested |
-| `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-"}`. Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant; a range read is not |
+| `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-"}`. Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant in the first two steps; a range read never is. A repeat of the same read is refused only within one step of the first |
 | `grep` | read | native | regex over every chapter's text, or only those named (lazy contents loaded first). Output "snippets" (chapter, offset, context) or "chapters" (counts). A broken regex is searched literally. Replaced `search_book` (user request, 2026-10-06): grep is the search interface models already know |
-| `open_chapter` | navigate | native | shows the user a chapter (`setActiveDocumentId`). Not needed for writing (D2). Refused while a selection rewrite is pending |
-| `create_chapter` | navigate | native | `addDocument(title)`; the view switches to it only when its first write starts (D6), so the user is not moved to an empty page; content comes from `update_document` with `chapter` |
+| `open_chapter` | navigate | native | ONLY to show the user a chapter (`setActiveDocumentId`); writing never needs it (D2). Says "already open" when it is. Refused while a selection rewrite is pending |
+| `create_chapter` | navigate | native | `addDocument(title)`, opened at once (D6) unless a selection rewrite is pending. Its result names the next write in the model's form (`<canvas chapter="N">` or `update_document` with `chapter`). Chapters are never created implicitly by a write |
+| `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
 
 Phase 3+: `analyze_book` (Rung 2 map-reduce, approval-gated, replaces the
 consent card for that rung), `update_chapter_summary`, `rename_chapter`,
 `generate_image` (`services/imageGen`), `import_url`. Destructive ones
 (`delete_chapter`) only with `approval`.
 
-## 7. Prompt changes
+## 7. Prompt (as built)
 
-- Markup system prompt (grok): keep the existing protocol text byte-stable and
-  append one short section. It says:
-  - read/navigate tools exist, and the document is still changed only with
-    tags;
-  - `<canvas>` and `<edit>` take an optional `chapter="…"` attribute (the
-    number or exact title from the chapter index); without it they change the
-    active chapter. To `<edit>` another chapter, read its HTML first;
-  - a reply whose only actions are document changes ends the turn (D3);
-  - the `<doc_status>` line is required only on a reply **without native tool
-    calls**, since a step with a call is not the final reply.
+- **System prompt.** `buildChatSystemPrompt({ protocol, agentTools,
+  continueAfterWrites, … })` teaches exactly one write protocol, so it can
+  never describe tools the request does not send. Its sections:
+  - the protocol, unchanged from before the loop: `MARKUP_PROTOCOL_RULES`
+    or `TOOL_PROTOCOL_RULES`;
+  - with the agent tools on, WORKING ACROSS THE BOOK (`agentRules`);
+  - the user's custom instructions;
+  - the format reminder.
 
-  No writing guidance (CLAUDE.md rule). The tag parser
-  (`parseAssistantResponse`) and the streaming splitter
-  (`splitStreamingResponse`) learn the attribute. The splitter must report the
-  target, because the live preview is routed by it (D2).
-- Volatile tail: "CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document
-  you can update)" becomes "…(changed by default; other chapters can be
-  changed by naming them)". This is in the per-turn tail, so the cached prefix
-  is not affected.
-- Tool system prompt: rule 5 ("the user message carries the CURRENT ACTIVE
-  DOCUMENT CONTENT") gains "…as of the start of this turn; after
-  a `read_chapter` or an edit, the tool result is the current text".
-- `buildChatSystemPrompt` takes the `ProtocolPlan` instead of a single
-  protocol, so it can never describe tools the request does not send.
+  WORKING ACROSS THE BOOK says:
+  - decide from the CHAPTER INDEX what to read; grep when no title or
+    summary says where something is; never guess at an unread chapter;
+  - paragraphs are numbered like lines (`¶12`); read only the range around
+    a grep hit;
+  - what each index marker means (D8);
+  - the active document is as of the start of the turn; tool results say
+    what changed since;
+  - how to name another chapter in a write, and that an `<edit>` there
+    needs its HTML read first;
+  - a new chapter must be created before it is written, in an earlier reply
+    or the same one (creation runs first);
+  - on markup: `<doc_status>` is required only on a reply that calls no
+    tool;
+  - **ending:** do each piece of work in the reply that says you are doing
+    it ("Now I'll rewrite chapter 3" goes in the same reply as its
+    `<canvas chapter="3">`). After a reply that changes the document or
+    calls a tool, the model receives the results and continues. A reply
+    that does neither ends the turn, so it is sent only when the work is
+    done (D3). With `continueAfterWrites` off, it says instead that a
+    write-only reply ends the turn.
+    - Why it is worded this way (2026-10-06): the earlier rules said "a
+      reply that calls a tool is not your final reply" and "a reply with no
+      action ends your turn". For a model that wanted to announce a rewrite
+      and write it in the next reply, the only move within those rules was
+      to call some tool. grok called `create_chapter("skip")` and left an
+      empty chapter behind. The wording now says where the work goes and no
+      longer offers a tool call as the way to keep going;
+  - **one chapter per reply** when writing several.
+
+  It carries no writing guidance (CLAUDE.md rule).
+- **The parsers.** The tag parser (`parseAssistantResponse`) and the
+  streaming splitter (`splitStreamingResponse`) read the `chapter`
+  attribute. The splitter reports the target, because the live preview is
+  routed by it.
+- **Volatile tail.** The heading over the active chapter reads "CURRENT
+  ACTIVE DOCUMENT CONTENT (Your writes change this chapter unless you name
+  another)". With the agent tools off it still reads "(This is the ONLY
+  document you can update)". This is in the per-turn tail, so the cached
+  prefix is not affected.
 
 ## 8. Resumability (grok runs on backend jobs)
 
-Each step is its own `/api/generate` job, tagged `meta.runId` + `meta.step`.
-The bubble's `agent.steps` record which tool call ids were applied, persisted
-with the chat. On reload:
+Each step is its own `/api/generate` job.
 
-- **Phase 2 (simple):** rejoin renders the step in flight exactly as today; when
-  it finishes, its invocations are executed (if not already recorded as
-  applied) and the run **ends** with "continued steps were interrupted — send
-  'continue'". Never re-applies a write.
-- **Phase 3 (full):** add `GET /api/generate/{id}/request` returning the job's
-  request messages; the client appends the step's results and continues the
-  loop. The tool-call id ledger on the bubble makes execution idempotent.
+**Built (phase 2).**
+- On reload, the rejoin path renders the step in flight exactly as before.
+  When the step finishes, its writes are applied.
+- The run cannot go on from there. It is built with `canContinue` false:
+  one step, no corrective retry, no continuation after writes. The user
+  sends "继续" (continue) to pick up.
 
-`handleStopGeneration` aborts the step in flight (client + `abortRemoteGeneration`)
-and ends the run; earlier steps' writes stay, each already a reviewable diff.
+**Phase 3 (full resume).**
+- Add `GET /api/generate/{id}/request`, returning the job's request
+  messages.
+- The client appends the step's results and continues the loop.
+- A tool-call id ledger on the bubble makes execution idempotent.
+
+**Stop.** `handleStopGeneration` aborts the step in flight, on the client
+and through `abortRemoteGeneration`, and ends the run. Earlier steps' writes
+stay, each already a reviewable diff.
 
 ## 9. Phased plan
 
 | Phase | Scope | Behavior change |
 |---|---|---|
+| | **Status (2026-10-06):** 0, 1 and 2 are done, and so are D9 polish, `grep`, paragraph numbering, the append-update ledger, writes continuing the turn, and changes kept under review. 2b, 3 and 4 have not started. | |
 | 0. Plumbing | `LLMMessage` tool fields; adapters in `llm.ts` + `server_generation.py` with parity tests; Anthropic/Gemini adapters translate arbitrary schemas | none |
 | 1. Extract | `src/agent/` registry + loop + `EditorPort`; port the 3 write tools and `MarkupToolSource`; `useChatLLM.onDone` becomes "run loop with `maxSteps` covering the corrective retries only" | none — existing `useChatLLM.test.ts` must pass unmodified |
 | 2. Read/navigate + cross-chapter writes | `list_chapters`, `read_chapter`, `grep` (was `search_book`), `open_chapter`, `create_chapter`; D8 freshness markers; `chapter` target on writes (tools + markup attribute) with preview routing; seen-content rule; blanking guard moved into `updateDocument`; per-document version snapshots; 本轮修改 (changed this turn) block; D3 policy; edit-failure feedback; trace UI; history trace line + continuity feed; settings `agentMaxSteps` (0 = unlimited) and `continueAfterWrites` | the loop, behind a per-provider setting `agentTools: auto/on/off` (grok `auto` = on only after M2 passes) |
@@ -997,26 +1353,26 @@ within an hour, so smaller batches mean nothing.
 - **M3. Step latency.** TTFT for step 2 vs step 1 at `low` effort, and cached
   token share of step 2 (expect ≈ step-1 prompt). Confirms D4, sets the
   `agentMaxSteps` default, and sets the grok default for `continueAfterWrites`
-  (on if step-2 TTFT ≤ 15 s).
+  (on if step-2 TTFT ≤ 15 s). Settled 2026-10-06 from the logs: a step after a
+  tool result reached its first token in 1–6 s, and the default is on for
+  every provider (D3).
 - **M4. Parallel calls.** Does grok emit several `read_chapter` calls in one
   step when asked about three chapters? If not, multi-read costs one step each
   and `maxSteps` must reflect it.
 
 ## 11. Testing
 
-- `src/agent/__tests__/loop.test.ts`: scripted transport; one test per D3 row
-  (including write+read continuing); budgets (step limit → final step with
-  `tool_choice: none`, `agentMaxSteps: 0` runs past the default limit,
-  corrective, token ceiling); duplicate reads; abort mid-step keeps earlier
-  writes.
-- Cross-chapter writes: a `<canvas chapter="B">` streamed while A is open never
-  touches the editor, and B's stored content becomes a reviewable diff; an
-  edit on an unread chapter is refused; a write to a lazy, unloaded chapter
-  loads it first and never blanks it; the 本轮修改 (changed this turn) rows
-  match `touched`, and the status follows accept/reject.
-- Per-tool tests against a fake `EditorPort` + store.
-- `MarkupToolSource` produces the same invocations as `toolCallToParsedResponse`
-  for the existing fixtures.
-- Adapter parity: the same tool exchange through `llm.ts` and
-  `server_generation.py` yields the same OpenAI body (pytest + vitest).
-- Every existing `useChatLLM` flow test stays green through phase 1.
+The suites as built:
+
+| Suite | Covers |
+|---|---|
+| `src/agent/__tests__/run.test.ts` | the controller against a scripted driver: each D3 row, budgets (final step with `toolChoice: 'none'`, 0 = unlimited, corrective), write + read continuing, Stop between steps, append-only messages |
+| `src/agent/__tests__/policy.test.ts` | `detectStepFailure` (including the closing reply after a write), `decideAfterStep`, `resolveRunSettings` defaults, `collectStep`, `planWrites` |
+| `src/agent/__tests__/documentWrites.test.ts` | the write tools on a fake context (`fakeContext.ts`): working copies, the review base, the seen-content rule, preview routing, guards |
+| `src/agent/__tests__/bookReads.test.ts` | `read_chapter` (paragraph ranges, parts, duplicate guard), `grep`, `list_chapters`, `open_chapter`, `create_chapter` |
+| `src/agent/__tests__/freshness.test.ts`, `polish.test.ts` | D8 markers; D9 polish and `polish_chapter` |
+| `src/hooks/__tests__/useChatLLMAgent.test.ts` | the real hook with a scripted `streamLLM`. Covers: finding and reading the outline; writing another chapter; creating chapters; writing a series (including the run that used to stop after chapter one, and Stop keeping the second chapter's draft); restoring one pending change; the Polish button; the step limit; what each protocol offers |
+| `src/hooks/__tests__/useChatLLM.test.ts`, `useChatLLMRejoin.test.ts`, `selectionWithEdits.test.ts`, `selectAllRewrite.test.ts` | the pre-loop flows, still green. Every written turn now has one more step, the closing reply, which the scripted transports return by default |
+| `src/services/__tests__/providerMessages.test.ts`, `scripts/test_server_generation_tools.py` | adapter parity, browser and backend |
+| `src/utils/__tests__/paragraphs.test.ts`, `pendingChanges.test.ts`, `polish.test.ts`, `systemPrompt.test.ts` | the pure helpers and the prompt |
+| `src/components/__tests__/AgentTimeline.test.ts` | the bubble's timeline |

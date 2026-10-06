@@ -35,11 +35,8 @@ vi.mock('../../services/llm', () => ({
   ) => {
     calls.push(messages)
     configs.push({ tools: config.tools, toolChoice: config.toolChoice, model: config.model, reasoningEffort: config.reasoningEffort, conversationId: config.conversationId })
-    const scripted = responses.shift()
-    if (scripted === undefined) {
-      callbacks.onError(new Error('scripted responses exhausted'))
-      return
-    }
+    // Past the script, the model closes the turn with no action.
+    const scripted = responses.shift() ?? '<doc_status>unchanged</doc_status>'
     const r = typeof scripted === 'string' ? { text: scripted } : scripted
     if (r.text) callbacks.onChunk(r.text)
     for (const d of r.toolCalls ?? []) {
@@ -57,7 +54,7 @@ vi.mock('../../services/llm', () => ({
 vi.mock('../../services/chapterSummaries', () => ({ enqueueStaleSummaryRefreshes: vi.fn() }))
 
 import { useChatLLM } from '../useChatLLM'
-import { useAppStore } from '../../store/useAppStore'
+import { useAppStore, isEditLocked } from '../../store/useAppStore'
 import { stripDiffMarkup } from '../../utils/diff'
 
 interface Harness { current: ReturnType<typeof useChatLLM>; unmount: () => void }
@@ -196,7 +193,8 @@ describe('finding and reading a chapter (D6)', () => {
     // The bubble: both steps' chat, and the turn's record.
     expect(bubble()?.content).toContain('先看大纲。')
     expect(bubble()?.content).toContain('写好了。')
-    expect(bubble()?.agent).toMatchObject({ status: 'done', steps: 2, touched: [{ documentId: 'doc-1', kind: 'rewrite' }] })
+    // Read, write, then the reply with no action that closes the turn.
+    expect(bubble()?.agent).toMatchObject({ status: 'done', steps: 3, touched: [{ documentId: 'doc-1', kind: 'rewrite' }] })
     expect(bubble()?.agent?.trace[0]).toContain('#3 "故事线"')
     // The bubble shows each call where it happened: after the text of its step.
     expect(bubble()?.agent?.timeline).toEqual([
@@ -313,15 +311,17 @@ describe('a change still under review (user-reported 2026-10-06)', () => {
     useAppStore.setState({ documents: [doc('doc-1', '序章', ORIGINAL)], activeDocumentId: 'doc-1' })
     // Turn 1 rewrites both paragraphs; the user reviews nothing yet.
     responses.push(`改好了。\n<canvas>${P1_NEW}${P2_NEW}</canvas>\n<doc_status>updated</doc_status>`)
+    responses.push('<doc_status>unchanged</doc_status>') // closes turn 1
     // Turn 2: "why did you change the second one? keep it as it was" — the
     // model restores that paragraph from the "was" text it is now shown.
     responses.push(`第二段改回原来的写法。\n<edit>\n<<<<<<< SEARCH\n${P2_NEW}\n=======\n<p>她站在窗边，没有回头。</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>`)
     const h = renderChatHook()
     await send(h, '润色一下')
+    const second = calls.length
     await send(h, '第二段为什么这么改？我想保留原来的写法')
 
     // The model was shown what each pending change replaced.
-    const tail = calls[1].at(-1)?.content ?? ''
+    const tail = calls[second].at(-1)?.content ?? ''
     expect(tail).toContain('PENDING CHANGES IN THIS CHAPTER')
     expect(tail).toContain('now: "她背对着门站在窗边，始终没有回头。"\n   was: "她站在窗边，没有回头。"')
 
@@ -435,7 +435,7 @@ describe('creating a chapter (D6)', () => {
     const created = s.documents[3]
     expect(created.title).toBe('第一章 离乡')
     expect(stripDiffMarkup(created.content)).toBe('<p>第一章：主角离开村子。</p>')
-    // Opened when its first write started, not when it was created.
+    // Opened as soon as it was created (user decision 2026-10-06).
     expect(s.activeDocumentId).toBe(created.id)
     // The open chapter before the turn was never touched.
     expect(content('doc-1')).toBe('<p>序章正文。</p>')
@@ -482,6 +482,132 @@ describe('the Polish button (D9)', () => {
 
     expect(content('doc-1')).toBe('<p>序章正文。</p>')
     expect(useAppStore.getState().messages.at(-1)?.agent?.touched[0]).toMatchObject({ changes: 0, failed: 1 })
+    h.unmount()
+  })
+})
+
+describe('writing a series of chapters (one per reply)', () => {
+  it('keeps going after a written chapter: the run reported 2026-10-06 that stopped after chapter one', async () => {
+    const { editor, writes } = stubEditor('<p>序章正文。</p>')
+    // Step 1 creates BOTH chapters up front; step 2 writes the first. That
+    // reply holds only a write — which used to end the turn, leaving chapter
+    // two created and empty. Now the write's result goes back to the model.
+    responses.push({
+      text: '先把两章建好。',
+      toolCalls: [
+        { index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章"}' },
+        { index: 1, id: 'c2', name: 'create_chapter', argumentsText: '{"title":"第二章"}' }
+      ]
+    })
+    responses.push('<canvas chapter="4"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
+    responses.push('<canvas chapter="5"><p>第二章正文。</p></canvas>\n<doc_status>updated</doc_status>')
+    // The closing reply needs no declaration: it refers to the writes above.
+    responses.push('两章都写完了。')
+    const h = renderChatHook(editor)
+    await send(h, '根据大纲写前两章')
+
+    expect(calls).toHaveLength(4)
+    // The prompt teaches the loop, not the old "create the next one while
+    // writing this one" workaround.
+    expect(calls[0][0].content).toContain('ONE chapter per reply — you continue after each')
+    expect(calls[1].at(-1)?.content).not.toContain('create the next one in that same reply')
+    // Step 3 saw step 2's result.
+    expect(calls[2].at(-1)?.content).toContain('RESULT OF YOUR DOCUMENT CHANGES')
+    const docs = useAppStore.getState().documents
+    expect(stripDiffMarkup(docs[3].content)).toBe('<p>第一章正文。</p>')
+    expect(stripDiffMarkup(docs[4].content)).toBe('<p>第二章正文。</p>')
+    expect(writes.some(w => w.includes('第二章正文'))).toBe(true)
+    expect(bubble()?.content).toContain('两章都写完了。')
+    expect(bubble()?.content).not.toContain('⚠️')
+    expect(bubble()?.agent?.status).toBe('done')
+    expect(bubble()?.agent?.touched.map(t => [t.titleAtRun, t.kind, t.changes])).toEqual([
+      ['第一章', 'created', 1], ['第二章', 'created', 1]
+    ])
+    h.unmount()
+  })
+  it('keeps the half-written second chapter on Stop: the preview followed the run to it', async () => {
+    const { editor } = stubEditor('<p>序章正文。</p>')
+    responses.push({
+      text: '',
+      toolCalls: [
+        { index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章"}' },
+        { index: 1, id: 'c2', name: 'create_chapter', argumentsText: '{"title":"第二章"}' }
+      ]
+    })
+    responses.push('<canvas chapter="4"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
+    responses.push({ text: '<canvas chapter="5"><p>第二章写到一半', error: Object.assign(new Error('aborted'), { name: 'AbortError' }) })
+    const h = renderChatHook(editor)
+    await send(h, '根据大纲写前两章')
+
+    const docs = useAppStore.getState().documents
+    expect(stripDiffMarkup(docs[3].content)).toBe('<p>第一章正文。</p>')
+    // Before the fix the preview still named chapter one, so Stop kept nothing.
+    expect(docs[4].content).toContain('第二章写到一半')
+    expect(bubble()?.content).toContain('The partial draft was kept')
+    h.unmount()
+  })
+})
+
+describe('editing other chapters while the assistant writes (§0.4)', () => {
+  const locked = () => {
+    const s = useAppStore.getState()
+    return [isEditLocked(s, 'doc-1'), isEditLocked(s, 'doc-x')]
+  }
+
+  it('locks only the chapter the preview paints, and only while it paints', async () => {
+    const { editor } = stubEditor('<p>序章正文。</p>')
+    const seen: boolean[][] = []
+    responses.push({ text: '<canvas><p>新的序章。</p></canvas>\n<doc_status>updated</doc_status>', between: () => { seen.push(locked()) } })
+    responses.push({ text: '好了。', between: () => { seen.push(locked()) } })
+    const h = renderChatHook(editor)
+    await send(h, '重写序章')
+
+    // Step 1 paints 序章: it is read-only, 人物表 is not. Step 2 (the
+    // closing reply) paints nothing: both are editable.
+    expect(seen).toEqual([[true, false], [false, false]])
+    expect(locked()).toEqual([false, false])
+    h.unmount()
+  })
+
+  it('lets the user edit another chapter mid-turn: a write built on the stale copy is refused, then redone on their text', async () => {
+    const edit = '<edit chapter="2">\n<<<<<<< SEARCH\n<p>主角：阿青。</p>\n=======\n<p>主角：阿青，十六岁。</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'
+    const read = (id: string) => ({ text: '', toolCalls: [{ index: 0, id, name: 'read_chapter', argumentsText: '{"chapters":[2],"format":"html"}' }] })
+    const seen: boolean[][] = []
+    responses.push(read('r1'))
+    responses.push({
+      text: edit,
+      // While the model writes, the user adds a line to 人物表.
+      between: () => {
+        seen.push(locked())
+        useAppStore.getState().updateDocument('doc-x', { content: '<p>主角：阿青。</p><p>配角：阿红。</p>' })
+      }
+    })
+    responses.push(read('r2'))
+    responses.push(edit)
+    const h = renderChatHook()
+    await send(h, '给主角加上年龄')
+
+    expect(seen).toEqual([[false, false]])
+    // Step 3 was told why its edit did not land.
+    expect(calls[2].at(-1)?.content).toContain('The user edited #2')
+    // The user's line survived; the model's change is on top of it.
+    expect(stripDiffMarkup(content('doc-x'))).toBe('<p>主角：阿青，十六岁。</p><p>配角：阿红。</p>')
+    h.unmount()
+  })
+
+  it('stops moving the view once the user opened another chapter', async () => {
+    responses.push({
+      text: '',
+      toolCalls: [{ index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章"}' }],
+      between: () => useAppStore.getState().setActiveDocumentId('doc-2')
+    })
+    responses.push('<canvas chapter="4"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
+    const h = renderChatHook()
+    await send(h, '写第一章')
+
+    expect(useAppStore.getState().activeDocumentId).toBe('doc-2')
+    expect(calls[1].at(-1)?.content).not.toContain('now open')
+    expect(stripDiffMarkup(useAppStore.getState().documents[3].content)).toBe('<p>第一章正文。</p>')
     h.unmount()
   })
 })

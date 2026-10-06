@@ -6,6 +6,14 @@ export interface ChatSlice {
   // Chat state
   messages: ChatMessage[]
   isStreaming: boolean
+  /**
+   * While streaming: the chapters the user may not edit — the ones the
+   * assistant is writing into right now. null = all of them, which is what
+   * any streamer that does not say otherwise gets (roleplay, whole-book
+   * batches). Cleared when streaming stops. Read it through isEditLocked.
+   */
+  editLockedIds: string[] | null
+  setEditLockedIds: (ids: string[] | null) => void
   addMessage: (message: ChatMessage) => void
   clearChat: () => void
   setStreaming: (isStreaming: boolean) => void
@@ -38,6 +46,20 @@ export interface ChatSlice {
   resetSessionTokens: () => void
 }
 
+/**
+ * May the user NOT edit this chapter right now? Everything is editable when
+ * nothing streams; while something does, only the chapters it is writing
+ * into are locked (agentic_chat_loop.md §0.4) — all of them when the
+ * streamer did not say which.
+ */
+export function isEditLocked(
+  state: Pick<ChatSlice, 'isStreaming' | 'editLockedIds'>,
+  documentId: string | null | undefined
+): boolean {
+  if (!state.isStreaming) return false
+  return state.editLockedIds === null || (!!documentId && state.editLockedIds.includes(documentId))
+}
+
 export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set) => ({
   // Chat state
   messages: [
@@ -49,6 +71,12 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set) 
     },
   ],
   isStreaming: false,
+  editLockedIds: null,
+  setEditLockedIds: (ids) => set((state) =>
+    state.editLockedIds !== null && ids !== null &&
+    state.editLockedIds.length === ids.length && state.editLockedIds.every((id, i) => id === ids[i])
+      ? {}
+      : { editLockedIds: ids }),
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   clearChat: () =>
     set({
@@ -61,7 +89,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set) 
         },
       ],
     }),
-  setStreaming: (isStreaming) => set({ isStreaming }),
+  setStreaming: (isStreaming) => set(isStreaming ? { isStreaming } : { isStreaming, editLockedIds: null }),
   setMessages: (messages) => set({ messages }),
 
   // Session stats & local storage implementation

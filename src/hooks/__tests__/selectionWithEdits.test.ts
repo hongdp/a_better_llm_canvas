@@ -200,7 +200,8 @@ describe('a selection rewrite with an edit beside it', () => {
     const h = await send(editor, selectedText)
     await act(async () => { await Promise.resolve() })
 
-    expect(requests).toHaveLength(2)
+    // Failed edit, fixed edit, closing reply.
+    expect(requests).toHaveLength(3)
     // The second step was told exactly which SEARCH text failed.
     expect(requests[1].at(-1)?.content).toContain('<p>文档里并没有这一句。</p>')
     expect(accepted(stored())).toBe(EXPECTED)

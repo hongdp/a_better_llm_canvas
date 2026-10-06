@@ -118,6 +118,27 @@ describe('read_chapter', () => {
     expect(repeat.content).toContain('already returned in step 1')
   })
 
+  it('states the size of a paragraph range, so a length can be planned from a number, not a guess', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '原文', content: '<p>一二三</p><p>四五六七</p><p>八九</p>' }] })
+    const r = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2], paragraphs: '2-3' }), f.ctx))
+    expect(r.content).toContain('3 paragraphs, 9 characters, ¶2–¶3 of 3 (6 characters), text')
+  })
+
+  it('lets the model read again what it read, or was sent, several steps back (its call, user decision 2026-10-06)', async () => {
+    const f = fakeContext('<p>start</p>', {
+      chapters: [{ id: 'doc-2', title: 'Ledger', content: '<p>outline</p>' }, { id: 'doc-3', title: 'Other', content: '<p>source</p>' }],
+      inContext: ['doc-2']
+    })
+    await run(readChapterTool.invoke(call('read_chapter', { chapters: [3] }), f.ctx))
+    // Many chapters later in a long series:
+    f.ctx.run.step = 9
+    const again = await run(readChapterTool.invoke(call('read_chapter', { chapters: [3] }), f.ctx))
+    expect(again.content).toContain('source')
+    const inRequest = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2] }), f.ctx))
+    expect(inRequest.content).toContain('outline')
+    expect(inRequest.content).not.toContain('already in your context')
+  })
+
   it('reads back the run\'s own changes, not the stored copy', async () => {
     const f = book()
     f.ctx.run.docs.set('doc-2', { original: '<p>主角：阿青。</p>', base: '<p>主角：阿青。</p>', reviewBase: '<p>主角：阿青。</p>', html: '<p>主角：阿红。</p>', dirty: true })
@@ -182,11 +203,26 @@ describe('list_chapters', () => {
 })
 
 describe('open_chapter', () => {
-  it('shows a chapter, and says its text is not in context', async () => {
+  it('shows a chapter, and tells the model a rewrite needs no further step', async () => {
+    // Measured: the old "read it with format html before editing it" made the
+    // model open, open again, then rewrite — two wasted steps.
     const f = book()
+    f.ctx.run.writeProtocol = 'markup'
     const r = await run(openChapterTool.invoke(call('open_chapter', { chapter: 3 }), f.ctx))
     expect(f.opened).toEqual(['doc-3'])
-    expect(r.content).toContain('not in your context')
+    expect(r.content).toContain('write it now: <canvas chapter="3">')
+    expect(r.content).toContain('Only edits to parts of it need its HTML first')
+  })
+
+  it('names the write in the form the model uses, and does not reopen an open chapter', async () => {
+    const f = book()
+    f.ctx.run.writeProtocol = 'tools'
+    const r = await run(openChapterTool.invoke(call('open_chapter', { chapter: 3 }), f.ctx))
+    expect(r.content).toContain('update_document with chapter="3"')
+    expect(r.content).not.toContain('<canvas')
+    const again = await run(openChapterTool.invoke(call('open_chapter', { chapter: 3 }), f.ctx))
+    expect(again.content).toContain('already open')
+    expect(f.opened).toEqual(['doc-3'])
   })
 
   it('refuses to leave a pending selection behind', async () => {
@@ -198,19 +234,66 @@ describe('open_chapter', () => {
 })
 
 describe('create_chapter', () => {
-  it('appends an empty chapter without opening it, ready to write', async () => {
+  it('appends an empty chapter and opens it at once, ready to write', async () => {
+    // Opened at creation (user decision 2026-10-06): the next step plans the
+    // chapter for 20–60 s, and the user should be looking at it meanwhile.
     const f = book()
+    f.ctx.run.writeProtocol = 'markup'
     const r = await run(createChapterTool.invoke(call('create_chapter', { title: '第一章 离乡' }), f.ctx))
     expect(r.content).toContain('#4 "第一章 离乡"')
-    expect(f.opened).toEqual([])
+    expect(r.content).toContain('now open in the editor')
+    expect(r.content).toContain('<canvas chapter="4">')
     const id = f.book()[3].id
+    expect(f.opened).toEqual([id])
     expect(f.ctx.run.created.has(id)).toBe(true)
     expect(f.ctx.run.htmlShown.has(id)).toBe(true)
   })
 
-  it('refuses a duplicate title and points at the existing chapter', async () => {
-    const r = await run(createChapterTool.invoke(call('create_chapter', { title: '故事线' }), book().ctx))
+  it('refuses a duplicate title and says to write to the existing chapter, not open it', async () => {
+    const f = book()
+    f.ctx.run.writeProtocol = 'markup'
+    const r = await run(createChapterTool.invoke(call('create_chapter', { title: '故事线' }), f.ctx))
     expect(r).toMatchObject({ ok: false })
-    expect(r.content).toContain('#3')
+    expect(r.content).toContain('Do not create or open it')
+    expect(r.content).toContain('<canvas chapter="3">')
+  })
+
+  it('does not move the user off a chapter with a pending selection rewrite', async () => {
+    const f = fakeContext('<p>x</p>', { selection: { from: 1, to: 2 } })
+    const r = await run(createChapterTool.invoke(call('create_chapter', { title: '新章' }), f.ctx))
+    expect(f.opened).toEqual([])
+    expect(r.content).not.toContain('now open')
+  })
+})
+
+describe('once the user has opened another chapter, the view is theirs', () => {
+  const book = () => fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第二章', content: '<p>two</p>' }] })
+
+  it('create_chapter makes the chapter but does not open it', () => {
+    const f = book()
+    f.userOpens('doc-2')
+    const r = createChapterTool.invoke(call('create_chapter', { title: '第三章' }), f.ctx) as ToolResult
+    expect(r.ok).toBe(true)
+    expect(r.content).not.toContain('now open')
+    expect(f.opened).toEqual([])
+    expect(f.ctx.document.openId()).toBe('doc-2')
+  })
+
+  it('open_chapter leaves the view where the user put it, and says so', () => {
+    const f = book()
+    f.userOpens('doc-2')
+    const r = openChapterTool.invoke(call('open_chapter', { chapter: 1 }), f.ctx) as ToolResult
+    expect(r).toMatchObject({ ok: true })
+    expect(r.content).toContain('NOT opened')
+    expect(f.opened).toEqual([])
+  })
+
+  it('a read of a chapter the user changed returns what is stored now, not the run\'s stale copy', async () => {
+    const f = book()
+    await readChapterTool.invoke(call('read_chapter', { chapters: [2], format: 'html' }), f.ctx)
+    f.userEdits('doc-2', '<p>two, edited</p>')
+    const r = await readChapterTool.invoke(call('read_chapter', { chapters: [2], format: 'html' }), f.ctx)
+    expect(r.content).toContain('two, edited')
+    expect(f.ctx.run.known.get('doc-2')).toBe('<p>two, edited</p>')
   })
 })

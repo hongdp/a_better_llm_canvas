@@ -90,6 +90,39 @@ describe('a markup-protocol turn (what every grok turn was before the loop)', ()
     expect(h.summary()).toMatchObject({ chatText: 'Done.', endReason: 'writes_done', steps: 1 })
   })
 
+  it('hands a write back when writes continue the turn, and ends on the reply with no action', async () => {
+    const h = harness({
+      policy: { continueAfterWrites: true },
+      replies: [
+        text('Done.\n<canvas><p>beta</p></canvas>\n<doc_status>updated</doc_status>'),
+        // The closing reply: no action and no declaration. It refers to the
+        // write above, so it is not a failed update.
+        text('Both paragraphs now read beta.')
+      ]
+    })
+    await h.run.start()
+
+    expect(h.requests).toHaveLength(2)
+    expect(h.requests[1].at(-1)).toMatchObject({ role: 'user', content: expect.stringContaining('RESULT OF YOUR DOCUMENT CHANGES') })
+    expect(h.corrective).toEqual([])
+    expect(h.summary()).toMatchObject({ chatText: 'Done.\n\nBoth paragraphs now read beta.', endReason: 'answered', steps: 2, failedUpdate: null })
+  })
+
+  it('still corrects broken markup in the closing reply', async () => {
+    const h = harness({
+      policy: { continueAfterWrites: true },
+      replies: [
+        text('<canvas><p>beta</p></canvas>\n<doc_status>updated</doc_status>'),
+        text('<edit>\n<<<<<<< SEARCH\n<p>beta</p>'),
+        text('Fine as it is.\n<doc_status>unchanged</doc_status>')
+      ]
+    })
+    await h.run.start()
+
+    expect(h.corrective).toEqual([['malformed', 1, 3]])
+    expect(h.summary()).toMatchObject({ endReason: 'answered', steps: 3 })
+  })
+
   it('retries a protocol failure by appending, never rebuilding, the request', async () => {
     const h = harness({ replies: [text('已改好。'), text('Sure.\n<doc_status>unchanged</doc_status>')] })
     await h.run.start()

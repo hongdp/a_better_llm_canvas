@@ -13,6 +13,7 @@ import { htmlToPlainText } from '../../utils/llmContext'
 import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
+import { forgetChapter, userEdited } from './documentWrites'
 
 /** Per chapter per call — the ledger's per-chapter cap (MAX_LEDGER_DOC_CHARS). */
 export const READ_CHAPTER_CAP = 20_000
@@ -21,6 +22,11 @@ export const READ_CALL_CAP = 60_000
 const SNIPPET_RADIUS = 60
 const DEFAULT_SEARCH_RESULTS = 20
 const MAX_SEARCH_RESULTS = 50
+
+/** How to write a whole chapter, in the form this model uses. */
+const fullWrite = (ctx: ToolContext, number: number) => ctx.run.writeProtocol === 'markup'
+  ? `<canvas chapter="${number}">…</canvas>`
+  : `update_document with chapter="${number}"`
 
 const fail = (name: string, message: string): ToolResult => ({
   ok: false, retryable: true, content: message, trace: `${name}: ${message.split('\n')[0]}`
@@ -45,6 +51,12 @@ function chapterRefs(raw: Record<string, unknown>): unknown[] {
 }
 
 // ── read_chapter ────────────────────────────────────────────────────────────
+
+/**
+ * How many steps back a copy still counts as "right there": a read repeated
+ * within this distance is refused as a duplicate, an older one is allowed.
+ */
+const RECENT_STEPS = 1
 
 /** Paragraphs to read: 1-based and inclusive; `to` null = to the end. */
 interface ParagraphRange {
@@ -126,12 +138,18 @@ export const readChapterTool = defineTool<ReadArgs>({
     let budget = READ_CALL_CAP
     const skipped: ResolvedChapter[] = []
     for (const chapter of resolved) {
+      // The user changed it while the run worked: the run's copy is stale,
+      // so read what is stored now.
+      if (userEdited(ctx, chapter.id)) forgetChapter(ctx, chapter.id)
       const html = acceptedHtml(ctx, chapter.id)
       const paras = chapterParagraphs(html)
       const totalChars = paras.reduce((sum, p) => sum + p.text.length, 0)
 
-      // Already in this request in full: say so instead of sending it twice.
-      if (format === 'text' && !range && ctx.run.inContext.has(chapter.id) && !ctx.run.docs.has(chapter.id)) {
+      // Already in this request in full: say so instead of sending it twice —
+      // in the first two steps, while that copy is still near. Later in a
+      // long turn the model may want it in view again before writing
+      // (user decision 2026-10-06: whether to re-read is the model's call).
+      if (format === 'text' && !range && ctx.run.inContext.has(chapter.id) && !ctx.run.docs.has(chapter.id) && ctx.run.step <= RECENT_STEPS) {
         parts.push(`=== ${citeChapter(chapter)} is already in your context in full (it is the active chapter or in REFERENCED CHAPTERS). ===`)
         traces.push(`${citeChapter(chapter)} (already in context)`)
         continue
@@ -142,10 +160,13 @@ export const readChapterTool = defineTool<ReadArgs>({
         errors.push(`${citeChapter(chapter)} has ${paras.length} paragraphs; there is no ¶${from}.`)
         continue
       }
-      // The duplicate guard (D5): the same request for the same bytes.
+      // The duplicate guard (D5): the same request for the same bytes, in this
+      // step or the one before — the copy is right there. An older one may
+      // be read again: in a long series it sits far behind the chapters
+      // written since, and refreshing it is the model's call.
       const key = `${chapter.id}|${format}|${from}-${to}|${hashContent(html)}`
       const earlier = ctx.run.reads.get(key)
-      if (earlier !== undefined) {
+      if (earlier !== undefined && ctx.run.step - earlier <= RECENT_STEPS) {
         parts.push(`=== ${citeChapter(chapter)} ¶${from}–¶${to} was already returned in step ${earlier + 1} of this turn and has not changed since. ===`)
         traces.push(`${citeChapter(chapter)} (repeat)`)
         continue
@@ -169,7 +190,11 @@ export const readChapterTool = defineTool<ReadArgs>({
       }
       budget -= used
       const whole = from === 1 && last === paras.length
-      const span = whole ? '' : `, ¶${from}–¶${last} of ${paras.length}`
+      // The part's own size, counted the way the chapter total is: a model
+      // planning a rewrite "at least as long as the source" cannot count it
+      // itself, and an estimate is not worth writing into an outline.
+      const partChars = paras.slice(from - 1, last).reduce((sum, p) => sum + p.text.length, 0)
+      const span = whole ? '' : `, ¶${from}–¶${last} of ${paras.length} (${partChars} characters)`
       const more = last < to
         ? `\n[Stopped at ¶${last} to stay under ${cap} characters. Continue with chapters=[${chapter.number}], paragraphs="${last + 1}-${range?.to ?? ''}", format="${format}".]`
         : ''
@@ -182,7 +207,10 @@ export const readChapterTool = defineTool<ReadArgs>({
 
       ctx.run.reads.set(key, ctx.run.step)
       ctx.run.readIds.add(chapter.id)
-      if (format === 'html') ctx.run.htmlShown.add(chapter.id)
+      if (format === 'html') {
+        ctx.run.htmlShown.add(chapter.id)
+        if (!ctx.run.known.has(chapter.id)) ctx.run.known.set(chapter.id, stored)
+      }
     }
     if (skipped.length > 0) {
       parts.push(`[Not returned — this call reached its ${READ_CALL_CAP}-character limit: ${skipped.map(citeChapter).join(', ')}. Ask for them in another call.]`)
@@ -358,7 +386,7 @@ export const listChaptersTool = defineTool<Record<string, never>>({
 export const openChapterTool = defineTool<{ chapter: unknown }>({
   name: 'open_chapter',
   description:
-    'Show a chapter to the user in the editor. You do NOT need this to read or change a chapter (read_chapter and the `chapter` argument of the writes do that); use it when the user asks to see a chapter.',
+    'ONLY to show a chapter to the user, when they ask to see it. Never call it to prepare a write or a read: every write names its chapter directly (`chapter`), and read_chapter reads any chapter. Opening a chapter changes nothing you can write or read.',
   parameters: {
     type: 'object',
     properties: { chapter: { type: 'string', description: 'Its number in the CHAPTER INDEX, or its exact title.' } },
@@ -380,11 +408,29 @@ export const openChapterTool = defineTool<{ chapter: unknown }>({
         trace: `open ${citeChapter(target)}: refused (selection pending)`
       }
     }
+    if (target.id === ctx.document.openId()) {
+      return { ok: true, content: `${citeChapter(target)} is already open.`, trace: `📂 ${citeChapter(target)} already open` }
+    }
+    // The user went to another chapter during this turn and may be typing
+    // there; the view is theirs now.
+    if (ctx.document.userMoved()) {
+      return {
+        ok: true,
+        content: `${citeChapter(target)} was NOT opened: the user is working in another chapter. Tell them it is #${target.number} in the chapter list. Writing and reading it need no opening.`,
+        trace: `📂 left ${citeChapter(target)} for the user to open`
+      }
+    }
     ctx.document.open(target.id)
+    // Problem: this used to end with "read it with format html before editing
+    //   it". Measured on a real turn: the model opened the chapter, opened it
+    //   again, and only then rewrote it — two extra steps of 20–60 s each. A
+    //   full rewrite needs no read at all.
+    // Fix: say what each kind of write needs, nothing more.
     return {
       ok: true,
-      content: `${citeChapter(target)} is now open in the editor.` +
-        (ctx.run.htmlShown.has(target.id) ? '' : ' Its text is not in your context; read it with format "html" before editing it.'),
+      content: `${citeChapter(target)} is now open in the editor for the user to see. ` +
+        `To rewrite it whole, write it now: ${fullWrite(ctx, target.number)}.` +
+        (ctx.run.htmlShown.has(target.id) ? '' : ' Only edits to parts of it need its HTML first (read_chapter, format "html").'),
       trace: `📂 open ${citeChapter(target)}`
     }
   }
@@ -395,8 +441,8 @@ export const openChapterTool = defineTool<{ chapter: unknown }>({
 export const createChapterTool = defineTool<{ title: string }>({
   name: 'create_chapter',
   description:
-    'Add a new, empty chapter at the end of the book. Then write it with update_document, passing the new chapter\'s number as `chapter` — you may do both in the same reply. ' +
-    'Do not create a chapter that already exists in the CHAPTER INDEX.',
+    'Add a new, empty chapter at the end of the book; it opens in the editor at once. Then write its text — in the same reply if you can. ' +
+    'Do not create a chapter that already exists in the CHAPTER INDEX: to rewrite an existing chapter, just write to it.',
   parameters: {
     type: 'object',
     properties: { title: { type: 'string', description: 'The chapter title, e.g. "第一章 风起".' } },
@@ -411,18 +457,32 @@ export const createChapterTool = defineTool<{ title: string }>({
   execute: ({ title }, ctx): ToolResult => {
     const existing = ctx.document.chapters().findIndex(c => c.title.trim() === title)
     if (existing !== -1) {
-      return fail('create_chapter', `A chapter titled "${title}" already exists as #${existing + 1}. Write to it with chapter=${existing + 1} instead.`)
+      return fail('create_chapter', `A chapter titled "${title}" already exists as #${existing + 1}. Do not create or open it — write to it directly: ${fullWrite(ctx, existing + 1)}.`)
     }
     const id = ctx.document.create(title)
     ctx.run.created.add(id)
     // Empty, and the model made it: nothing to read before writing.
     ctx.run.htmlShown.add(id)
     ctx.run.inContext.add(id)
+    ctx.run.known.set(id, ctx.document.chapters().find(c => c.id === id)?.content ?? '')
     const number = ctx.document.chapters().findIndex(c => c.id === id) + 1
     ctx.run.touched.set(id, { documentId: id, titleAtRun: title, kind: 'created', changes: 0, failed: 0 })
+    // Opened at once (user decision 2026-10-06): the next step spends 20–60 s
+    // planning the chapter before its first word, and the user should be
+    // looking at the new chapter meanwhile, not at the old one. Not while a
+    // selection rewrite is pending: the selection lives in the open chapter.
+    // Nor once the user has gone to another chapter: they may be typing there.
+    const selectionPending = ctx.selection.range() !== null && !ctx.run.selectionApplied
+    const opened = !selectionPending && !ctx.document.userMoved()
+    if (opened) ctx.document.open(id)
     return {
       ok: true,
-      content: `Created chapter #${number} "${title}" (empty). Write it with update_document and chapter="${number}".`,
+      content: `Created chapter #${number} "${title}" (empty)${opened ? ', now open in the editor' : ''}. Write its text now: ${fullWrite(ctx, number)}.` +
+        (ctx.run.continuesAfterWrites === false
+          // Writes end the turn here, so the next chapter must be asked for
+          // in the same reply or the series stops after this one.
+          ? ' If more chapters follow it, create the next one in that same reply — the turn continues and your next reply writes it.'
+          : ''),
       trace: `➕ create #${number} "${title}"`
     }
   }

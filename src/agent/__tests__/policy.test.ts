@@ -38,6 +38,14 @@ describe('detectStepFailure', () => {
   it('does not judge a step whose markup parsed into an action', () => {
     expect(judge('<canvas><p>x</p></canvas>', 'markup', false, 'canvas')).toBeNull()
   })
+
+  it('takes the closing reply of a run that already wrote at its word, but not its broken markup', () => {
+    // "Done — both chapters are written." refers to the earlier steps' writes.
+    const closing = (text: string) => detectStepFailure({ text, writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat', wroteThisRun: true })
+    expect(closing('两章都写完了。')).toBeNull()
+    expect(closing('写完了。\n<doc_status>updated</doc_status>')).toBeNull()
+    expect(closing('<edit>\n<<<<<<< SEARCH\nx')).toBe('malformed')
+  })
 })
 
 describe('decideAfterStep (spec D3)', () => {
@@ -49,8 +57,14 @@ describe('decideAfterStep (spec D3)', () => {
     expect(decide([call('write'), call('write')])).toEqual({ action: 'end', reason: 'writes_done' })
   })
 
-  it('continues after writes when the policy asks for a confirmation round', () => {
+  it('continues after writes when the policy hands write results back (the default)', () => {
     expect(decide([call('write')], { policy: { ...policy, continueAfterWrites: true } })).toEqual({ action: 'continue', corrective: false, final: false })
+  })
+
+  it('calls writes that landed on the last allowed step done, not cut off', () => {
+    const p = { ...policy, continueAfterWrites: true }
+    expect(decide([call('write')], { policy: p, stepsTaken: 6 })).toEqual({ action: 'end', reason: 'writes_done' })
+    expect(decide([call('write'), call('read')], { policy: p, stepsTaken: 6 })).toEqual({ action: 'end', reason: 'step_limit' })
   })
 
   it('continues after a read — the model asked for information', () => {
@@ -148,14 +162,17 @@ describe('planWrites', () => {
 })
 
 describe('resolveRunSettings', () => {
-  it('defaults: agent tools on, provider step limits, confirmation round only for local models', async () => {
+  it('defaults: agent tools on, provider step limits, and writes hand their result back (every provider)', async () => {
     const { resolveRunSettings } = await import('../policy')
     expect(resolveRunSettings('grok', {})).toMatchObject({
       agentTools: true,
       budgets: { maxSteps: 6 },
-      policy: { continueAfterWrites: false, feedBackFailedWrites: true }
+      policy: { continueAfterWrites: true, feedBackFailedWrites: true }
     })
     expect(resolveRunSettings('ollama', undefined).policy.continueAfterWrites).toBe(true)
+    expect(resolveRunSettings('grok', { continueAfterWrites: false }).policy.continueAfterWrites).toBe(false)
+    // A rejoined stream cannot continue at all.
+    expect(resolveRunSettings('grok', {}, false).policy.continueAfterWrites).toBe(false)
   })
 
   it('honours the settings, with 0 meaning no step limit', async () => {

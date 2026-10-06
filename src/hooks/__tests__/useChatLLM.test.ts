@@ -35,11 +35,9 @@ vi.mock('../../services/llm', () => ({
     }
   ) => {
     calls.push(messages)
-    const scripted = responses.shift()
-    if (scripted === undefined) {
-      callbacks.onError(new Error('scripted responses exhausted'))
-      return
-    }
+    // Past the script, the model closes the turn with no action — writes
+    // hand their result back now, so every write is followed by this reply.
+    const scripted = responses.shift() ?? '<doc_status>unchanged</doc_status>'
     if (typeof scripted === 'string') {
       callbacks.onChunk(scripted)
       callbacks.onDone(scripted, { promptTokens: 10, completionTokens: 20 })
@@ -166,6 +164,9 @@ const assistantBubble = () => {
 }
 
 /** The final user message of a recorded request — where the volatile context sits. */
+/** The model's reply with no action, which closes a turn that wrote. */
+const CLOSE = '<doc_status>unchanged</doc_status>'
+
 const finalUserContent = (callIndex: number) => {
   const msgs = calls[callIndex]
   return msgs[msgs.length - 1].content
@@ -216,7 +217,10 @@ describe('useChatLLM — normal completion', () => {
 
     await send(harness, '重写这一章')
 
-    expect(calls).toHaveLength(1)
+    // A write does not end the turn: its result goes back to the model, and
+    // the model's reply with no action (the script's default) closes it.
+    expect(calls).toHaveLength(2)
+    expect(finalUserContent(1)).toContain('RESULT OF YOUR DOCUMENT CHANGES')
     // The update lands as a reviewable diff, not a raw replacement.
     expect(activeContent()).toContain('New')
     expect(activeContent()).toContain('fresh')
@@ -259,26 +263,29 @@ describe('useChatLLM — cache-first prompt layout', () => {
   })
 
   it('keeps every message before the tail byte-identical across turns', async () => {
-    responses.push('<canvas><p>a</p></canvas>', '<canvas><p>b</p></canvas>')
+    responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     const harness = renderChatHook()
 
     await send(harness, '第一个问题')
     const firstTail = calls[0].length
+    // Each turn takes two steps (write, then close); compare the turns' FIRST
+    // requests.
+    const second = calls.length
     await send(harness, '第二个完全不同的问题')
 
     // The second turn appends history; everything the first turn sent before
     // its own tail is still there, unchanged, in the same order.
-    expect(calls).toHaveLength(2)
-    expect(prefixOf(1).startsWith(prefixOf(0))).toBe(true)
-    expect(calls[1].length).toBeGreaterThan(firstTail)
+    expect(second).toBe(2)
+    expect(prefixOf(second).startsWith(prefixOf(0))).toBe(true)
+    expect(calls[second].length).toBeGreaterThan(firstTail)
     // …and that shared prefix actually carries the chapter, which is the whole
     // point. Without this the assertion above passes trivially on a prefix of
     // nothing but the system prompt.
     expect(prefixOf(0)).toContain('REFERENCED CHAPTERS')
     expect(prefixOf(0)).toContain('the betrayal')
     // The tail is what changed — the request, and nothing before it.
-    expect(finalUserContent(1)).toContain('第二个完全不同的问题')
-    expect(finalUserContent(1)).not.toContain('the betrayal')
+    expect(finalUserContent(second)).toContain('第二个完全不同的问题')
+    expect(finalUserContent(second)).not.toContain('the betrayal')
     harness.unmount()
   })
 
@@ -299,23 +306,24 @@ describe('useChatLLM — cache-first prompt layout', () => {
   })
 
   it('appends a newly attached chapter without disturbing the first one', async () => {
-    responses.push('<canvas><p>a</p></canvas>', '<canvas><p>b</p></canvas>')
+    responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     const harness = renderChatHook()
 
     await send(harness, '第一轮')
     // Pin a second chapter: it must be APPENDED, never inserted or re-sorted.
     useAppStore.setState({ pinnedReferenceIds: ['doc-2', 'doc-3'] })
+    const second = calls.length
     await send(harness, '第二轮')
 
     const before = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
-    const after = calls[1].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
     expect(after.startsWith(before.replace(/\n$/, ''))).toBe(true)
     expect(after).toContain('the return')
     harness.unmount()
   })
 
   it('drops the chapter the writer switches to, keeping the rest cached', async () => {
-    responses.push('<canvas><p>a</p></canvas>', '<canvas><p>b</p></canvas>')
+    responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     const harness = renderChatHook()
 
     useAppStore.setState({ pinnedReferenceIds: ['doc-2', 'doc-3'] })
@@ -323,9 +331,10 @@ describe('useChatLLM — cache-first prompt layout', () => {
     // Now edit chapter 2 — it must leave the ledger rather than sit there as a
     // stale duplicate of the document in the tail.
     useAppStore.setState({ activeDocumentId: 'doc-2', pinnedReferenceIds: ['doc-3'] })
+    const second = calls.length
     await send(harness, '第二轮')
 
-    const after = calls[1].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
     expect(after).not.toContain('the betrayal')
     expect(after).toContain('the return')
     harness.unmount()
@@ -390,7 +399,8 @@ describe('useChatLLM — document tools', () => {
 
     await send(harness, '改一下第二段')
 
-    expect(calls).toHaveLength(2)
+    // Bad call, fixed call, closing reply.
+    expect(calls).toHaveLength(3)
     expect(calls[1].at(-1)).toMatchObject({ role: 'tool', content: expect.stringContaining('was not run') })
     const { stripDiffMarkup } = await import('../../utils/diff')
     expect(stripDiffMarkup(activeContent())).toBe('<p>one</p><p>TWO</p>')
@@ -424,11 +434,16 @@ describe('useChatLLM — document tools', () => {
         text: '写好了。',
         toolCalls: [{ index: 0, name: 'update_document', argumentsText: '{"html": "<p>x</p>"}' }]
       } as never)
+      // The closing reply carries no declaration either.
+      responses.push('好了。')
       const harness = renderChatHook()
 
       await send(harness, '写一段')
 
-      expect(calls).toHaveLength(1)
+      // The write's result, then the close — no corrective step after either.
+      expect(calls).toHaveLength(2)
+      expect(calls[1].at(-1)?.content).not.toContain('did not follow the output protocol')
+      expect(assistantBubble()[0]).not.toContain('⚠️')
       harness.unmount()
     })()
   })
@@ -503,7 +518,8 @@ describe('useChatLLM — no-action retry', () => {
 
     await send(harness, '继续写第三章')
 
-    expect(calls).toHaveLength(2)
+    // Failed reply, corrected reply, closing reply.
+    expect(calls).toHaveLength(3)
     // The failed reply is quoted back, then corrected.
     const retryMessages = calls[1]
     expect(retryMessages[retryMessages.length - 2]).toMatchObject({
@@ -528,7 +544,7 @@ describe('useChatLLM — no-action retry', () => {
 
     await send(harness, '继续写第三章')
 
-    expect(calls).toHaveLength(3)
+    expect(calls).toHaveLength(4)
     expect(assistantBubble()).toEqual(['好了。'])
     expect(activeContent()).toContain('RECOVERED_LATE')
     harness.unmount()
@@ -568,7 +584,7 @@ describe('useChatLLM — no-action retry', () => {
 
     await send(harness, '随便看看')
 
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
     expect(activeContent()).toContain('DECLARED_FIX')
     // The declaration is protocol — the user never sees it.
     expect(assistantBubble()).toEqual(['好了。'])
@@ -596,7 +612,7 @@ describe('useChatLLM — no-action retry', () => {
 
     await send(harness, '你觉得这段怎么样')
 
-    expect(calls).toHaveLength(2)
+    expect(calls).toHaveLength(3)
     expect(activeContent()).toContain('FIXED_MARKUP')
     harness.unmount()
   })

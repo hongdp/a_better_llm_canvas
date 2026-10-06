@@ -6,7 +6,7 @@
 import { defineTool } from '../registry'
 import { citeChapter } from '../chapters'
 import type { ToolResult } from '../types'
-import { commitDoc, docState, resolveTarget, touch, withLoaded } from './documentWrites'
+import { commitDoc, docState, editedMeanwhile, resolveTarget, touch, userEdited, withLoaded } from './documentWrites'
 
 export const polishChapterTool = defineTool<{ chapter: unknown }>({
   name: 'polish_chapter',
@@ -29,11 +29,25 @@ export const polishChapterTool = defineTool<{ chapter: unknown }>({
     if (!polish) return { ok: false, retryable: false, content: 'No polish model is configured.', trace: '⚠️ polish: not configured' }
 
     return withLoaded(ctx, target, async () => {
+      if (userEdited(ctx, target.id)) return editedMeanwhile(ctx, target)
       const st = docState(ctx, target)
-      const outcome = await polish.run(ctx.images.preserve(st.html), (done, total) => {
-        ctx.ui.progress(`✨ polishing ${citeChapter(target)} … ${done}/${total}`)
-      })
+      // A polish takes 26–53 s; the chapter is locked for the user meanwhile,
+      // so the rewrite cannot land over their edit. Other chapters stay open.
+      ctx.ui.writing(target.id)
+      let outcome
+      try {
+        outcome = await polish.run(ctx.images.preserve(st.html), (done, total) => {
+          ctx.ui.progress(`✨ polishing ${citeChapter(target)} … ${done}/${total}`)
+        })
+      } finally {
+        ctx.ui.writing(null)
+      }
       ctx.ui.progress(null)
+      // Locked, but the stored content could still have moved (a review
+      // button pressed just before the lock): never write over it.
+      if (userEdited(ctx, target.id)) {
+        return { ...editedMeanwhile(ctx, target), retryable: false, content: `The user edited ${citeChapter(target)} while it was being polished, so the polish was discarded. Tell the user; polish it again only if they ask.` }
+      }
       if (outcome.polished > 0) {
         st.html = ctx.images.restore(outcome.html)
         st.dirty = true

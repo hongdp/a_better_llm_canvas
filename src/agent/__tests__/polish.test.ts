@@ -97,3 +97,22 @@ describe('polish_chapter', () => {
     expect(f.writes).toEqual([])
   })
 })
+
+describe('polish_chapter and the user\'s edits', () => {
+  const call = (args: Record<string, unknown>): ToolInvocation => ({ id: 'p', name: 'polish_chapter', args, source: 'native' })
+
+  it('locks the chapter while it polishes, and discards the polish if the stored text moved anyway', async () => {
+    const f = fakeContext('<p>草稿。</p>')
+    f.ctx.polish = {
+      run: async html => {
+        f.userEdits('doc-1', '<p>草稿，用户改过。</p>')
+        return { html: html.replace('草稿', '润色稿'), chunks: 1, polished: 1, kept: [], stopped: false }
+      }
+    }
+    const r = await (polishChapterTool.invoke(call({}), f.ctx) as Promise<ToolResult>)
+    expect(f.writing).toEqual(['doc-1', null])
+    expect(r).toMatchObject({ ok: false, retryable: false })
+    expect(r.content).toContain('discarded')
+    expect(f.writes).toEqual([])
+  })
+})
