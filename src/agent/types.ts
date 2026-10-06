@@ -12,6 +12,7 @@ import type { JsonSchema, ToolSpec } from '../utils/documentTools'
 import type { AppState } from '../store/types'
 import type { AgentTouchedChapter } from '../types/chat'
 import type { PolishOutcome } from './polish'
+import type { AnalyzeChapter, AnalyzeOutcome } from './analyzeBook'
 
 export type { JsonSchema, ToolSpec }
 
@@ -263,9 +264,15 @@ export interface PolishPort {
   run(html: string, onProgress: (done: number, total: number) => void): Promise<PolishOutcome>
 }
 
+/** analyze_book's model calls (D7), batched by ../analyzeBook. Absent where no model is wired. */
+export interface AnalyzePort {
+  run(task: string, chapters: AnalyzeChapter[], onProgress: (done: number, total: number) => void): Promise<AnalyzeOutcome>
+}
+
 export interface ToolContext {
   getState: () => AppState
   polish?: PolishPort
+  analyze?: AnalyzePort
   editor: EditorPort
   selection: SelectionPort
   document: DocumentPort

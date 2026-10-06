@@ -3,12 +3,6 @@ export interface CanvasDocument {
   title: string
   content: string
   contentLoaded?: boolean
-  /** @deprecated Legacy manual selection — migrated to pinnedReferenceIds (envelope v2). */
-  selectedReferenceIds?: string[]
-  /** Chapters the user pinned as reference context; sticky across turns. */
-  pinnedReferenceIds?: string[]
-  /** Chapters the user excluded from auto-selection for this document. */
-  blockedReferenceIds?: string[]
   createdAt: string
   updatedAt: string
   /**

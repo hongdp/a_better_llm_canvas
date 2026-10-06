@@ -191,9 +191,6 @@ beforeEach(() => {
     isStreaming: false,
     user: { username: 'alice' },
     activeBookId: 'book-test',
-    wholeBookMode: 'off',
-    pinnedReferenceIds: [],
-    blockedReferenceIds: [],
     debugMode: false,
     activeSystemPromptId: 'prompt-none',
     customSystemPrompts: [{ id: 'prompt-none', name: 'None', content: '' }]

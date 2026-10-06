@@ -48,8 +48,6 @@ export const createAuthSlice: StateCreator<AppState, [], [], AuthSlice> = (set) 
       bookTitle: 'Untitled Book',
       activeBookId: 'default',
       availableBooks: [],
-      pinnedReferenceIds: [],
-      blockedReferenceIds: [],
       lastSyncedAt: null,
       lastSeenServerUpdatedAt: null,
       serverSaveStatus: 'saved'

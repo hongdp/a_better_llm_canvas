@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand'
 import type { CanvasDocument } from '../../types/document'
 import type { AppState } from '../types'
-import { localStorage, saveDocumentsToIndexedDB, loadWholeBookMode, saveWholeBookMode } from '../persistence'
+import { localStorage, saveDocumentsToIndexedDB } from '../persistence'
 import { idsNeedingContent, loadDocumentContents } from '../contentLoader'
 import { MOCK_DOCUMENTS } from '../defaults'
 import { loadSavedActiveDocId } from '../settingsPersistence'
@@ -18,20 +18,6 @@ export interface DocumentsSlice {
   // Multi-document state
   documents: CanvasDocument[]
   activeDocumentId: string
-  // Reference selection for the ACTIVE document (mirrors of its per-doc
-  // fields): pins always attach and stick across turns; blocked chapters are
-  // never auto-attached. Auto-selected ids are ephemeral (computed at send
-  // time by utils/contextSelection) and never stored.
-  pinnedReferenceIds: string[]
-  blockedReferenceIds: string[]
-  // Whole-book mode ("All chapters" super-tag). One-shot by design: it
-  // auto-resets after a send so the entire book isn't re-billed every turn.
-  // Deliberately NOT persisted.
-  // 'once' auto-resets after a send (the default click); 'sticky' keeps the
-  // whole book attached across turns, moving it into the stable prompt
-  // prefix so turns 2+ pay cache-read prices. Deliberately NOT persisted.
-  wholeBookMode: 'off' | 'once' | 'sticky'
-  setWholeBookMode: (mode: 'off' | 'once' | 'sticky') => void
 
   setActiveDocumentId: (id: string) => void
   /**
@@ -46,15 +32,12 @@ export interface DocumentsSlice {
   updateDocument: (id: string, updates: Partial<CanvasDocument>) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
   setDocumentSummary: (id: string, summary: string, contentHash: string) => void
-  /** Cycle a chapter's manual reference state: neutral → pinned → blocked → neutral. */
-  cycleReferenceState: (id: string) => void
-  clearReferences: () => void
   /**
    * Ensure the given documents' content is loaded (server books lazy-load
    * metadata-only chapters). Resolves once every needed fetch settles; a
    * failed doc stays unloaded and degrades to its index line. Callers that
-   * attach chapter content (pins, whole-book) MUST await this
-   * first, or unopened chapters are silently dropped by the selector.
+   * need chapter content (the read tools) MUST await this first, or an
+   * unopened chapter reads as empty.
    */
   ensureDocumentContents: (ids: string[]) => Promise<void>
 }
@@ -67,26 +50,10 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
     // Multi-document state
     documents: initialDocs,
     activeDocumentId: initialActiveId,
-    pinnedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.pinnedReferenceIds || [],
-    blockedReferenceIds: initialDocs.find(d => d.id === initialActiveId)?.blockedReferenceIds || [],
-    // Sticky is a standing choice and survives reloads; 'once' is consumed by
-    // the next send, so it is never restored (see persistence.loadWholeBookMode).
-    wholeBookMode: loadWholeBookMode(),
-    setWholeBookMode: (mode) => {
-      saveWholeBookMode(mode)
-      set({ wholeBookMode: mode })
-    },
 
     setActiveDocumentId: (id) => {
       localStorage.setItem('web_canvas_active_document_id', id)
-      set((state) => {
-        const targetDoc = state.documents.find((d) => d.id === id)
-        return {
-          activeDocumentId: id,
-          pinnedReferenceIds: (targetDoc?.pinnedReferenceIds || []).filter(refId => refId !== id),
-          blockedReferenceIds: (targetDoc?.blockedReferenceIds || []).filter(refId => refId !== id)
-        }
-      })
+      set({ activeDocumentId: id })
 
       // Lazy-load document content from server if not yet loaded
       void useAppStore.getState().ensureDocumentContents([id])
@@ -118,8 +85,6 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
         title,
         content,
         contentLoaded: true,
-        pinnedReferenceIds: [],
-        blockedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
@@ -133,9 +98,7 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
         localStorage.setItem('web_canvas_active_document_id', newDoc.id)
         return {
           documents: updatedDocs,
-          activeDocumentId: newDoc.id,
-          pinnedReferenceIds: [],
-          blockedReferenceIds: []
+          activeDocumentId: newDoc.id
         }
       })
 
@@ -167,8 +130,6 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
         title: doc.title || `Chapter ${idx + 1}`,
         content: doc.content || '<p></p>',
         contentLoaded: true,
-        pinnedReferenceIds: [],
-        blockedReferenceIds: [],
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }))
@@ -178,9 +139,7 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
         localStorage.setItem('web_canvas_active_document_id', formattedDocs[0].id)
         return {
           documents: formattedDocs,
-          activeDocumentId: formattedDocs[0].id,
-          pinnedReferenceIds: [],
-          blockedReferenceIds: []
+          activeDocumentId: formattedDocs[0].id
         }
       })
     },
@@ -224,8 +183,6 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
             title: 'Chapter 1: Welcome',
             content: '<h1>Getting Started</h1><p>Start writing...</p>',
             contentLoaded: true,
-            pinnedReferenceIds: [],
-            blockedReferenceIds: [],
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
           }
@@ -238,10 +195,7 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
 
         return {
           documents: filteredDocs,
-          activeDocumentId: newActiveId,
-          // Remove from manual reference lists if present
-          pinnedReferenceIds: state.pinnedReferenceIds.filter((refId) => refId !== id),
-          blockedReferenceIds: state.blockedReferenceIds.filter((refId) => refId !== id)
+          activeDocumentId: newActiveId
         }
       })
 
@@ -358,68 +312,5 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
       }
     },
 
-    cycleReferenceState: (id) => {
-      set((state) => {
-        // neutral → pinned → blocked → neutral. The UI's "auto" state is
-        // ephemeral (scorer output) and behaves as neutral here: clicking an
-        // auto tag promotes it to a sticky pin.
-        let pinned = state.pinnedReferenceIds
-        let blocked = state.blockedReferenceIds
-        if (pinned.includes(id)) {
-          pinned = pinned.filter((refId) => refId !== id)
-          blocked = [...blocked, id]
-        } else if (blocked.includes(id)) {
-          blocked = blocked.filter((refId) => refId !== id)
-        } else {
-          pinned = [...pinned, id]
-        }
-
-        const updatedDocs = state.documents.map((d) => {
-          if (d.id === state.activeDocumentId) {
-            return {
-              ...d,
-              pinnedReferenceIds: pinned,
-              blockedReferenceIds: blocked,
-              updatedAt: new Date().toISOString(),
-            }
-          }
-          return d
-        })
-        saveDocumentsToIndexedDB(updatedDocs, true)
-        return {
-          pinnedReferenceIds: pinned,
-          blockedReferenceIds: blocked,
-          documents: updatedDocs
-        }
-      })
-      // Eagerly load a newly pinned chapter that only has server metadata so
-      // the tag-bar preview/budget is accurate and send time doesn't wait.
-      const after = useAppStore.getState()
-      if (after.pinnedReferenceIds.includes(id)) {
-        void after.ensureDocumentContents([id])
-      }
-    },
-
-    clearReferences: () => {
-      set((state) => {
-        const updatedDocs = state.documents.map((d) => {
-          if (d.id === state.activeDocumentId) {
-            return {
-              ...d,
-              pinnedReferenceIds: [],
-              blockedReferenceIds: [],
-              updatedAt: new Date().toISOString(),
-            }
-          }
-          return d
-        })
-        saveDocumentsToIndexedDB(updatedDocs, true)
-        return {
-          pinnedReferenceIds: [],
-          blockedReferenceIds: [],
-          documents: updatedDocs
-        }
-      })
-    },
   }
 }

@@ -3,11 +3,11 @@ import { detectReferencedDocIds } from './llmContext'
 /**
  * Context auto-selection ("Layer 1") — a deterministic, LLM-free scorer that
  * decides which chapters to attach as read-only reference context for a chat
- * request. Runs on debounced keystrokes to preview the selection in the tag
- * bar, and again at send time. See docs/features/smart_context_selection.md §4.
+ * request, at send time. See docs/features/smart_context_selection.md §4.
  *
- * Control precedence: pinned > blocked > auto > index-only. Manual choices
- * are never overridden by automation.
+ * There is no manual control any more (agentic_chat_loop.md D7): the user
+ * steers context in the conversation, and the model reads anything else it
+ * needs with its tools. This is the prefetch that saves it a step.
  */
 
 export interface SelectableDoc {
@@ -26,10 +26,6 @@ export interface SelectionInput {
   /** All documents in book order. */
   documents: SelectableDoc[]
   activeDocumentId: string | null
-  /** User-pinned chapter ids (always attached). */
-  pinnedIds: string[]
-  /** User-blocked chapter ids (never auto-attached). */
-  blockedIds: string[]
   /** Chapters attached on the previous turn (conversation continuity). */
   previousAttachedIds?: string[]
   /**
@@ -59,8 +55,8 @@ export interface SelectionOptions {
 
 export interface SelectionResult {
   /**
-   * Every chapter this turn wants attached: the ledger's members (minus any
-   * the user blocked) plus this turn's admissions. This is a SET, not a
+   * Every chapter this turn wants attached: the ledger's members plus this
+   * turn's admissions. This is a SET, not a
    * layout — `planLedgerTurn` decides the order, which is why nothing here
    * sorts by score any more.
    */
@@ -130,15 +126,9 @@ const docCost = (doc: SelectableDoc, perDocChars: number): number =>
  * Score every non-active chapter and pick what to attach under the budget.
  *
  * Guarantees:
- * - Pinned docs are always attached (they consume budget but are never
- *   dropped — an explicit user choice may exceed the budget).
- * - Blocked docs never auto-attach.
  * - Docs whose content isn't loaded yet (server lazy-loading) or is empty
  *   are never attached — there is nothing to send; their index line still
- *   gives the model awareness. Callers that need a doc's content attached
- *   (pins at send time, whole-book) must await the store's
- *   ensureDocumentContents() BEFORE calling this, or the doc is silently
- *   dropped here (this scorer is sync and cannot fetch).
+ *   gives the model awareness, and read_chapter loads what it reads.
  * - A wrong selection degrades to the chapter's index line, never to nothing.
  */
 export function selectReferenceChapters(
@@ -146,7 +136,7 @@ export function selectReferenceChapters(
   options: SelectionOptions = {}
 ): SelectionResult {
   const { maxTotalChars, perDocChars, scoreThreshold } = { ...DEFAULT_SELECTION_OPTIONS, ...options }
-  const { promptText, recentHistory, documents, activeDocumentId, pinnedIds, blockedIds } = input
+  const { promptText, recentHistory, documents, activeDocumentId } = input
   const previousAttachedIds = input.previousAttachedIds ?? []
   const modelReadIds = input.modelReadIds ?? []
   const ledgerIds = input.ledgerIds ?? []
@@ -193,22 +183,13 @@ export function selectReferenceChapters(
   }
 
   // Ledger members ride along for free: their bytes are already in the
-  // model's cached prefix, so they cost no budget this turn. A blocked one is
-  // the user asking for it to go — the ledger planner turns that into a
-  // consent prompt rather than a silent eviction.
-  const keptLedgerIds = ledgerIds.filter(id => !blockedIds.includes(id) && id !== activeDocumentId)
+  // model's cached prefix, so they cost no budget this turn.
+  const keptLedgerIds = ledgerIds.filter(id => id !== activeDocumentId)
+  let usedChars = 0
 
-  // Pinned: always attached, in book order.
-  const pinnedDocs = candidates.filter(d =>
-    pinnedIds.includes(d.id) && attachable(d) && !keptLedgerIds.includes(d.id)
-  )
-  let usedChars = pinnedDocs.reduce((sum, d) => sum + docCost(d, perDocChars), 0)
-
-  // Autos: qualified by score, greedy by score under the remaining budget.
+  // Qualified by score, greedy by score under the budget.
   const autoCandidates = candidates
     .filter(d =>
-      !pinnedIds.includes(d.id) &&
-      !blockedIds.includes(d.id) &&
       attachable(d) &&
       !keptLedgerIds.includes(d.id) &&
       scores[d.id] >= scoreThreshold
@@ -228,7 +209,7 @@ export function selectReferenceChapters(
   }
 
   return {
-    attachedIds: [...keptLedgerIds, ...pinnedDocs.map(d => d.id), ...autoIds],
+    attachedIds: [...keptLedgerIds, ...autoIds],
     autoIds,
     droppedForBudget,
     scores,

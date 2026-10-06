@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {  getChapterDigest,
   buildChapterIndex,
   extractHeadingTree,
-  buildWholeBookDigest,
   packChaptersIntoBatches,
   type IndexableDoc
 } from '../chapterIndex'
@@ -106,22 +105,6 @@ describe('extractHeadingTree', () => {
 
   it('returns empty string for heading-less content', () => {
     expect(extractHeadingTree('<p>Just prose.</p>')).toBe('')
-  })
-})
-
-// ── buildWholeBookDigest ──────────────────────────────────────────────────────
-describe('buildWholeBookDigest', () => {
-  it('includes every chapter with headings, summary, and active marker', () => {
-    const docs: IndexableDoc[] = [
-      makeDoc({ id: 'a', title: 'Chapter 1', content: '<h1>Origins</h1><p>Riva digs.</p>', summary: 'Riva finds the archive.' }),
-      makeDoc({ id: 'b', title: 'Chapter 2', content: '<h1>Crossing</h1><p>They cross.</p>' })
-    ]
-    const digest = buildWholeBookDigest(docs, 'b')
-    expect(digest).toContain('WHOLE-BOOK DIGEST')
-    expect(digest).toContain('1. "Chapter 1"')
-    expect(digest).toContain('- Origins')
-    expect(digest).toContain('Summary: Riva finds the archive.')
-    expect(digest).toContain('2. "Chapter 2" (ACTIVE)')
   })
 })
 

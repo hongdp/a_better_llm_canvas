@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, loadWholeBookMode, saveWholeBookMode, diffDocumentsForWrite } from '../persistence'
+import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, DOCUMENTS_INDEX_VERSION, clearRetiredSettings, diffDocumentsForWrite, loadDocumentsFromIndexedDB, db } from '../persistence'
 import type { CanvasDocument } from '../../types/document'
 
 // ── getCookie ─────────────────────────────────────────────────────────────────
@@ -145,64 +145,55 @@ describe('migrateDocumentsPayload', () => {
     expect(migrateDocumentsPayload([])).toEqual([])
   })
 
-  it('migrates v0 selectedReferenceIds to pinnedReferenceIds', () => {
-    const v0Doc = { ...legacyDoc, selectedReferenceIds: ['doc-2', 'doc-3'] }
-    const result = migrateDocumentsPayload([v0Doc])
-    expect(result![0].pinnedReferenceIds).toEqual(['doc-2', 'doc-3'])
-    expect(result![0].blockedReferenceIds).toEqual([])
-    expect(result![0].selectedReferenceIds).toBeUndefined()
+  // v4 (agentic_chat_loop.md D7): manual reference selection is retired, so
+  // every legacy shape loses its reference fields — and nothing else.
+  it('drops v0 selectedReferenceIds', () => {
+    const result = migrateDocumentsPayload([{ ...legacyDoc, selectedReferenceIds: ['doc-2', 'doc-3'] }])
+    expect(result).toEqual([legacyDoc])
   })
 
-  it('migrates a v1 envelope to v2, converting selection to pins', () => {
+  it('drops a v1 selection and keeps the v1 fields', () => {
     const v1Doc = { ...legacyDoc, summary: 'S', summaryContentHash: 'h', selectedReferenceIds: ['doc-9'] }
     const result = migrateDocumentsPayload({ version: 1, data: [v1Doc] })
-    expect(result![0].pinnedReferenceIds).toEqual(['doc-9'])
-    expect(result![0].selectedReferenceIds).toBeUndefined()
-    // v1 fields survive the v1→v2 step
-    expect(result![0].summary).toBe('S')
+    expect(result).toEqual([{ ...legacyDoc, summary: 'S', summaryContentHash: 'h' }])
   })
 
-  it('leaves docs without legacy selection untouched in v1→v2', () => {
-    const result = migrateDocumentsPayload({ version: 1, data: [legacyDoc] })
-    expect(result![0].pinnedReferenceIds).toBeUndefined()
-    expect(result![0].blockedReferenceIds).toBeUndefined()
-  })
-
-  it('does not re-migrate a current v2 envelope', () => {
-    const v2Doc: CanvasDocument = { ...legacyDoc, pinnedReferenceIds: ['a'], blockedReferenceIds: ['b'] }
+  it('drops v2 pins and blocks', () => {
+    const v2Doc = { ...legacyDoc, pinnedReferenceIds: ['a'], blockedReferenceIds: ['b'] }
     const result = migrateDocumentsPayload({ version: DOCUMENTS_ENVELOPE_VERSION, data: [v2Doc] })
-    expect(result).toEqual([v2Doc])
+    expect(result).toEqual([legacyDoc])
   })
 })
 
-// ── whole-book mode ───────────────────────────────────────────────────────────
-describe('whole-book mode persistence', () => {
-  beforeEach(() => {
-    ls.removeItem('web_canvas_whole_book_mode')
-  })
+// ── v3 → v4 per-document records (D7) ─────────────────────────────────────────
+describe('loadDocumentsFromIndexedDB — v3 → v4', () => {
+  it('rewrites v3 records without the retired reference fields, under a v4 index', async () => {
+    const store = new Map<string, unknown>([
+      ['web_canvas_documents', { version: 3, ids: ['d1', 'd2'] }],
+      ['web_canvas_doc:d1', { id: 'd1', title: 'A', content: '<p>a</p>', createdAt: 't', updatedAt: 't', pinnedReferenceIds: ['d2'], blockedReferenceIds: [] }],
+      ['web_canvas_doc:d2', { id: 'd2', title: 'B', content: '<p>b</p>', createdAt: 't', updatedAt: 't', summary: 'S' }]
+    ])
+    const get = vi.spyOn(db, 'get').mockImplementation(async <T,>(key: string) => (store.get(key) ?? null) as T | null)
+    const set = vi.spyOn(db, 'set').mockImplementation(async (key: string, value: unknown) => { store.set(key, value) })
 
-  it('restores sticky — a standing choice survives a reload', () => {
-    saveWholeBookMode('sticky')
-    expect(ls.getItem('web_canvas_whole_book_mode')).toBe('sticky')
-    expect(loadWholeBookMode()).toBe('sticky')
-  })
+    const docs = await loadDocumentsFromIndexedDB()
 
-  it('never restores once — it is consumed by the next send', () => {
-    saveWholeBookMode('once')
-    expect(loadWholeBookMode()).toBe('off')
+    expect(docs).toEqual([
+      { id: 'd1', title: 'A', content: '<p>a</p>', createdAt: 't', updatedAt: 't' },
+      { id: 'd2', title: 'B', content: '<p>b</p>', createdAt: 't', updatedAt: 't', summary: 'S' }
+    ])
+    expect(store.get('web_canvas_doc:d1')).not.toHaveProperty('pinnedReferenceIds')
+    expect(store.get('web_canvas_documents')).toEqual({ version: DOCUMENTS_INDEX_VERSION, ids: ['d1', 'd2'] })
+    get.mockRestore(); set.mockRestore()
   })
+})
 
-  it('clears the stored preference when switched off', () => {
-    saveWholeBookMode('sticky')
-    saveWholeBookMode('off')
+// ── retired settings ──────────────────────────────────────────────────────────
+describe('clearRetiredSettings', () => {
+  it('forgets the retired whole-book mode', () => {
+    ls.setItem('web_canvas_whole_book_mode', 'sticky')
+    clearRetiredSettings()
     expect(ls.getItem('web_canvas_whole_book_mode')).toBeNull()
-    expect(loadWholeBookMode()).toBe('off')
-  })
-
-  it('defaults to off with nothing (or junk) stored', () => {
-    expect(loadWholeBookMode()).toBe('off')
-    ls.setItem('web_canvas_whole_book_mode', 'STICKY')
-    expect(loadWholeBookMode()).toBe('off')
   })
 })
 

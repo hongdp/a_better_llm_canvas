@@ -17,7 +17,7 @@
 import { stripDiffMarkup } from '../../utils/diff'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { truncateWithNotice, htmlToPlainText } from '../../utils/llmContext'
-import { buildChapterIndex, buildWholeBookDigest } from '../../utils/chapterIndex'
+import { buildChapterIndex } from '../../utils/chapterIndex'
 import type { LLMMessage } from '../../types/llm'
 
 // Per-document cap for read-only reference documents attached as context.
@@ -36,15 +36,7 @@ export interface RenderableDoc {
   summary?: string
 }
 
-/**
- * Whole-book options: `perDocChars` lifts the per-doc cap for Rung 1
- * attach-all; `includeWholeBookDigest` swaps the compact index for the full
- * structural digest (fast mode); `notesBlock` carries Rung 2 batch notes.
- */
 export interface DynamicContextOptions {
-  perDocChars?: number
-  includeWholeBookDigest?: boolean
-  notesBlock?: string
   /** The agentic loop's tools are on: the model may write any chapter. */
   agentTools?: boolean
   /** Freshness markers for the chapter index (agentic_chat_loop.md D8). */
@@ -79,9 +71,8 @@ export function ledgerBlock(doc: RenderableDoc, kind: 'fresh' | 'update' = 'fres
 
 /**
  * The stable, append-only block of reference chapters, injected ahead of the
- * chat history as a user/assistant pair — the same shape `buildStickyBookPrefix`
- * uses for whole-book mode, and for the same reason: providers cache a prefix,
- * not a set of fields.
+ * chat history as a user/assistant pair: providers cache a prefix, not a set
+ * of fields.
  *
  * Returns [] for an empty ledger so the caller can spread it unconditionally.
  */
@@ -147,13 +138,8 @@ export function buildVolatileTail(
   preserveImages: (html: string) => string,
   opts?: DynamicContextOptions
 ): string {
-  const chapterIndex = opts?.includeWholeBookDigest
-    ? buildWholeBookDigest(documents, activeDocumentId)
-    : buildChapterIndex(documents, activeDocumentId, { agentTools: opts?.agentTools, markers: opts?.markers })
-  let chapterIndexBlock = chapterIndex ? `${chapterIndex}\n\n` : ''
-  if (opts?.notesBlock) {
-    chapterIndexBlock += `BOOK ANALYSIS NOTES (compiled by reading every chapter of this book in batches for this request — treat them as your own reading of the full text):\n${opts.notesBlock}\n\n`
-  }
+  const chapterIndex = buildChapterIndex(documents, activeDocumentId, { agentTools: opts?.agentTools, markers: opts?.markers })
+  const chapterIndexBlock = chapterIndex ? `${chapterIndex}\n\n` : ''
 
   const activeDoc = documents.find(d => d.id === activeDocumentId)
   // Review markup must not reach the model: it copies `<ins class=
@@ -188,26 +174,4 @@ CURRENT ACTIVE DOCUMENT CONTENT (${opts?.agentTools
 """
 ${cleanActiveContent}
 """${pendingBlock}`
-}
-
-/**
- * Whole-book Rung 1 (attach-all, non-sticky) still inlines every chapter into
- * the final user message: it is a one-shot request whose content is chosen per
- * call, so there is no cross-turn prefix to protect.
- */
-export function buildInlineReferenceBlock(
-  documents: RenderableDoc[],
-  referenceIds: string[],
-  perDocChars: number
-): string {
-  const body = referenceIds
-    .map(id => {
-      const doc = documents.find(d => d.id === id)
-      return doc ? ledgerBlock(doc, 'fresh', perDocChars) : ''
-    })
-    .filter(Boolean)
-    .join('\n')
-  return body
-    ? `\nREFERENCED DOCUMENT CONTEXTS (Read-only, do not modify these but use them for details/consistency):\n${body}`
-    : ''
 }
