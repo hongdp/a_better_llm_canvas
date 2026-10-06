@@ -35,10 +35,20 @@ interface ModelReasoningSupport {
  * and OpenAI's reasoning_effort on the o-series and gpt-5 families.
  * Anthropic and Gemini express effort as a token BUDGET rather than a word,
  * so their levels map to numbers in the request builders below.
+ *
+ * Probed against api.x.ai on 2026-10-05, one tiny request per level:
+ * grok-4.7 and grok-4.3 accept every level, so they get grok-4.6's set.
+ * grok-4.20-0309-reasoning rejects the parameter outright ("does not support
+ * parameter reasoningEffort") — listing levels for it only bought a failed
+ * request and a retry on every turn, so it offers 'default' alone.
+ * grok-4.5 also accepted xhigh, but spent exactly the reasoning tokens of
+ * high, so xhigh looks silently clamped there and stays unlisted.
  */
 const SUPPORT_TABLE: Record<string, ModelReasoningSupport[]> = {
   grok: [
-    { match: /grok-4\.6|grok-4\.20/i, levels: ['default', 'low', 'medium', 'high', 'xhigh'] },
+    // First, so no broader grok-4 pattern added later can claim it.
+    { match: /grok-4\.20/i, levels: ['default'] },
+    { match: /grok-4\.(?:3|6|7)(?!\d)/i, levels: ['default', 'low', 'medium', 'high', 'xhigh'] },
     { match: /grok-4\.5/i, levels: ['default', 'low', 'medium', 'high'] },
     { match: /grok-3-mini/i, levels: ['default', 'low', 'high'] }
   ],
