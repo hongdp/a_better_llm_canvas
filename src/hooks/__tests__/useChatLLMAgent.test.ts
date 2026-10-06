@@ -146,7 +146,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'polish_chapter'])
+    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter'])
     // …and the system prompt teaches the chapter attribute.
     expect(calls[0][0].content).toContain('<canvas chapter="3">')
     h.unmount()
@@ -158,7 +158,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'polish_chapter'])
+    expect(offered(0)).toEqual(['update_document', 'edit_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter'])
     h.unmount()
   })
 
@@ -201,7 +201,7 @@ describe('finding and reading a chapter (D6)', () => {
       { type: 'text', text: '先看大纲。' },
       { type: 'tool', line: expect.stringContaining('📖 read #3 "故事线"'), ok: true },
       { type: 'text', text: '写好了。' },
-      { type: 'tool', line: '✏️ rewrote #1 "序章"', ok: true }
+      { type: 'tool', line: '✏️ rewrote #1 "序章" (8 chars)', ok: true }
     ])
     expect(bubble()?.agent?.live).toBeUndefined()
     h.unmount()

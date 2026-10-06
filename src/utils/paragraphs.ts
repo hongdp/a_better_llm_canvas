@@ -61,6 +61,14 @@ export function chapterParagraphs(html: string): ChapterParagraph[] {
   })
 }
 
+/**
+ * A chapter's length the way the read tools state it: the characters of its
+ * paragraphs' text. Write results use the same count, so a model can compare
+ * what it wrote with what it read ("¶869–¶933 (3585 characters)").
+ */
+export const chapterChars = (html: string) =>
+  chapterParagraphs(html).reduce((sum, p) => sum + p.text.length, 0)
+
 /** One numbered line of a text-format read: "¶12 …", headings marked "#". */
 export function numberedLine(p: ChapterParagraph): string {
   if (p.kind === 'image') return `¶${p.number} [image]`

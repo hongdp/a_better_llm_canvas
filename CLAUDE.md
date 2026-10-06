@@ -70,7 +70,7 @@ src/
   agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
                           #   step policy, invocation collection, freshness (D8),
                           #   tools/documentWrites (3 writes), tools/bookReads (read/search/
-                          #   list/open/create chapters)
+                          #   list/open/create/delete chapters), tools/polishChapter
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
     providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored

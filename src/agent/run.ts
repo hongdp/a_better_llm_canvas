@@ -198,9 +198,16 @@ export class AgentRun {
     }
 
     this.o.ctx.run.step = this.stepsTaken - 1
-    const writes = collected.invocations.filter(inv => this.kindOf(inv) === 'write')
+    // Reads and navigation first, then the writes in reply order, then what
+    // must run last (a deletion, which renumbers the chapters after it).
+    const last = (inv: ToolInvocation) => !!this.o.registry.get(inv.name)?.runLast
+    const writes = collected.invocations.filter(inv => this.kindOf(inv) === 'write' && !last(inv))
     const { run: plannedWrites, dropped } = planWrites(writes)
-    const toRun = [...collected.invocations.filter(inv => this.kindOf(inv) !== 'write'), ...plannedWrites]
+    const toRun = [
+      ...collected.invocations.filter(inv => this.kindOf(inv) !== 'write' && !last(inv)),
+      ...plannedWrites,
+      ...collected.invocations.filter(last)
+    ]
     this.stray += collected.strayMarkup + dropped
     if (collected.chatText.trim()) {
       this.chatTexts.push(collected.chatText.trim())

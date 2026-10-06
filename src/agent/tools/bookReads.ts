@@ -14,6 +14,7 @@ import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, userEdited } from './documentWrites'
+import { isBlankContent } from '../../utils/text'
 
 /** Per chapter per call — the ledger's per-chapter cap (MAX_LEDGER_DOC_CHARS). */
 export const READ_CHAPTER_CAP = 20_000
@@ -488,4 +489,70 @@ export const createChapterTool = defineTool<{ title: string }>({
   }
 })
 
-export const BOOK_TOOLS = [readChapterTool, grepTool, listChaptersTool, openChapterTool, createChapterTool]
+// ── delete_chapter ──────────────────────────────────────────────────────────
+
+/**
+ * Delete a chapter nothing would be lost from: one this run created (a
+ * create_chapter by mistake — grok left an empty "skip" behind, 2026-10-06)
+ * or an empty one. A chapter with text is the user's to delete; the loop has
+ * no way yet to ask for their confirmation (spec §6, `approval`), so it says
+ * so instead.
+ */
+export const deleteChapterTool = defineTool<{ chapter: unknown }>({
+  name: 'delete_chapter',
+  description:
+    'Delete a chapter you created by mistake, or an empty chapter. A chapter that has text can only be deleted by the user — ask them to; never empty a chapter to get around this. ' +
+    'Deleting renumbers the chapters after it.',
+  parameters: {
+    type: 'object',
+    properties: { chapter: { type: 'string', description: 'Its number in the CHAPTER INDEX, or its exact title.' } },
+    required: ['chapter']
+  },
+  kind: 'write',
+  // After every other call of the reply: they were numbered from the index
+  // as it was before this deletion.
+  runLast: true,
+  isAvailable: () => true,
+  parse: raw => (raw && raw.chapter !== undefined ? { chapter: raw.chapter } : 'no chapter was named'),
+  execute: async ({ chapter }, ctx): Promise<ToolResult> => {
+    const chapters = ctx.document.chapters()
+    const target = resolveChapter(chapter, chapters)
+    if (typeof target === 'string') return fail('delete_chapter', target)
+    const refuse = (content: string, why: string): ToolResult =>
+      ({ ok: false, retryable: false, content, trace: `🗑 delete ${citeChapter(target)} refused — ${why}` })
+    if (target.id === ctx.document.startId) {
+      return refuse(`${citeChapter(target)} is the chapter this turn started on; it cannot be deleted during the turn.`, 'the turn started there')
+    }
+    if (chapters.length <= 1) return refuse('It is the only chapter of the book.', 'the only chapter')
+    // Created this run and untouched by the user since: the run's own.
+    const own = ctx.run.created.has(target.id) && !userEdited(ctx, target.id)
+    if (!own) {
+      await ctx.document.ensureLoaded([target.id])
+      const now = ctx.document.chapters().find(c => c.id === target.id)
+      // A server chapter whose text has not arrived reads as '' — that is
+      // not "empty", and deleting it would lose the text.
+      if (!now || now.loaded === false) {
+        return refuse(`${citeChapter(target)} could not be loaded, so it is not known to be empty. It was not deleted.`, 'not loaded')
+      }
+      if (!isBlankContent(now.content)) {
+        return refuse(`${citeChapter(target)} has text. Only the user can delete a chapter with text: ask them to delete it from the chapter list.`, 'it has text')
+      }
+    }
+    ctx.document.remove(target.id)
+    forgetChapter(ctx, target.id)
+    ctx.run.created.delete(target.id)
+    ctx.run.inContext.delete(target.id)
+    // Gone: no "changed this turn" row pointing at it.
+    ctx.run.touched.delete(target.id)
+    const after = chapters.length - target.number
+    return {
+      ok: true,
+      content: `Deleted ${citeChapter(target)}.` + (after > 0
+        ? ` The ${after} chapter(s) after it moved up by one: #${target.number + 1} is now #${target.number}, and so on. The CHAPTER INDEX in your request still shows the old numbers.`
+        : ''),
+      trace: `🗑 deleted ${citeChapter(target)}`
+    }
+  }
+})
+
+export const BOOK_TOOLS = [readChapterTool, grepTool, listChaptersTool, openChapterTool, createChapterTool, deleteChapterTool]

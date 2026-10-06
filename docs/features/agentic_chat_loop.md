@@ -69,12 +69,18 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
 | `update_document` | write | `<canvas chapter="N">` (live preview) | native |
 | `edit_document` | write | `<edit chapter="N">` SEARCH/REPLACE | native |
 | `replace_selection` | write | `<selection_replace>` | native |
-| `polish_chapter` | write | native (no tag form) | native |
+| `polish_chapter`, `delete_chapter` | write | native (no tag form) | native |
 | `read_chapter`, `grep`, `list_chapters` | read | native | native |
 | `open_chapter`, `create_chapter` | navigate | native | native |
 
 - A tool with a tag form (`markupForm`) is never also offered natively to a
-  markup model; offering a write both ways invites mixing.
+  markup model; offering a write both ways invites mixing. A native call of
+  such a write marks the reply as tool-protocol, and tags beside it are
+  dropped as stray. A write that only exists as a call (polish, delete)
+  does not: a `<canvas>` beside a `delete_chapter` is applied.
+- A tool marked `runLast` (`delete_chapter`) runs after every other call
+  of its reply. The model numbered the other calls from the index as it
+  was, before the deletion renumbered it.
 - The offered set is fixed at the run's first step. The tools array is part
   of every request, so changing it would break the cached prefix.
 - With `agentTools` off, only the tag-form writes remain: the pre-loop
@@ -149,7 +155,33 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   have erased a user edit. Both now use the stored text of the open
   chapter; the reset is kept only for a selection turn.
 - **Series.** The model is taught one chapter per reply; it continues after
-  each.
+  each. A tip, not a rule (user decision, 2026-10-06): creating the next
+  chapter in the reply that writes this one saves a step. Measured: a
+  19-chapter run spent 21 of its 40 steps on a lone `create_chapter`, each
+  re-sending about 90k tokens.
+- **Lengths are stated, not guessed.** Write results give the chapter's
+  length ("#23 was rewritten (2738 characters)"), counted the way
+  `read_chapter` counts a paragraph range ("¶869–¶933 (3585 characters)").
+  The model cannot count its own output: it said a rewrite was "as long as
+  the source" at 76% of it.
+- **Deleting.** `delete_chapter` deletes only what nothing would be lost
+  from: a chapter this run created (unless the user typed into it since) or
+  an empty one. It refuses the turn's start chapter, the book's last
+  chapter, and a server chapter whose text has not loaded ('' there is not
+  "empty"). A chapter with text is the user's to delete; the loop cannot ask
+  for confirmation yet (`approval`, phase 3), so the tool says to ask the
+  user. The result tells the model the chapters after it moved up.
+- **Correcting a selection rewrite in the same turn.** An edit that lands
+  inside unreviewed inserted text (the selection's fresh rewrite, or any
+  pending addition) changes that text in place. It is a proposal nobody has
+  accepted, so the review still shows one diff and reject-all still returns
+  the confirmed text. Text inside a pending deletion, or across a pending
+  change's edge, is refused, and the result says the edit was found but
+  touches text under review (`underReview`), not that it was missing.
+  Before (2026-10-06), a selection rewrite came out with a stray English
+  word. Every edit removing it was refused as "a diff nested in a diff" and
+  reported as "SEARCH not found", so the model re-read and re-sent a correct
+  SEARCH twice, then gave up.
 - **Pending changes.** A chapter that still carries unreviewed markup is
   shown to the model as "now / was" pairs (`utils/pendingChanges`). "Keep
   what it said before" then restores just that paragraph, and every other
@@ -1235,6 +1267,7 @@ interface AgentTouchedChapter {
 | `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-"}`. Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant in the first two steps; a range read never is. A repeat of the same read is refused only within one step of the first |
 | `grep` | read | native | regex over every chapter's text, or only those named (lazy contents loaded first). Output "snippets" (chapter, offset, context) or "chapters" (counts). A broken regex is searched literally. Replaced `search_book` (user request, 2026-10-06): grep is the search interface models already know |
 | `open_chapter` | navigate | native | ONLY to show the user a chapter (`setActiveDocumentId`); writing never needs it (D2). Says "already open" when it is. Refused while a selection rewrite is pending |
+| `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one; anything with text is refused ("ask the user"). Runs last in its reply; reports the renumbering (§0.4) |
 | `create_chapter` | navigate | native | `addDocument(title)`, opened at once (D6) unless a selection rewrite is pending. Its result names the next write in the model's form (`<canvas chapter="N">` or `update_document` with `chapter`). Chapters are never created implicitly by a write |
 | `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
 

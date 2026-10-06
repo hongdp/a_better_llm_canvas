@@ -131,6 +131,20 @@ describe('collectStep', () => {
     expect(step.chatText).not.toContain('stray')
   })
 
+  it('applies tag writes beside a native write that has no tag form (delete, polish)', () => {
+    const del = defineTool<Record<string, unknown>>({
+      name: 'delete_chapter', description: '', parameters: { type: 'object' }, kind: 'write',
+      isAvailable: () => true, parse: raw => raw ?? {}, execute: () => ok
+    })
+    const reg = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, del])
+    const step = collectStep('<canvas chapter="3"><p>x</p></canvas>', [native('delete_chapter', '{"chapter":"2"}')], reg, 0)
+    expect(step.invocations.map(i => [i.name, i.source])).toEqual([
+      ['delete_chapter', 'native'],
+      ['update_document', 'markup']
+    ])
+    expect(step.strayMarkup).toBe(0)
+  })
+
   it('applies tag writes beside native READS: the hybrid grok runs on', () => {
     const step = collectStep('<canvas><p>x</p></canvas>', [native('read_chapter', '{"chapter":"3"}')], registry, 0)
     expect(step.invocations.map(i => [i.name, i.source])).toEqual([

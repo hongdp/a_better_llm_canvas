@@ -6,6 +6,7 @@
 import { defineTool } from '../registry'
 import { citeChapter } from '../chapters'
 import type { ToolResult } from '../types'
+import { chapterChars } from '../../utils/paragraphs'
 import { commitDoc, docState, editedMeanwhile, resolveTarget, touch, userEdited, withLoaded } from './documentWrites'
 
 export const polishChapterTool = defineTool<{ chapter: unknown }>({
@@ -61,6 +62,7 @@ export const polishChapterTool = defineTool<{ chapter: unknown }>({
         ok: outcome.polished > 0,
         retryable: false,
         content: `Polished ${citeChapter(target)}: ${summary}.` +
+          (outcome.polished > 0 ? ` It now has ${chapterChars(st.html)} characters.` : '') +
           (outcome.kept.length ? ` Kept as drafted — ${outcome.kept.join('; ')}.` : '') +
           (outcome.polished > 0 ? ' Its text changed: read it again (format "html") before editing it.' : ''),
         trace: `✨ polished ${citeChapter(target)} (${summary})`

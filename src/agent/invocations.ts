@@ -91,11 +91,16 @@ export function collectStep(
   }))
   const unknownCalls = nativeCalls.filter(c => !registry.get(c.name)).length
 
-  // A native WRITE means the model is on the tool protocol for writes, so any
-  // tag markup beside it took no channel: it is stray, never applied and never
-  // shown. Without one (no calls, or only reads — the hybrid case, where
-  // writes are tags by design) the markup is parsed and applied.
-  if (native.some(inv => registry.get(inv.name)?.kind === 'write')) {
+  // A native call of a write that HAS a tag form means the model is on the
+  // tool protocol for writes, so any tag markup beside it took no channel: it
+  // is stray, never applied and never shown. Without one (no calls, reads, or
+  // writes that only exist as calls — polish_chapter, delete_chapter — the
+  // hybrid case, where document text is tags by design) the markup is parsed
+  // and applied.
+  if (native.some(inv => {
+    const tool = registry.get(inv.name)
+    return tool?.kind === 'write' && !!tool.markupForm
+  })) {
     const stray = stripStrayDocumentMarkup(text)
     return { invocations: native, chatText: stray.text, strayMarkup: stray.removed, unknownCalls, markupKind: null }
   }

@@ -32,6 +32,7 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
   const writes: Array<{ id: string; html: string }> = []
   const snapshots: string[] = []
   const opened: string[] = []
+  const removed: string[] = []
   const progress: Array<string | null> = []
   /** Every ui.writing call: the chapter locked for a slow write, or null. */
   const writing: Array<string | null> = []
@@ -78,7 +79,7 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
     document: {
       startId: 'doc-1',
       original,
-      chapters: () => book.map(c => ({ ...c })),
+      chapters: () => book.map(c => ({ ...c, loaded: lazy[c.id] === undefined })),
       openId: () => openId,
       userMoved: () => userMoved,
       ensureLoaded,
@@ -94,14 +95,20 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
         book.push({ id, title, content: '<p></p>' })
         return id
       },
-      snapshot: id => { snapshots.push(id) }
+      snapshot: id => { snapshots.push(id) },
+      remove: id => {
+        removed.push(id)
+        const i = book.findIndex(c => c.id === id)
+        if (i !== -1) book.splice(i, 1)
+        if (openId === id) openId = book[0]?.id ?? ''
+      }
     },
     images: { preserve: h => h, restore: h => h },
     ui: { progress: line => { progress.push(line) }, writing: id => { writing.push(id) } },
     run: createRunState({ startId: 'doc-1', inContext: opts.inContext, startContent: original })
   }
   return {
-    ctx, commits, writes, snapshots, opened, progress, writing, previewDocument, previewSelection, discardPreview, ensureLoaded,
+    ctx, commits, writes, snapshots, opened, removed, progress, writing, previewDocument, previewSelection, discardPreview, ensureLoaded,
     book: () => book,
     /** The user types into a chapter (the stored content changes outside the run). */
     userEdits: (id: string, html: string) => {

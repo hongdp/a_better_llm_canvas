@@ -660,10 +660,23 @@ describe('applyEditBlocksLocally', () => {
     expect(r.html).toBe(doc)
   })
 
-  it('refuses a change inside a pending insertion — a diff nested in a diff', () => {
-    const doc = '<p>keep <ins class="diff-addition">brand new words here</ins> end</p>'
-    const r = applyEditBlocksLocally(doc, [{ search: 'new words', replace: 'fresh words' }])
+  it('corrects text inside a pending insertion in place — the proposal changes, no diff nests', () => {
+    // Reported 2026-10-06: a selection rewrite came out with a stray English
+    // word, and every edit removing it was refused (and reported "not found").
+    const doc = '<p>keep <del class="diff-deletion">old words</del><ins class="diff-addition">brand new entrained words here</ins> end</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'new entrained words', replace: 'new words' }])
+    expect(r.failed).toHaveLength(0)
+    expect(r.html).toBe('<p>keep <del class="diff-deletion">old words</del><ins class="diff-addition">brand new words here</ins> end</p>')
+    // Still one diff (confirmed text → corrected proposal); the reject side is
+    // checked against a real editor in selectionWithEdits.test.ts.
+    expect(stripDiffMarkup(r.html)).toBe('<p>keep brand new words here end</p>')
+  })
+
+  it('refuses a change inside a pending deletion, and says it was found, not missing', () => {
+    const doc = '<p>keep <del class="diff-deletion">old words</del><ins class="diff-addition">new</ins> end</p>'
+    const r = applyEditBlocksLocally(doc, [{ search: 'old words', replace: 'older words' }])
     expect(r.failed).toHaveLength(1)
+    expect(r.underReview).toHaveLength(1)
     expect(r.html).toBe(doc)
   })
 

@@ -12,6 +12,7 @@ import type { AgentTool, ToolContext, ToolInvocation, ToolKind, ToolResult, Tool
 export interface RegisteredTool extends ToolSpec {
   kind: ToolKind
   markupForm?: boolean
+  runLast?: boolean
   isAvailable(ctx: ToolContext): boolean
   preview?(partialArgumentsText: string, ctx: ToolContext): void
   /** Parse, then execute. An argument error becomes a failed result. */
@@ -25,6 +26,7 @@ export function defineTool<A>(tool: AgentTool<A>): RegisteredTool {
     parameters: tool.parameters,
     kind: tool.kind,
     markupForm: tool.markupForm,
+    runLast: tool.runLast,
     isAvailable: ctx => tool.isAvailable(ctx),
     preview: tool.preview ? (text, ctx) => tool.preview?.(text, ctx) : undefined,
     invoke: (call, ctx) => {

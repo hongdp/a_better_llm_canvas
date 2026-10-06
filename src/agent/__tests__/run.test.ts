@@ -6,7 +6,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { LLMMessage } from '../../types/llm'
 import { AgentRun, type RunSummary, type StepOutput } from '../run'
-import { ToolRegistry, defineTool } from '../registry'
+import { ToolRegistry, defineTool, type RegisteredTool } from '../registry'
+import { deleteChapterTool } from '../tools/bookReads'
 import { DOCUMENT_WRITE_TOOLS } from '../tools/documentWrites'
 import { DEFAULT_BUDGETS, DEFAULT_POLICY, type RunBudgets, type StepPolicy } from '../policy'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../../hooks/chat/streamHandlers'
@@ -38,9 +39,13 @@ function harness(opts: {
   canContinue?: boolean
   original?: string
   read?: ReturnType<typeof readTool>
+  /** More tools for the registry. */
+  extra?: RegisteredTool[]
+  /** The fake book's further chapters. */
+  chapters?: Parameters<typeof fakeContext>[1] extends infer O ? O extends { chapters?: infer C } ? C : never : never
 }) {
-  const fake = fakeContext(opts.original ?? '<p>alpha</p>')
-  const registry = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, opts.read ?? readTool()])
+  const fake = fakeContext(opts.original ?? '<p>alpha</p>', { chapters: opts.chapters })
+  const registry = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, opts.read ?? readTool(), ...(opts.extra ?? [])])
   const requests: LLMMessage[][] = []
   const corrective: Array<[string, number, number]> = []
   let summary: RunSummary | null = null
@@ -78,6 +83,30 @@ const calls = (t: string, ...c: Array<[string, string, string]>): StepOutput => 
 
 beforeEach(() => {
   vi.spyOn(console, 'warn').mockImplementation(() => {})
+})
+
+describe('a deletion runs after the other calls of its reply', () => {
+  it('lets a write in the same reply keep the number it was given from the index', async () => {
+    // Reply: delete #2 (an empty chapter) and rewrite #3. The model numbered
+    // both from the index as it was; deleting first would make "#3" point
+    // past the end of the book.
+    const h = harness({
+      extra: [deleteChapterTool],
+      chapters: [{ id: 'doc-2', title: 'skip', content: '<p></p>' }, { id: 'doc-3', title: '第一章', content: '<p></p>' }],
+      policy: { continueAfterWrites: true },
+      replies: [
+        calls('<canvas chapter="3"><p>第一章正文</p></canvas>\n<doc_status>updated</doc_status>', ['d1', 'delete_chapter', '{"chapter":"2"}']),
+        text('好了。')
+      ]
+    })
+    await h.run.start()
+    // Writes to another chapter wait for its content to load.
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(h.fake.removed).toEqual(['doc-2'])
+    expect(stripDiffMarkup(h.fake.lastWrite('doc-3') ?? '')).toBe('<p>第一章正文</p>')
+    expect(h.summary()?.trace).toEqual(['✏️ rewrote #3 "第一章" (5 chars)', '🗑 deleted #2 "skip"'])
+  })
 })
 
 describe('a markup-protocol turn (what every grok turn was before the loop)', () => {
@@ -192,7 +221,7 @@ describe('a multi-step turn', () => {
     const tail = h.requests[1].slice(h.requests[0].length)
     expect(tail.map(m => m.role)).toEqual(['assistant', 'tool', 'user'])
     // The tag write has no call id to answer; its outcome goes in a user note.
-    expect(tail[2].content).toContain('update_document: #1 "Chapter 1" was rewritten.')
+    expect(tail[2].content).toContain('update_document: #1 "Chapter 1" was rewritten (14 characters).')
   })
 
   it('answers a call to an unknown tool instead of leaving its id unanswered', async () => {

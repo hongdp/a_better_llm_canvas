@@ -49,6 +49,7 @@ import { useChatLLM } from '../useChatLLM'
 import { useAppStore } from '../../store/useAppStore'
 import { CustomImage, DiffAddition, DiffDeletion } from '../../components/editorExtensions'
 import { stripDiffMarkup } from '../../utils/diff'
+import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 
 const extensions = [StarterKit.configure({ strike: false }), DiffAddition, DiffDeletion, CustomImage]
 const realEditor = (content: string) => new Editor({ element: document.createElement('div'), extensions, content })
@@ -207,6 +208,28 @@ describe('a selection rewrite with an edit beside it', () => {
     expect(accepted(stored())).toBe(EXPECTED)
     expect(bubble()).not.toMatch(RAW_MARKUP)
     // Fixed, so nothing to warn about.
+    expect(bubble()).not.toContain('could not be located')
+    h.unmount(); editor.destroy()
+  })
+
+  it('corrects its own selection rewrite in a later step, as one pending diff (reported 2026-10-06)', async () => {
+    // The rewrite came out with a stray English word; the model's edit to
+    // remove it was refused as "a diff nested in a diff" and reported as
+    // "not found", twice. The edit lands inside the unreviewed insertion now.
+    const { editor, selectedText } = setup()
+    const flawed = '<p>被选中的这一段文字， entrained 补上了更多细节。</p>'
+    responses.push({ chunks: [`好的。\n<selection_replace>${flawed}</selection_replace>\n<doc_status>updated</doc_status>`] })
+    responses.push({ chunks: [`删掉混进来的英文词。\n${editMarkup('这一段文字， entrained 补上了', '这一段文字，补上了')}\n<doc_status>updated</doc_status>`] })
+    responses.push({ chunks: ['好了。'] })
+
+    const h = await send(editor, selectedText)
+    for (let i = 0; i < 4; i++) await act(async () => { await Promise.resolve() })
+
+    expect(accepted(stored())).toBe(normalize('<p>开头的一段话。</p>' + SEL_NEW + '<p>中间保持不变的一段。</p><p>后面需要衔接的一句话。</p>'))
+    // Still under review, and rejecting returns the confirmed text.
+    expect(stored()).toMatch(/diff-addition/)
+    expect(normalize(resolveDiffMarkupInHtml(stored(), 'reject')).replace(/<p><\/p>/g, '')).toBe(normalize(DOC))
+    expect(stored()).not.toContain('entrained')
     expect(bubble()).not.toContain('could not be located')
     h.unmount(); editor.destroy()
   })

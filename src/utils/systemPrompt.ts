@@ -84,7 +84,10 @@ function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean):
   // Measured 2026-10-06: packed into one reply, four chapters lost their live
   // preview after the first and were squeezed short (902 chars for one).
   const series = continueAfterWrites
-    ? '- Writing several chapters: ONE chapter per reply — you continue after each. Never put two or more chapters into one reply.'
+    // The tip, not a rule (user decision 2026-10-06): measured, a 19-chapter
+    // run spent 21 of its 40 steps on a lone create_chapter, each re-sending
+    // ~90k tokens of context.
+    ? '- Writing several chapters: ONE chapter per reply — you continue after each. Never put two or more chapters into one reply. You can save a step by creating the next chapter in the same reply that writes this one.'
     : '- Writing several chapters in a row: ONE chapter per reply. In the reply that writes a chapter, also create the next one — that keeps your turn going, and your next reply writes it. The reply that writes the last chapter creates nothing, and ends the turn. Never put two or more chapters into one reply.'
   // Whether to look again is the model's judgment, not a rule (user decision
   // 2026-10-06). Measured: a 19-chapter run read its outline and sources once,

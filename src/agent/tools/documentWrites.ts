@@ -41,6 +41,7 @@ import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { reinsertMissingImages } from '../../utils/imagePreservation'
 import { htmlToPlainText } from '../../utils/llmContext'
+import { chapterChars } from '../../utils/paragraphs'
 
 const schemaOf = (name: DocumentToolName) => {
   const tool = DOCUMENT_TOOLS.find(t => t.name === name)
@@ -323,10 +324,13 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
       // The model wrote it, so it knows the current bytes.
       ctx.run.htmlShown.add(target.id)
       touch(ctx, target, 'rewrite', 1, 0)
+      // Its length, counted like a read: the model cannot count its own
+      // output, and said "as long as the source" of a rewrite at 76% of it.
+      const chars = chapterChars(st.html)
       return {
         ok: true,
-        content: `${citeChapter(target)} was rewritten.`,
-        trace: `✏️ rewrote ${citeChapter(target)}`,
+        content: `${citeChapter(target)} was rewritten (${chars} characters).`,
+        trace: `✏️ rewrote ${citeChapter(target)} (${chars} chars)`,
         effects: { reinsertedImages: reinserted }
       }
     })
@@ -354,7 +358,7 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
     if (typeof target === 'string') return { ok: false, retryable: true, content: target, trace: `⚠️ edit: ${target.split('\n')[0]}` }
     if (!ctx.run.htmlShown.has(target.id)) return unseen(target)
 
-    const report = (failed: EditBlock[], where: string): ToolResult => {
+    const report = (failed: EditBlock[], where: string, chars?: number, underReview: EditBlock[] = []): ToolResult => {
       if (failed.length > 0) {
         // Surface the unmatched SEARCH text for diagnosis — the usual cause
         // is the model paraphrasing instead of copying verbatim.
@@ -365,12 +369,21 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       }
       const applied = edits.length - failed.length
       if (applied > 0 || failed.length > 0) touch(ctx, target, 'edits', applied, failed.length)
+      // Located but refused is not "not found": telling a model to re-copy a
+      // SEARCH that was right only gets the same SEARCH back.
+      const notFound = failed.filter(f => !underReview.includes(f))
+      const list = (blocks: EditBlock[]) => blocks.map(f => `- ${f.search}`).join('\n')
       return {
         ok: failed.length === 0,
         content: failed.length === 0
-          ? `Applied ${applied} edit(s) to ${citeChapter(target)}.`
-          : `Applied ${applied} of ${edits.length} edit(s) to ${citeChapter(target)}. These SEARCH texts were not found in its current HTML — copy them exactly from the document, or read it again:\n` +
-            failed.map(f => `- ${f.search}`).join('\n'),
+          ? `Applied ${applied} edit(s) to ${citeChapter(target)}.${chars === undefined ? '' : ` It now has ${chars} characters.`}`
+          : `Applied ${applied} of ${edits.length} edit(s) to ${citeChapter(target)}.` +
+            (notFound.length > 0
+              ? ` These SEARCH texts were not found in its current HTML — copy them exactly from the document, or read it again:\n${list(notFound)}`
+              : '') +
+            (underReview.length > 0
+              ? `\nThese were found, but they change text that is still under review — text a pending change deletes, or across the edge of a pending change — so they were not applied. Change only text that lies wholly inside the new wording, or wholly outside any pending change:\n${list(underReview)}`
+              : ''),
         trace: failed.length === 0
           ? `✏️ edited ${citeChapter(target)} (${applied} change${applied === 1 ? '' : 's'})`
           : `⚠️ edited ${citeChapter(target)}: ${applied} of ${edits.length} located`,
@@ -388,7 +401,7 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       if (!ctx.run.selectionApplied || !editor) return { ...report(edits, ' beside the selection'), retryable: false }
       const local = applyEditBlocksLocally(ctx.images.preserve(editor.getHTML()), edits)
       if (local.failed.length < edits.length) commitHtml(ctx, target.id, ctx.images.restore(local.html))
-      return report(local.failed, ' beside the selection')
+      return report(local.failed, ' beside the selection', undefined, local.underReview)
     }
 
     return withLoaded(ctx, target, () => {
@@ -402,7 +415,7 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
         st.dirty = true
       }
       commitDoc(ctx, target, st)
-      return report(failed, '')
+      return report(failed, '', chapterChars(st.html))
     })
   }
 })

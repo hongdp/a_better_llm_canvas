@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readChapterTool, grepTool, openChapterTool, createChapterTool, listChaptersTool } from '../tools/bookReads'
+import { readChapterTool, grepTool, openChapterTool, createChapterTool, listChaptersTool, deleteChapterTool } from '../tools/bookReads'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 import { resolveChapter } from '../chapters'
@@ -295,5 +295,74 @@ describe('once the user has opened another chapter, the view is theirs', () => {
     const r = await readChapterTool.invoke(call('read_chapter', { chapters: [2], format: 'html' }), f.ctx)
     expect(r.content).toContain('two, edited')
     expect(f.ctx.run.known.get('doc-2')).toBe('<p>two, edited</p>')
+  })
+})
+
+describe('delete_chapter: only what nothing would be lost from', () => {
+  const del = (f: ReturnType<typeof fakeContext>, chapter: unknown) =>
+    run(deleteChapterTool.invoke(call('delete_chapter', { chapter }), f.ctx))
+  const book = () => fakeContext('<p>start</p>', {
+    chapters: [
+      { id: 'doc-2', title: '大纲', content: '<p>outline</p>' },
+      { id: 'doc-3', title: 'skip', content: '<p></p>' },
+      { id: 'doc-4', title: '第一章', content: '<p>text</p>' }
+    ]
+  })
+
+  it('deletes an empty chapter, and tells the model the chapters after it moved up', async () => {
+    const f = book()
+    const r = await del(f, 3)
+    expect(r).toMatchObject({ ok: true, trace: '🗑 deleted #3 "skip"' })
+    expect(r.content).toContain('#4 is now #3')
+    expect(f.removed).toEqual(['doc-3'])
+  })
+
+  it('deletes a chapter this run created, text and all, and drops its "changed this turn" row', async () => {
+    const f = book()
+    run(createChapterTool.invoke(call('create_chapter', { title: '重复的一章' }), f.ctx))
+    const id = [...f.ctx.run.created][0]
+    f.ctx.document.commit(id, '<p>the run wrote this</p>')
+    f.ctx.run.known.set(id, '<p>the run wrote this</p>')
+    const r = await del(f, '重复的一章')
+    expect(r.ok).toBe(true)
+    expect(f.removed).toEqual([id])
+    expect(f.ctx.run.touched.has(id)).toBe(false)
+    expect(r.content).not.toContain('moved up')
+  })
+
+  it('refuses a chapter with text, which only the user may delete', async () => {
+    const f = book()
+    const r = await del(f, 2)
+    expect(r).toMatchObject({ ok: false, retryable: false })
+    expect(r.content).toContain('ask them to delete it from the chapter list')
+    expect(f.removed).toEqual([])
+  })
+
+  it('refuses a chapter it created once the user has typed into it', async () => {
+    const f = book()
+    run(createChapterTool.invoke(call('create_chapter', { title: '新章' }), f.ctx))
+    const id = [...f.ctx.run.created][0]
+    f.userEdits(id, '<p>the user started writing here</p>')
+    expect((await del(f, '新章')).ok).toBe(false)
+    expect(f.removed).toEqual([])
+  })
+
+  it('refuses the chapter the turn started on', async () => {
+    const f = fakeContext('<p></p>', { chapters: [{ id: 'doc-2', title: 'b', content: '<p>x</p>' }] })
+    expect((await del(f, 1)).ok).toBe(false)
+  })
+
+  it('never takes a chapter whose text has not loaded for an empty one', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: 'lazy', content: '' }], lazy: { 'doc-2': '<p>real text</p>' } })
+    // The fetch fails: the chapter stays unloaded and reads as ''.
+    f.ensureLoaded.mockImplementation(async () => {})
+    const r = await del(f, 2)
+    expect(r.ok).toBe(false)
+    expect(r.content).toContain('could not be loaded')
+    expect(f.removed).toEqual([])
+    // Loaded, it has text: refused for that.
+    f.ensureLoaded.mockRestore()
+    const g = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: 'lazy', content: '' }], lazy: { 'doc-2': '<p>real text</p>' } })
+    expect((await del(g, 2)).content).toContain('has text')
   })
 })

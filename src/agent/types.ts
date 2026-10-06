@@ -121,6 +121,8 @@ export interface BookChapter {
   title: string
   content: string
   summary?: string
+  /** False while a server book's content has not arrived ('' is then not "empty"). */
+  loaded?: boolean
 }
 
 /** The book, as this turn found it and as it is now. */
@@ -147,6 +149,8 @@ export interface DocumentPort {
   open(id: string): void
   /** Append a new, empty chapter WITHOUT switching to it; returns its id. */
   create(title: string): string
+  /** Delete a chapter (store + server), as the chapter list's delete does. */
+  remove(id: string): void
   /** Version snapshot of a chapter, taken before the run first changes it. */
   snapshot(id: string, label: string): void
 }
@@ -281,6 +285,12 @@ export interface AgentTool<A = Record<string, unknown>> extends ToolSpec {
    * (polish_chapter) is offered natively to every model.
    */
   markupForm?: boolean
+  /**
+   * Runs after every other call of its step. A deletion renumbers the
+   * chapters after it, and the model numbered the other calls of the same
+   * reply from the index as it was.
+   */
+  runLast?: boolean
   /** Offered this step? (a selection exists, the book is loaded, …) */
   isAvailable(ctx: ToolContext): boolean
   /**

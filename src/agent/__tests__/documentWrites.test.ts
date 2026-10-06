@@ -306,3 +306,14 @@ describe('the user edits other chapters while the run works (§0.4)', () => {
     expect(g.ctx.document.openId()).toBe('doc-2')
   })
 })
+
+describe('write results state the chapter\'s length (counted like a read)', () => {
+  it('after a rewrite and after edits', async () => {
+    const f = fakeContext('<p>一二三</p>')
+    const r = updateDocumentTool.invoke(call('update_document', { html: '<p>一二三四五</p><p>六七</p>' }), f.ctx) as ToolResult
+    expect(r.content).toContain('was rewritten (7 characters)')
+    expect(r.trace).toContain('(7 chars)')
+    const e = await editDocumentTool.invoke(call('edit_document', edit('<p>六七</p>', '<p>六七八九</p>')), f.ctx)
+    expect(e.content).toContain('It now has 9 characters.')
+  })
+})

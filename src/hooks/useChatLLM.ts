@@ -690,7 +690,7 @@ export function useChatLLM({
     document: {
       startId: info.startId,
       original: info.originalDocContent,
-      chapters: () => useAppStore.getState().documents.map(d => ({ id: d.id, title: d.title, content: d.content, summary: d.summary })),
+      chapters: () => useAppStore.getState().documents.map(d => ({ id: d.id, title: d.title, content: d.content, summary: d.summary, loaded: d.contentLoaded !== false })),
       openId: () => useAppStore.getState().activeDocumentId,
       userMoved: () => {
         if (!view.moved && useAppStore.getState().activeDocumentId !== view.expected) view.moved = true
@@ -710,6 +710,13 @@ export function useChatLLM({
         useAppStore.getState().setActiveDocumentId(id)
       },
       create: (title: string) => useAppStore.getState().addDocument(title, '<p></p>', { activate: false }),
+      remove: (id: string) => {
+        const wasOpen = useAppStore.getState().activeDocumentId === id
+        useAppStore.getState().deleteDocument(id)
+        // Deleting the open chapter makes the store open another one. That
+        // move is the run's, not the user's (see userMoved).
+        if (wasOpen && !view.moved) view.expected = useAppStore.getState().activeDocumentId
+      },
       snapshot: (id: string, label: string) => useAppStore.getState().createVersionSnapshot(label, id)
     },
     images: { preserve: preserveImagesWithPlaceholders, restore: restoreImagesFromPlaceholders },

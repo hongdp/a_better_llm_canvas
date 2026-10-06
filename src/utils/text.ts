@@ -422,6 +422,13 @@ export interface ApplyEditsResult {
   html: string
   /** Edits whose SEARCH text could not be located (left unapplied). */
   failed: EditBlock[]
+  /**
+   * Of `failed`: edits that WERE located but change text still under review
+   * in a way that cannot be applied (deleted text, across a pending change's
+   * edge). Saying "not found" for these sends a model re-reading and
+   * re-copying a SEARCH that was right all along.
+   */
+  underReview?: EditBlock[]
 }
 
 /**
@@ -777,13 +784,13 @@ function splitTopLevelNodes(html: string): string[] {
 // A pending diff element's opening tag, or any closing </ins>/</del>.
 const DIFF_ELEMENT_EDGE_RE = /<(?:ins|del)\b[^>]*class="[^"]*diff-(?:addition|deletion)[^"]*"[^>]*>|<\/(?:ins|del)>/gi
 
-/** True when `index` lies inside a pending <ins>/<del> diff element. */
-function isInsidePendingDiff(html: string, index: number): boolean {
-  let inside = false
+/** The pending diff element `index` lies inside — an insertion, a deletion — or null. */
+function pendingDiffAt(html: string, index: number): 'ins' | 'del' | null {
+  let inside: 'ins' | 'del' | null = null
   DIFF_ELEMENT_EDGE_RE.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = DIFF_ELEMENT_EDGE_RE.exec(html)) !== null && m.index < index) {
-    inside = !m[0].startsWith('</')
+    inside = m[0].startsWith('</') ? null : m[0].startsWith('<ins') ? 'ins' : 'del'
   }
   return inside
 }
@@ -791,9 +798,19 @@ function isInsidePendingDiff(html: string, index: number): boolean {
 /**
  * Diff only the characters an edit changed inside `oldPart` → `newPart`. The
  * span is widened so it never cuts a word, a tag or an entity apart. Null when
- * the change overlaps pending diff markup, sits inside a pending <ins>/<del>
- * (a diff nested in a diff), or is not balanced on its own (it splits or joins
- * blocks).
+ * the change overlaps pending diff markup, sits inside a pending deletion, or
+ * is not balanced on its own (it splits or joins blocks).
+ *
+ * A change inside a pending INSERTION is applied to that inserted text as is.
+ *   Problem: it used to be refused, to keep a diff from nesting inside a diff
+ *     — and reported as "SEARCH not found". A selection rewrite that came out
+ *     with a stray English word could not be corrected in the same turn: the
+ *     model re-read, re-copied a SEARCH that was right, and failed again
+ *     (2026-10-06).
+ *   Fix: inserted text is a proposal nobody has accepted yet; correcting it
+ *     changes the proposal. The review still shows one diff (confirmed text →
+ *     corrected proposal) and reject-all still returns the confirmed text, so
+ *     nothing nests.
  */
 function diffChangedSpan(oldPart: string, newPart: string): string | null {
   const max = Math.min(oldPart.length, newPart.length)
@@ -822,10 +839,13 @@ function diffChangedSpan(oldPart: string, newPart: string): string | null {
 
   const oldMid = oldPart.slice(start, oldPart.length - tail)
   const newMid = newPart.slice(start, newPart.length - tail)
-  if (DIFF_MARKUP_RE.test(oldMid)) return null
-  if (isInsidePendingDiff(oldPart, start)) return null
+  if (DIFF_MARKUP_RE.test(oldMid) || DIFF_MARKUP_RE.test(newMid)) return null
   if (!isBalancedHtml(oldMid) || !isBalancedHtml(newMid)) return null
-  return oldPart.slice(0, start) + diffHtml(oldMid, newMid) + oldPart.slice(oldPart.length - tail)
+  const inside = pendingDiffAt(oldPart, start)
+  if (inside === 'del') return null
+  // Balanced and free of diff markup, so it cannot cross the insertion's edge.
+  const replacement = inside === 'ins' ? newMid : diffHtml(oldMid, newMid)
+  return oldPart.slice(0, start) + replacement + oldPart.slice(oldPart.length - tail)
 }
 
 /**
@@ -856,6 +876,7 @@ function diffChangedSpan(oldPart: string, newPart: string): string | null {
 export function applyEditBlocksLocally(html: string, blocks: EditBlock[]): ApplyEditsResult {
   let current = html
   const failed: EditBlock[] = []
+  const underReview: EditBlock[] = []
   for (const block of blocks) {
     const next = applyOneEdit(current, block.search, stripBlankParagraphs(block.replace))
     if (next === null) {
@@ -876,11 +897,12 @@ export function applyEditBlocksLocally(html: string, blocks: EditBlock[]): Apply
     const replacement = diffChangedSpan(oldPart, newPart) ?? (DIFF_MARKUP_RE.test(oldPart) ? null : diffHtml(oldPart, newPart))
     if (replacement === null) {
       failed.push(block)
+      underReview.push(block)
       continue
     }
     current = before.slice(0, head).join('') + replacement + before.slice(before.length - tail).join('')
   }
-  return { html: current, failed }
+  return { html: current, failed, underReview }
 }
 
 /**

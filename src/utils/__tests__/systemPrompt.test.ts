@@ -147,6 +147,8 @@ describe('agent rules: writing several chapters', () => {
     const prompt = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
     expect(prompt).toContain('ONE chapter per reply — you continue after each')
     expect(prompt).not.toContain('also create the next one')
+    // A tip that saves a step, not a rule (user decision 2026-10-06).
+    expect(prompt).toContain('You can save a step by creating the next chapter in the same reply that writes this one')
     expect(prompt).toContain('A reply that does neither ends your turn')
   })
 
