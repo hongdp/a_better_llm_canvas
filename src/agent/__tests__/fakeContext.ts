@@ -95,6 +95,10 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
         book.push({ id, title, content: '<p></p>' })
         return id
       },
+      rename: (id, title) => {
+        const chapter = book.find(c => c.id === id)
+        if (chapter) chapter.title = title
+      },
       snapshot: id => { snapshots.push(id) },
       remove: id => {
         removed.push(id)

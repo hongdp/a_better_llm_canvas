@@ -66,4 +66,18 @@ describe('splitStreamingResponse — a canvas that names a chapter', () => {
   it('has no target for a plain canvas', () => {
     expect(splitStreamingResponse('<canvas><p>x').canvasChapter).toBeUndefined()
   })
+
+  it('reports the title of a chapter the canvas creates, not a chapter it names', () => {
+    const split = splitStreamingResponse('写第二章。\n<canvas new_chapter="第二章 进城"><p>城门')
+    expect(split.canvasNewChapter).toBe('第二章 进城')
+    expect(split.canvasChapter).toBeUndefined()
+    expect(split.canvasText).toBe('<p>城门')
+    expect(split.chatText).toBe('写第二章。')
+  })
+
+  it('creates nothing while the opening tag is still arriving', () => {
+    const split = splitStreamingResponse('<canvas new_chapter="第二')
+    expect(split.canvasNewChapter).toBeUndefined()
+    expect(split.chatText).toBe('')
+  })
 })

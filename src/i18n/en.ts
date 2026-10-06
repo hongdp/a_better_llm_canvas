@@ -87,6 +87,7 @@ export const en = {
     kindRewrite: 'rewritten',
     kindSelection: 'selection rewritten',
     kindPolished: (n: number) => `polished (${n} chunk${n === 1 ? '' : 's'})`,
+    kindRenamed: 'renamed',
     kindEdits: (n: number) => `${n} change${n === 1 ? '' : 's'}`,
     failed: (n: number) => `${n} not located`,
     keptDraft: (n: number) => `${n} chunk${n === 1 ? '' : 's'} kept as drafted`,

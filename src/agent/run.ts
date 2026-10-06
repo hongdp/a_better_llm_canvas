@@ -14,12 +14,12 @@
  */
 import type { LLMMessage, ThinkingBlock } from '../types/llm'
 import type { FinishedToolCall } from '../utils/toolCallStream'
-import type { DocumentUpdateFailure } from '../utils/text'
+import { isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
 import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepDecision, type StepPolicy } from './policy'
 import type { RegisteredTool, ToolRegistry } from './registry'
-import type { ToolContext, ToolInvocation, ToolKind, ToolResult, WriteEffects } from './types'
+import { seenChapters, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
 import type { AgentTimelineItem, AgentTouchedChapter } from '../types/chat'
 
 /** What one streamed model call produced. */
@@ -77,6 +77,8 @@ export interface RunProgress {
   steps: number
   trace: string[]
   touched: AgentTouchedChapter[]
+  /** What the model has seen so far (a reload restores it). */
+  seen: SeenChapter[]
 }
 
 export interface RunObserver {
@@ -386,13 +388,18 @@ export class AgentRun {
       timeline: [...this.timeline],
       steps: this.stepsTaken,
       trace: [...this.trace],
-      touched: [...this.o.ctx.run.touched.values()]
+      touched: [...this.o.ctx.run.touched.values()],
+      seen: seenChapters(this.o.ctx.run)
     }
   }
 
   private finish(end: Pick<RunSummary, 'failedUpdate' | 'exhaustedCorrective' | 'unretriableFailedUpdate' | 'endReason'>): void {
     if (this.finished) return
     this.finished = true
+    // Not on Stop: the hook keeps the half-written draft in the chapter the
+    // preview created, and nothing a stopped run made is removed behind the
+    // user's back — it is theirs to keep or delete.
+    if (end.endReason !== 'cancelled') this.dropEmptyCreated()
     this.o.observer.onFinish({
       strayMarkup: this.stray,
       effects: this.effects,
@@ -400,5 +407,21 @@ export class AgentRun {
       readIds: [...this.o.ctx.run.readIds],
       ...end
     })
+  }
+
+  /**
+   * A chapter is created by the write that fills it, as soon as its preview
+   * starts (documentWrites, claimNewChapter). If that write never landed —
+   * cut off, refused, never retried — the chapter is still empty when the
+   * run ends: leave nothing behind.
+   */
+  private dropEmptyCreated(): void {
+    const { run, document } = this.o.ctx
+    for (const chapter of document.chapters()) {
+      if (!run.created.has(chapter.id) || !isBlankContent(chapter.content)) continue
+      document.remove(chapter.id)
+      run.created.delete(chapter.id)
+      run.touched.delete(chapter.id)
+    }
   }
 }

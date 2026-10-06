@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { readChapterTool, grepTool, openChapterTool, createChapterTool, listChaptersTool, deleteChapterTool } from '../tools/bookReads'
+import { readChapterTool, grepTool, openChapterTool, listChaptersTool, deleteChapterTool } from '../tools/bookReads'
+import { updateDocumentTool } from '../tools/documentWrites'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 import { resolveChapter } from '../chapters'
@@ -123,6 +124,16 @@ describe('read_chapter', () => {
     const r = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2], paragraphs: '"2-3"' }), f.ctx))
     expect(r.ok).toBe(true)
     expect(r.content).toContain('¶2–¶3 of 3')
+  })
+
+  it('reads "-2" as the first two paragraphs, quoted or not (grok asked this way and was refused, 2026-10-06)', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: 'x', content: '<p>一</p><p>二</p><p>三</p>' }] })
+    const r = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2], paragraphs: '"-2"' }), f.ctx))
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('¶1–¶2 of 3')
+    expect(r.content).not.toContain('¶3 三')
+    const zero = await run(readChapterTool.invoke(call('read_chapter', { chapters: [2], paragraphs: '-0' }), f.ctx))
+    expect(zero.ok).toBe(false)
   })
 
   it('states the size of a paragraph range, so a length can be planned from a number, not a guess', async () => {
@@ -255,51 +266,8 @@ describe('open_chapter', () => {
   })
 })
 
-describe('create_chapter', () => {
-  it('appends an empty chapter and opens it at once, ready to write', async () => {
-    // Opened at creation (user decision 2026-10-06): the next step plans the
-    // chapter for 20–60 s, and the user should be looking at it meanwhile.
-    const f = book()
-    f.ctx.run.writeProtocol = 'markup'
-    const r = await run(createChapterTool.invoke(call('create_chapter', { title: '第一章 离乡' }), f.ctx))
-    expect(r.content).toContain('#4 "第一章 离乡"')
-    expect(r.content).toContain('now open in the editor')
-    expect(r.content).toContain('<canvas chapter="4">')
-    const id = f.book()[3].id
-    expect(f.opened).toEqual([id])
-    expect(f.ctx.run.created.has(id)).toBe(true)
-    expect(f.ctx.run.htmlShown.has(id)).toBe(true)
-  })
-
-  it('refuses a duplicate title and says to write to the existing chapter, not open it', async () => {
-    const f = book()
-    f.ctx.run.writeProtocol = 'markup'
-    const r = await run(createChapterTool.invoke(call('create_chapter', { title: '故事线' }), f.ctx))
-    expect(r).toMatchObject({ ok: false })
-    expect(r.content).toContain('Do not create or open it')
-    expect(r.content).toContain('<canvas chapter="3">')
-  })
-
-  it('does not move the user off a chapter with a pending selection rewrite', async () => {
-    const f = fakeContext('<p>x</p>', { selection: { from: 1, to: 2 } })
-    const r = await run(createChapterTool.invoke(call('create_chapter', { title: '新章' }), f.ctx))
-    expect(f.opened).toEqual([])
-    expect(r.content).not.toContain('now open')
-  })
-})
-
 describe('once the user has opened another chapter, the view is theirs', () => {
   const book = () => fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第二章', content: '<p>two</p>' }] })
-
-  it('create_chapter makes the chapter but does not open it', () => {
-    const f = book()
-    f.userOpens('doc-2')
-    const r = createChapterTool.invoke(call('create_chapter', { title: '第三章' }), f.ctx) as ToolResult
-    expect(r.ok).toBe(true)
-    expect(r.content).not.toContain('now open')
-    expect(f.opened).toEqual([])
-    expect(f.ctx.document.openId()).toBe('doc-2')
-  })
 
   it('open_chapter leaves the view where the user put it, and says so', () => {
     const f = book()
@@ -341,10 +309,8 @@ describe('delete_chapter: only what nothing would be lost from', () => {
 
   it('deletes a chapter this run created, text and all, and drops its "changed this turn" row', async () => {
     const f = book()
-    run(createChapterTool.invoke(call('create_chapter', { title: '重复的一章' }), f.ctx))
+    await run(updateDocumentTool.invoke(call('update_document', { new_chapter: '重复的一章', html: '<p>the run wrote this</p>' }), f.ctx))
     const id = [...f.ctx.run.created][0]
-    f.ctx.document.commit(id, '<p>the run wrote this</p>')
-    f.ctx.run.known.set(id, '<p>the run wrote this</p>')
     const r = await del(f, '重复的一章')
     expect(r.ok).toBe(true)
     expect(f.removed).toEqual([id])
@@ -362,7 +328,7 @@ describe('delete_chapter: only what nothing would be lost from', () => {
 
   it('refuses a chapter it created once the user has typed into it', async () => {
     const f = book()
-    run(createChapterTool.invoke(call('create_chapter', { title: '新章' }), f.ctx))
+    await run(updateDocumentTool.invoke(call('update_document', { new_chapter: '新章', html: '<p>the run wrote this</p>' }), f.ctx))
     const id = [...f.ctx.run.created][0]
     f.userEdits(id, '<p>the user started writing here</p>')
     expect((await del(f, '新章')).ok).toBe(false)

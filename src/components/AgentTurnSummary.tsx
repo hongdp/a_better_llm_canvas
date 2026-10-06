@@ -60,6 +60,7 @@ export function AgentTurnSummary({ record }: { record: AgentTurnRecord }) {
       : row.kind === 'rewrite' ? t.agent.kindRewrite
       : row.kind === 'selection' ? t.agent.kindSelection
       : row.kind === 'polished' ? t.agent.kindPolished(row.changes)
+      : row.kind === 'renamed' ? t.agent.kindRenamed
       : t.agent.kindEdits(row.changes)
 
   if (record.touched.length === 0 && (record.timeline || record.trace.length === 0)) return null

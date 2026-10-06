@@ -3,7 +3,7 @@ export interface AgentTouchedChapter {
   documentId: string
   /** The title when the turn ran; shown if the chapter is renamed or deleted later. */
   titleAtRun: string
-  kind: 'edits' | 'rewrite' | 'selection' | 'created' | 'polished'
+  kind: 'edits' | 'rewrite' | 'selection' | 'created' | 'polished' | 'renamed'
   /** Changes that landed (edit blocks, or 1 for a rewrite/selection). */
   changes: number
   /** Changes that could not be located. */
@@ -39,6 +39,12 @@ export interface AgentTurnRecord {
   suffix?: string
   /** While running: the step in flight (its text so far, a progress line). */
   live?: string
+  /**
+   * While running: the chapters whose HTML the model has seen, by content
+   * hash — a page reload restores them for the rejoined step (agent/types,
+   * restoreSeen). Dropped when the turn ends.
+   */
+  seen?: Array<{ id: string; hash: string }>
 }
 
 export interface ChatMessage {

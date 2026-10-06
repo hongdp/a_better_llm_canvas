@@ -12,6 +12,8 @@ import type { LLMMessage } from '../../types/llm'
 type ToolDelta = { index: number; id?: string; name?: string; argumentsText: string }
 type Scripted = string | {
   text: string
+  /** Deliver `text` in these pieces instead of one chunk (they must join to `text`). */
+  chunks?: string[]
   toolCalls?: ToolDelta[]
   /** Runs after the text streamed, before the step ends (the user acting mid-turn). */
   between?: () => void
@@ -38,7 +40,7 @@ vi.mock('../../services/llm', () => ({
     // Past the script, the model closes the turn with no action.
     const scripted = responses.shift() ?? '<doc_status>unchanged</doc_status>'
     const r = typeof scripted === 'string' ? { text: scripted } : scripted
-    if (r.text) callbacks.onChunk(r.text)
+    for (const chunk of ('chunks' in r && r.chunks) ? r.chunks : r.text ? [r.text] : []) callbacks.onChunk(chunk)
     for (const d of r.toolCalls ?? []) {
       callbacks.onToolCallDelta?.(d)
       vi.setSystemTime(Date.now() + 300)
@@ -93,6 +95,16 @@ function stubEditor(html: string) {
   }
 }
 
+/**
+ * A reply that streams like a real one: the chunk that opens a new chapter
+ * creates and opens it, and the next ones paint it (documentWrites,
+ * previewRewrite). Split just inside the canvas's first paragraph.
+ */
+const streamed = (text: string, extra: Omit<Scripted, 'text' | 'chunks'> = {}): Scripted => {
+  const at = text.indexOf('<p>', text.indexOf('<canvas')) + 4
+  return { text, chunks: [text.slice(0, at), text.slice(at)], ...extra }
+}
+
 const doc = (id: string, title: string, content: string, summary?: string) => ({
   id, title, content, summary, contentLoaded: true,
   createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z'
@@ -145,7 +157,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter', 'analyze_book'])
+    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'analyze_book'])
     // …and the system prompt teaches the chapter attribute.
     expect(calls[0][0].content).toContain('<canvas chapter="3">')
     h.unmount()
@@ -157,7 +169,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter', 'analyze_book'])
+    expect(offered(0)).toEqual(['update_document', 'edit_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'analyze_book'])
     h.unmount()
   })
 
@@ -436,25 +448,52 @@ describe('the user switching chapters mid-turn', () => {
   })
 })
 
-describe('creating a chapter (D6)', () => {
-  it('creates and writes a chapter in one step, then opens it', async () => {
-    responses.push({
-      text: '我来写第一章。\n<canvas chapter="4"><p>第一章：主角离开村子。</p></canvas>\n<doc_status>updated</doc_status>',
-      toolCalls: [{ index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章 离乡"}' }]
-    })
-    responses.push('第一章写好了。\n<doc_status>unchanged</doc_status>')
-    const h = renderChatHook()
+describe('creating a chapter (D6): creating IS writing', () => {
+  it('creates the chapter as its text starts streaming, and writes it in the same step', async () => {
+    // A lone create_chapter step planned the chapter for 105–158 s and the
+    // writing step planned it again (2026-10-06): one call now does both.
+    const { editor, writes } = stubEditor('<p>序章正文。</p>')
+    const during: Array<{ count: number; open: string }> = []
+    responses.push(streamed('我来写第一章。\n<canvas new_chapter="第一章 离乡"><p>第一章：主角离开村子。</p></canvas>\n<doc_status>updated</doc_status>', {
+      between: () => {
+        const st = useAppStore.getState()
+        during.push({ count: st.documents.length, open: st.activeDocumentId })
+      }
+    }))
+    responses.push('第一章写好了。')
+    const h = renderChatHook(editor)
     await send(h, '根据大纲写第一章')
 
     const s = useAppStore.getState()
     const created = s.documents[3]
     expect(created.title).toBe('第一章 离乡')
     expect(stripDiffMarkup(created.content)).toBe('<p>第一章：主角离开村子。</p>')
-    // Opened as soon as it was created (user decision 2026-10-06).
-    expect(s.activeDocumentId).toBe(created.id)
+    // Created and opened while the reply was still streaming: the live
+    // preview ran in the new chapter.
+    expect(during).toEqual([{ count: 4, open: created.id }])
+    expect(writes.some(w => w.includes('第一章：主角离开村子'))).toBe(true)
+    // One model call wrote it; the next only closed the turn.
+    expect(calls).toHaveLength(2)
+    expect(calls[1].at(-1)?.content).toContain('Created a NEW chapter #4 "第一章 离乡" at the end of the book and wrote it')
     // The open chapter before the turn was never touched.
     expect(content('doc-1')).toBe('<p>序章正文。</p>')
     expect(bubble()?.agent?.touched).toEqual([{ documentId: created.id, titleAtRun: '第一章 离乡', kind: 'created', changes: 1, failed: 0 }])
+    expect(bubble()?.agent?.timeline).toContainEqual({ type: 'tool', line: '➕ wrote new #4 "第一章 离乡" (11 chars)', ok: true })
+    h.unmount()
+  })
+
+  it('leaves no empty chapter behind when the write that created it did not land', async () => {
+    const { editor } = stubEditor('<p>序章正文。</p>')
+    // Cut off before the closing tag: the rewrite is refused as truncated.
+    responses.push('<canvas new_chapter="第一章"><p>第一章写到一半')
+    responses.push('写不下去了。\n<doc_status>unchanged</doc_status>')
+    const h = renderChatHook(editor)
+    await send(h, '写第一章')
+
+    const s = useAppStore.getState()
+    expect(s.documents.map(d => d.title)).toEqual(['序章', '人物表', '故事线'])
+    expect(s.documents.some(d => d.id === s.activeDocumentId)).toBe(true)
+    expect(bubble()?.agent?.touched).toEqual([])
     h.unmount()
   })
 })
@@ -504,30 +543,20 @@ describe('the Polish button (D9)', () => {
 describe('writing a series of chapters (one per reply)', () => {
   it('keeps going after a written chapter: the run reported 2026-10-06 that stopped after chapter one', async () => {
     const { editor, writes } = stubEditor('<p>序章正文。</p>')
-    // Step 1 creates BOTH chapters up front; step 2 writes the first. That
-    // reply holds only a write — which used to end the turn, leaving chapter
-    // two created and empty. Now the write's result goes back to the model.
-    responses.push({
-      text: '先把两章建好。',
-      toolCalls: [
-        { index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章"}' },
-        { index: 1, id: 'c2', name: 'create_chapter', argumentsText: '{"title":"第二章"}' }
-      ]
-    })
-    responses.push('<canvas chapter="4"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
-    responses.push('<canvas chapter="5"><p>第二章正文。</p></canvas>\n<doc_status>updated</doc_status>')
+    // A reply that holds only a write used to end the turn after chapter
+    // one. Now the write's result goes back to the model — and each chapter
+    // is created by the reply that writes it, one step per chapter.
+    responses.push(streamed('<canvas new_chapter="第一章"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>'))
+    responses.push(streamed('<canvas new_chapter="第二章"><p>第二章正文。</p></canvas>\n<doc_status>updated</doc_status>'))
     // The closing reply needs no declaration: it refers to the writes above.
     responses.push('两章都写完了。')
     const h = renderChatHook(editor)
     await send(h, '根据大纲写前两章')
 
-    expect(calls).toHaveLength(4)
-    // The prompt teaches the loop, not the old "create the next one while
-    // writing this one" workaround.
+    expect(calls).toHaveLength(3)
     expect(calls[0][0].content).toContain('ONE chapter per reply — you continue after each')
-    expect(calls[1].at(-1)?.content).not.toContain('create the next one in that same reply')
-    // Step 3 saw step 2's result.
-    expect(calls[2].at(-1)?.content).toContain('RESULT OF YOUR DOCUMENT CHANGES')
+    // Step 2 saw step 1's result.
+    expect(calls[1].at(-1)?.content).toContain('RESULT OF YOUR DOCUMENT CHANGES')
     const docs = useAppStore.getState().documents
     expect(stripDiffMarkup(docs[3].content)).toBe('<p>第一章正文。</p>')
     expect(stripDiffMarkup(docs[4].content)).toBe('<p>第二章正文。</p>')
@@ -542,21 +571,16 @@ describe('writing a series of chapters (one per reply)', () => {
   })
   it('keeps the half-written second chapter on Stop: the preview followed the run to it', async () => {
     const { editor } = stubEditor('<p>序章正文。</p>')
-    responses.push({
-      text: '',
-      toolCalls: [
-        { index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章"}' },
-        { index: 1, id: 'c2', name: 'create_chapter', argumentsText: '{"title":"第二章"}' }
-      ]
-    })
-    responses.push('<canvas chapter="4"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
-    responses.push({ text: '<canvas chapter="5"><p>第二章写到一半', error: Object.assign(new Error('aborted'), { name: 'AbortError' }) })
+    responses.push(streamed('<canvas new_chapter="第一章"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>'))
+    responses.push(streamed('<canvas new_chapter="第二章"><p>第二章写到一半', { error: Object.assign(new Error('aborted'), { name: 'AbortError' }) }))
     const h = renderChatHook(editor)
     await send(h, '根据大纲写前两章')
 
     const docs = useAppStore.getState().documents
     expect(stripDiffMarkup(docs[3].content)).toBe('<p>第一章正文。</p>')
-    // Before the fix the preview still named chapter one, so Stop kept nothing.
+    // The preview created chapter two and painted into it, so Stop keeps the
+    // draft there (and the end-of-run cleanup leaves a stopped run alone).
+    expect(docs[4].title).toBe('第二章')
     expect(docs[4].content).toContain('第二章写到一半')
     expect(bubble()?.content).toContain('The partial draft was kept')
     h.unmount()
@@ -613,15 +637,15 @@ describe('editing other chapters while the assistant writes (§0.4)', () => {
   it('stops moving the view once the user opened another chapter', async () => {
     responses.push({
       text: '',
-      toolCalls: [{ index: 0, id: 'c1', name: 'create_chapter', argumentsText: '{"title":"第一章"}' }],
+      toolCalls: [{ index: 0, id: 'r1', name: 'read_chapter', argumentsText: '{"chapters":[3]}' }],
       between: () => useAppStore.getState().setActiveDocumentId('doc-2')
     })
-    responses.push('<canvas chapter="4"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
+    responses.push('<canvas new_chapter="第一章"><p>第一章正文。</p></canvas>\n<doc_status>updated</doc_status>')
     const h = renderChatHook()
     await send(h, '写第一章')
 
+    // Created and written, but the view stays where the user put it.
     expect(useAppStore.getState().activeDocumentId).toBe('doc-2')
-    expect(calls[1].at(-1)?.content).not.toContain('now open')
     expect(stripDiffMarkup(useAppStore.getState().documents[3].content)).toBe('<p>第一章正文。</p>')
     h.unmount()
   })

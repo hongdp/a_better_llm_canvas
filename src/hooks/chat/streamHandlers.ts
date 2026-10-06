@@ -5,7 +5,7 @@
  * store — the ref-coupled parts (live previews, editor transactions, the
  * retry re-dispatch) stay in useChatLLM.
  */
-import { stripDocStatus, chapterAttribute } from '../../utils/text'
+import { stripDocStatus, chapterAttribute, newChapterAttribute } from '../../utils/text'
 
 // Recovery rounds per turn when the model answers a write request without any
 // action tag (nothing reaches the document). Measured against grok-4.5 on a
@@ -67,6 +67,8 @@ export interface StreamingSplit {
    * that is open (spec D2).
    */
   canvasChapter?: string
+  /** The title the canvas's `new_chapter="…"` attribute creates: the preview creates it. */
+  canvasNewChapter?: string
   /** Body of a (possibly still-open) <selection_replace> block; empty when absent. */
   selectionReplaceText: string
   isSelectionEdit: boolean
@@ -213,6 +215,7 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
   let chatText: string
   let canvasText = ''
   let canvasChapter: string | undefined
+  let canvasNewChapter: string | undefined
   let selectionReplaceText = ''
   let isSelectionEdit = false
 
@@ -246,6 +249,7 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
   } else if (canvasIdx !== -1) {
     chatText = raw.substring(0, canvasIdx).trim()
     canvasChapter = chapterAttribute((canvasOpen as RegExpExecArray)[0])
+    canvasNewChapter = newChapterAttribute((canvasOpen as RegExpExecArray)[0])
     const rest = raw.substring(canvasIdx + (canvasOpen as RegExpExecArray)[0].length)
     const endIdx = rest.indexOf(canvasEnd)
     if (endIdx !== -1) {
@@ -259,7 +263,7 @@ export function splitStreamingResponse(raw: string): StreamingSplit {
     chatText = MARKUP_START_RE.test(raw) ? chatPart(raw) : raw
   }
 
-  return { chatText: stripDocStatus(chatText), canvasText, canvasChapter, selectionReplaceText, isSelectionEdit }
+  return { chatText: stripDocStatus(chatText), canvasText, canvasChapter, canvasNewChapter, selectionReplaceText, isSelectionEdit }
 }
 
 /**

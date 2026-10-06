@@ -70,7 +70,8 @@ src/
   agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
                           #   step policy, invocation collection, freshness (D8),
                           #   tools/documentWrites (3 writes), tools/bookReads (read/search/
-                          #   list/open/create/delete chapters), tools/polishChapter
+                          #   list/open/delete chapters; a write creates a new chapter; rename_chapter in
+                          #   documentWrites), tools/polishChapter
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
     providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored
@@ -113,7 +114,9 @@ npm run test:coverage       # coverage over utils, services/import, store/persis
 
 **Logs**: `app.log` holds the orchestrator + Vite output; the Python API
 server's own output (including `web_canvas.*` log lines — job starts,
-time-to-first-token, per-job summaries) goes to **`api-server.log`**. Grepping
+time-to-first-token, per-job summaries with prompt-cache hits, and a
+`prefix:` line saying where a request departs from the conversation's
+previous one) goes to **`api-server.log`**. Grepping
 `app.log` for API behavior finds nothing.
 
 **Editing `scripts/*.py` requires restarting the API server** — Vite hot-reloads
