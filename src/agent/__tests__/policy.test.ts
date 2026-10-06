@@ -116,6 +116,22 @@ describe('collectStep', () => {
     expect(step.chatText).toBe('Done.')
   })
 
+  it('turns a canvas that creates its chapter into update_document with new_chapter', () => {
+    const step = collectStep('写第二章。\n<canvas new_chapter="第二章 进城"><p>x</p></canvas>\n<doc_status>updated</doc_status>', [], registry, 0)
+    expect(step.invocations).toEqual([
+      { id: 'markup_0_0', name: 'update_document', args: { html: '<p>x</p>', new_chapter: '第二章 进城' }, source: 'markup', unclosed: false }
+    ])
+    expect(step.chatText).toBe('写第二章。')
+  })
+
+  it('keeps a new chapter written beside a selection rewrite: it cannot collide with it', () => {
+    const text = '<selection_replace><p>new</p></selection_replace>\n<canvas new_chapter="第二章"><p>x</p></canvas>\n<doc_status>updated</doc_status>'
+    const step = collectStep(text, [], registry, 0)
+    const { run, dropped } = planWrites(step.invocations)
+    expect(run.map(i => [i.name, i.args?.new_chapter])).toEqual([['replace_selection', undefined], ['update_document', '第二章']])
+    expect(dropped).toBe(0)
+  })
+
   it('splits a selection rewrite and the edits beside it into two invocations', () => {
     const text = '<selection_replace><p>new</p></selection_replace>\n<edit>\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'
     expect(collectStep(text, [], registry, 2).invocations.map(i => [i.id, i.name])).toEqual([

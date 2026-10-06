@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, applyEditBlocksLocally, parseAssistantResponse, stripStrayDocumentMarkup, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
+import { getTimestampId, chapterAttribute, newChapterAttribute, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, applyEditBlocksLocally, parseAssistantResponse, stripStrayDocumentMarkup, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
 import { stripDiffMarkup } from '../diff'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
@@ -979,3 +979,30 @@ describe('detectFailedDocumentUpdate', () => {
   })
 })
 
+
+// ── new_chapter: a canvas that creates its chapter ──────────────────────────
+describe('new_chapter', () => {
+  it('is its own attribute: never read as `chapter`', () => {
+    expect(newChapterAttribute('<canvas new_chapter="第二章 进城">')).toBe('第二章 进城')
+    expect(chapterAttribute('<canvas new_chapter="第二章 进城">')).toBeUndefined()
+    expect(newChapterAttribute("<canvas new_chapter=' 尾声 '>")).toBe('尾声')
+    expect(newChapterAttribute('<canvas new_chapter="">')).toBeUndefined()
+    expect(newChapterAttribute('<canvas chapter="3">')).toBeUndefined()
+  })
+
+  it('leads the canvas channel, with the title', () => {
+    const r = parseAssistantResponse('写第二章。\n<canvas new_chapter="第二章"><p>x</p></canvas>')
+    expect(r).toMatchObject({ kind: 'canvas', canvasText: '<p>x</p>', canvasClosed: true, canvasNewChapter: '第二章', chatText: '写第二章。' })
+    expect(r.canvasChapter).toBeUndefined()
+  })
+
+  it('rides along with another channel like a named chapter does', () => {
+    const r = parseAssistantResponse('<canvas><p>active</p></canvas>\n<canvas new_chapter="第二章"><p>two</p></canvas>')
+    expect(r.canvasText).toBe('<p>active</p>')
+    expect(r.extraCanvases).toEqual([{ text: '<p>two</p>', closed: true, newChapter: '第二章' }])
+  })
+
+  it('reports a cut-off new chapter as unclosed', () => {
+    expect(parseAssistantResponse('<canvas new_chapter="第二章"><p>半').canvasClosed).toBe(false)
+  })
+})

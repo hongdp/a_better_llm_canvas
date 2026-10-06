@@ -40,12 +40,14 @@ Tests that stub the network should patch `server_generation._http_stream`
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
 from urllib.parse import urlparse
 import secrets
 import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -1000,6 +1002,57 @@ def _check_abort(job: GenerationJob) -> None:
         raise _JobAborted()
 
 
+# Problem: a turn whose first step re-sent its whole prompt (cache 512 of
+#   17117 tokens, 2026-10-06) looks the same in the log whether OUR request
+#   changed (a preset switch, a rebuilt message) or the provider simply
+#   missed its cache, so there was nothing to say which one to fix.
+# Fix: compare each request with the previous one in the same conversation
+#   (the cache routing key) and log where they part: the model, the tools,
+#   or the first message that differs.
+PREFIX_MEMORY = 64
+_last_requests: "OrderedDict[str, Tuple[float, str, str, List[str]]]" = OrderedDict()
+
+
+def _fingerprint(value: Any) -> str:
+    text = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def describe_prefix(conversation: str, body: Dict[str, Any], now: Optional[float] = None) -> str:
+    """How this request's prefix relates to the conversation's previous one."""
+    now = time.monotonic() if now is None else now
+    messages = body.get("messages") or []
+    hashes = [_fingerprint(m) for m in messages]
+    tools = _fingerprint(body.get("tools") or [])
+    model = str(body.get("model") or "")
+    previous = _last_requests.pop(conversation, None)
+    _last_requests[conversation] = (now, model, tools, hashes)
+    while len(_last_requests) > PREFIX_MEMORY:
+        _last_requests.popitem(last=False)
+    if previous is None:
+        return "first request seen in this conversation"
+    then, prev_model, prev_tools, prev_hashes = previous
+    same = 0
+    while same < min(len(hashes), len(prev_hashes)) and hashes[same] == prev_hashes[same]:
+        same += 1
+    parts = [f"{now - then:.0f}s after the previous request"]
+    if prev_model != model:
+        parts.append(f"model changed ({prev_model} -> {model})")
+    if prev_tools != tools:
+        parts.append("tools changed")
+    if same == len(prev_hashes):
+        parts.append(f"extends it (all {same} earlier messages identical)")
+    else:
+        differing = messages[same] if same < len(messages) else {}
+        content = differing.get("content") if isinstance(differing, dict) else None
+        parts.append(
+            f"first {same} of its {len(prev_hashes)} messages identical; "
+            f"message #{same} ({differing.get('role') if isinstance(differing, dict) else '?'}, "
+            f"{len(content) if isinstance(content, str) else 0} chars) differs"
+        )
+    return "; ".join(parts)
+
+
 async def _stream_openai(
     job: GenerationJob,
     config: Dict[str, Any],
@@ -1008,6 +1061,8 @@ async def _stream_openai(
 ) -> Optional[Dict[str, Any]]:
     url, headers, body = build_openai_request(config, messages, provider)
     _debug_log("OpenAI", url, headers, body, config)
+    if config.get("conversationId"):
+        logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"{provider}:{config['conversationId']}", body))
 
     usage: Optional[Dict[str, Any]] = None
     async with _http_stream(url, headers, body) as response:

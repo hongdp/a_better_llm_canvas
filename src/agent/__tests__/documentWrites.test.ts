@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { stripDiffMarkup, diffHtml } from '../../utils/diff'
-import { updateDocumentTool, editDocumentTool, replaceSelectionTool } from '../tools/documentWrites'
+import { updateDocumentTool, editDocumentTool, replaceSelectionTool, previewRewrite, renameChapterTool, similarChapters } from '../tools/documentWrites'
 import { readChapterTool } from '../tools/bookReads'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
@@ -311,7 +311,7 @@ describe('write results state the chapter\'s length (counted like a read)', () =
   it('after a rewrite and after edits', async () => {
     const f = fakeContext('<p>一二三</p>')
     const r = updateDocumentTool.invoke(call('update_document', { html: '<p>一二三四五</p><p>六七</p>' }), f.ctx) as ToolResult
-    expect(r.content).toContain('was rewritten (7 characters)')
+    expect(r.content).toContain('it had 3 characters and now has 7')
     expect(r.trace).toContain('(7 chars)')
     const e = await editDocumentTool.invoke(call('edit_document', edit('<p>六七</p>', '<p>六七八九</p>')), f.ctx)
     expect(e.content).toContain('It now has 9 characters.')
@@ -352,6 +352,190 @@ describe('a selection rewrite while the user is in another chapter (2026-10-06)'
     const e = editDocumentTool.invoke(call('edit_document', edit('<p>后面一句。</p>', '<p>后面衔接的一句。</p>')), f.ctx) as ToolResult
     expect(e.ok).toBe(true)
     expect(stripDiffMarkup(f.lastWrite('doc-1') ?? '')).toBe('<p>改写后的一段。</p><p>后面衔接的一句。</p>')
+    expect(f.lastWrite('doc-2')).toBeUndefined()
+  })
+})
+
+// Creating IS writing (2026-10-06): a new chapter took two model calls —
+// create_chapter, then its text — and grok planned the chapter in the first
+// call's reasoning (105–158 s), which the second does not see.
+describe('a new chapter is created by the write that fills it', () => {
+  const book = () => fakeContext('<p>start</p>', {
+    chapters: [{ id: 'doc-2', title: '大纲', content: '<p>outline</p>' }]
+  })
+  const write = async (f: ReturnType<typeof fakeContext>, args: Record<string, unknown>): Promise<ToolResult> =>
+    updateDocumentTool.invoke(call('update_document', args), f.ctx)
+
+  it('appends the chapter, opens it, and writes it in one call', async () => {
+    const f = book()
+    const r = await write(f, { new_chapter: '第一章 离乡', html: '<p>阿青走了。</p>' })
+    expect(r).toMatchObject({ ok: true, trace: '➕ wrote new #3 "第一章 离乡" (5 chars)' })
+    expect(r.content).toBe('Created a NEW chapter #3 "第一章 离乡" at the end of the book and wrote it (5 characters). The book now has 3 chapters.')
+    const chapter = f.book()[2]
+    expect(chapter.title).toBe('第一章 离乡')
+    expect(stripDiffMarkup(chapter.content)).toBe('<p>阿青走了。</p>')
+    expect(f.opened).toEqual([chapter.id])
+    expect(f.ctx.run.touched.get(chapter.id)?.kind).toBe('created')
+  })
+
+  it('is created by the live preview on its first chunk, which then streams into it', async () => {
+    const f = book()
+    previewRewrite(f.ctx, { create: '第一章' }, '<p>阿青</p>')
+    const id = f.book()[2]?.id
+    expect(f.book()).toHaveLength(3)
+    expect(f.opened).toEqual([id])
+    // Not in the chunk that opened it: the editor on screen is still the
+    // previous chapter's until it re-renders.
+    expect(f.previewDocument).not.toHaveBeenCalled()
+    previewRewrite(f.ctx, { create: '第一章' }, '<p>阿青走了</p>')
+    expect(f.previewDocument).toHaveBeenLastCalledWith('<p>阿青走了</p>')
+    // The write lands in the same chapter: no second one.
+    expect((await write(f, { new_chapter: '第一章', html: '<p>阿青走了。</p>' })).ok).toBe(true)
+    expect(f.book()).toHaveLength(3)
+    expect(stripDiffMarkup(f.lastWrite(id) ?? '')).toBe('<p>阿青走了。</p>')
+  })
+
+  it('is created by a native call\'s preview once the title has arrived', async () => {
+    const f = book()
+    updateDocumentTool.preview?.('{"new_chapter": "第二章", "html": "<p>流', f.ctx)
+    expect(f.book()[2]?.title).toBe('第二章')
+    updateDocumentTool.preview?.('{"new_chapter": "第二章", "html": "<p>流水', f.ctx)
+    expect(f.previewDocument).toHaveBeenLastCalledWith('<p>流水')
+  })
+
+  it('refuses a title a chapter with text already has, and creates nothing', async () => {
+    const f = book()
+    f.ctx.run.writeProtocol = 'markup'
+    previewRewrite(f.ctx, { create: '大纲' }, '<p>x</p>')
+    const r = await write(f, { new_chapter: ' 大 纲', html: '<p>new outline</p>' })
+    expect(r.ok).toBe(false)
+    expect(r.content).toContain('already exists as #2')
+    expect(r.content).toContain('<canvas chapter="2">')
+    expect(f.book()).toHaveLength(2)
+    expect(f.lastWrite('doc-2')).toBeUndefined()
+    expect(f.previewDocument).not.toHaveBeenCalled()
+  })
+
+  it('fills an empty chapter of that title instead of adding a second one', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第三章 风起', content: '<p></p>' }] })
+    const r = await write(f, { new_chapter: '第三章风起', html: '<p>风起了。</p>' })
+    expect(r.ok).toBe(true)
+    expect(f.book()).toHaveLength(2)
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>风起了。</p>')
+    // Not the run's own: the end-of-run cleanup must never remove it.
+    expect(f.ctx.run.created.has('doc-2')).toBe(false)
+  })
+
+  it('never takes a chapter whose text has not loaded for an empty one', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第三章', content: '' }], lazy: { 'doc-2': '<p>real</p>' } })
+    expect((await write(f, { new_chapter: '第三章', html: '<p>x</p>' })).ok).toBe(false)
+  })
+
+  it('leaves the view where the user put it: created, written, not opened', async () => {
+    const f = book()
+    f.userOpens('doc-2')
+    previewRewrite(f.ctx, { create: '第一章' }, '<p>阿青</p>')
+    expect(f.previewDocument).not.toHaveBeenCalled()
+    expect(f.progress.at(-1)).toContain('第一章')
+    expect((await write(f, { new_chapter: '第一章', html: '<p>阿青走了。</p>' })).ok).toBe(true)
+    expect(f.opened).toEqual([])
+  })
+
+  it('does not move the user off a chapter with a pending selection rewrite', async () => {
+    const f = fakeContext('<p>x</p>', { selection: { from: 1, to: 2 } })
+    await write(f, { new_chapter: '新章', html: '<p>y</p>' })
+    expect(f.opened).toEqual([])
+  })
+})
+
+describe('similarChapters', () => {
+  const book = [
+    { id: 'a', title: '大纲' },
+    { id: 'b', title: '第二章 进城' },
+    { id: 'c', title: '第三章 风起云涌' },
+    { id: 'd', title: '原作-第四章 夜宴' }
+  ]
+  it('finds the chapter a slightly different title was probably meant for', () => {
+    expect(similarChapters('第二章 入城', 'new', book)).toEqual([{ number: 2, title: '第二章 进城' }])
+    expect(similarChapters('第四章 夜宴', 'new', book)).toEqual([{ number: 4, title: '原作-第四章 夜宴' }])
+  })
+  it('never pairs different chapter numbers, however alike the rest', () => {
+    // Not #3 "第三章 风起云涌" (another chapter number), only #2 (the same one).
+    expect(similarChapters('第二章 风起云涌', 'new', book)).toEqual([{ number: 2, title: '第二章 进城' }])
+    expect(similarChapters('第五章 别离', 'new', book)).toEqual([])
+  })
+})
+
+describe('creating and rewriting answer differently (2026-10-06)', () => {
+  it('a new chapter says it was ADDED, and points at a similar chapter it may have been meant for', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第二章 进城', content: '<p>旧</p>' }] })
+    const r = await updateDocumentTool.invoke(call('update_document', { new_chapter: '第二章 入城', html: '<p>新稿</p>' }), f.ctx)
+    expect(r.content).toContain('Created a NEW chapter #3 "第二章 入城" at the end of the book')
+    expect(r.content).toContain('The book now has 3 chapters.')
+    expect(r.content).toContain('#2 "第二章 进城" has a similar title')
+    expect(r.content).toContain('rename_chapter with chapter="3", title="第二章 进城" and replace=true')
+  })
+
+  it('a rewrite says it changed an EXISTING chapter, with its length before and after', async () => {
+    const f = fakeContext('<p>四个字。</p>')
+    const r = await updateDocumentTool.invoke(call('update_document', { html: '<p>现在有八个字了。</p>' }), f.ctx)
+    expect(r.content).toBe('Rewrote the EXISTING chapter #1 "Chapter 1": it had 4 characters and now has 8. No chapter was added.')
+  })
+})
+
+describe('rename_chapter', () => {
+  const rename = (f: ReturnType<typeof fakeContext>, args: Record<string, unknown>) =>
+    Promise.resolve(renameChapterTool.invoke(call('rename_chapter', args), f.ctx))
+
+  it('renames, and says when the first heading still reads the old title', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第二章 入城', content: '<h1>第二章 入城</h1><p>x</p>' }] })
+    const r = await rename(f, { chapter: 2, title: '第二章 进城' })
+    expect(r).toMatchObject({ ok: true, trace: '🏷 renamed #2 "第二章 入城" → "第二章 进城"' })
+    expect(r.content).toContain('Its first heading still reads "第二章 入城"')
+    expect(f.book()[1].title).toBe('第二章 进城')
+    expect(f.ctx.run.touched.get('doc-2')?.kind).toBe('renamed')
+  })
+
+  it('refuses a title another chapter has, and offers the replacement only for a chapter it created', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第二章 进城', content: '<p>旧</p>' }, { id: 'doc-3', title: '别的', content: '<p>y</p>' }] })
+    const theirs = await rename(f, { chapter: 3, title: '第二章进城' })
+    expect(theirs).toMatchObject({ ok: false })
+    expect(theirs.content).toContain('Choose another title')
+    await updateDocumentTool.invoke(call('update_document', { new_chapter: '第二章 入城', html: '<p>新稿</p>' }), f.ctx)
+    const mine = await rename(f, { chapter: 4, title: '第二章 进城' })
+    expect(mine.content).toContain('call rename_chapter again with replace=true')
+    expect(f.book().map(c => c.title)).toEqual(['Chapter 1', '第二章 进城', '别的', '第二章 入城'])
+  })
+
+  it('with replace=true, moves the created chapter\'s text into the original — in place, reviewable — and removes it', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [
+      { id: 'doc-2', title: '第二章 进城', content: '<h1>第二章 进城</h1><p>旧稿。</p>' },
+      { id: 'doc-3', title: '第三章', content: '<p>三</p>' }
+    ] })
+    await updateDocumentTool.invoke(call('update_document', { new_chapter: '第二章 入城', html: '<h1>第二章 入城</h1><p>新稿，长一些。</p>' }), f.ctx)
+    const created = f.book()[3].id
+    expect(f.ctx.document.openId()).toBe(created)
+
+    const r = await rename(f, { chapter: '第二章 入城', title: '第二章 进城', replace: true })
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('#2 "第二章 进城" now has the text of #4 "第二章 入城"')
+    // The original keeps its place, its id and its title; the text arrives as
+    // a diff against what it had, with a snapshot before it.
+    expect(f.book().map(c => c.title)).toEqual(['Chapter 1', '第二章 进城', '第三章'])
+    const ch2 = f.lastWrite('doc-2') ?? ''
+    expect(stripDiffMarkup(ch2)).toBe('<h1>第二章 进城</h1><p>新稿，长一些。</p>')
+    expect(ch2).toContain('diff-addition')
+    expect(f.snapshots).toEqual(['doc-2'])
+    expect(f.removed).toEqual([created])
+    expect(f.ctx.document.openId()).toBe('doc-2')
+    expect([...f.ctx.run.touched.values()].map(t => [t.documentId, t.kind])).toEqual([['doc-2', 'rewrite']])
+  })
+
+  it('never lets a chapter the run did not create take another\'s place', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '甲', content: '<p>a</p>' }, { id: 'doc-3', title: '乙', content: '<p>b</p>' }] })
+    const r = await rename(f, { chapter: 3, title: '甲', replace: true })
+    expect(r).toMatchObject({ ok: false, retryable: false })
+    expect(f.removed).toEqual([])
     expect(f.lastWrite('doc-2')).toBeUndefined()
   })
 })

@@ -38,6 +38,8 @@ vi.mock('@tiptap/pm/model', () => ({
 
 import { useState } from 'react'
 import { useChatLLM } from '../useChatLLM'
+import { hashContent } from '../../utils/contextLedger'
+import { stripDiffMarkup } from '../../utils/diff'
 import { useAppStore } from '../../store/useAppStore'
 import { INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE } from '../chat/streamHandlers'
 
@@ -268,6 +270,55 @@ describe('useChatLLM — rejoin after the tab was discarded', () => {
     expect(msg?.content).toContain('Chapter one done.\n\nChapter two.')
     expect(msg?.content).toContain('The page reloaded during this turn')
     unmount()
+  })
+
+  describe('remembers what the model read before the reload', () => {
+    // 2026-10-06, "继续写第二章": the step before the reload read chapter 2's
+    // HTML; the rejoined step's edit of it was refused as "not read yet".
+    const CH2 = '<p>第二章旧句。</p>'
+    const setup = (seenContent: string) => {
+      useAppStore.setState({
+        documents: [
+          ...useAppStore.getState().documents,
+          { id: 'doc-2', title: '第二章', content: CH2, contentLoaded: true, createdAt: '2026-07-01T00:00:00.000Z', updatedAt: '2026-07-01T00:00:00.000Z' }
+        ],
+        messages: [
+          { id: 'u-1', role: 'user', content: '扩写第二章', timestamp: '2026-07-01T00:00:00.000Z' },
+          {
+            id: 'a-1', role: 'assistant', content: '先读第二章。', timestamp: '2026-07-01T00:00:00.000Z',
+            agent: {
+              status: 'running', steps: 1, trace: ['📖 read #2 "第二章" (html)'], touched: [],
+              seen: [{ id: 'doc-2', hash: hashContent(seenContent) }]
+            }
+          }
+        ]
+      })
+      findResumableJob.mockResolvedValue({ jobId: 'gen-1', meta: { assistantMessageId: 'a-1', kind: 'chat' }, offset: 0 })
+      resumeRemoteGeneration.mockImplementation(async (_id: string, _from: number, callbacks: StreamCallbacks) => {
+        const text = '扩写。\n<edit chapter="2">\n<<<<<<< SEARCH\n<p>第二章旧句。</p>\n=======\n<p>第二章新句，更长。</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>'
+        callbacks.onChunk(text)
+        callbacks.onDone(text)
+      })
+    }
+    const ch2 = () => useAppStore.getState().documents.find(d => d.id === 'doc-2')?.content ?? ''
+
+    it('applies the rejoined step\'s edit of a chapter read before the reload', async () => {
+      setup(CH2)
+      const unmount = renderChatHook()
+      await settle()
+      expect(stripDiffMarkup(ch2())).toBe('<p>第二章新句，更长。</p>')
+      expect(useAppStore.getState().messages.find(m => m.id === 'a-1')?.agent?.trace.at(-1)).not.toContain('not read yet')
+      unmount()
+    })
+
+    it('does not count a chapter the user changed since it was read', async () => {
+      setup('<p>what the model saw, before the user edited it</p>')
+      const unmount = renderChatHook()
+      await settle()
+      expect(ch2()).toBe(CH2)
+      expect(useAppStore.getState().messages.find(m => m.id === 'a-1')?.agent?.trace.at(-1)).toContain('not read yet')
+      unmount()
+    })
   })
 
   it('explains a resumed reply that wrote nothing, instead of going silent', async () => {

@@ -66,12 +66,12 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
 
 | Tool | Kind | Markup models (grok) | Tool-protocol models (local) |
 |---|---|---|---|
-| `update_document` | write | `<canvas chapter="N">` (live preview) | native |
+| `update_document` | write | `<canvas chapter="N">`, or `<canvas new_chapter="title">` to create one (live preview) | native (`chapter` or `new_chapter`) |
 | `edit_document` | write | `<edit chapter="N">` SEARCH/REPLACE | native |
 | `replace_selection` | write | `<selection_replace>` | native |
-| `polish_chapter`, `delete_chapter` | write | native (no tag form) | native |
+| `polish_chapter`, `delete_chapter`, `rename_chapter` | write | native (no tag form) | native |
 | `read_chapter`, `grep`, `list_chapters` | read | native | native |
-| `open_chapter`, `create_chapter` | navigate | native | native |
+| `open_chapter` | navigate | native | native |
 | `analyze_book` | read | native | native |
 
 - A tool with a tag form (`markupForm`) is never also offered natively to a
@@ -110,16 +110,32 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   - Truncated or elided full rewrites are refused.
   - Image tokens are preserved and reinserted.
   - A version snapshot is taken per chapter before its first change.
-- **New chapters.** `create_chapter` makes an empty chapter and opens it at
-  once, unless a selection rewrite is pending. Its result names the next
-  write in the model's own form. Chapters are only ever created explicitly.
+- **New chapters: creating IS writing** (user decision, 2026-10-06). There
+  is no `create_chapter`. A chapter is created by the write that fills it:
+  `<canvas new_chapter="title">…</canvas>` on markup, `update_document`
+  with `new_chapter` with tools. It is appended to the book and opened
+  (unless a selection rewrite is pending or the user moved). On markup it is
+  created as soon as the opening tag has streamed, so the live preview runs
+  in it — from the next chunk: in the chunk that opens it, the editor on
+  screen is still the previous chapter's until React re-renders. Still
+  explicit: a `chapter="…"` that names nothing is an error, never
+  a new chapter.
+  - Why: a lone `create_chapter` step planned the chapter in its reasoning
+    (105–158 s to the first token, measured), and grok's reasoning does not
+    carry to the next call. So the writing step planned again (up to 33 s),
+    or claimed the chapter was written and wrote nothing.
+  - A title already taken by a chapter with text is refused, with the write
+    that rewrites it. An empty chapter of that title (titles compared
+    ignoring whitespace) is filled instead of duplicated.
+  - A chapter created for a write that never landed (cut off, refused) is
+    removed when the run ends; on Stop it is left, with its draft.
 - **Live preview, routed by target.**
   - The open chapter is painted as the rewrite streams.
   - A rewrite of a chapter that is not open shows a progress line in the
-    bubble instead. So does one for a chapter created in the same reply.
-  - The preview follows the run from chapter to chapter. A write to a
-    created chapter opens it, and the preview restarts there, so Stop keeps
-    that chapter's partial draft.
+    bubble instead.
+  - The preview follows the run from chapter to chapter. A new chapter is
+    opened as its write starts, and the preview restarts there, so Stop
+    keeps that chapter's partial draft.
   - The user may switch chapters mid-run. The preview then never paints
     over the chapter they opened.
 - **The user keeps writing while the run works** (user decision,
@@ -146,7 +162,7 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
     changed shows as a progress line, never painted.
   - **The view is the user's once they move.** After the user opens
     another chapter during the run, the run stops changing the view:
-    `create_chapter` and a first write no longer open the chapter, and
+    a new chapter's write no longer opens it, and
     `open_chapter` says it left the chapter for the user
     (`DocumentPort.userMoved`).
 
@@ -156,10 +172,11 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   have erased a user edit. Both now use the stored text of the open
   chapter; the reset is kept only for a selection turn.
 - **Series.** The model is taught one chapter per reply; it continues after
-  each. A tip, not a rule (user decision, 2026-10-06): creating the next
-  chapter in the reply that writes this one saves a step. Measured: a
-  19-chapter run spent 21 of its 40 steps on a lone `create_chapter`, each
-  re-sending about 90k tokens.
+  each. A tip, not a rule (user decision, 2026-10-06): asking for what the
+  next chapter needs (reading its sources) in the reply that writes this one
+  saves a step. Measured before creation became writing: a 19-chapter run
+  spent 21 of its 40 steps on a lone `create_chapter`, each re-sending about
+  90k tokens.
 - **Lengths are stated, not guessed.** Write results give the chapter's
   length ("#23 was rewritten (2738 characters)"), counted the way
   `read_chapter` counts a paragraph range ("¶869–¶933 (3585 characters)").
@@ -172,6 +189,29 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   "empty"). A chapter with text is the user's to delete; the loop cannot ask
   for confirmation yet (`approval`, phase 3), so the tool says to ask the
   user. The result tells the model the chapters after it moved up.
+- **Renaming, and undoing a wrongly titled new chapter** (user request,
+  2026-10-06). `rename_chapter` renames any chapter. Its result says when the
+  chapter's first heading still reads the old title. A title another chapter
+  has is refused.
+  - With `replace=true`, a chapter this run created gives its text to the
+    chapter that has the title and is removed. This is the fix for
+    `new_chapter="第二章 入城"` written when "第二章 进城" was meant. The text
+    lands in place: same position, id and title. It is a reviewable diff with
+    a snapshot first, and its leading heading is renamed to match. Nothing is
+    written again.
+  - Deleting the original and renaming the new chapter was the request as
+    asked. It was not built that way: the chapter would move to the end of
+    the book, and a chapter with text is the user's to delete.
+  - Only a chapter the run created may take another's place. Its text is the
+    model's own, so a rejected review loses nothing of the user's.
+- **Creating and rewriting answer differently.** A new chapter's result
+  says "Created a NEW chapter … at the end of the book" with the book's new
+  chapter count. When another chapter's title looks like it (the same
+  chapter marker such as 第二章, one title inside the other, or most
+  characters shared — never two different chapter numbers), the result names
+  it and the `rename_chapter … replace=true` call that would undo the
+  mistake. A rewrite says "Rewrote the EXISTING chapter …" with its length
+  before and after, and "No chapter was added."
 - **A selection rewrite survives the user leaving its chapter.** When the
   selection's chapter is no longer on screen at placement, the rewrite is
   placed in the stored chapter by its text, starting from the turn's
@@ -287,6 +327,12 @@ How the context behaves:
   continuation after writes). Full resume is phase 3 (§8).
   - The rejoined step continues the bubble's record (steps, trace, timeline,
     changed chapters) instead of replacing it.
+  - It also knows what the model had read. The record carries the chapters
+    whose HTML the model has seen, each with a hash of its stored content
+    (`AgentTurnRecord.seen`, `restoreSeen`). A chapter still stored exactly
+    so counts as seen; one the user changed since does not. Before, the
+    rejoined step's edit of a chapter read one step earlier was refused as
+    "not read yet" (2026-10-06). The list is dropped when the turn ends.
   - When the run would have gone on, the bubble says the reload stopped it
     and that "continue" picks it up. Before, a reload at chapter 19 left the
     turn showing one trace line, with no reason given.
@@ -771,8 +817,31 @@ write in the model's own form (`RunState.writeProtocol`: `<canvas
 chapter="N">` on markup, `update_document chapter="N"` with tools), say a
 full rewrite needs no read, and `open_chapter` is described as "only to
 show the user". Creating a chapter from a `<canvas chapter>` that names no
-existing chapter was considered and declined: new chapters stay an explicit
-`create_chapter` (user decision).
+existing chapter was considered and declined: new chapters stay explicit
+(user decision).
+
+**Revised 2026-10-06: creating IS writing.** The user asked whether grok's
+reasoning is cached, and to force a chapter's creation and its first draft
+into one step. Measured on two turns:
+- "写第一章": the first step thought for 158.8 s (2,732 chars of reasoning
+  summary) and emitted 37 chars of text plus `create_chapter`. The next
+  thought for 33 s and claimed "第一章按大纲写好了" with no write; the text
+  landed two steps later.
+- "继续写第二章": the create step thought for 105 s; the write after it
+  started at once (1.7 s).
+
+The prompt cache covers a request's input only. Reasoning is output: it is
+generated again in every step, and on Chat Completions it cannot be sent
+back at all (only xAI's Responses API carries encrypted reasoning to the
+next request, with no documented latency gain). So a step that only creates
+throws its planning away.
+
+`create_chapter` is retired. The write creates its chapter, explicitly:
+`<canvas new_chapter="title">` / `update_document` `new_chapter`. A
+same-reply `create_chapter` plus `<canvas chapter>` was always allowed (item
+3 above); grok did not use it. A chapter created that way could not be
+previewed until the reply ended, either. Now the opening tag creates the
+chapter mid-stream, and the preview runs in it (`claimNewChapter`).
 
 ### D7. No manual context selection
 
@@ -905,8 +974,9 @@ something saved?":
 - it cannot tell "the user accepted my diff" (no change for the model) from
   "the user rejected it" (a change).
 
-**Not persisted.** After a reload nothing counts as seen except what the
-ledger re-sends. That is correct, because a reloaded session's prompt prefix
+**Not persisted.** After a reload nothing counts as seen across turns
+except what the ledger re-sends (within the turn in flight, the run's own
+seen list does survive: §0, Reload). That is correct, because a reloaded session's prompt prefix
 is new anyway. The user-facing version history (`DocumentVersion` snapshots)
 is a separate feature and is unchanged.
 
@@ -1300,11 +1370,11 @@ interface AgentTouchedChapter {
 | `edit_document` | write | markup `<edit chapter="…">` | optional `chapter` (D2); seen-content rule; failures fed back (§5.3) |
 | `replace_selection` | write | markup `<selection_replace>` | always the chapter the selection was made in; once per run |
 | `list_chapters` | read | native | index + summaries + char counts. Cheap; the volatile tail already has the index, so this mostly serves long books whose index is digested |
-| `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-"}`. Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant in the first two steps; a range read never is. A repeat of the same read is refused only within one step of the first |
+| `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-" \| "-15"}` ("-15" is the first 15: grok asked that way and was refused, 2026-10-06). Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant in the first two steps; a range read never is. A repeat of the same read is refused only within one step of the first |
 | `grep` | read | native | regex over every chapter's text, or only those named (lazy contents loaded first). Output "snippets" (chapter, offset, context) or "chapters" (counts). A broken regex is searched literally. Its trace names the scope ("in the whole book" or "in #13"); "→ 30 in 1 chapter(s)" without it read as "grep only searches one chapter". Chapters whose text could not be loaded are listed as not searched, not reported as having no match. Replaced `search_book` (user request, 2026-10-06): grep is the search interface models already know |
 | `open_chapter` | navigate | native | ONLY to show the user a chapter (`setActiveDocumentId`); writing never needs it (D2). Says "already open" when it is. Refused while a selection rewrite is pending |
 | `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one; anything with text is refused ("ask the user"). Runs last in its reply; reports the renumbering (§0.4) |
-| `create_chapter` | navigate | native | `addDocument(title)`, opened at once (D6) unless a selection rewrite is pending. Its result names the next write in the model's form (`<canvas chapter="N">` or `update_document` with `chapter`). Chapters are never created implicitly by a write |
+| `rename_chapter` | write | native (no tag form) | `{chapter, title, replace?}`. Renames; a taken title is refused. `replace=true` moves a chapter created this run into the one with that title (in place, reviewable) and removes it (§0). Runs last in its reply |
 | `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
 | `analyze_book` | read | native | D7. Notes from reading the whole book (or the chapters named) in batches, one model call per batch, for a task that needs all of it at once. Batches are packed by `WHOLE_BOOK_CONTEXT_CHARS` per provider. Stop ends it between batches, keeping the notes so far. Replaced the whole-book toggle and its consent card |
 
@@ -1439,7 +1509,7 @@ The suites as built:
 | `src/agent/__tests__/run.test.ts` | the controller against a scripted driver: each D3 row, budgets (final step with `toolChoice: 'none'`, 0 = unlimited, corrective), write + read continuing, Stop between steps, append-only messages |
 | `src/agent/__tests__/policy.test.ts` | `detectStepFailure` (including the closing reply after a write), `decideAfterStep`, `resolveRunSettings` defaults, `collectStep`, `planWrites` |
 | `src/agent/__tests__/documentWrites.test.ts` | the write tools on a fake context (`fakeContext.ts`): working copies, the review base, the seen-content rule, preview routing, guards |
-| `src/agent/__tests__/bookReads.test.ts` | `read_chapter` (paragraph ranges, parts, duplicate guard), `grep`, `list_chapters`, `open_chapter`, `create_chapter` |
+| `src/agent/__tests__/bookReads.test.ts` | `read_chapter` (paragraph ranges, parts, duplicate guard), `grep`, `list_chapters`, `open_chapter`, `delete_chapter` |
 | `src/agent/__tests__/freshness.test.ts`, `polish.test.ts` | D8 markers; D9 polish and `polish_chapter` |
 | `src/hooks/__tests__/useChatLLMAgent.test.ts` | the real hook with a scripted `streamLLM`. Covers: finding and reading the outline; writing another chapter; creating chapters; writing a series (including the run that used to stop after chapter one, and Stop keeping the second chapter's draft); restoring one pending change; the Polish button; the step limit; what each protocol offers |
 | `src/hooks/__tests__/useChatLLM.test.ts`, `useChatLLMRejoin.test.ts`, `selectionWithEdits.test.ts`, `selectAllRewrite.test.ts` | the pre-loop flows, still green. Every written turn now has one more step, the closing reply, which the scripted transports return by default |

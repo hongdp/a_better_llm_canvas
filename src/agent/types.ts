@@ -13,6 +13,7 @@ import type { AppState } from '../store/types'
 import type { AgentTouchedChapter } from '../types/chat'
 import type { PolishOutcome } from './polish'
 import type { AnalyzeChapter, AnalyzeOutcome } from './analyzeBook'
+import { hashContent } from '../utils/contextLedger'
 
 export type { JsonSchema, ToolSpec }
 
@@ -150,6 +151,8 @@ export interface DocumentPort {
   open(id: string): void
   /** Append a new, empty chapter WITHOUT switching to it; returns its id. */
   create(title: string): string
+  /** Rename a chapter (its title only). */
+  rename(id: string, title: string): void
   /** Delete a chapter (store + server), as the chapter list's delete does. */
   remove(id: string): void
   /** Version snapshot of a chapter, taken before the run first changes it. */
@@ -256,6 +259,41 @@ export function createRunState(init: { startId: string; inContext?: Iterable<str
     selectionAttempted: false,
     selectionApplied: false
   }
+}
+
+/** A chapter whose HTML the model has seen this run, by the stored content it saw. */
+export interface SeenChapter {
+  id: string
+  hash: string
+}
+
+/** What the model has seen, for the turn's record: a page reload restores it (restoreSeen). */
+export function seenChapters(run: RunState): SeenChapter[] {
+  return [...run.htmlShown].flatMap(id => {
+    const known = run.known.get(id)
+    return known === undefined ? [] : [{ id, hash: hashContent(known) }]
+  })
+}
+
+/**
+ * A reloaded page rejoins the step in flight with a new run state.
+ *
+ * Problem: that state knew only the start chapter, so the rejoined step's
+ *   edit of a chapter it had read in the step before was refused as "not
+ *   read yet" (2026-10-06, "继续写第二章").
+ * Fix: the turn's record carries what the model had seen, with the hash of
+ *   each chapter's stored content. A chapter still stored exactly as seen
+ *   is seen again; one that changed since (the user edited it) is not.
+ */
+export function restoreSeen(run: RunState, seen: SeenChapter[] | undefined, stored: (id: string) => string | undefined): RunState {
+  for (const { id, hash } of seen ?? []) {
+    const content = stored(id)
+    if (content === undefined || hashContent(content) !== hash) continue
+    run.htmlShown.add(id)
+    run.known.set(id, content)
+    run.inContext.add(id)
+  }
+  return run
 }
 
 /** The polish pass (D9), bound to the polish model. Absent where none is configured. */

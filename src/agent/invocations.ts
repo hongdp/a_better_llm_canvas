@@ -58,7 +58,8 @@ function markupInvocations(parsed: ParsedAssistantResponse, step: number): ToolI
   if (parsed.kind === 'canvas') {
     out.push(make('update_document', {
       html: parsed.canvasText,
-      ...(parsed.canvasChapter ? { chapter: parsed.canvasChapter } : {})
+      ...(parsed.canvasNewChapter ? { new_chapter: parsed.canvasNewChapter }
+        : parsed.canvasChapter ? { chapter: parsed.canvasChapter } : {})
     }, !parsed.canvasClosed))
   }
   // Edits: the 'edits' channel, or written beside a selection rewrite (they
@@ -68,7 +69,10 @@ function markupInvocations(parsed: ParsedAssistantResponse, step: number): ToolI
   }
   // Rewrites of other chapters that rode along (`<canvas chapter="…">`).
   for (const extra of parsed.extraCanvases) {
-    out.push(make('update_document', { html: extra.text, ...(extra.chapter ? { chapter: extra.chapter } : {}) }, !extra.closed))
+    out.push(make('update_document', {
+      html: extra.text,
+      ...(extra.newChapter ? { new_chapter: extra.newChapter } : extra.chapter ? { chapter: extra.chapter } : {})
+    }, !extra.closed))
   }
   return out
 }
@@ -133,8 +137,10 @@ export function planWrites(
   const selection = writes.find(w => w.name === 'replace_selection')
   if (!selection) return { run: writes, dropped: 0 }
   // A rewrite that names a chapter targets another chapter (the tool refuses
-  // it if that chapter is the selection's); only an unnamed one collides.
+  // it if that chapter is the selection's), and a new chapter is another one
+  // by definition; only an unnamed rewrite collides.
   const run = [selection, ...writes.filter(w =>
-    w.name === 'edit_document' || (w.name === 'update_document' && w.args?.chapter !== undefined))]
+    w.name === 'edit_document' ||
+    (w.name === 'update_document' && (w.args?.chapter !== undefined || w.args?.new_chapter !== undefined)))]
   return { run, dropped: writes.length - run.length }
 }

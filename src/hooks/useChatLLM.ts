@@ -36,7 +36,7 @@ import { analyzeInBatches } from '../agent/analyzeBook'
 import { WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
 import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
 import { resolveRunSettings } from '../agent/policy'
-import { createRunState, type ToolContext } from '../agent/types'
+import { createRunState, restoreSeen, type ToolContext } from '../agent/types'
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
 import type { AgentTurnRecord } from '../types/chat'
 import type { ThinkingBlock } from '../types/llm'
@@ -711,6 +711,7 @@ export function useChatLLM({
         useAppStore.getState().setActiveDocumentId(id)
       },
       create: (title: string) => useAppStore.getState().addDocument(title, '<p></p>', { activate: false }),
+      rename: (id: string, title: string) => useAppStore.getState().updateDocument(id, { title }),
       remove: (id: string) => {
         const wasOpen = useAppStore.getState().activeDocumentId === id
         useAppStore.getState().deleteDocument(id)
@@ -732,7 +733,11 @@ export function useChatLLM({
         publishEditLock()
       }
     },
-    run: createRunState({ startId: info.startId, inContext: info.inContextIds, startContent: info.originalDocContent })
+    run: restoreSeen(
+      createRunState({ startId: info.startId, inContext: info.inContextIds, startContent: info.originalDocContent }),
+      info.rejoined?.prior?.seen,
+      id => useAppStore.getState().documents.find(d => d.id === id && d.contentLoaded !== false)?.content
+    )
     }
     // selectionRefs is a ref's `.current`, so it never changes identity — it is
     // listed only to satisfy exhaustive-deps (see the timeout note in CLAUDE.md).
@@ -801,7 +806,7 @@ export function useChatLLM({
 
         // Incremental tag split (pure; chat/streamHandlers): routes
         // document markup away from the chat bubble as it streams.
-        const { canvasText, canvasChapter, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
+        const { canvasText, canvasChapter, canvasNewChapter, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
         paintStreamingBubble(assistantMsgId, attachmentsText)
 
         // The markup protocol's live previews, through the same ports the
@@ -812,7 +817,9 @@ export function useChatLLM({
           if (cleanedText) toolCtx.editor.previewSelection(cleanedText)
         } else if (canvasText.trim()) {
           setSaveStatus('unsaved')
-          previewRewrite(toolCtx, canvasChapter, trimIncompleteHtmlTail(canvasText))
+          // A new chapter is created on its first chunk, so its text streams
+          // into it (documentWrites, claimNewChapter).
+          previewRewrite(toolCtx, canvasNewChapter ? { create: canvasNewChapter } : canvasChapter, trimIncompleteHtmlTail(canvasText))
         }
       },
       onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
@@ -939,6 +946,7 @@ export function useChatLLM({
         trace: progress.trace,
         touched: progress.touched,
         timeline: progress.timeline,
+        seen: progress.seen,
         prefix: info.attachmentsText || undefined
       }))
     },

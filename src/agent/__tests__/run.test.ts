@@ -239,7 +239,7 @@ describe('a multi-step turn', () => {
     const tail = h.requests[1].slice(h.requests[0].length)
     expect(tail.map(m => m.role)).toEqual(['assistant', 'tool', 'user'])
     // The tag write has no call id to answer; its outcome goes in a user note.
-    expect(tail[2].content).toContain('update_document: #1 "Chapter 1" was rewritten (14 characters).')
+    expect(tail[2].content).toContain('update_document: Rewrote the EXISTING chapter #1 "Chapter 1": it had 5 characters and now has 14.')
   })
 
   it('answers a call to an unknown tool instead of leaving its id unanswered', async () => {
@@ -309,5 +309,29 @@ describe('what a step offers', () => {
   it('offers the writes natively on the tool protocol, the selection rewrite only with a selection', () => {
     const h = harness({ writeProtocol: 'tools', replies: [] })
     expect(h.run.offeredTools().map(t => t.name)).toEqual(['update_document', 'edit_document', 'read_chapter'])
+  })
+})
+
+describe('a chapter created for a write that never landed', () => {
+  const cutOff = text('<canvas new_chapter="第二章"><p>写到一半')
+
+  it('is removed when the run ends', async () => {
+    const h = harness({ policy: { continueAfterWrites: true }, replies: [cutOff, text('写不下去了。\n<doc_status>unchanged</doc_status>')] })
+    await h.run.start()
+    // A write to a chapter other than the start one waits for its content.
+    await vi.waitFor(() => expect(h.summary()).not.toBeNull())
+    expect(h.requests[1].at(-1)?.content).toContain('cut off')
+    expect(h.fake.book().map(c => c.title)).toEqual(['Chapter 1'])
+    expect(h.fake.removed).toHaveLength(1)
+    expect(h.summary()?.touched).toEqual([])
+  })
+
+  it('is left alone when the user stopped the run: what a stopped run made is theirs to keep or delete', async () => {
+    const h = harness({ replies: [() => { h.run.cancel(); return cutOff }] })
+    await h.run.start()
+    await vi.waitFor(() => expect(h.summary()).not.toBeNull())
+    expect(h.summary()).toMatchObject({ endReason: 'cancelled' })
+    expect(h.fake.book().map(c => c.title)).toEqual(['Chapter 1', '第二章'])
+    expect(h.fake.removed).toEqual([])
   })
 })

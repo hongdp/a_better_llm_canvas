@@ -89,6 +89,7 @@ export const zh: TranslationDictionary = {
     kindRewrite: '整章重写',
     kindSelection: '选区改写',
     kindPolished: (n: number) => `润色（${n} 段）`,
+    kindRenamed: '已改名',
     kindEdits: (n: number) => `${n} 处修改`,
     failed: (n: number) => `${n} 处未能定位`,
     keptDraft: (n: number) => `${n} 段保留初稿`,

@@ -43,6 +43,8 @@ export interface TaggedBlock {
   after: string
   /** The `chapter="…"` attribute of the opening tag, if any (agentic loop, spec D2). */
   chapter?: string
+  /** The `new_chapter="…"` attribute: the block creates a chapter of that title. */
+  newChapter?: string
 }
 
 /**
@@ -51,6 +53,17 @@ export interface TaggedBlock {
  */
 export function chapterAttribute(openingTag: string): string | undefined {
   const m = /\bchapter\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(openingTag)
+  const value = (m?.[1] ?? m?.[2] ?? '').trim()
+  return value || undefined
+}
+
+/**
+ * The `new_chapter="…"` attribute of a `<canvas>` opening tag: the title of a
+ * chapter the block creates and fills. (`\bchapter` above never matches
+ * inside it: `_c` is not a word boundary.)
+ */
+export function newChapterAttribute(openingTag: string): string | undefined {
+  const m = /\bnew_chapter\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(openingTag)
   const value = (m?.[1] ?? m?.[2] ?? '').trim()
   return value || undefined
 }
@@ -75,13 +88,15 @@ export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
   }
 
   const chapter = chapterAttribute(openMatch[0])
+  const newChapter = newChapterAttribute(openMatch[0])
+  const named = { ...(chapter ? { chapter } : {}), ...(newChapter ? { newChapter } : {}) }
   const before = text.substring(0, openMatch.index)
   const rest = text.substring(openMatch.index + openMatch[0].length)
 
   const closeRe = new RegExp(`</${tag}\\s*>`, 'i')
   const closeMatch = closeRe.exec(rest)
   if (!closeMatch) {
-    return { found: true, closed: false, inner: rest, before, after: '', chapter }
+    return { found: true, closed: false, inner: rest, before, after: '', ...named }
   }
 
   const inner = rest.substring(0, closeMatch.index)
@@ -95,7 +110,7 @@ export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
     inner: fenced ? fenced[1] : inner,
     before,
     after,
-    chapter
+    ...named
   }
 }
 
@@ -275,6 +290,8 @@ export interface ParsedAssistantResponse {
   canvasClosed: boolean
   /** kind === 'canvas': the chapter its `chapter="…"` attribute names, if any. */
   canvasChapter?: string
+  /** kind === 'canvas': the title its `new_chapter="…"` attribute creates, if any. */
+  canvasNewChapter?: string
   /**
    * Further `<canvas chapter="…">` blocks — full rewrites of OTHER chapters
    * written in the same reply (agentic loop, spec D2) — and, when every
@@ -282,7 +299,7 @@ export interface ParsedAssistantResponse {
    * that rewrites the active one (`chapter` absent). A second attribute-less
    * canvas is still stray, as it always was.
    */
-  extraCanvases: { text: string; closed: boolean; chapter?: string }[]
+  extraCanvases: { text: string; closed: boolean; chapter?: string; newChapter?: string }[]
   /**
    * Document-markup regions removed from `chatText` because no channel took
    * them (a second channel's block, or markup too broken to parse). Never
@@ -324,27 +341,33 @@ export function stripStrayDocumentMarkup(text: string): { text: string; removed:
 }
 
 /**
- * Pull every `<canvas chapter="…">` block out of `text`. Attribute-less
+ * Pull every `<canvas chapter="…">` and `<canvas new_chapter="…">` block out
+ * of `text`. Attribute-less
  * canvases are left in place for the stray pass. A block with no closing tag
  * is taken as unclosed (truncated) and ends the scan.
  */
 function takeChapterCanvases(text: string): {
-  blocks: { text: string; closed: boolean; chapter: string }[]
+  blocks: { text: string; closed: boolean; chapter?: string; newChapter?: string }[]
   rest: string
 } {
-  const blocks: { text: string; closed: boolean; chapter: string }[] = []
+  const blocks: { text: string; closed: boolean; chapter?: string; newChapter?: string }[] = []
   let rest = text
   const openRe = /<canvas\s[^>]*>/gi
   let m: RegExpExecArray | null
   openRe.lastIndex = 0
   while ((m = openRe.exec(rest)) !== null) {
     const chapter = chapterAttribute(m[0])
-    if (!chapter) continue
+    const newChapter = newChapterAttribute(m[0])
+    if (!chapter && !newChapter) continue
     const after = rest.slice(m.index + m[0].length)
     const close = /<\/canvas\s*>/i.exec(after)
     const inner = close ? after.slice(0, close.index) : after
     const fenced = inner.match(/^\s*```(?:html)?\s*([\s\S]*?)\s*```\s*$/i)
-    blocks.push({ text: fenced ? fenced[1] : inner, closed: !!close, chapter })
+    blocks.push({
+      text: fenced ? fenced[1] : inner,
+      closed: !!close,
+      ...(newChapter ? { newChapter } : { chapter })
+    })
     const tail = close ? after.slice(close.index + close[0].length) : ''
     rest = (rest.slice(0, m.index).trim() + '\n\n' + tail.trim()).trim()
     openRe.lastIndex = 0
@@ -402,7 +425,8 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
     result.kind = 'canvas'
     result.canvasText = canvasBlock.inner
     result.canvasClosed = canvasBlock.closed
-    if (canvasBlock.chapter) result.canvasChapter = canvasBlock.chapter
+    if (canvasBlock.newChapter) result.canvasNewChapter = canvasBlock.newChapter
+    else if (canvasBlock.chapter) result.canvasChapter = canvasBlock.chapter
     result.chatText = joinAround(canvasBlock.before, canvasBlock.after)
   }
 
@@ -423,7 +447,7 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
    */
   if (result.kind === 'edits' && result.editBlocks.every(b => !!b.chapter)) {
     const own = extractTaggedBlock(result.chatText, 'canvas')
-    if (own.found && !own.chapter) {
+    if (own.found && !own.chapter && !own.newChapter) {
       result.extraCanvases.push({ text: own.inner, closed: own.closed })
       result.chatText = joinAround(own.before, own.after)
     }

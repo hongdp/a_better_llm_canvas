@@ -131,12 +131,12 @@ describe('buildChatSystemPrompt', () => {
 })
 
 describe('agent rules: writing several chapters', () => {
-  it('teaches one chapter per reply, creating the next one alongside, on both protocols', async () => {
+  it('teaches one chapter per reply, asking for the next one\'s needs alongside, on both protocols', async () => {
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     for (const protocol of ['markup', 'tools'] as const) {
       const prompt = buildChatSystemPrompt({ protocol, agentTools: true })
       expect(prompt).toContain('ONE chapter per reply')
-      expect(prompt).toContain('also create the next one')
+      expect(prompt).toContain('also ask for what the next one needs')
       expect(prompt).toContain('Never put two or more chapters into one reply')
     }
     // Off: not a byte of it.
@@ -146,10 +146,24 @@ describe('agent rules: writing several chapters', () => {
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     const prompt = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
     expect(prompt).toContain('ONE chapter per reply — you continue after each')
-    expect(prompt).not.toContain('also create the next one')
+    expect(prompt).not.toContain('also ask for what the next one needs')
     // A tip that saves a step, not a rule (user decision 2026-10-06).
-    expect(prompt).toContain('You can save a step by creating the next chapter in the same reply that writes this one')
+    expect(prompt).toContain('You can save a step by asking for what the next chapter needs (e.g. reading its source passages) in the same reply that writes this one')
     expect(prompt).toContain('A reply that does neither ends your turn')
+  })
+
+  it('creates a chapter only by writing it, on both protocols', async () => {
+    // A lone create_chapter step cost a full planning pass that the writing
+    // step then repeated (105–158 s measured, 2026-10-06).
+    const { buildChatSystemPrompt } = await import('../systemPrompt')
+    const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
+    expect(markup).toContain('<canvas new_chapter="its title">…its full text…</canvas> creates it at the end of the book and fills it in one go')
+    const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
+    expect(tools).toContain('call update_document with `new_chapter` set to its title')
+    for (const prompt of [markup, tools]) {
+      expect(prompt).toContain('There is no separate step for creating a chapter')
+      expect(prompt).not.toContain('create_chapter')
+    }
   })
 
   it('puts the work in the reply that announces it, and never sells a tool call as the way to keep going', async () => {

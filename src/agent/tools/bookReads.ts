@@ -1,6 +1,9 @@
 /**
  * Reading and moving around the book: read_chapter, grep, list_chapters,
- * open_chapter, create_chapter (spec §6, D6).
+ * open_chapter, delete_chapter, and rename_chapter (defined with the writes it
+ * shares state with) (spec §6, D6). There is no create_chapter: a
+ * chapter is created by the write that fills it (documentWrites,
+ * claimNewChapter).
  *
  * The model finds what it needs from the CHAPTER INDEX it is sent every turn
  * and reads it here — the user no longer attaches chapters by hand (D7).
@@ -13,7 +16,7 @@ import { htmlToPlainText } from '../../utils/llmContext'
 import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
-import { forgetChapter, userEdited } from './documentWrites'
+import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
 import { isBlankContent } from '../../utils/text'
 
 /** Per chapter per call — the ledger's per-chapter cap (MAX_LEDGER_DOC_CHARS). */
@@ -66,8 +69,9 @@ interface ParagraphRange {
 }
 
 /**
- * "40-60", "45", "81-" or [40, 60]. A string error for anything else, so the
- * model learns the syntax instead of silently reading the wrong part.
+ * "40-60", "45", "81-", "-15" (the first 15) or [40, 60]. A string error for
+ * anything else, so the model learns the syntax instead of silently reading
+ * the wrong part.
  */
 function parseRange(raw: unknown): ParagraphRange | null | string {
   if (raw === undefined || raw === null || raw === '') return null
@@ -78,8 +82,15 @@ function parseRange(raw: unknown): ParagraphRange | null | string {
   // grok has sent the range quoted twice ("\"50-80\"") — the value is plain,
   // only its wrapping is wrong, so it is read rather than refused.
   const value = String(raw).trim().replace(/^["'“”「」]+|["'“”「」]+$/g, '')
+  // "-15": grok asked for the opening paragraphs this way (2026-10-06) and
+  // was refused; it means what a reader would take it to mean.
+  const head = /^\s*(?:-|–|~)\s*¶?(\d+)\s*$/.exec(value)
+  if (head) {
+    const to = Number(head[1])
+    return to >= 1 ? { from: 1, to } : `paragraph range ${JSON.stringify(raw)} is not valid`
+  }
   const m = /^\s*¶?(\d+)\s*(?:(-|–|~)\s*¶?(\d+)?)?\s*$/.exec(value)
-  if (!m) return `paragraphs must look like "40-60", "45" or "81-", not ${JSON.stringify(raw)}`
+  if (!m) return `paragraphs must look like "40-60", "45", "81-" or "-15", not ${JSON.stringify(raw)}`
   const from = Number(m[1])
   const to = m[3] !== undefined ? Number(m[3]) : m[2] ? null : from
   if (from < 1 || (to !== null && to < from)) return `paragraph range ${JSON.stringify(raw)} is not valid`
@@ -110,7 +121,7 @@ export const readChapterTool = defineTool<ReadArgs>({
         items: { type: 'string' }
       },
       format: { type: 'string', description: '"text" (default, numbered paragraphs) or "html" (for editing).' },
-      paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45" or "81-". Default: the whole chapter.' }
+      paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.' }
     },
     required: ['chapters']
   },
@@ -458,63 +469,11 @@ export const openChapterTool = defineTool<{ chapter: unknown }>({
   }
 })
 
-// ── create_chapter ──────────────────────────────────────────────────────────
-
-export const createChapterTool = defineTool<{ title: string }>({
-  name: 'create_chapter',
-  description:
-    'Add a new, empty chapter at the end of the book; it opens in the editor at once. Then write its text — in the same reply if you can. ' +
-    'Do not create a chapter that already exists in the CHAPTER INDEX: to rewrite an existing chapter, just write to it.',
-  parameters: {
-    type: 'object',
-    properties: { title: { type: 'string', description: 'The chapter title, e.g. "第一章 风起".' } },
-    required: ['title']
-  },
-  kind: 'navigate',
-  isAvailable: () => true,
-  parse: raw => {
-    const title = typeof raw?.title === 'string' ? raw.title.trim() : ''
-    return title ? { title } : 'the title was empty'
-  },
-  execute: ({ title }, ctx): ToolResult => {
-    const existing = ctx.document.chapters().findIndex(c => c.title.trim() === title)
-    if (existing !== -1) {
-      return fail('create_chapter', `A chapter titled "${title}" already exists as #${existing + 1}. Do not create or open it — write to it directly: ${fullWrite(ctx, existing + 1)}.`)
-    }
-    const id = ctx.document.create(title)
-    ctx.run.created.add(id)
-    // Empty, and the model made it: nothing to read before writing.
-    ctx.run.htmlShown.add(id)
-    ctx.run.inContext.add(id)
-    ctx.run.known.set(id, ctx.document.chapters().find(c => c.id === id)?.content ?? '')
-    const number = ctx.document.chapters().findIndex(c => c.id === id) + 1
-    ctx.run.touched.set(id, { documentId: id, titleAtRun: title, kind: 'created', changes: 0, failed: 0 })
-    // Opened at once (user decision 2026-10-06): the next step spends 20–60 s
-    // planning the chapter before its first word, and the user should be
-    // looking at the new chapter meanwhile, not at the old one. Not while a
-    // selection rewrite is pending: the selection lives in the open chapter.
-    // Nor once the user has gone to another chapter: they may be typing there.
-    const selectionPending = ctx.selection.range() !== null && !ctx.run.selectionApplied
-    const opened = !selectionPending && !ctx.document.userMoved()
-    if (opened) ctx.document.open(id)
-    return {
-      ok: true,
-      content: `Created chapter #${number} "${title}" (empty)${opened ? ', now open in the editor' : ''}. Write its text now: ${fullWrite(ctx, number)}.` +
-        (ctx.run.continuesAfterWrites === false
-          // Writes end the turn here, so the next chapter must be asked for
-          // in the same reply or the series stops after this one.
-          ? ' If more chapters follow it, create the next one in that same reply — the turn continues and your next reply writes it.'
-          : ''),
-      trace: `➕ create #${number} "${title}"`
-    }
-  }
-})
-
 // ── delete_chapter ──────────────────────────────────────────────────────────
 
 /**
- * Delete a chapter nothing would be lost from: one this run created (a
- * create_chapter by mistake — grok left an empty "skip" behind, 2026-10-06)
+ * Delete a chapter nothing would be lost from: one this run created (by
+ * mistake — grok once created an empty "skip" chapter, 2026-10-06)
  * or an empty one. A chapter with text is the user's to delete; the loop has
  * no way yet to ask for their confirmation (spec §6, `approval`), so it says
  * so instead.
@@ -576,4 +535,4 @@ export const deleteChapterTool = defineTool<{ chapter: unknown }>({
   }
 })
 
-export const BOOK_TOOLS = [readChapterTool, grepTool, listChaptersTool, openChapterTool, createChapterTool, deleteChapterTool]
+export const BOOK_TOOLS = [readChapterTool, grepTool, listChaptersTool, openChapterTool, deleteChapterTool, renameChapterTool]
