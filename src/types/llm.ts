@@ -36,9 +36,30 @@ export interface ProviderConfig {
   tools?: unknown[]
 }
 
+/**
+ * A tool call as the model made it, kept for replay in a later step of the
+ * same turn (docs/features/agentic_chat_loop.md §5.5).
+ */
+export interface LLMToolCall {
+  id: string
+  name: string
+  /**
+   * The arguments EXACTLY as received. Never re-serialize parsed JSON into
+   * this: grok's prompt cache is exact-prefix, so a re-spaced replay turns
+   * every follow-up step into a full-price prefill.
+   */
+  argumentsText: string
+}
+
 export interface LLMMessage {
-  role: 'system' | 'user' | 'assistant'
+  role: 'system' | 'user' | 'assistant' | 'tool'
   content: string
+  /** Assistant only: the tool calls this reply made. */
+  toolCalls?: LLMToolCall[]
+  /** Tool only: the call this message answers. */
+  toolCallId?: string
+  /** Tool only: the tool's name (Gemini keys results by name, not id). */
+  name?: string
   images?: string[] // base64 Data URLs
   /**
    * Marks the end of a stable prompt prefix for providers with explicit

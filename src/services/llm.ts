@@ -1,6 +1,7 @@
 import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
-import { DOCUMENT_TOOLS, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
+import { fromOpenAITools, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
+import { toOpenAIMessages, toAnthropicMessages, toGeminiContents } from './providerMessages'
 
 /**
  * A base URL typed with a trailing slash is normal; the resulting `//path`
@@ -141,38 +142,8 @@ async function streamOpenAI(
   }
 
   const url = `${trimBaseUrl(config.baseUrl)}/chat/completions`
-  const openAIMessages = messages.map(m => {
-    if (m.images && m.images.length > 0) {
-      const contentParts: Array<
-        { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } }
-      > = [
-        {
-          type: 'text',
-          text: m.content
-        }
-      ]
-      m.images.forEach((img, idx) => {
-        contentParts.push({
-          type: 'text',
-          text: `\n[Image ${idx + 1}]:`
-        })
-        contentParts.push({
-          type: 'image_url',
-          image_url: {
-            url: img
-          }
-        })
-      })
-      return {
-        role: m.role,
-        content: contentParts
-      }
-    }
-    return {
-      role: m.role,
-      content: m.content
-    }
-  })
+  // Tool exchanges included — see services/providerMessages.
+  const openAIMessages = toOpenAIMessages(messages)
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -261,29 +232,7 @@ async function streamGemini(
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
-  const contents = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => {
-      const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [{ text: m.content }]
-      if (m.images && m.images.length > 0) {
-        m.images.forEach((img, idx) => {
-          const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
-          if (match) {
-            parts.push({ text: `\n[Image ${idx + 1}]:` })
-            parts.push({
-              inlineData: {
-                mimeType: match[1],
-                data: match[2]
-              }
-            })
-          }
-        })
-      }
-      return {
-        role: m.role === 'assistant' ? 'model' : 'user',
-        parts,
-      }
-    })
+  const contents = toGeminiContents(messages.filter((m) => m.role !== 'system'))
 
   const body: Record<string, unknown> = {
     contents,
@@ -312,10 +261,7 @@ async function streamGemini(
     body['generationConfig'] = geminiGenerationConfig
   }
   if (config.tools?.length) {
-    const requested = config.tools as Array<{ function?: { name?: string } }>
-    body['tools'] = toGeminiTools(
-      DOCUMENT_TOOLS.filter(t => requested.some(x => x.function?.name === t.name))
-    )
+    body['tools'] = toGeminiTools(fromOpenAITools(config.tools))
   }
 
   // Gemini uses streamGenerateContent for streaming. Support model names with or without 'models/' prefix.
@@ -453,56 +399,14 @@ async function streamGemini(
 /**
  * Anthropic Claude stream handler
  */
-interface AnthropicContentPart {
-  type: string
-  text?: string
-  source?: { type: string; media_type: string; data: string }
-  cache_control?: { type: string }
-}
-
 async function streamAnthropic(
   messages: LLMMessage[],
   config: ProviderConfig & { debug?: boolean; signal?: AbortSignal },
   callbacks: StreamCallbacks
 ): Promise<void> {
   const systemMessage = messages.find((m) => m.role === 'system')
-  const anthropicMessages: Array<{ role: string; content: string | AnthropicContentPart[] }> = messages
-    .filter((m) => m.role !== 'system')
-    .map(m => {
-      if (m.images && m.images.length > 0) {
-        const content: AnthropicContentPart[] = [
-          {
-            type: 'text',
-            text: m.content
-          }
-        ]
-        m.images.forEach((img, idx) => {
-          const match = img.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/)
-          if (match) {
-            content.push({
-              type: 'text',
-              text: `\n[Image ${idx + 1}]:`
-            })
-            content.push({
-              type: 'image',
-              source: {
-                type: 'base64',
-                media_type: match[1],
-                data: match[2]
-              }
-            })
-          }
-        })
-        return {
-          role: m.role,
-          content
-        }
-      }
-      return {
-        role: m.role,
-        content: m.content
-      }
-    })
+  const nonSystemSources = messages.filter((m) => m.role !== 'system')
+  const { messages: anthropicMessages, sourceIndex } = toAnthropicMessages(nonSystemSources)
 
   const body: Record<string, unknown> = {
     model: config.model,
@@ -515,10 +419,7 @@ async function streamAnthropic(
   }
 
   if (config.tools?.length) {
-    const requested = config.tools as Array<{ function?: { name?: string } }>
-    body['tools'] = toAnthropicTools(
-      DOCUMENT_TOOLS.filter(t => requested.some(x => x.function?.name === t.name))
-    )
+    body['tools'] = toAnthropicTools(fromOpenAITools(config.tools))
   }
 
   // Anthropic's extended thinking is a budget, and the API requires it to be
@@ -548,11 +449,12 @@ async function streamAnthropic(
   // document context). Anthropic looks back from each breakpoint for hits,
   // so a breakpoint that advances turn-by-turn still reads last turn's cache.
   // Max 3 message-level breakpoints (the system block uses the 4th slot).
+  // Indexed through sourceIndex: merged tool results make input and output
+  // positions differ (see toAnthropicMessages).
   let cacheBreakpoints = 0
-  const nonSystemSources = messages.filter((m) => m.role !== 'system')
   nonSystemSources.forEach((source, idx) => {
     if (!source.cacheHint || cacheBreakpoints >= 3 || !source.content) return
-    const target = anthropicMessages[idx]
+    const target = anthropicMessages[sourceIndex[idx]]
     if (typeof target.content === 'string') {
       target.content = [
         { type: 'text', text: target.content, cache_control: { type: 'ephemeral' } }

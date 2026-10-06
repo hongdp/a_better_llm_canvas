@@ -716,3 +716,46 @@ describe('useChatLLM — stopping mid-stream', () => {
     harness.unmount()
   })
 })
+
+describe('useChatLLM — the agentic loop (phase 1)', () => {
+  let savedProvider: string
+  beforeEach(() => { savedProvider = useAppStore.getState().activeProvider })
+  afterEach(() => { useAppStore.setState({ activeProvider: savedProvider as never }) })
+
+  it('does not retry a plain answer on the tool protocol, which never taught <doc_status>', async () => {
+    // ollama resolves to the tool protocol under 'auto'. Before the loop a
+    // question answered in prose was judged "undeclared" and retried three
+    // times with an instruction about tags this model was never shown.
+    useAppStore.setState({ activeProvider: 'ollama' })
+    responses.push('大约一千二百字。')
+    const harness = renderChatHook()
+
+    await send(harness, '这一章多少字？')
+
+    expect(calls).toHaveLength(1)
+    expect(assistantBubble()).toEqual(['大约一千二百字。'])
+    harness.unmount()
+  })
+
+  it('applies every edit_document call in a reply, not only the first', async () => {
+    useAppStore.setState({
+      documents: [doc('doc-1', 'Chapter 1', '<p>one</p><p>two</p>')],
+      activeDocumentId: 'doc-1'
+    })
+    responses.push({
+      text: '两处都改了。',
+      toolCalls: [
+        { index: 0, name: 'edit_document', argumentsText: '{"edits":[{"search":"<p>one</p>","replace":"<p>ONE</p>"}]}' },
+        { index: 1, name: 'edit_document', argumentsText: '{"edits":[{"search":"<p>two</p>","replace":"<p>TWO</p>"}]}' }
+      ]
+    } as never)
+    const harness = renderChatHook()
+
+    await send(harness, '两段都大写')
+
+    const { stripDiffMarkup } = await import('../../utils/diff')
+    expect(stripDiffMarkup(activeContent())).toBe('<p>ONE</p><p>TWO</p>')
+    expect(assistantBubble()).toEqual(['两处都改了。'])
+    harness.unmount()
+  })
+})

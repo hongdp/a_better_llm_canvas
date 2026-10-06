@@ -67,8 +67,12 @@ src/
                           #   dynamicContext, types
     useRoleplayLLM.ts     # Roleplay game-master mode streaming
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
+  agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
+                          #   step policy, invocation collection, tools/ (document writes)
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
+    providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored
+                          #   by scripts/server_generation.py — change both together
     chapterSummaries.ts   # Background chapter summarizer (lazy queue)
     imageGen.ts  imageGenModels.ts
     import/               # Import pipeline: parser, contentBuilder, imageProcessor,
@@ -205,6 +209,15 @@ of user intent.
 Safety failures (403)
 trigger a self-healing retry with local sensitive-word censorship, then an
 interactive Prompt Editor UI (`status === 'prompt_edit'`).
+
+**A turn is a run of steps** (`src/agent/run.ts`, spec
+`docs/features/agentic_chat_loop.md`). Each step is one model call; native
+tool calls and markup blocks are normalized into the same tool invocations and
+executed from one registry — add a tool with `defineTool` and register it in
+`useChatLLM`'s `CHAT_TOOLS`. Tools reach the editor and store only through the
+ports in `src/agent/types.ts`. A run never rebuilds an earlier message: each
+step appends, so follow-up steps hit grok's exact-prefix cache, and tool-call
+arguments are replayed byte-for-byte (`argumentsText`).
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

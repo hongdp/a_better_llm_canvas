@@ -18,6 +18,13 @@ Provider parity note: the request shapes, delta extraction and usage
 accounting below are a direct port of `src/services/llm.ts`. When that file
 changes, this one must change with it — in particular the Anthropic usage
 rules and the Gemini safety-block detection, which carry their own comments.
+That includes tool calling (docs/features/agentic_chat_loop.md): tool
+definitions arrive OpenAI-shaped in `config["tools"]` and are translated per
+provider (`_anthropic_tools`, `_gemini_tools` mirror `toAnthropicTools` /
+`toGeminiTools` in src/utils/documentTools.ts); history messages may carry
+`toolCalls` (assistant) or be `role: "tool"` results, and every builder
+replays them in its provider's native shape; every stream reader reports
+tool-call deltas through `GenerationJob.note_tool_call`.
 
 Tests that stub the network should patch `server_generation._http_stream`
 (this module reads its own global) and may clear `server_generation.registry`.
@@ -422,6 +429,119 @@ def _split_data_url(image: str) -> Optional[Tuple[str, str]]:
     return match.group(1), match.group(2)
 
 
+# ── Tool calling: definitions and history (docs/features/agentic_chat_loop.md)
+#
+# Wire contract, per message: an assistant reply may carry
+# `toolCalls: [{id, name, argumentsText}]`; a tool result is
+# `{role: "tool", content, toolCallId, name}`. Before these helpers existed the
+# builders copied only role + content, so an agentic loop's tool history was
+# dropped without a word and the model never saw its own calls or their
+# results.
+
+def _assistant_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The tool calls an assistant message made, or [] for any other message."""
+    if message.get("role") != "assistant":
+        return []
+    calls = message.get("toolCalls")
+    if not isinstance(calls, list):
+        return []
+    return [call for call in calls if isinstance(call, dict)]
+
+
+def _arguments_text(call: Dict[str, Any]) -> str:
+    text = call.get("argumentsText")
+    return text if isinstance(text, str) else ""
+
+
+def _parsed_arguments(call: Dict[str, Any]) -> Dict[str, Any]:
+    """argumentsText as an object — for providers that take arguments parsed.
+
+    Anything that is not a JSON object becomes {}: the providers that want a
+    parsed value (Anthropic `input`, Gemini `args`) reject anything else.
+    """
+    try:
+        parsed = json.loads(_arguments_text(call))
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _tool_specs(tools: Any) -> List[Dict[str, Any]]:
+    """Read back the OpenAI-shaped tool list a request carries.
+
+    Mirrors `fromOpenAITools` in src/utils/documentTools.ts: the translation is
+    generic, so a tool this module has never heard of still reaches the model.
+    Malformed entries are skipped rather than failing the whole request.
+    """
+    specs: List[Dict[str, Any]] = []
+    for entry in tools if isinstance(tools, list) else []:
+        fn = entry.get("function") if isinstance(entry, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        parameters = fn.get("parameters")
+        if not isinstance(name, str) or not isinstance(parameters, dict):
+            continue
+        description = fn.get("description")
+        specs.append({
+            "name": name,
+            "description": description if isinstance(description, str) else "",
+            "parameters": parameters,
+        })
+    return specs
+
+
+def _anthropic_tools(tools: Any) -> List[Dict[str, Any]]:
+    """`toAnthropicTools`: same fields, `input_schema` instead of `parameters`."""
+    return [
+        {"name": s["name"], "description": s["description"], "input_schema": s["parameters"]}
+        for s in _tool_specs(tools)
+    ]
+
+
+def _gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
+    """`toGeminiTools`' `clean`: Gemini's schema dialect rejects the unknown keys
+    OpenAPI allows, so only the subset it accepts is carried over.
+
+    Presence tests follow JavaScript truthiness exactly: an empty
+    `properties` object or `required` list IS carried (both are truthy in JS),
+    an empty description is not.
+    """
+    out: Dict[str, Any] = {}
+    if isinstance(schema.get("type"), str):
+        out["type"] = schema["type"].upper()
+    if schema.get("description"):
+        out["description"] = schema["description"]
+    properties = schema.get("properties")
+    if isinstance(properties, dict):
+        out["properties"] = {
+            key: _gemini_schema(value if isinstance(value, dict) else {})
+            for key, value in properties.items()
+        }
+    items = schema.get("items")
+    if isinstance(items, dict):
+        out["items"] = _gemini_schema(items)
+    if schema.get("required") is not None:
+        out["required"] = schema["required"]
+    return out
+
+
+def _gemini_tools(tools: Any) -> List[Dict[str, Any]]:
+    specs = _tool_specs(tools)
+    if not specs:
+        return []
+    return [{
+        "functionDeclarations": [
+            {
+                "name": s["name"],
+                "description": s["description"],
+                "parameters": _gemini_schema(s["parameters"]),
+            }
+            for s in specs
+        ]
+    }]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Reasoning effort
 # ══════════════════════════════════════════════════════════════════════════════
@@ -472,7 +592,34 @@ def build_openai_request(
     for message in messages:
         images = message.get("images") or []
         content = message.get("content") or ""
-        if images:
+        if message.get("role") == "tool":
+            openai_messages.append({
+                "role": "tool",
+                "tool_call_id": message.get("toolCallId") or "",
+                "content": content,
+            })
+            continue
+        tool_calls = _assistant_tool_calls(message)
+        if tool_calls:
+            openai_messages.append({
+                "role": "assistant",
+                # A reply that only called tools has no text; the API's own
+                # replay of such a turn uses null, not "".
+                "content": content or None,
+                # `arguments` is the text exactly as the model streamed it —
+                # never parsed and re-dumped. xAI's prompt cache is
+                # exact-prefix, so a re-spaced replay turns every later step
+                # into a full-price prefill.
+                "tool_calls": [
+                    {
+                        "id": call.get("id") or "",
+                        "type": "function",
+                        "function": {"name": call.get("name") or "", "arguments": _arguments_text(call)},
+                    }
+                    for call in tool_calls
+                ],
+            })
+        elif images:
             parts: List[Dict[str, Any]] = [{"type": "text", "text": content}]
             for idx, img in enumerate(images):
                 parts.append({"type": "text", "text": f"\n[Image {idx + 1}]:"})
@@ -521,11 +668,49 @@ def build_gemini_request(
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
     system_message = next((m for m in messages if m.get("role") == "system"), None)
 
-    contents: List[Dict[str, Any]] = []
+    # Gemini keys a function result by the tool's NAME, not a call id. The
+    # client sends `name` on every tool message; recovering it from the call
+    # it answers covers a message that arrives without one.
+    call_names: Dict[str, str] = {}
     for message in messages:
-        if message.get("role") == "system":
+        for call in _assistant_tool_calls(message):
+            if call.get("id") and call.get("name"):
+                call_names[str(call["id"])] = str(call["name"])
+
+    contents: List[Dict[str, Any]] = []
+    previous_was_tool = False
+    for message in messages:
+        role = message.get("role")
+        if role == "system":
             continue
-        parts: List[Dict[str, Any]] = [{"text": message.get("content") or ""}]
+        content = message.get("content") or ""
+        if role == "tool":
+            response_part = {
+                "functionResponse": {
+                    "name": message.get("name") or call_names.get(str(message.get("toolCallId") or ""), ""),
+                    "response": {"content": content},
+                }
+            }
+            # Every result for one model turn travels in ONE user message.
+            if previous_was_tool and contents:
+                contents[-1]["parts"].append(response_part)
+            else:
+                contents.append({"role": "user", "parts": [response_part]})
+            previous_was_tool = True
+            continue
+        previous_was_tool = False
+
+        tool_calls = _assistant_tool_calls(message)
+        if tool_calls:
+            model_parts: List[Dict[str, Any]] = [{"text": content}] if content else []
+            for call in tool_calls:
+                model_parts.append({
+                    "functionCall": {"name": call.get("name") or "", "args": _parsed_arguments(call)}
+                })
+            contents.append({"role": "model", "parts": model_parts})
+            continue
+
+        parts: List[Dict[str, Any]] = [{"text": content}]
         for idx, img in enumerate(message.get("images") or []):
             split = _split_data_url(img)
             if split:
@@ -550,6 +735,9 @@ def build_gemini_request(
         generation_config["thinkingConfig"] = {"thinkingBudget": THINKING_BUDGET_TOKENS[gemini_effort]}
     if generation_config:
         body["generationConfig"] = generation_config
+    gemini_tools = _gemini_tools(config.get("tools"))
+    if gemini_tools:
+        body["tools"] = gemini_tools
 
     # Support model names with or without the 'models/' prefix.
     model = config.get("model") or ""
@@ -569,9 +757,48 @@ def build_anthropic_request(
     non_system = [m for m in messages if m.get("role") != "system"]
 
     anthropic_messages: List[Dict[str, Any]] = []
+    # source_index[i]: the anthropic_messages entry non_system[i] landed in
+    # (`sourceIndex` in src/services/providerMessages.ts). Merging tool results
+    # breaks the old one-to-one indexing, and the cache breakpoint loop below
+    # has to find the message the hint was set on.
+    source_index: List[int] = []
+    previous_was_tool = False
     for message in non_system:
         images = message.get("images") or []
         content = message.get("content") or ""
+        role = message.get("role")
+
+        if role == "tool":
+            result_block = {
+                "type": "tool_result",
+                "tool_use_id": message.get("toolCallId") or "",
+                "content": content,
+            }
+            # Anthropic requires every result for one assistant turn in ONE
+            # user message, so consecutive tool messages share it.
+            if previous_was_tool and anthropic_messages:
+                anthropic_messages[-1]["content"].append(result_block)
+            else:
+                anthropic_messages.append({"role": "user", "content": [result_block]})
+            source_index.append(len(anthropic_messages) - 1)
+            previous_was_tool = True
+            continue
+        previous_was_tool = False
+        source_index.append(len(anthropic_messages))
+
+        tool_calls = _assistant_tool_calls(message)
+        if tool_calls:
+            blocks: List[Dict[str, Any]] = [{"type": "text", "text": content}] if content else []
+            for call in tool_calls:
+                blocks.append({
+                    "type": "tool_use",
+                    "id": call.get("id") or "",
+                    "name": call.get("name") or "",
+                    "input": _parsed_arguments(call),
+                })
+            anthropic_messages.append({"role": "assistant", "content": blocks})
+            continue
+
         if images:
             parts: List[Dict[str, Any]] = [{"type": "text", "text": content}]
             for idx, img in enumerate(images):
@@ -595,6 +822,10 @@ def build_anthropic_request(
         "max_tokens": config.get("maxOutputTokens") or 8192,
         "stream": True,
     }
+
+    anthropic_tools = _anthropic_tools(config.get("tools"))
+    if anthropic_tools:
+        body["tools"] = anthropic_tools
 
     # Extended thinking is a budget, and the API requires it to stay under
     # max_tokens — clamp rather than let the request 400.
@@ -622,7 +853,7 @@ def build_anthropic_request(
     for idx, source in enumerate(non_system):
         if not source.get("cacheHint") or cache_breakpoints >= 3 or not source.get("content"):
             continue
-        target = anthropic_messages[idx]
+        target = anthropic_messages[source_index[idx]]
         if isinstance(target["content"], str):
             target["content"] = [{
                 "type": "text",
@@ -775,7 +1006,20 @@ async def _stream_anthropic(
 
             event_type = parsed.get("type")
             delta = parsed.get("delta") or {}
-            if event_type in ("content_block_delta", "message_delta") and delta.get("text"):
+            block = parsed.get("content_block") or {}
+            # Tool calls are keyed by the event's content-block index, as
+            # streamAnthropic does (`json.index ?? 0`): a text block before
+            # the call makes it index 1, and that is fine — it is a key.
+            block_index = parsed.get("index")
+            if block_index is None:
+                block_index = 0
+            if event_type == "content_block_start" and block.get("type") == "tool_use":
+                # Anthropic opens a block naming the tool, then streams its
+                # input as JSON fragments.
+                job.note_tool_call(block_index, block.get("id"), block.get("name"), "")
+            elif event_type == "content_block_delta" and delta.get("type") == "input_json_delta":
+                job.note_tool_call(block_index, None, None, delta.get("partial_json") or "")
+            elif event_type in ("content_block_delta", "message_delta") and delta.get("text"):
                 job.append(delta["text"])
 
             if event_type == "message_start" and (parsed.get("message") or {}).get("usage"):
@@ -874,6 +1118,24 @@ def _handle_gemini_chunk(
             text = parts[0].get("text")
             if text:
                 job.append(text)
+        for part in parts:
+            function_call = part.get("functionCall") if isinstance(part, dict) else None
+            if isinstance(function_call, dict):
+                # Gemini delivers a call whole, not in fragments, so it is one
+                # delta carrying the complete arguments. Index 0 and compact,
+                # non-ASCII-preserving JSON mirror streamGemini's
+                # `index: 0` / `JSON.stringify(args ?? {})` byte for byte.
+                args = function_call.get("args")
+                job.note_tool_call(
+                    0,
+                    None,
+                    function_call.get("name"),
+                    json.dumps(
+                        args if args is not None else {},
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                    ),
+                )
     return usage
 
 

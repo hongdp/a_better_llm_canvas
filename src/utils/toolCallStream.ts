@@ -92,6 +92,8 @@ export interface FinishedToolCall {
   name: string
   /** Parsed arguments, or null when the model produced unparseable JSON. */
   args: Record<string, unknown> | null
+  /** The raw argument text, kept for an exact replay in a later step. */
+  argumentsText: string
 }
 
 /**
@@ -112,6 +114,6 @@ export function finishToolCalls(accumulators: Map<number, ToolCallAccumulator>):
       } catch {
         args = null
       }
-      return { id: acc.id, name: acc.name, args }
+      return { id: acc.id, name: acc.name, args, argumentsText: acc.argumentsText }
     })
 }

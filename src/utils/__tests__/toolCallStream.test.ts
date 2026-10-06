@@ -59,8 +59,16 @@ describe('applyToolCallDelta / finishToolCalls', () => {
     applyToolCallDelta(a, { index: 0, function: { arguments: ' "<p>hi</p>"}' } })
 
     expect(finishToolCalls(a)).toEqual([
-      { id: 'call_1', name: 'update_document', args: { html: '<p>hi</p>' } }
+      { id: 'call_1', name: 'update_document', args: { html: '<p>hi</p>' }, argumentsText: '{"html": "<p>hi</p>"}' }
     ])
+  })
+
+  it('keeps the argument bytes exactly as they arrived', () => {
+    // A later step replays the call to the model; grok's prompt cache is
+    // exact-prefix, so re-serialized JSON would miss the cache every step.
+    const a = acc()
+    applyToolCallDelta(a, { index: 0, function: { name: 'read_chapter', arguments: '{"chapter":  "第三章" }' } })
+    expect(finishToolCalls(a)[0].argumentsText).toBe('{"chapter":  "第三章" }')
   })
 
   it('keeps several calls apart and in order', () => {
@@ -85,7 +93,7 @@ describe('applyToolCallDelta / finishToolCalls', () => {
     const a = acc()
     applyToolCallDelta(a, { index: 0, function: { name: 'update_document', arguments: '{"html": "cut off' } })
 
-    expect(finishToolCalls(a)).toEqual([{ id: undefined, name: 'update_document', args: null }])
+    expect(finishToolCalls(a)).toEqual([{ id: undefined, name: 'update_document', args: null, argumentsText: '{"html": "cut off' }])
   })
 
   it('replaces rather than appends on a replay', () => {
@@ -101,7 +109,7 @@ describe('applyToolCallDelta / finishToolCalls', () => {
     })
 
     expect(finishToolCalls(a)).toEqual([
-      { id: undefined, name: 'update_document', args: { html: '<p>partial then whole</p>' } }
+      { id: undefined, name: 'update_document', args: { html: '<p>partial then whole</p>' }, argumentsText: '{"html":"<p>partial then whole</p>"}' }
     ])
   })
 

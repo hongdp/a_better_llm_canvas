@@ -1,6 +1,3 @@
-import type { ParsedAssistantResponse, EditBlock } from './text'
-import { stripStrayDocumentMarkup } from './text'
-
 /**
  * The document tools, in one internal shape, with adapters per provider.
  *
@@ -30,10 +27,15 @@ export interface JsonSchema {
   required?: string[]
 }
 
-export interface DocumentTool {
-  name: DocumentToolName
+/** Any tool, as the provider adapters see it: a name, a description, a schema. */
+export interface ToolSpec {
+  name: string
   description: string
   parameters: JsonSchema
+}
+
+export interface DocumentTool extends ToolSpec {
+  name: DocumentToolName
 }
 
 /**
@@ -107,20 +109,10 @@ export const DOCUMENT_TOOLS: DocumentTool[] = [
   }
 ]
 
-/** The tools a turn should offer, given what the turn can actually use. */
-export function toolsForTurn(options: {
-  hasSelection: boolean
-}): DocumentTool[] {
-  return DOCUMENT_TOOLS.filter(tool => {
-    if (tool.name === 'replace_selection') return options.hasSelection
-    return true
-  })
-}
-
 // ── Provider adapters ───────────────────────────────────────────────────────
 
 /** OpenAI, Grok, Ollama, llama.cpp — the shape this module already uses. */
-export function toOpenAITools(tools: DocumentTool[]): unknown[] {
+export function toOpenAITools(tools: ToolSpec[]): unknown[] {
   return tools.map(t => ({
     type: 'function',
     function: { name: t.name, description: t.description, parameters: t.parameters }
@@ -128,7 +120,7 @@ export function toOpenAITools(tools: DocumentTool[]): unknown[] {
 }
 
 /** Anthropic: same fields, `input_schema` instead of `parameters`. */
-export function toAnthropicTools(tools: DocumentTool[]): unknown[] {
+export function toAnthropicTools(tools: ToolSpec[]): unknown[] {
   return tools.map(t => ({
     name: t.name,
     description: t.description,
@@ -140,7 +132,7 @@ export function toAnthropicTools(tools: DocumentTool[]): unknown[] {
  * Gemini: one `functionDeclarations` array. Its schema dialect rejects the
  * unknown keys OpenAPI allows, so only the subset it accepts is passed through.
  */
-export function toGeminiTools(tools: DocumentTool[]): unknown[] {
+export function toGeminiTools(tools: ToolSpec[]): unknown[] {
   const clean = (schema: JsonSchema): Record<string, unknown> => {
     const out: Record<string, unknown> = { type: schema.type.toUpperCase() }
     if (schema.description) out.description = schema.description
@@ -162,57 +154,22 @@ export function toGeminiTools(tools: DocumentTool[]): unknown[] {
   }]
 }
 
-// ── Bridge to the existing apply pipeline ───────────────────────────────────
-
 /**
- * Present a tool call in the shape the completion path already understands.
+ * Read back the OpenAI-shaped list a request carries (`ProviderConfig.tools`).
  *
- * Everything downstream — the diff, canvas validation, image reinsertion,
- * edit-block application — was built against `ParsedAssistantResponse` and is
- * well tested. The tools change how a model EXPRESSES an edit, not what the
- * app does with it, so they are adapted here rather than duplicated there.
+ * The Anthropic and Gemini paths used to look the requested names up in
+ * DOCUMENT_TOOLS, so any tool not in that list — every tool the agentic loop
+ * adds — was dropped from the request without a word. Translating whatever
+ * was passed keeps the adapters ignorant of which tools exist.
  */
-export function toolCallToParsedResponse(
-  call: { name: string; args: Record<string, unknown> | null },
-  chatText: string
-): ParsedAssistantResponse {
-  // Markup-protocol tags written beside a tool call took no channel either.
-  const stray = stripStrayDocumentMarkup(chatText)
-  const base: ParsedAssistantResponse = {
-    kind: 'chat',
-    chatText: stray.text,
-    selectionText: '',
-    editBlocks: [],
-    canvasText: '',
-    canvasClosed: false,
-    strayMarkup: stray.removed
-  }
-
-  // Unparseable arguments mean the model was cut off mid-call. Reported as an
-  // unclosed canvas so it takes the existing "response was truncated, nothing
-  // applied" path instead of silently writing half a document.
-  if (!call.args) {
-    return { ...base, kind: 'canvas', canvasText: '', canvasClosed: false }
-  }
-
-  if (call.name === 'update_document') {
-    const html = typeof call.args.html === 'string' ? call.args.html : ''
-    return { ...base, kind: 'canvas', canvasText: html, canvasClosed: html.length > 0 }
-  }
-
-  if (call.name === 'replace_selection') {
-    const html = typeof call.args.html === 'string' ? call.args.html : ''
-    return { ...base, kind: 'selection', selectionText: html }
-  }
-
-  if (call.name === 'edit_document') {
-    const raw = Array.isArray(call.args.edits) ? call.args.edits : []
-    const editBlocks: EditBlock[] = raw
-      .filter((e): e is { search: string; replace?: string } =>
-        !!e && typeof e === 'object' && typeof (e as { search?: unknown }).search === 'string')
-      .map(e => ({ search: e.search, replace: typeof e.replace === 'string' ? e.replace : '' }))
-    return { ...base, kind: editBlocks.length > 0 ? 'edits' : 'chat', editBlocks }
-  }
-
-  return base
+export function fromOpenAITools(tools: unknown[] | undefined): ToolSpec[] {
+  return (tools ?? []).flatMap(entry => {
+    const fn = (entry as { function?: { name?: unknown; description?: unknown; parameters?: unknown } } | null)?.function
+    if (!fn || typeof fn.name !== 'string' || !fn.parameters || typeof fn.parameters !== 'object') return []
+    return [{
+      name: fn.name,
+      description: typeof fn.description === 'string' ? fn.description : '',
+      parameters: fn.parameters as JsonSchema
+    }]
+  })
 }
