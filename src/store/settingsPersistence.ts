@@ -7,7 +7,8 @@
 import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../types/llm'
 import type { CanvasDocument } from '../types/document'
 import { localStorage } from './persistence'
-import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_ANALYSIS_PROMPT, DEFAULT_IMAGE_GEN_CONFIG } from './defaults'
+import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_ANALYSIS_PROMPT, DEFAULT_IMAGE_GEN_CONFIG, DEFAULT_POLISH_PROMPT } from './defaults'
+import type { PolishPrompt } from '../utils/polish'
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
 // in server-side HttpOnly cookies instead of exposing them to client-side JS.
@@ -371,4 +372,36 @@ export const loadSavedActiveDocId = (docs: CanvasDocument[]): string => {
     return saved
   }
   return docs[0]?.id || ''
+}
+
+/**
+ * The polish prompt (agentic_chat_loop.md D9), user-editable. Stored as a
+ * versioned envelope so its shape can evolve: v1 = { system, template }.
+ * Anything unreadable falls back to the default rather than to nothing — a
+ * blank polish prompt would rewrite chunks with no instructions at all.
+ */
+export const POLISH_PROMPT_KEY = 'web_canvas_polish_prompt'
+export const POLISH_PROMPT_VERSION = 1
+
+export const loadSavedPolishPrompt = (): PolishPrompt => {
+  try {
+    const raw = localStorage.getItem(POLISH_PROMPT_KEY)
+    if (!raw) return { ...DEFAULT_POLISH_PROMPT }
+    const parsed = JSON.parse(raw) as { version?: number; data?: Partial<PolishPrompt> }
+    const data = parsed && parsed.version === POLISH_PROMPT_VERSION ? parsed.data : undefined
+    return {
+      system: typeof data?.system === 'string' ? data.system : DEFAULT_POLISH_PROMPT.system,
+      template: typeof data?.template === 'string' && data.template.includes('{part}') ? data.template : DEFAULT_POLISH_PROMPT.template
+    }
+  } catch {
+    return { ...DEFAULT_POLISH_PROMPT }
+  }
+}
+
+export const savePolishPrompt = (prompt: PolishPrompt): void => {
+  try {
+    localStorage.setItem(POLISH_PROMPT_KEY, JSON.stringify({ version: POLISH_PROMPT_VERSION, data: prompt }))
+  } catch (e) {
+    console.error('Failed to save the polish prompt', e)
+  }
 }

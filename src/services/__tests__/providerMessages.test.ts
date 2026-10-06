@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
-import type { LLMMessage } from '../../types/llm'
+import type { LLMMessage, ThinkingBlock } from '../../types/llm'
 import { toOpenAIMessages, toAnthropicMessages, toGeminiContents } from '../providerMessages'
 import { fromOpenAITools, toOpenAITools, toAnthropicTools, toGeminiTools, type ToolSpec } from '../../utils/documentTools'
 
@@ -122,6 +122,75 @@ describe('toGeminiContents', () => {
   })
 })
 
+// Reasoning artifacts the providers check on replay. Anthropic: the tool_use
+// turn comes back with its thinking blocks complete, unmodified, in order,
+// FIRST. Gemini: a call's thoughtSignature comes back beside its functionCall.
+describe('reasoning artifacts on replay', () => {
+  const THINKING: ThinkingBlock = { type: 'thinking', thinking: 'Need chapter 3 first.', signature: 'EqQBCgIYAhIM1gbc+/==' }
+  const REDACTED: ThinkingBlock = { type: 'redacted_thinking', data: 'EmwKAhgBEgy3va3pzix/LafPsn4a' }
+
+  const withArtifacts = (): LLMMessage[] => toolHistory
+    .filter(m => m.role !== 'system')
+    .map(m => m.role === 'assistant'
+      ? {
+          ...m,
+          content: 'Reading it first.',
+          thinking: [THINKING, REDACTED],
+          // Parallel calls: only the FIRST carries a signature.
+          toolCalls: m.toolCalls!.map((c, i) => i === 0 ? { ...c, signature: 'CiQBVt+/sig==' } : c)
+        }
+      : m)
+
+  it('anthropic: thinking blocks first and verbatim, then text, then tool_use', () => {
+    const { messages } = toAnthropicMessages(withArtifacts())
+    expect(messages[1]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'Need chapter 3 first.', signature: 'EqQBCgIYAhIM1gbc+/==' },
+        { type: 'redacted_thinking', data: 'EmwKAhgBEgy3va3pzix/LafPsn4a' },
+        { type: 'text', text: 'Reading it first.' },
+        { type: 'tool_use', id: 'call_1', name: 'read_chapter', input: { chapter: '第三章', format: 'html' } },
+        { type: 'tool_use', id: 'call_2', name: 'read_chapter', input: { chapter: '第四章' } }
+      ]
+    })
+  })
+
+  it('anthropic: an omitted-display block (empty thinking) still goes back, with no stray keys', () => {
+    const omitted = { type: 'thinking', thinking: '', signature: 'sig', extra: 'x' } as unknown as ThinkingBlock
+    const { messages } = toAnthropicMessages([
+      { role: 'user', content: 'go' },
+      { role: 'assistant', content: '', thinking: [omitted], toolCalls: [{ id: 'a', name: 'list_chapters', argumentsText: '{}' }] }
+    ])
+    expect(messages[1].content).toEqual([
+      { type: 'thinking', thinking: '', signature: 'sig' },
+      { type: 'tool_use', id: 'a', name: 'list_chapters', input: {} }
+    ])
+    expect(Object.keys((messages[1].content as object[])[0])).toEqual(['type', 'thinking', 'signature'])
+  })
+
+  it('gemini: thoughtSignature sits beside the functionCall of the call that had it', () => {
+    const contents = toGeminiContents(withArtifacts())
+    expect(contents[1]).toEqual({
+      role: 'model',
+      parts: [
+        { text: 'Reading it first.' },
+        {
+          functionCall: { name: 'read_chapter', args: { chapter: '第三章', format: 'html' } },
+          thoughtSignature: 'CiQBVt+/sig=='
+        },
+        { functionCall: { name: 'read_chapter', args: { chapter: '第四章' } } }
+      ]
+    })
+  })
+
+  it('openai: no equivalent, so neither artifact leaks into the request', () => {
+    const out = toOpenAIMessages(withArtifacts()) as Array<Record<string, unknown>>
+    expect(Object.keys(out[1]).sort()).toEqual(['content', 'role', 'tool_calls'])
+    const calls = out[1].tool_calls as Array<Record<string, unknown>>
+    expect(Object.keys(calls[0]).sort()).toEqual(['function', 'id', 'type'])
+  })
+})
+
 describe('fromOpenAITools', () => {
   const custom: ToolSpec = {
     name: 'read_chapter',
@@ -198,5 +267,32 @@ describe('streamLLM request bodies', () => {
     const body = await captureBody('grok')
     const messages = body.messages as Array<Record<string, unknown>>
     expect(messages[3]).toEqual({ role: 'tool', tool_call_id: 'call_1', content: 'text of 3' })
+  })
+})
+
+describe('toolChoice "none" (the run\'s final step)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  const bodyFor = async (provider: string) => {
+    let body: Record<string, unknown> | null = null
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
+      body = JSON.parse(init.body)
+      return new Response('', { status: 500 })
+    }))
+    const { streamLLM } = await import('../llm')
+    await streamLLM([{ role: 'user', content: 'hi' }], {
+      provider, apiKey: 'k', model: 'm', baseUrl: 'https://example.test', forceDirect: true,
+      toolChoice: 'none',
+      tools: toOpenAITools([{ name: 'read_chapter', description: 'd', parameters: { type: 'object' } }])
+    }, { onChunk: () => {}, onDone: () => {}, onError: () => {} })
+    return body as unknown as Record<string, unknown>
+  }
+
+  it('keeps the tools but forbids a new call, in each provider\'s spelling', async () => {
+    const grok = await bodyFor('grok')
+    expect(grok.tool_choice).toBe('none')
+    expect(grok.tools).toBeDefined()
+    expect((await bodyFor('anthropic')).tool_choice).toEqual({ type: 'none' })
+    expect((await bodyFor('gemini')).toolConfig).toEqual({ functionCallingConfig: { mode: 'NONE' } })
   })
 })

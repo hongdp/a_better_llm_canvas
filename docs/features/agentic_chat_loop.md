@@ -1,6 +1,6 @@
 # Agentic chat loop with document tools (grok-first)
 
-Status: **phases 0–1 implemented** (2026-10-05); phases 2–4 proposed.
+Status: **phases 0–2 implemented** (2026-10-05); phases 2b–4 proposed.
 Revised after user review on 2026-10-05 (D1 decided, D2 and D3 rewritten,
 step limit made a setting).
 
@@ -34,6 +34,30 @@ step limit made a setting).
   yet: no read tool is registered and `DEFAULT_POLICY` keeps feed-back off.
   Phase 2 turns both on.
 
+**Phase 2 (read, navigate, cross-chapter writes), done.**
+- The tools:
+  - `src/agent/tools/bookReads.ts`: `read_chapter` (list of chapters,
+    text/html, paging, duplicate guard), `grep` (was `search_book`), `list_chapters`,
+    `open_chapter` and `create_chapter`;
+  - `src/agent/chapters.ts`: chapter references, as a number or a title.
+- Writes take `chapter`, as a tool argument or a markup attribute on
+  `<canvas chapter>` / `<edit chapter>`. The parser groups edit blocks by
+  chapter, and extra canvases that name a chapter are applied.
+- The seen-content rule, a version snapshot per chapter before its first
+  change, and a preview routed by target: another chapter shows a progress
+  line, and a created chapter is opened when its first write starts.
+- D3 with retryable failures fed back. D5 with the final step sent as
+  `toolChoice: 'none'`, in both transports and all providers. D8 markers
+  (`src/agent/freshness.ts`). The "changed this turn" block and the step
+  trace (`AgentTurnSummary.tsx`). Settings `agentTools`, `agentMaxSteps`
+  (0 = unlimited) and `continueAfterWrites`, per provider.
+- Anthropic thinking blocks and Gemini `thoughtSignature` are captured and
+  replayed byte-exact in both transports. Parallel Gemini calls now get one
+  index each.
+- Found while testing: a chapter the model read scored only 30 (continuity),
+  under the 40 threshold, so D4's "the ledger carries it next turn" did not
+  happen. `contextSelection` now has `modelReadIds` worth 60.
+
 Deliberate differences from the pre-loop behavior, each with a test:
 - **Plain answers on the tool protocol are no longer retried.** That
   protocol never teaches `<doc_status>`, yet a prose answer was judged
@@ -49,13 +73,67 @@ Deliberate differences from the pre-loop behavior, each with a test:
   `Editor.tsx` syncs content independently of the flag, and a multi-step run
   must not drop it between steps.
 
-Known gaps, not grok's:
-- Anthropic with extended thinking expects its thinking blocks to be replayed
-  next to `tool_use`.
-- Newer Gemini models expect `thoughtSignature` on replayed calls.
+Phase 2 behavior changes, each tested:
+- **Failed edits and unusable write calls are handed back to the model.** It
+  gets the failed SEARCH text and fixes it, within the 3-round corrective
+  budget. A failure handed back is not also warned about. A cut-off rewrite
+  or a vanished selection is not retryable and is reported as before.
+- **The selection and the offered tools are fixed at a run's first step.**
+- **`addDocument` ids carry a random suffix**, so two chapters can be created
+  in one millisecond. Version snapshot ids get the same.
 
-Neither is in the wire contract, so a multi-step run with reasoning on those
-providers may be rejected.
+Follow-ups from the first browser test (2026-10-05):
+- **Switching chapters during a turn is allowed.** The sidebar no longer
+  blocks it. Writes target ids, and the live preview tracks the chapter it
+  paints (`previewDocIdRef`): once another chapter is open, settling or
+  stopping never touches it, and a selection preview stops writing. Reorder
+  stays blocked mid-turn, because chapter numbers must keep their meaning.
+  The editor stays read-only.
+- **"In context — CHANGED since you last saw it".** User-reported: an outline
+  revised before "write chapter 6" was re-sent in full by the ledger, so the
+  model had the new text. Nothing told it the text was new, though, and its
+  earlier replies were planned against the old one. Index lines of in-context
+  chapters whose hash differs from what the model last saw now say so (D8).
+- Measured on that turn: step 1 hit 4,224 of 46,312 cached tokens (9%). The
+  edited outline was dropped from its ledger slot and re-appended, which
+  invalidated everything after it. See "Prior art" for the append-update
+  alternative.
+
+A change still under review stays under review (user-reported, 2026-10-06).
+Two cases:
+- asking for another change while the previous one was unreviewed silently
+  accepted the previous one;
+- "why did you change this? keep what it said before" could not be done
+  exactly, because the model had never seen the earlier wording.
+
+Two readings of a chapter with pending markup:
+- **The model still writes against the ACCEPTED reading**, because its
+  SEARCH text must be copyable.
+- **The review diff is drawn from the REJECTED reading** (`DocState.reviewBase`
+  = `resolveDiffMarkupInHtml(original, 'reject')`, the same function
+  reject-all uses), so everything unconfirmed stays one pending diff.
+  Reject-all returns exactly the last confirmed text. The Polish button
+  follows the same rule.
+
+The model is also shown what each pending change replaced:
+`utils/pendingChanges` lists "now / was" per changed paragraph, appended to
+the active chapter in the tail, and to `read_chapter` results for other
+chapters. It comes with the instruction to restore only the part asked for.
+A restored paragraph then matches the confirmed text, so its diff is gone,
+while every other pending change remains. Without pending markup the tail is
+byte-identical to before.
+
+Known gaps:
+- The Anthropic replay approximates order as thinking → text → tool_use. A
+  reply that interleaves text between thinking blocks is reordered on replay.
+- Gemini signatures on text parts are not captured (recommended by the docs,
+  not enforced).
+- The docs say Claude 4.7+ models reject `thinking: {type: "enabled"}`. The
+  backend's reasoning-effort retry probably catches it; the direct path does
+  not.
+- A full rewrite of a chapter that is not open shows progress only, with no
+  live text. A second chapter rewritten in the same reply also gets no
+  preview.
 Primary target: **grok** (grok-4.5 / grok-4.6 over the backend job transport).
 Other providers must keep working, but every trade-off below is decided by
 what grok does, because grok is what this app is used with day to day.
@@ -292,7 +370,7 @@ replayed as tool output.
   next prompt; if it would cross, the step is sent with `tool_choice: "none"`
   plus a one-line "answer now with what you have" note.
 - Per-result caps: `read_chapter` returns at most 20k chars (the same cap as the
-  ledger, `MAX_LEDGER_DOC_CHARS`) with `offset` paging; `search_book` at most
+  ledger, `MAX_LEDGER_DOC_CHARS`) with `offset` paging; `grep` at most
   N snippets.
 - Duplicate guard: an identical `(name, arguments)` read in the same run returns
   "already provided in step k" instead of the text again.
@@ -312,7 +390,7 @@ hit.
   设定集 reads as an outline from its digest alone.
 - **The rule.** `read_chapter` takes the index number. Its description says:
   find the chapter in the CHAPTER INDEX and pass its number; when no title or
-  digest tells you where something is, use `search_book`.
+  digest tells you where something is, use `grep`.
 - **Prefetch.** The Layer-1 scorer (`selectReferenceChapters`) stays. When it
   attaches the right chapter, the model can write in the first step. When it
   misses, the cost is one `read_chapter` step, not a wrong answer.
@@ -323,7 +401,7 @@ Gaps to close in phase 2 (found in the code):
 1. **Empty digests.** A chapter that has no generated summary and whose
    content has not lazy-loaded yet has an empty digest, so the model sees
    only its title. The index marks such lines `(not summarized yet)`, so the
-   model knows the title is all it has. `search_book` loads contents
+   model knows the title is all it has. `grep` loads contents
    (`ensureDocumentContents`) before searching. An optional server-side fix
    is to return a short text excerpt with the chapter list metadata.
 2. **The active chapter's index line** says "[ACTIVE — this is the document
@@ -395,6 +473,243 @@ Trade-offs, stated plainly:
 2. **A chapter the user would have pinned may now cost one step** on grok
    when the prefetch misses it. That is a wait of up to one first token,
    paid only when the model decides it needs the chapter.
+
+### D8. Freshness markers: the model knows what it has, and whether it changed
+
+**Decided (2026-10-05, from the user's question** "should a last-saved
+timestamp version system tell the agent when to re-read a chapter?"). The
+answer is yes to the goal, but the mechanism is a content-hash record
+attached to the chapter index, not a version-control system and not
+timestamps.
+
+**What already works.** The ledger stores each chapter's content hash and
+re-sends any chapter whose hash changed (`planLedgerTurn`'s `'edited'`
+drop). A chapter that is IN context is always current.
+
+**The gap.** The model cannot tell what is in context. The index header only
+says that full text appears "if it is in REFERENCED DOCUMENT CONTEXTS or is
+the active document", so the model has to infer it, and each wrong guess
+costs something:
+- re-reading a chapter it already has costs one step, a full first-token
+  wait on grok;
+- trusting a chapter it read two turns ago gives a stale answer. Tool
+  results are not replayed across turns (D4), so that text is gone, and the
+  chapter may have changed since: the user rejected the agent's diff, or
+  rewrote the outline.
+
+**Mechanism.**
+- **The seen record** (`seen: Map<docId, { hash, turn }>`) is session-scoped
+  with the same scope as the ledger (book + provider + model). It is updated
+  every time the model is shown a chapter's full text: the ledger or an
+  inline attachment, the active chapter in the tail, a `read_chapter`
+  result, or the model's own successful write.
+- **What is hashed is the ACCEPTED reading** (`stripDiffMarkup`). Accepting
+  the agent's own diff is therefore not a change, while rejecting it is, and
+  the model needs to learn that its edit was rejected.
+- **Each index line carries a marker.** The index is in the per-turn tail,
+  so markers changing never cost the cached prefix:
+  - `[in context]`: the full text is in this request;
+  - `[changed since you read it]`: seen before, the hash differs now, and it
+    is not in context;
+  - `[read earlier, not in context]`: seen before and unchanged, but its text
+    is no longer in this request;
+  - no marker: never shown to the model.
+- **`read_chapter` results say the same**, e.g. "第三章 — unchanged since turn
+  4" (chapter 3) or "— changed since you last read it".
+- **The duplicate guard (D5) keys on the hash.** Asking for the same chapter
+  with the same hash while it is in context returns "already provided in step
+  k", not the text again.
+
+**Why not timestamps.** The question the model needs answered is "is this the
+same text I saw?", and a hash answers exactly that. `updatedAt` answers "was
+something saved?":
+- it moves when no text changed;
+- it compares clocks across devices;
+- it cannot tell "the user accepted my diff" (no change for the model) from
+  "the user rejected it" (a change).
+
+**Not persisted.** After a reload nothing counts as seen except what the
+ledger re-sends. That is correct, because a reloaded session's prompt prefix
+is new anyway. The user-facing version history (`DocumentVersion` snapshots)
+is a separate feature and is unchanged.
+
+### D9. Polish pass — on the user's request only (implemented 2026-10-06)
+
+**Decided (user, 2026-10-05): polish runs only when the user asks.** It is
+not a step after every full-chapter write. It has two entry points:
+- the **Polish button** in the canvas header (`requestPolish` → the chat
+  hook's `runPolish`). It polishes the open chapter directly, with no chat
+  model, so there is no first-token wait for a decision the user already
+  made. It shows as a turn of its own: a user line, then a reply carrying the
+  chapter in its "changed this turn" block;
+- the **`polish_chapter` tool**. Its description says to call it only when the
+  user explicitly asks (e.g. "润色第六章", "polish chapter 6"). It has no tag
+  form, so it is offered natively even on the markup protocol (D1; the
+  `markupForm` flag). After a polish, the chapter's HTML counts as unseen
+  again, so an edit has to read it first.
+
+Both paths use `polishHtml` (`src/agent/polish.ts`) and the pure helpers in
+`src/utils/polish.ts`:
+- every chunk is sent in parallel;
+- each chunk is validated, and one that fails keeps its draft;
+- Stop keeps the chunks that finished;
+- the result is one diff against the accepted reading, with a version
+  snapshot first.
+
+Settings:
+- `ProviderConfig.polishModel` — absent means `grok-4.20-0309-reasoning` on
+  grok, else the chat model;
+- the polish prompt (system + per-chunk template), user-editable, stored as
+  a versioned localStorage envelope (`web_canvas_polish_prompt`, v1). The
+  default is the tuning session's prompt. The user's writing preset is
+  appended to the system prompt.
+
+Polish calls send no reasoning effort and use their own
+`x-grok-conv-id` (`<book>:polish`).
+
+The rest of this section is the original proposal and its evaluation, kept
+for the record. Points 1 and 6 assumed an automatic pass; the user's decision
+replaces that trigger.
+
+**Source.** Proposed 2026-10-05 by the user's prose-tuning session
+("老头修仙记"), from measurements on a real chapter request (the book's own
+prompt assembly, grok on markup).
+
+**The measurements.** Metric: the narration's clause rhythm, with dialogue
+excluded. Human reference (four source posts): mean clause 10.7 chars, 20.7%
+of clauses at most 6 chars, 0.9 runs per thousand chars of three or more such
+clauses.
+
+| Draft | Mean clause (chars) | ≤6-char clauses | Runs / 1k chars | Notes |
+|---|---|---|---|---|
+| grok-4.6, no polish | 7.6 | 43% | 5.4 | |
+| grok-4.7 | 7.2 | 48% | 7.3 | newer models were choppier |
+| grok-4.6 + 4.20-reasoning, whole-chapter rewrite | — | — | — | 97–100% copied verbatim; no effect |
+| grok-4.6 + 4.20-reasoning, ~1000-char chunks rewritten in parallel, tightened instructions | 9.4 | 22% | 1.1 | all dialogue kept; length +15%; no run-on over 25 chars; ~35 s per chapter |
+
+Each condition was run n = 5. The metrics measure rhythm only, not content;
+the user is still reading the samples.
+
+**Decision as proposed:**
+- **A fixed pipeline step, not a tool.** The model would not call it
+  reliably, and its cost and latency should be predictable.
+- It applies only to full-chapter writes (`update_document` / `<canvas>`).
+- It is off unless `ProviderConfig.polishModel` is set.
+
+**Evaluation (this session), with changes to the proposal:**
+1. **When: at the end of the run, not right after the write.** Polishing the
+   working copy mid-run would break the model's next `<edit>` on that
+   chapter, because its SEARCH text is copied from its own draft. At the run's
+   end, every chapter fully rewritten this run is polished from its final
+   working copy, and the review diff is `base → polished`. Under D3 the write
+   step is usually the last step anyway, so this costs no latency.
+2. **The polish instructions are a user-editable preset, not code.** They are
+   writing guidance, and CLAUDE.md keeps writing guidance out of the
+   protocol prompt and with the user's presets. The default is the prompt the
+   tuning session settled on.
+3. **The validation thresholds must sit above the measured expansion.**
+   Confirmed by the per-chunk measurement below: ±15% would have sent 43% of
+   the chunks back to their draft.
+4. **Chunks keep the HTML and the image tokens.** Chunks split on block
+   boundaries (`<p>`, headings) of the working HTML, not on plain text. A
+   chunk is also sent back if a heading or an `{{IMAGE_PLACEHOLDER_n}}` is
+   lost.
+5. **A separate cache key.** Polish requests share no prefix with the
+   conversation, so they get their own `x-grok-conv-id` (book id +
+   `:polish`) rather than competing on the book's cache shard.
+6. **Shown in the bubble.** One timeline line, e.g. "✨ polished #6 (5/6
+   chunks; 1 kept as drafted)". While it runs, "润色中 k/n" (polishing k/n).
+   The live preview still streams the draft (D1 exists for it), and the
+   editor then swaps in the polished text. The diff base never changes.
+7. **Stop** keeps finished chunks and drops the rest. **Budget**: outside
+   `agentMaxSteps`, inside token accounting. **Resume**: one backend job per
+   chunk (meta: runId, chunk); a full resume waits for phase 3.
+8. **Dependency.** grok-4.20 rejects `reasoning_effort`. The fix is on branch
+   `feat/grok-reasoning-models` (uncommitted, per the tuning session), so
+   polish calls to it must not send the parameter.
+
+**Per-chunk measurement (tuning session, 2026-10-05).** Setup: the same
+chunk prompt, grok-4.20-0309-reasoning, 10 chapters of grok-4.6 drafts.
+That gave 51 chunks of 69–1080 chars, holding 159 dialogue lines.
+
+Length change per chunk: mean +13.8%, median +14.0%, P10 +6.5%, P90 +22.0%,
+range −2.8%…+27.9%. Chunks almost only grow; short tail chunks behave the
+same.
+
+Fall-back rate by threshold:
+
+| Run-on bound (chars) | Length bound | Fall-back |
+|---|---|---|
+| — | ±15% | 22/51 (43%) |
+| — | −10%…+25% | 4/51 (8%) |
+| >25 | −10%…+25% | 13/51 (25%) |
+| >30 | −10%…+25% | 6/51 (12%) |
+| **>30** | **−10%…+30%** | **2/51 (4%)** |
+
+The run-on bound is 30, not 25: nine chunks peak at 26–28 chars, and the
+human source posts peak at 28–43. The one chunk that genuinely reads badly
+is a 59-char unbroken run, and 30 still catches it.
+
+Other results:
+- Dialogue: 1 of 159 lines lost, in one chunk. The per-chunk dialogue check
+  catches it and that chunk falls back.
+- Paragraphs: two chunks merged two paragraphs into one (18→17, 14→13).
+  Requiring equal `<p>` counts would reject them for nothing.
+- Time: 25.6 s per chunk on average. A chapter is about 5 chunks sent in
+  parallel, so it takes 26–53 s; serially it would be over 2 minutes.
+  **Chunks must be sent in parallel.**
+
+**Validation, per chunk:**
+- every dialogue line kept verbatim;
+- length change −10%…+30%;
+- no unbroken run over 30 chars;
+- every heading and every image token kept;
+- `<p>` count at least the original's minus one.
+
+A chunk that fails any check keeps its draft. The default preset is the
+tuning session's chunk prompt (`chunk2_template.json`, backed up with the
+data in this session's scratchpad `d9/`). Copy it into the repo when this is
+implemented.
+
+**Measurement M5 (before defaults):** n ≥ 8 per condition, as §10 requires.
+The run above is one pass over one set of 10 chapters: repeat it on other
+chapters, and several times, before fixing the thresholds.
+Measure:
+- the per-chunk length-change distribution, to set the bound;
+- the fall-back rate at the chosen bounds;
+- dialogue preservation;
+- time per chapter.
+
+The user's read of the samples decides whether the rhythm gain is worth the
++15% length.
+
+### Prior art: what Codex and Claude Code do
+
+Researched 2026-10-05, at the user's request, in a local clone of the Codex
+CLI (`~/Workspace/codex-deskd/codex-rs`). Claude Code's own behaviour is
+observable in the sessions that built this. What each does, and what this
+design took from it:
+
+| Question | Codex | Claude Code | This design |
+|---|---|---|---|
+| Does the model learn that content it read has changed? | **No.** No mtime/hash tracking and no read-before-edit check. `apply_patch` fails when its context lines no longer match; that failure is the only staleness guard. The base prompt tells the model to assume unexpected changes came from the user. | Yes. An edit requires a prior read, and a file that changed since it was read is flagged to the model. | D8: a hash record plus index markers, and D2's seen-content rule. A failed SEARCH is fed back (D3), Codex's guard, as a second line. |
+| How are context changes communicated? | Appended, never rewritten. A per-section snapshot is diffed against what the model last saw, and only the change is appended ("These … instructions replace all previously provided …"). Full context is re-injected only after compaction. | Appended as reminders. | D4 (append-only within a run). Markers live in the per-turn tail, so they never touch the cached prefix. A re-read of a changed chapter says it replaces the earlier copy. |
+| Earlier tool results | Kept in history, truncated when recorded, until compaction drops them all. | Kept until compaction. | Dropped across turns (D4); the chapters read come back through the ledger, which caches them. Chapter text can always be re-read, so carrying stale copies is cost without benefit. |
+| Size of one result | About 10k tokens per output, cut out of the middle (head + tail) with a "…N tokens truncated…" marker and the original size. Files are read with shell ranges (`sed -n 'a,bp'`). | Whole file up to 2000 lines, printed with line numbers (`cat -n`); `offset`/`limit` for a range; "when you know which part you need, read only that part". | **Paragraphs as lines** (user decision, 2026-10-06): text reads are numbered `¶N`, `grep` reports `¶N`, and `read_chapter` takes a paragraph range. The model greps to a hit and reads only around it. Whole-chapter reads stay the default (a chapter is the size of a small source file, and prose needs its context); parts end at whole paragraphs (`READ_CHAPTER_CAP` 20k, `READ_CALL_CAP` 60k per call). No middle cut: it would remove the very passage a writer needs. |
+| Near the context ceiling | Compacts at 90% of the window (hard cap 95%). An optional mode warns the model at about 6k remaining tokens to save notes. | Compacts. | D5's ceiling: the final step gets `tool_choice: "none"`. **Not done yet:** compaction (below). |
+| Iterations per turn | Unlimited while the model needs a follow-up; an optional session token budget with reminders. | Unlimited. | `agentMaxSteps`, 0 = unlimited (user decision). |
+| Stable cached prefix | Session `prompt_cache_key`; send only the new items when the input strictly extends the last one; stable synthetic call ids; tools array unchanged within a session (new tools arrive through a search tool, not a changed array). | — | xAI's `x-grok-conv-id` per book; byte-exact argument replay; deterministic ids (`call_<step>_<i>`, `markup_<step>_<i>`). **The tools offered stay identical for every step of a run** — `offeredTools` must not depend on anything that changes mid-run. |
+| Progressive disclosure | Skills appear as metadata only (name + description, about 2% of the window); the body is read on demand. | Same pattern for skills. | The CHAPTER INDEX is the metadata, `read_chapter` is the body. `chapterIndex.ts` already named this pattern. |
+
+**Adopted as a later phase: conversation compaction.** `trimHistoryForContext`
+drops old turns outright today. Codex replaces them with a handoff summary
+and keeps the most recent user messages verbatim (its prompt asks for
+progress, decisions, constraints and user preferences, what remains, and
+critical references). For a book, the chapter summaries already carry the
+document memory; what is lost today is the conversation's decisions ("the
+heroine keeps her name", "no epilogue"). Compaction costs one re-prefill of
+the history when it happens, and is cheaper than re-explaining those
+decisions.
 
 ## 5. Interfaces
 
@@ -575,10 +890,14 @@ Trace lines and counts only, never chapter text. The review status per row is
 go stale. Optional and additive, so stored messages need no migration. Add a
 test that an old message (no `agent`) renders unchanged.
 
-The bubble renders top to bottom:
-1. the step trace, collapsed by default ("📖 Read 第三章 · ✏️ Edited 第五章 ×3");
-2. the **本轮修改** (changed this turn) block (D2), always expanded;
-3. the reply text.
+The bubble renders the turn **in the order it happened**: each step's text,
+then the tool calls that step made, where it made them (`agent.timeline`,
+`AgentTimeline`). While the turn runs, the step in flight follows (`live`).
+The **本轮修改** (changed this turn) block (D2) comes after. `content` keeps
+the joined text for history and older clients. The record is stored
+server-side in a JSON `agent` column of `messages` (`server_db.init_db`
+migration). Before that column existed, only fixed columns were saved and
+the record vanished on reload.
 
 ## 6. Initial tool set
 
@@ -588,8 +907,8 @@ The bubble renders top to bottom:
 | `edit_document` | write | markup `<edit chapter="…">` | optional `chapter` (D2); seen-content rule; failures fed back (§5.3) |
 | `replace_selection` | write | markup `<selection_replace>` | always the chapter the selection was made in; once per run |
 | `list_chapters` | read | native | index + summaries + char counts. Cheap; the volatile tail already has the index, so this mostly serves long books whose index is digested |
-| `read_chapter` | read | native | `{chapter: number or exact title, format: "text" \| "html", offset?}`, 20k cap, paging. `text` for reading (cheaper); `html` (image placeholders in) when the model will edit it, which sets `htmlShown`. Ambiguous or unknown chapter → error listing candidates. `text` is refused for chapters already in the ledger / sticky prefix, which are in context already; `html` is not |
-| `search_book` | read | native | keyword/regex over all chapters (lazy contents via `ensureDocumentContents`) → snippets with chapter + offset |
+| `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-"}`. Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant; a range read is not |
+| `grep` | read | native | regex over every chapter's text, or only those named (lazy contents loaded first). Output "snippets" (chapter, offset, context) or "chapters" (counts). A broken regex is searched literally. Replaced `search_book` (user request, 2026-10-06): grep is the search interface models already know |
 | `open_chapter` | navigate | native | shows the user a chapter (`setActiveDocumentId`). Not needed for writing (D2). Refused while a selection rewrite is pending |
 | `create_chapter` | navigate | native | `addDocument(title)`; the view switches to it only when its first write starts (D6), so the user is not moved to an empty page; content comes from `update_document` with `chapter` |
 
@@ -648,10 +967,10 @@ and ends the run; earlier steps' writes stay, each already a reviewable diff.
 |---|---|---|
 | 0. Plumbing | `LLMMessage` tool fields; adapters in `llm.ts` + `server_generation.py` with parity tests; Anthropic/Gemini adapters translate arbitrary schemas | none |
 | 1. Extract | `src/agent/` registry + loop + `EditorPort`; port the 3 write tools and `MarkupToolSource`; `useChatLLM.onDone` becomes "run loop with `maxSteps` covering the corrective retries only" | none — existing `useChatLLM.test.ts` must pass unmodified |
-| 2. Read/navigate + cross-chapter writes | `list_chapters`, `read_chapter`, `search_book`, `open_chapter`, `create_chapter`; `chapter` target on writes (tools + markup attribute) with preview routing; seen-content rule; blanking guard moved into `updateDocument`; per-document version snapshots; 本轮修改 (changed this turn) block; D3 policy; edit-failure feedback; trace UI; history trace line + continuity feed; settings `agentMaxSteps` (0 = unlimited) and `continueAfterWrites` | the loop, behind a per-provider setting `agentTools: auto/on/off` (grok `auto` = on only after M2 passes) |
+| 2. Read/navigate + cross-chapter writes | `list_chapters`, `read_chapter`, `grep` (was `search_book`), `open_chapter`, `create_chapter`; D8 freshness markers; `chapter` target on writes (tools + markup attribute) with preview routing; seen-content rule; blanking guard moved into `updateDocument`; per-document version snapshots; 本轮修改 (changed this turn) block; D3 policy; edit-failure feedback; trace UI; history trace line + continuity feed; settings `agentMaxSteps` (0 = unlimited) and `continueAfterWrites` | the loop, behind a per-provider setting `agentTools: auto/on/off` (grok `auto` = on only after M2 passes) |
 | 2b. Retire manual context (D7) | remove the attach bar, the whole-book toggle and the consent card; `analyze_book` and the digest tool; provider-sized ledger budget; documents envelope v3 migration | context is chosen by the model and steered by the conversation |
-| 3. Hardening | full resume (§8); cliff-aware budget telemetry in the turn cache panel | |
-| 4. More tools | image gen, import, summaries; roleplay as a second tool profile | |
+| 3. Hardening | full resume (§8); cliff-aware budget telemetry in the turn cache panel. (The append-update ledger planned here was done early, 2026-10-05; see cache_first_context.md §13.) | |
+| 4. More tools | image gen, import, summaries; roleplay as a second tool profile; conversation compaction (handoff summary + recent user messages verbatim, see "Prior art") | |
 
 ## 10. Measurements required before defaults are set (grok)
 

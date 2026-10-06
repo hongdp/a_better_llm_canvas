@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { History, Cloud, CloudOff, CloudUpload, Wand2, RefreshCw, Save, Download, BookOpen, LayoutList } from 'lucide-react'
+import { History, Cloud, CloudOff, CloudUpload, Wand2, RefreshCw, Save, Download, BookOpen, LayoutList, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { CanvasDocument } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
@@ -45,7 +45,10 @@ export function CanvasHeader({
     selectedText,
     bookTitle,
     serverSaveStatus,
-    syncToServer
+    syncToServer,
+    activeDocumentId,
+    requestPolish,
+    roleplayMode
   } = useAppStore()
 
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
@@ -177,6 +180,30 @@ export function CanvasHeader({
           style={{ color: isHistoryOpen ? 'var(--accent)' : 'inherit' }}
         >
           <History size={18} />
+        </button>
+
+        {/* Polish (agentic_chat_loop.md D9): only ever on the user's request */}
+        <button
+          onClick={() => requestPolish(activeDocumentId)}
+          className="btn-icon"
+          title={t.app.polishHint}
+          type="button"
+          disabled={isStreaming || roleplayMode || !activeDoc.content}
+          style={{
+            borderRadius: '7px',
+            padding: '5px 10px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '5px',
+            fontSize: '0.78rem',
+            fontWeight: 600,
+            border: '1px solid var(--border-color)',
+            opacity: isStreaming || roleplayMode ? 0.5 : 1,
+            cursor: isStreaming || roleplayMode ? 'not-allowed' : 'pointer'
+          }}
+        >
+          <Sparkles size={14} />
+          {layoutMode !== 'portrait' && t.app.polish}
         </button>
 
         {/* Generate Image Button */}

@@ -16,8 +16,9 @@ import { DOMSerializer } from '@tiptap/pm/model'
 import type { LLMMessage } from '../../types/llm'
 
 type ToolDelta = { index: number; name?: string; argumentsText: string }
-type Scripted = { chunks: string[]; toolCalls?: ToolDelta[]; beforeDone?: () => void }
+type Scripted = { chunks: string[]; toolCalls?: ToolDelta[]; beforeDone?: () => void; afterChunk?: (index: number) => void }
 const responses: Scripted[] = []
+const requests: LLMMessage[][] = []
 vi.mock('../../services/llm', () => ({
   streamLLM: async (
     _m: LLMMessage[],
@@ -28,13 +29,15 @@ vi.mock('../../services/llm', () => ({
       onToolCallDelta?: (d: ToolDelta) => void
     }
   ) => {
+    requests.push(_m)
     const r = responses.shift() ?? { chunks: [] }
     let full = ''
-    for (const ch of r.chunks) {
+    r.chunks.forEach((ch, i) => {
       full += ch
       cb.onChunk(ch)
       vi.setSystemTime(Date.now() + 300)   // past the preview throttle
-    }
+      r.afterChunk?.(i)
+    })
     for (const d of r.toolCalls ?? []) cb.onToolCallDelta?.(d)
     r.beforeDone?.()
     cb.onDone(full, { promptTokens: 10, completionTokens: 20 })
@@ -114,6 +117,8 @@ const bubble = () => useAppStore.getState().messages.filter(m => m.role === 'ass
 const RAW_MARKUP = /<edit|<{5,}|={5,}|>{5,}|<canvas|<selection_replace/
 
 beforeEach(() => {
+  responses.length = 0
+  requests.length = 0
   vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -185,15 +190,23 @@ describe('a selection rewrite with an edit beside it', () => {
     h.unmount(); editor.destroy()
   })
 
-  it('reports an edit it cannot locate, without showing it, and still applies the selection', async () => {
+  it('hands an edit it cannot locate back to the model, which fixes it, and keeps the selection', async () => {
+    // The agentic loop (spec D3): an unmatched SEARCH is a failure the model
+    // can fix, so it is fed back instead of ending the turn with a warning.
     const { editor, selectedText } = setup()
     responses.push({ chunks: [`好的。\n<selection_replace>${SEL_NEW}</selection_replace>\n${editMarkup('<p>文档里并没有这一句。</p>', EDIT_REPLACE)}`] })
+    responses.push({ chunks: [`改正了衔接句。\n${editMarkup(EDIT_SEARCH, EDIT_REPLACE)}\n<doc_status>updated</doc_status>`] })
 
     const h = await send(editor, selectedText)
+    await act(async () => { await Promise.resolve() })
 
-    expect(accepted(stored())).toBe(normalize('<p>开头的一段话。</p>' + SEL_NEW + '<p>中间保持不变的一段。</p><p>后面需要衔接的一句话。</p>'))
+    expect(requests).toHaveLength(2)
+    // The second step was told exactly which SEARCH text failed.
+    expect(requests[1].at(-1)?.content).toContain('<p>文档里并没有这一句。</p>')
+    expect(accepted(stored())).toBe(EXPECTED)
     expect(bubble()).not.toMatch(RAW_MARKUP)
-    expect(bubble()).toContain('1 suggested change could not be located')
+    // Fixed, so nothing to warn about.
+    expect(bubble()).not.toContain('could not be located')
     h.unmount(); editor.destroy()
   })
 
@@ -226,6 +239,36 @@ describe('a selection that disappeared while the reply streamed', () => {
     expect(bubble()).toContain('no longer where it was')
     expect(bubble()).toContain('1 suggested change could not be located')
     expect(bubble()).not.toMatch(RAW_MARKUP)
+    h.unmount(); editor.destroy()
+  })
+})
+
+// Switching chapters mid-turn is allowed (agentic loop, D2). A selection
+// preview writes REAL transactions at the selection's offsets, so it must stop
+// the moment the editor shows another chapter.
+describe('the user switching chapters during a selection rewrite', () => {
+  it('stops previewing into the chapter now open, and reports the selection as gone', async () => {
+    const { editor, selectedText } = setup()
+    // Longer than the selection's offsets, so a stray preview WOULD land in it.
+    const OTHER = '<p>第二章第一段，是一段比较长的文字，足够容纳原来选区的位置。</p><p>第二章第二段，同样足够长，不会让写入因为越界而落空。</p><p>第二章第三段。</p>'
+    useAppStore.setState(st => ({
+      documents: [...st.documents, { id: 'doc-2', title: '第二章', content: OTHER, contentLoaded: true, createdAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-01T00:00:00.000Z' }]
+    }))
+    responses.push({
+      chunks: ['好的。\n<selection_replace><p>被选中的这一段', '文字，补上了更多细节。</p>', '</selection_replace>\n<doc_status>updated</doc_status>'],
+      afterChunk: i => {
+        if (i !== 0) return
+        // The user clicks chapter 2; Editor.tsx loads it into the editor.
+        useAppStore.getState().setActiveDocumentId('doc-2')
+        editor.commands.setContent(OTHER)
+      }
+    })
+
+    const h = await send(editor, selectedText)
+
+    expect(editor.getHTML()).toBe(normalize(OTHER))
+    expect(useAppStore.getState().documents.find(d => d.id === 'doc-2')?.content).toBe(OTHER)
+    expect(bubble()).toContain('no longer where it was')
     h.unmount(); editor.destroy()
   })
 })

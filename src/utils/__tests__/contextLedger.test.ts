@@ -319,3 +319,109 @@ describe('orderAdmissionsByStability', () => {
     expect(orderAdmissionsByStability(['b', 'a'], mixed, ['a', 'b'], null)).toEqual(['a', 'b'])
   })
 })
+
+// ── Append-updates (planLedgerTurn with a renderer) ─────────────────────────
+// An edited chapter keeps its old copy in place, byte for byte, and its new
+// version is appended — instead of re-sending everything after the old copy.
+
+describe('planLedgerTurn — append-updates', () => {
+  /** Chapters with explicit bodies and sizes; the renderer records what it drew. */
+  const book = (bodies: Record<string, string>, sizes: Record<string, number> = {}): LedgerDocLike[] =>
+    Object.entries(bodies).map(([id, body]) => ({ id, chars: sizes[id] ?? 1000, hash: hashContent(body) }))
+  const renderer = (bodies: Record<string, string>) =>
+    (id: string, kind: 'fresh' | 'update') => `[${kind}:${id}:${bodies[id]}]`
+
+  const start = (bodies: Record<string, string>, order: string[], sizes?: Record<string, number>) =>
+    planLedgerTurn(EMPTY_LEDGER, order, book(bodies, sizes), null, { render: renderer(bodies) }).ledger
+
+  it('keeps an edited chapter\'s old copy where it is and appends the new version', () => {
+    const v1 = { a: 'a1', outline: 'o1', c: 'c1', d: 'd1' }
+    const ledger = start(v1, ['a', 'outline', 'c', 'd'])
+    const v2 = { ...v1, outline: 'o2' }
+    const plan = planLedgerTurn(ledger, ['a', 'outline', 'c', 'd'], book(v2), null, { render: renderer(v2) })
+
+    // Nothing before the end was touched: every original entry survives, same bytes.
+    expect(plan.cachedPrefixCount).toBe(4)
+    expect(plan.ledger.entries.slice(0, 4).map(e => e.text)).toEqual(ledger.entries.map(e => e.text))
+    expect(plan.ledger.entries[1]).toMatchObject({ id: 'outline', stale: true, text: '[fresh:outline:o1]' })
+    // The new version comes last, marked as one.
+    expect(plan.ledger.entries.at(-1)).toMatchObject({ id: 'outline', text: '[update:outline:o2]' })
+    expect(plan.updatedIds).toEqual(['outline'])
+    expect(plan.resentIds).toEqual([])
+    expect(plan.resendChars).toBe(1000)
+    expect(plan.staleChars).toBe(1000)
+  })
+
+  it('still cuts when the chapter is near the end — re-sending less than it would duplicate', () => {
+    const v1 = { a: 'a1', b: 'b1', outline: 'o1' }
+    const ledger = start(v1, ['a', 'b', 'outline'])
+    const v2 = { ...v1, outline: 'o2' }
+    const plan = planLedgerTurn(ledger, ['a', 'b', 'outline'], book(v2), null, { render: renderer(v2) })
+
+    expect(plan.updatedIds).toEqual([])
+    expect(plan.ledger.entries.map(e => [e.id, e.text])).toEqual([
+      ['a', '[fresh:a:a1]'], ['b', '[fresh:b:b1]'], ['outline', '[fresh:outline:o2]']
+    ])
+    expect(plan.staleChars).toBe(0)
+  })
+
+  it('consolidates once outdated copies pass the budget: one cut, re-sent clean', () => {
+    const v1 = { a: 'a1', outline: 'o1', c: 'c1', d: 'd1' }
+    const ledger = start(v1, ['a', 'outline', 'c', 'd'])
+    const v2 = { ...v1, outline: 'o2' }
+    const plan = planLedgerTurn(ledger, ['a', 'outline', 'c', 'd'], book(v2), null, { render: renderer(v2), maxStaleChars: 500 })
+
+    expect(plan.cachedPrefixCount).toBe(1)
+    expect(plan.ledger.entries.map(e => e.text)).toEqual(['[fresh:a:a1]', '[fresh:c:c1]', '[fresh:d:d1]', '[fresh:outline:o2]'])
+    expect(plan.ledger.entries.some(e => e.stale)).toBe(false)
+  })
+
+  it('keeps the outdated copy turn after turn, and appends again on a second edit', () => {
+    const v1 = { a: 'a1', outline: 'o1', c: 'c1', d: 'd1', e: 'e1' }
+    const order = ['a', 'outline', 'c', 'd', 'e']
+    const sizes = { outline: 300 }
+    let ledger = start(v1, order, sizes)
+    const v2 = { ...v1, outline: 'o2' }
+    ledger = planLedgerTurn(ledger, order, book(v2, sizes), null, { render: renderer(v2) }).ledger
+
+    // Unchanged next turn: identical bytes, nothing re-sent.
+    const quiet = planLedgerTurn(ledger, order, book(v2, sizes), null, { render: renderer(v2) })
+    expect(quiet.ledger.entries.map(e => e.text)).toEqual(ledger.entries.map(e => e.text))
+    expect(quiet.resendChars).toBe(0)
+
+    // Edited again: the update entry is itself last, so it is replaced in place.
+    const v3 = { ...v1, outline: 'o3' }
+    const again = planLedgerTurn(ledger, order, book(v3, sizes), null, { render: renderer(v3) })
+    expect(again.ledger.entries.filter(e => e.id === 'outline').map(e => [e.text, !!e.stale])).toEqual([
+      ['[fresh:outline:o1]', true],
+      ['[update:outline:o3]', false]
+    ])
+  })
+
+  it('drops every copy of a chapter that leaves', () => {
+    const v1 = { a: 'a1', outline: 'o1', c: 'c1', d: 'd1' }
+    let ledger = start(v1, ['a', 'outline', 'c', 'd'])
+    const v2 = { ...v1, outline: 'o2' }
+    ledger = planLedgerTurn(ledger, ['a', 'outline', 'c', 'd'], book(v2), null, { render: renderer(v2) }).ledger
+
+    // The writer opens the outline: it moves to the volatile tail.
+    const opened = planLedgerTurn(ledger, ['a', 'c', 'd'], book(v2), 'outline', { render: renderer(v2) })
+    expect(opened.ledger.entries.map(e => e.id)).toEqual(['a', 'c', 'd'])
+    expect(opened.drops).toEqual([{ id: 'outline', reason: 'now-active' }])
+  })
+
+  it('marks a chapter re-sent after a cut as the newer version when an old copy stays above', () => {
+    const v1 = { a: 'a1', outline: 'o1', c: 'c1', d: 'd1' }
+    let ledger = start(v1, ['a', 'outline', 'c', 'd'])
+    const v2 = { ...v1, outline: 'o2' }
+    ledger = planLedgerTurn(ledger, ['a', 'outline', 'c', 'd'], book(v2), null, { render: renderer(v2) }).ledger
+    // Now 'c' leaves: the cut is at 'c', after the outline's old copy.
+    const plan = planLedgerTurn(ledger, ['a', 'outline', 'd'], book(v2), null, { render: renderer(v2) })
+    expect(plan.ledger.entries.map(e => [e.id, e.text])).toEqual([
+      ['a', '[fresh:a:a1]'],
+      ['outline', '[fresh:outline:o1]'],
+      ['d', '[fresh:d:d1]'],
+      ['outline', '[update:outline:o2]']
+    ])
+  })
+})

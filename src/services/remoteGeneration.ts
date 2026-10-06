@@ -12,7 +12,7 @@
  * enough in localStorage (`{ jobId, meta, offset }`) to find its way back
  * after the tab is destroyed.
  */
-import type { LLMMessage, ProviderConfig, StreamCallbacks } from '../types/llm'
+import type { LLMMessage, ProviderConfig, StreamCallbacks, ThinkingBlock } from '../types/llm'
 import { localStorage } from '../store/persistence'
 import { useAppStore } from '../store/useAppStore'
 import { readSSEDataLines } from './llm'
@@ -133,6 +133,23 @@ function apiHeaders(): Record<string, string> {
 const MAX_STREAM_RECONNECTS = 1
 const STREAM_RECONNECT_DELAY_MS = 500
 
+/**
+ * A `thinking_block` event's payload, checked field by field: it is replayed
+ * to Anthropic verbatim, and a malformed block there is a 400 for the whole
+ * next step — better to drop it here and let the provider say what is missing.
+ */
+function parseThinkingBlock(raw: unknown): ThinkingBlock | null {
+  if (!raw || typeof raw !== 'object') return null
+  const block = raw as Record<string, unknown>
+  if (block.type === 'thinking' && typeof block.thinking === 'string' && typeof block.signature === 'string') {
+    return { type: 'thinking', thinking: block.thinking, signature: block.signature }
+  }
+  if (block.type === 'redacted_thinking' && typeof block.data === 'string') {
+    return { type: 'redacted_thinking', data: block.data }
+  }
+  return null
+}
+
 export function isRemoteGenerationAvailable(): boolean {
   return !!useAppStore.getState().user
 }
@@ -148,9 +165,16 @@ async function attachToJob(
   callbacks: StreamCallbacks,
   signal?: AbortSignal,
   reconnectsLeft: number = MAX_STREAM_RECONNECTS,
-  carryText: string = ''
+  carryText: string = '',
+  carryThinkingBlocks: number = 0
 ): Promise<void> {
   let offset = fromOffset
+  // Thinking blocks already handed to onThinkingBlock by THIS logical attach.
+  // Every attach replays the job's blocks from the first (they have no text
+  // offset), so a mid-turn reconnect would otherwise deliver them twice — and
+  // a duplicated block makes Anthropic reject the replay. Carried forward
+  // like fullText; a fresh resume starts at 0 and gets them all.
+  let thinkingBlocksSeen = carryThinkingBlocks
   // Text THIS reader rendered. On a resume it deliberately excludes the
   // replayed-before-the-offset prefix — onDone reports what was streamed here.
   // A mid-turn reconnect carries it forward: one logical attach must report
@@ -176,6 +200,8 @@ async function attachToJob(
         id?: string
         name?: string
         replay?: boolean
+        signature?: string
+        block?: unknown
         offset?: number
         message?: string
         usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }
@@ -202,8 +228,21 @@ async function attachToJob(
           name: event.name,
           argumentsText: event.text || '',
           // A replay carries the whole call; appending it would duplicate.
-          replace: event.replay === true
+          replace: event.replay === true,
+          // Gemini thoughtSignature; only added when sent, so deltas for
+          // every other provider keep their exact shape.
+          ...(typeof event.signature === 'string' && event.signature ? { signature: event.signature } : {})
         })
+      } else if (event.type === 'thinking_block') {
+        // A completed Anthropic reasoning block, for the replay. `index` is
+        // its position in the job; anything below what was already delivered
+        // is a reconnect's replay of a block this caller has.
+        const position = typeof event.index === 'number' ? event.index : thinkingBlocksSeen
+        if (position < thinkingBlocksSeen) return
+        const block = parseThinkingBlock(event.block)
+        if (!block) return
+        thinkingBlocksSeen = position + 1
+        callbacks.onThinkingBlock?.(block)
       } else if (event.type === 'reasoning') {
         // Thinking, not text: it never joins fullText and never advances the
         // offset, so a reconnect simply misses what was thought while away.
@@ -236,7 +275,7 @@ async function attachToJob(
       // a pause, and only a job that is really gone becomes an error.
       if (reconnectsLeft > 0 && !signal?.aborted) {
         await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
-        return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText)
+        return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen)
       }
       // Keep the persisted record: a later page load can still pick the job up
       // if it survived. Reporting beats pretending a truncated answer is whole.
@@ -254,7 +293,7 @@ async function attachToJob(
     const retryable = !signal?.aborted && !(error instanceof StreamRefusedError)
     if (retryable && reconnectsLeft > 0) {
       await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
-      return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText)
+      return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen)
     }
     callbacks.onError(error instanceof Error ? error : new Error(String(error)))
   }
@@ -306,7 +345,8 @@ export async function startRemoteGeneration(
           conversationId: config.conversationId,
           // Same lesson: the backend cannot apply an effort it never receives.
           reasoningEffort: config.reasoningEffort,
-          tools: config.tools
+          tools: config.tools,
+          toolChoice: config.toolChoice
         },
         messages,
         meta

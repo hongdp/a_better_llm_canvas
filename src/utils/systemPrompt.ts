@@ -42,6 +42,39 @@ export interface ChatSystemPromptOptions {
    * editing, so it is required rather than defaulted.
    */
   protocol: 'tools' | 'markup'
+  /**
+   * The agentic loop's read/navigate tools are offered (agentic_chat_loop.md).
+   * Off ⇒ the prompt is byte-identical to the pre-loop one.
+   */
+  agentTools?: boolean
+  /** Writes that succeed are followed by another step (spec D3). */
+  continueAfterWrites?: boolean
+}
+
+/**
+ * How the turn works once the model can read and move around the book. Only
+ * the loop's mechanics — which chapter a write reaches, when a reply ends the
+ * turn — never what to write.
+ */
+function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
+  const write = protocol === 'markup'
+    ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the number from the CHAPTER INDEX.
+- Before an <edit> on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- To write a new chapter, call create_chapter and write it with <canvas chapter="N"> in the same reply.
+- A reply that calls a tool is not your final reply: you receive the results and continue. The <doc_status> line is required only on a reply that calls no tool.`
+    : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its number in the CHAPTER INDEX.
+- Before edit_document on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- To write a new chapter, call create_chapter and then update_document with its number, in the same reply.`
+  const ending = continueAfterWrites
+    ? '- After document changes you receive their results and may continue; reply without a tool call when the work is done.'
+    : '- A reply whose only actions are document changes ENDS your turn. If more work remains after a change, ask for what you need (e.g. read the next chapter) in that same reply.'
+  return `WORKING ACROSS THE BOOK:
+- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read_chapter — or grep the book when no title or summary says where something is. Do not guess at a chapter you have not read.
+- Paragraphs are numbered like lines (¶12). grep reports the ¶ of each hit; to look closer, read only the paragraphs around it (read_chapter with paragraphs="40-60") rather than the whole chapter.
+- Index markers: [in context] — its full text is in this request; [in context — CHANGED since you last saw it…] — the text in this request is a newer version than the one your earlier replies were based on, so plan from it; [changed since you read it] — read it again before relying on it; [read earlier, not in context] — its text is no longer here.
+- The CURRENT ACTIVE DOCUMENT CONTENT is as of the start of this turn; tool results tell you what changed since.
+${write}
+${ending}`
 }
 
 /**
@@ -166,6 +199,7 @@ Every instruction above, including the user's custom writing instructions, gover
 export function buildChatSystemPrompt(options: ChatSystemPromptOptions): string {
   const { customInstructions, protocol } = options
   const sections = [protocol === 'tools' ? TOOL_PROTOCOL_RULES : MARKUP_PROTOCOL_RULES]
+  if (options.agentTools) sections.push(agentRules(protocol, !!options.continueAfterWrites))
 
   if (customInstructions?.trim()) {
     sections.push(

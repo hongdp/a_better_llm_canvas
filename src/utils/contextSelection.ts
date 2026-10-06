@@ -33,6 +33,13 @@ export interface SelectionInput {
   /** Chapters attached on the previous turn (conversation continuity). */
   previousAttachedIds?: string[]
   /**
+   * Chapters the model chose to read with a tool on the previous turn
+   * (agentic_chat_loop.md D4/D7). The strongest sign the conversation needs
+   * them: scored above the threshold, so they enter the cached ledger
+   * instead of costing the model another read step.
+   */
+  modelReadIds?: string[]
+  /**
    * Chapters already in the context ledger — sent on an earlier turn and
    * therefore already inside the model's cached prefix. They stay attached
    * for free (no budget, no re-scoring); dropping one costs a re-prefill and
@@ -78,6 +85,7 @@ const SCORE_TITLE_IN_PROMPT = 100
 const SCORE_TITLE_IN_HISTORY = 60
 const SCORE_ADJACENT = 40
 const SCORE_PREVIOUS_TURN = 30
+const SCORE_READ_BY_MODEL = 60
 const SCORE_KEYWORD_MAX = 50
 const SCORE_PER_KEYWORD_HIT = 10
 const HISTORY_TAIL_MESSAGES = 4
@@ -140,6 +148,7 @@ export function selectReferenceChapters(
   const { maxTotalChars, perDocChars, scoreThreshold } = { ...DEFAULT_SELECTION_OPTIONS, ...options }
   const { promptText, recentHistory, documents, activeDocumentId, pinnedIds, blockedIds } = input
   const previousAttachedIds = input.previousAttachedIds ?? []
+  const modelReadIds = input.modelReadIds ?? []
   const ledgerIds = input.ledgerIds ?? []
 
   const candidates = documents.filter(d => d.id !== activeDocumentId)
@@ -171,6 +180,7 @@ export function selectReferenceChapters(
     // the ledger; a ledger member is kept regardless, and scoring it here
     // would only distort which NEW chapter wins the remaining budget.
     if (!ledgerIds.includes(doc.id) && previousAttachedIds.includes(doc.id)) score += SCORE_PREVIOUS_TURN
+    if (!ledgerIds.includes(doc.id) && modelReadIds.includes(doc.id)) score += SCORE_READ_BY_MODEL
     if (keywords.length > 0) {
       const digest = `${doc.title}\n${doc.summary ?? ''}`.toLowerCase()
       let hits = 0

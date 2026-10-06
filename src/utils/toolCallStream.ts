@@ -18,6 +18,8 @@ export interface ToolCallAccumulator {
   name?: string
   /** Raw JSON text so far — not necessarily parseable. */
   argumentsText: string
+  /** Gemini thoughtSignature for this call, kept opaque for the replay. */
+  signature?: string
 }
 
 /**
@@ -73,12 +75,17 @@ export function applyToolCallDelta(
     id?: string
     function?: { name?: string; arguments?: string }
     replace?: boolean
+    /** Gemini thoughtSignature. Opaque: stored, never appended to. */
+    signature?: string
   }
 ): void {
   const index = typeof delta.index === 'number' ? delta.index : 0
   const existing = accumulators.get(index) ?? { argumentsText: '' }
   if (delta.id) existing.id = delta.id
   if (delta.function?.name) existing.name = delta.function.name
+  // Last non-empty wins: a signature is a whole token, not a fragment, and a
+  // later delta without one (a replay of an older reader) must not erase it.
+  if (delta.signature) existing.signature = delta.signature
   if (delta.function?.arguments !== undefined) {
     existing.argumentsText = delta.replace
       ? delta.function.arguments
@@ -94,6 +101,8 @@ export interface FinishedToolCall {
   args: Record<string, unknown> | null
   /** The raw argument text, kept for an exact replay in a later step. */
   argumentsText: string
+  /** Gemini thoughtSignature, present only when the provider sent one. */
+  signature?: string
 }
 
 /**
@@ -114,6 +123,9 @@ export function finishToolCalls(accumulators: Map<number, ToolCallAccumulator>):
       } catch {
         args = null
       }
-      return { id: acc.id, name: acc.name, args, argumentsText: acc.argumentsText }
+      const finished: FinishedToolCall = { id: acc.id, name: acc.name, args, argumentsText: acc.argumentsText }
+      // Only when present, so a call without one keeps its old exact shape.
+      if (acc.signature) finished.signature = acc.signature
+      return finished
     })
 }

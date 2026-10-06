@@ -29,6 +29,29 @@ export interface ProviderConfig {
    */
   documentProtocol?: DocumentProtocol
   /**
+   * Offer the read/navigate tools — the agentic loop
+   * (docs/features/agentic_chat_loop.md). Absent = on. Off = one step per
+   * turn plus the corrective retries, the pre-loop behaviour.
+   */
+  agentTools?: boolean
+  /** Steps one turn may take; 0 = no limit. Absent = the provider default (agent/policy). */
+  agentMaxSteps?: number
+  /**
+   * Give the model another step after writes that all succeeded (spec D3).
+   * Costs one more first-token wait per turn. Absent = the provider default.
+   */
+  continueAfterWrites?: boolean
+  /**
+   * The model the polish pass uses (D9), same provider. Absent = the
+   * provider default (agent/polish defaultPolishModel).
+   */
+  polishModel?: string
+  /**
+   * Per request, not a setting: 'none' forbids new tool calls while keeping
+   * the tools in the request (the agentic run's final step).
+   */
+  toolChoice?: 'auto' | 'none'
+  /**
    * Document tools in OpenAI shape (see utils/documentTools). Present for any
    * provider that supports tool calling; adapters translate at the edge.
    * Absent on the markup protocol — the tags are the interface there.
@@ -49,7 +72,25 @@ export interface LLMToolCall {
    * every follow-up step into a full-price prefill.
    */
   argumentsText: string
+  /**
+   * Gemini's `thoughtSignature` from this call's part, replayed on the same
+   * part. Gemini 3 rejects (400) a step whose first call comes back without
+   * it; only the FIRST of parallel calls carries one, so most calls have none.
+   * Opaque — never inspect or rebuild it.
+   */
+  signature?: string
 }
+
+/**
+ * Anthropic reasoning blocks, kept verbatim for replay. With extended
+ * thinking on, the assistant turn that holds `tool_use` must come back with
+ * these blocks complete, unmodified and in their original order, or the next
+ * step is rejected (400). `thinking` may be '' (display: "omitted") — the
+ * `signature` is what the API checks. `redacted_thinking` has no text at all.
+ */
+export type ThinkingBlock =
+  | { type: 'thinking'; thinking: string; signature: string }
+  | { type: 'redacted_thinking'; data: string }
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'
@@ -60,6 +101,11 @@ export interface LLMMessage {
   toolCallId?: string
   /** Tool only: the tool's name (Gemini keys results by name, not id). */
   name?: string
+  /**
+   * Assistant only, Anthropic: the reasoning blocks this reply streamed, in
+   * order. Replayed BEFORE the text and tool_use blocks (providerMessages).
+   */
+  thinking?: ThinkingBlock[]
   images?: string[] // base64 Data URLs
   /**
    * Marks the end of a stable prompt prefix for providers with explicit
@@ -107,7 +153,16 @@ export interface StreamCallbacks {
     argumentsText: string
     /** True when this carries the WHOLE call (a replay), not a fragment. */
     replace?: boolean
+    /** Gemini thoughtSignature of this call's part, when the provider sent one. */
+    signature?: string
   }) => void
+  /**
+   * One COMPLETED Anthropic reasoning block (thinking with its signature, or
+   * redacted_thinking), in stream order — keep them for the replay
+   * (LLMMessage.thinking). A transport delivers each block once per attach;
+   * a fresh resume of a remote job replays every block from the start.
+   */
+  onThinkingBlock?: (block: ThinkingBlock) => void
 }
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'

@@ -11,6 +11,7 @@ import type { AgentTool, ToolContext, ToolInvocation, ToolKind, ToolResult, Tool
 /** A tool with its argument type erased, as the registry holds it. */
 export interface RegisteredTool extends ToolSpec {
   kind: ToolKind
+  markupForm?: boolean
   isAvailable(ctx: ToolContext): boolean
   preview?(partialArgumentsText: string, ctx: ToolContext): void
   /** Parse, then execute. An argument error becomes a failed result. */
@@ -23,6 +24,7 @@ export function defineTool<A>(tool: AgentTool<A>): RegisteredTool {
     description: tool.description,
     parameters: tool.parameters,
     kind: tool.kind,
+    markupForm: tool.markupForm,
     isAvailable: ctx => tool.isAvailable(ctx),
     preview: tool.preview ? (text, ctx) => tool.preview?.(text, ctx) : undefined,
     invoke: (call, ctx) => {
@@ -31,7 +33,7 @@ export function defineTool<A>(tool: AgentTool<A>): RegisteredTool {
         return {
           ok: false,
           content: `${tool.name} was not run: ${parsed}`,
-          trace: `${tool.name}: ${parsed}`,
+          trace: `⚠️ ${tool.name}: ${parsed}`,
           // A write the model attempted but could not express is reported as
           // such — otherwise the turn ends in silence over an unchanged document.
           effects: tool.kind === 'write' ? { producedNothing: true } : undefined

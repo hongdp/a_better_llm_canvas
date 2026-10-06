@@ -362,19 +362,17 @@ export const ChaptersSidebar: React.FC = () => {
           return (
             <div
               key={doc.id}
-              onClick={() => {
-                if (isStreaming) {
-                  alert('Please wait for the assistant to finish writing before switching chapters.')
-                  return
-                }
-                setActiveDocumentId(doc.id)
-              }}
+              // Switching is allowed while the assistant writes: every write
+              // targets its chapter by id, and the live preview follows the
+              // chapter it belongs to (agentic_chat_loop.md D2). The editor
+              // stays read-only during a turn either way.
+              onClick={() => setActiveDocumentId(doc.id)}
               className={`chapter-item ${isActive ? 'active' : ''} ${isDragging ? 'dragging' : ''} ${dragOverClass}`}
-              style={{
-                opacity: isStreaming && !isActive ? 0.5 : 1,
-                cursor: isStreaming && !isActive ? 'not-allowed' : 'pointer'
-              }}
+              style={{ cursor: 'pointer' }}
               title={doc.title}
+              // Reordering stays blocked: the model names chapters by their
+              // number in the index it was sent, and a reorder mid-turn would
+              // point those numbers at other chapters.
               draggable={!isStreaming}
               onDragStart={(e) => handleDragStart(e, idx)}
               onDragOver={(e) => handleDragOver(e, idx)}

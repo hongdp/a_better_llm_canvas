@@ -5,7 +5,7 @@ import { streamLLM, type LLMMessage } from '../services/llm'
 import { findResumableJob, findJobsForBubbles, resumeRemoteGeneration, abortRemoteGeneration, type PersistedGenerationJob } from '../services/remoteGeneration'
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
-import { getTimestampId, stripIncompleteEndTag, trimIncompleteHtmlTail } from '../utils/text'
+import { getTimestampId, stripIncompleteEndTag, trimIncompleteHtmlTail, isBlankContent } from '../utils/text'
 import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel } from '../utils/llmContext'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
@@ -22,17 +22,26 @@ import {
 import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
-import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, type DynamicContextOptions } from './chat/dynamicContext'
+import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, ledgerBlock, type DynamicContextOptions } from './chat/dynamicContext'
+import { stripDiffMarkup, diffHtml } from '../utils/diff'
+import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
 import { AgentRun, type RunObserver } from '../agent/run'
 import { ToolRegistry, toToolSpecs } from '../agent/registry'
-import { DOCUMENT_WRITE_TOOLS } from '../agent/tools/documentWrites'
-import { DEFAULT_BUDGETS, DEFAULT_POLICY, defaultMaxSteps } from '../agent/policy'
-import type { ToolContext } from '../agent/types'
+import { DOCUMENT_WRITE_TOOLS, previewRewrite } from '../agent/tools/documentWrites'
+import { BOOK_TOOLS } from '../agent/tools/bookReads'
+import { polishChapterTool } from '../agent/tools/polishChapter'
+import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
+import { resolveRunSettings } from '../agent/policy'
+import { createRunState, type ToolContext } from '../agent/types'
+import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
+import type { AgentTurnRecord } from '../types/chat'
+import type { ThinkingBlock } from '../types/llm'
 import {
   EMPTY_LEDGER,
   hashContent,
   planLedgerTurn,
+  ledgerChapterIds,
   orderAdmissionsByStability,
   type ContextLedger,
   type LedgerPlan
@@ -60,12 +69,16 @@ const MAX_LEDGER_DOC_CHARS = 20_000
 // on "first text" aborted every rejoin of a turn that was merely thinking.
 const REJOIN_FIRST_EVENT_TIMEOUT_MS = 20_000
 
-/** What a run reports into: the bubble, the document it may rewrite, the cost estimate. */
+/** What a run reports into: the bubble, the chapter it started on, the cost estimate. */
 interface RunInfo {
   assistantMsgId: string
+  /** The chapter that was active when the turn was sent. */
+  startId: string
   originalDocContent: string
   attachmentsText: string
   estimatedInputTokens: number
+  /** Chapters whose full text the request carries (ledger, inline, active). */
+  inContextIds: string[]
 }
 
 /** Everything one streamed step needs in order to render itself. */
@@ -78,7 +91,19 @@ interface StreamRenderContext extends RunInfo {
  * The chat's tools (docs/features/agentic_chat_loop.md). Module-level: the
  * registry is static, so it can never destabilise a callback's identity.
  */
-const CHAT_TOOLS = new ToolRegistry(DOCUMENT_WRITE_TOOLS)
+const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool])
+
+/**
+ * One compact line telling the model what a past turn did with its tools.
+ * Tool exchanges are not replayed across turns (spec D4) — the chapters come
+ * back through the ledger — but the model should know it read or changed them.
+ */
+function agentHistoryNote(m: HistorySourceMessage): string {
+  const trace = m.role === 'assistant' ? m.agent?.trace : undefined
+  if (!trace?.length) return ''
+  const line = trace.join('; ')
+  return `\n\n[Tools used in this turn: ${line.length > 400 ? `${line.slice(0, 400)}…` : line}]`
+}
 
 /**
  * Resolves once the store satisfies `predicate`, or false once `timeoutMs`
@@ -242,6 +267,9 @@ export function useChatLLM({
   // Chapters attached on the previous turn — feeds the scorer's continuity
   // signal so a chapter under discussion isn't dropped mid-conversation.
   const previousAttachedIdsRef = useRef<string[]>([])
+  // Chapters the model read with a tool on the previous turn: scored into
+  // this turn's ledger (contextSelection modelReadIds).
+  const modelReadIdsRef = useRef<string[]>([])
   // What the model has already been sent, in the order it was sent. Session
   // scoped: a different book is a different prefix, and the provider's cache
   // is keyed on the token sequence, not on our bookkeeping.
@@ -281,17 +309,53 @@ export function useChatLLM({
   // Editor.tsx's content-prop effect sees no change and would leave the
   // half-streamed draft on screen.
   const canvasPreviewActiveRef = useRef(false)
+  // The editor's HTML when a live preview first painted it: the base Stop
+  // rebuilds its single undo step from. Not the turn's original — a run may
+  // be previewing a chapter it created rather than the one it started on.
+  const previewBaseRef = useRef<string | null>(null)
+  // Which chapter the live preview is painting. The user may switch chapters
+  // mid-run (agentic_chat_loop.md D2): from then on the editor shows another
+  // chapter, and settling or keeping "the preview" must not touch it.
+  const previewDocIdRef = useRef<string | null>(null)
+  // Chat text of the run's finished steps, shown above the step in flight.
+  const priorChatRef = useRef('')
+  // One live progress line, for a rewrite of a chapter that is not open.
+  const progressLineRef = useRef<string | null>(null)
+  // The step's Anthropic thinking blocks, replayed with its tool calls.
+  const thinkingRef = useRef<ThinkingBlock[]>([])
+  // D8: what the model has been shown of each chapter (accepted-reading hash
+  // and turn). Same scope as the ledger: a different book or model starts over.
+  const seenRef = useRef<SeenRecord>(new Map())
+  const turnCounterRef = useRef(0)
 
   /** Force the editor back to `html` after a live preview, without polluting undo. */
+  /**
+   * Is the chapter the preview painted still the one on screen?
+   *
+   * Problem: switching chapters mid-run left the preview flags set while the
+   *   editor already showed the other chapter (Editor.tsx's content sync
+   *   replaced the draft). Settling then wrote the FIRST chapter's HTML into
+   *   the editor showing the second — and the next keystroke there would have
+   *   saved it into the wrong chapter. Stop did the same into the undo stack.
+   * Fix: once the open chapter is not the previewed one, nothing of the
+   *   preview is on screen; settling and keeping only clear the flags.
+   */
+  const previewOnScreen = useCallback(() =>
+    previewDocIdRef.current === null || previewDocIdRef.current === useAppStore.getState().activeDocumentId, [])
+
   const settleCanvasPreview = useCallback((html: string) => {
     if (!canvasPreviewActiveRef.current) return
     canvasPreviewActiveRef.current = false
+    previewBaseRef.current = null
     lastCanvasPreviewRef.current = 0
+    const onScreen = previewOnScreen()
+    previewDocIdRef.current = null
+    if (!onScreen) return
     const editor = activeEditorRef.current
     if (editor && editor.getHTML() !== html) {
       editor.chain().setMeta('addToHistory', false).setContent(html, { emitUpdate: false }).run()
     }
-  }, [])
+  }, [previewOnScreen])
 
   /**
    * Keep the half-streamed draft after a stop, as ONE undo step, and return
@@ -310,7 +374,14 @@ export function useChatLLM({
   const keepCanvasPreview = useCallback((originalHtml: string): string | null => {
     if (!canvasPreviewActiveRef.current) return null
     canvasPreviewActiveRef.current = false
+    previewBaseRef.current = null
     lastCanvasPreviewRef.current = 0
+    const onScreen = previewOnScreen()
+    previewDocIdRef.current = null
+    // The user moved to another chapter: the draft is no longer on screen,
+    // so there is nothing to keep — and rebuilding an undo step here would
+    // put the previewed chapter's text into the open one's history.
+    if (!onScreen) return null
     const editor = activeEditorRef.current
     if (!editor) return null
     const draft = editor.getHTML()
@@ -321,7 +392,7 @@ export function useChatLLM({
     // HTML on both sides.
     editor.commands.setContent(draft, { emitUpdate: false })
     return draft
-  }, [])
+  }, [previewOnScreen])
 
   // Image preservation during LLM streaming: swap base64 <img> tags for
   // small tokens before sending, restore them (tolerantly) on the way back.
@@ -342,10 +413,13 @@ export function useChatLLM({
   const buildSystemPrompt = useCallback((): LLMMessage => {
     const s = useAppStore.getState()
     const preset = s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)
+    const settings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider])
     return {
       role: 'system',
       content: buildChatSystemPrompt({
         customInstructions: preset?.content,
+        agentTools: settings.agentTools,
+        continueAfterWrites: settings.policy.continueAfterWrites,
         // The prompt must teach whichever protocol the request will actually
         // use — describing tools while sending none disables editing outright.
         protocol: resolveDocumentProtocol(
@@ -385,11 +459,74 @@ export function useChatLLM({
     return runWholeBookBatchesFlow(promptText, batches, assistantMsgId, perBatchChars, abortControllerRef.current.signal)
   }, [])
 
+  // The bubble while a run streams: attachments, the chat of finished steps,
+  // the step in flight, and the progress line of an off-screen rewrite.
+  const paintStreamingBubble = useCallback((assistantMsgId: string, attachmentsText: string) => {
+    const { chatText } = splitStreamingResponse(accumulatedTextRef.current)
+    const body = [priorChatRef.current, chatText].map(t => t.trim()).filter(Boolean).join('\n\n') || 'Updating document...'
+    const withProgress = progressLineRef.current ? `${body}\n\n${progressLineRef.current}` : body
+    const content = attachmentsText ? `${attachmentsText}\n\n${withProgress}` : withProgress
+    // Once a turn has a timeline, the bubble renders it and shows only the
+    // step in flight after it (`live`); `content` keeps the whole text.
+    const live = [chatText.trim(), progressLineRef.current ?? ''].filter(Boolean).join('\n\n')
+    const s = useAppStore.getState()
+    s.setMessages(s.messages.map(m => m.id !== assistantMsgId ? m
+      : m.agent ? { ...m, content, agent: { ...m.agent, live } }
+      : { ...m, content }))
+  }, [])
+
+  /**
+   * One polish call (D9): the polish model of the active provider, with
+   * reasoning effort left to the provider (grok-4.20 rejects the parameter)
+   * and a cache key of its own — polish prompts share no prefix with the
+   * conversation, so they must not compete for its cache shard.
+   */
+  const polishTransport: PolishTransport = useCallback((system, user, signal) => new Promise<string>((resolve, reject) => {
+    const s = useAppStore.getState()
+    const cfg = s.providerConfigs[s.activeProvider]
+    void streamLLM(
+      [{ role: 'system', content: system }, { role: 'user', content: user }],
+      {
+        ...cfg,
+        provider: s.activeProvider,
+        model: cfg.polishModel?.trim() || defaultPolishModel(s.activeProvider, cfg.model),
+        reasoningEffort: 'default',
+        tools: undefined,
+        debug: s.debugMode,
+        signal,
+        conversationId: `${s.activeBookId ?? 'book'}:polish`,
+        // Not a chat job: a reload must not try to stream it into a bubble.
+        remoteMeta: { bookId: s.activeBookId ?? undefined, kind: 'batch' }
+      },
+      {
+        onChunk: () => {},
+        onDone: (text, usage) => {
+          if (usage) useAppStore.getState().addSessionTokens(usage.promptTokens, usage.completionTokens, usage.cachedPromptTokens || 0)
+          resolve(text)
+        },
+        onError: reject
+      }
+    )
+  }), [])
+
   // The ports the turn's tools work through (src/agent/types). Built once per
-  // run; every member reads refs, so a resumed turn whose editor mounts later
-  // still reaches the live editor.
-  const buildToolContext = useCallback((originalDocContent: string): ToolContext => ({
+  // run; every member reads refs or the store, so a resumed turn whose editor
+  // mounts later still reaches the live editor.
+  const buildToolContext = useCallback((info: RunInfo): ToolContext => ({
     getState: useAppStore.getState,
+    polish: {
+      run: (html, onProgress) => {
+        const s = useAppStore.getState()
+        return polishHtml(html, {
+          transport: polishTransport,
+          prompt: s.polishPrompt,
+          writingPreset: s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)?.content,
+          // The step's controller: Stop aborts the chunks in flight.
+          signal: abortControllerRef.current?.signal,
+          onProgress
+        })
+      }
+    },
     editor: {
       current: () => activeEditorRef.current,
       // Live full-document preview (measured: ~17s to first token, then ~70s
@@ -404,6 +541,10 @@ export function useChatLLM({
         const now = Date.now()
         if (now - lastCanvasPreviewRef.current < CANVAS_PREVIEW_THROTTLE_MS) return
         lastCanvasPreviewRef.current = now
+        if (!canvasPreviewActiveRef.current) {
+          previewBaseRef.current = editor.getHTML()
+          previewDocIdRef.current = useAppStore.getState().activeDocumentId
+        }
         canvasPreviewActiveRef.current = true
         setSaveStatus('unsaved')
         editor.chain()
@@ -417,6 +558,10 @@ export function useChatLLM({
       previewSelection: (html: string) => {
         const editor = activeEditorRef.current
         if (!editor) return
+        // The selection lives in the chapter the turn started on. A selection
+        // preview writes real transactions, so once the user has moved to
+        // another chapter it would rewrite that chapter at the same offsets.
+        if (useAppStore.getState().activeDocumentId !== info.startId) return
         // A rejoined turn has the selected text but no range — without this
         // the whole resumed rewrite previewed nothing.
         relocateResumedSelection(editor, selectionRefs)
@@ -435,6 +580,11 @@ export function useChatLLM({
       replaceRange: (from: number, to: number, html: string) => {
         const editor = activeEditorRef.current
         return editor ? replaceSelectionWithHtml(editor, from, to, html) : null
+      },
+      discardPreview: () => {
+        if (!canvasPreviewActiveRef.current) return
+        const st = useAppStore.getState()
+        settleCanvasPreview(st.documents.find(d => d.id === st.activeDocumentId)?.content ?? '')
       }
     },
     selection: {
@@ -447,14 +597,49 @@ export function useChatLLM({
       originalText: () => originalSelectedTextRef.current
     },
     document: {
-      original: originalDocContent,
-      commit: (html: string) => useAppStore.getState().updateActiveDocument({ content: html })
+      startId: info.startId,
+      original: info.originalDocContent,
+      chapters: () => useAppStore.getState().documents.map(d => ({ id: d.id, title: d.title, content: d.content, summary: d.summary })),
+      openId: () => useAppStore.getState().activeDocumentId,
+      ensureLoaded: (ids: string[]) => useAppStore.getState().ensureDocumentContents(ids),
+      // The open chapter goes through updateActiveDocument so Editor.tsx's
+      // content sync sees it; any other through updateDocument. Both carry
+      // the blanking guard.
+      commit: (id: string, html: string) => {
+        const st = useAppStore.getState()
+        if (id === st.activeDocumentId) st.updateActiveDocument({ content: html })
+        else st.updateDocument(id, { content: html })
+      },
+      open: (id: string) => useAppStore.getState().setActiveDocumentId(id),
+      create: (title: string) => useAppStore.getState().addDocument(title, '<p></p>', { activate: false }),
+      snapshot: (id: string, label: string) => useAppStore.getState().createVersionSnapshot(label, id)
     },
     images: { preserve: preserveImagesWithPlaceholders, restore: restoreImagesFromPlaceholders },
-    run: { working: null, selectionAttempted: false, selectionApplied: false }
+    ui: {
+      progress: (line: string | null) => {
+        if (progressLineRef.current === line) return
+        progressLineRef.current = line
+        paintStreamingBubble(info.assistantMsgId, info.attachmentsText)
+      }
+    },
+    run: createRunState({ startId: info.startId, inContext: info.inContextIds })
     // selectionRefs is a ref's `.current`, so it never changes identity — it is
     // listed only to satisfy exhaustive-deps (see the timeout note in CLAUDE.md).
-  }), [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, setSaveStatus, selectionRefs])
+  }), [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, setSaveStatus, selectionRefs, settleCanvasPreview, paintStreamingBubble, polishTransport])
+
+  // The agent record on a bubble (types/chat AgentTurnRecord): trace, steps,
+  // chapters changed. Only turns that ran a tool get one.
+  const setAgentRecord = useCallback((assistantMsgId: string, record: AgentTurnRecord) => {
+    if (record.trace.length === 0 && record.touched.length === 0) return
+    const s = useAppStore.getState()
+    s.setMessages(s.messages.map(m => m.id === assistantMsgId ? { ...m, agent: record } : m))
+  }, [])
+  const markAgentRecord = useCallback((assistantMsgId: string, status: AgentTurnRecord['status'], suffix?: string) => {
+    const s = useAppStore.getState()
+    s.setMessages(s.messages.map(m => m.id === assistantMsgId && m.agent
+      ? { ...m, agent: { ...m.agent, status, live: undefined, ...(suffix ? { suffix } : {}) } }
+      : m))
+  }, [])
 
   // The callback set that renders one streamed step into the chat bubble and
   // the editor. Shared by the send path and the rejoin path (a generation
@@ -471,12 +656,16 @@ export function useChatLLM({
           index: delta.index,
           id: delta.id,
           function: { name: delta.name, arguments: delta.argumentsText },
-          replace: delta.replace
+          replace: delta.replace,
+          signature: delta.signature
         })
         // Render the call as it is written: each tool previews its own
         // partial arguments (the document writes paint the editor).
         const acc = toolCallsRef.current.get(delta.index)
         if (acc) CHAT_TOOLS.get(acc.name)?.preview?.(acc.argumentsText, toolCtx)
+      },
+      onThinkingBlock: (block: ThinkingBlock) => {
+        thinkingRef.current.push(block)
       },
       onReasoning: (text: string) => {
         if (firstTokenAtRef.current === 0) firstTokenAtRef.current = Date.now()
@@ -501,33 +690,18 @@ export function useChatLLM({
 
         // Incremental tag split (pure; chat/streamHandlers): routes
         // document markup away from the chat bubble as it streams.
-        const { chatText, canvasText, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
-
-        // Prepend visual attachment details to conversational text.
-        const displayChatText = attachmentsText
-          ? `${attachmentsText}\n\n${chatText || 'Updating document...'}`
-          : (chatText || 'Updating document...')
-
-        // Update assistant message from fresh store state
-        const latestMessages = useAppStore.getState().messages
-        s.setMessages(
-          latestMessages.map(m => {
-            if (m.id === assistantMsgId) {
-              return { ...m, content: displayChatText }
-            }
-            return m
-          })
-        )
+        const { canvasText, canvasChapter, selectionReplaceText, isSelectionEdit } = splitStreamingResponse(raw)
+        paintStreamingBubble(assistantMsgId, attachmentsText)
 
         // The markup protocol's live previews, through the same ports the
-        // tool calls use.
+        // tool calls use — routed by the canvas's chapter attribute.
         if (isSelectionEdit) {
           toolCtx.selection.relocate()
           const cleanedText = stripIncompleteEndTag(selectionReplaceText)
           if (cleanedText) toolCtx.editor.previewSelection(cleanedText)
         } else if (canvasText.trim()) {
           setSaveStatus('unsaved')
-          toolCtx.editor.previewDocument(trimIncompleteHtmlTail(canvasText))
+          previewRewrite(toolCtx, canvasChapter, trimIncompleteHtmlTail(canvasText))
         }
       },
       onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => {
@@ -553,7 +727,11 @@ export function useChatLLM({
             : null
         })
 
-        run.stepDone({ text: fullText, nativeCalls: finishToolCalls(toolCallsRef.current) })
+        run.stepDone({
+          text: fullText,
+          nativeCalls: finishToolCalls(toolCallsRef.current),
+          thinking: thinkingRef.current.length > 0 ? [...thinkingRef.current] : undefined
+        })
       },
       onError: (err: Error) => {
         run.cancel()
@@ -566,7 +744,7 @@ export function useChatLLM({
           // store HAD captured it (see the setEditable note in Editor.tsx),
           // so a reload contradicted the screen. Committing the draft makes
           // the two identical, and keepCanvasPreview makes it one undo step.
-          const draft = keepCanvasPreview(originalDocContent)
+          const draft = keepCanvasPreview(previewBaseRef.current ?? originalDocContent)
           if (draft !== null) s.updateActiveDocument({ content: draft })
           // A selection rewrite previews through real transactions, so its
           // partial text is already in the store; only the note differs.
@@ -574,11 +752,16 @@ export function useChatLLM({
 
           // The bubble was last painted mid-stream ("Updating document..." or
           // a half sentence); say what happened rather than leaving it there.
-          const { chatText } = splitStreamingResponse(accumulatedTextRef.current)
+          const chatText = [priorChatRef.current, splitStreamingResponse(accumulatedTextRef.current).chatText]
+            .map(t => t.trim()).filter(Boolean).join('\n\n')
           const stoppedNote = keptDraft
             ? '⏹️ Stopped. The partial draft was kept in the document — Undo (Ctrl+Z) restores the previous version.'
             : '⏹️ Stopped.'
           const stoppedText = chatText.trim() ? `${chatText.trim()}\n\n${stoppedNote}` : stoppedNote
+          // The timeline keeps the finished steps; the interrupted one and the
+          // note follow it.
+          const stoppedStep = splitStreamingResponse(accumulatedTextRef.current).chatText.trim()
+          markAgentRecord(assistantMsgId, 'stopped', stoppedStep ? `${stoppedStep}\n\n${stoppedNote}` : stoppedNote)
           s.setMessages(useAppStore.getState().messages.map(m =>
             m.id === assistantMsgId
               ? { ...m, content: attachmentsText ? `${attachmentsText}\n\n${stoppedText}` : stoppedText }
@@ -589,6 +772,7 @@ export function useChatLLM({
         }
 
         setErrorMsg(err.message)
+        markAgentRecord(assistantMsgId, 'stopped', `⚠️ Error during stream: ${err.message}`)
 
         const displayChatText = attachmentsText
           ? `${attachmentsText}\n\n⚠️ Error during stream: ${err.message}`
@@ -604,16 +788,38 @@ export function useChatLLM({
           })
         )
 
-        settleCanvasPreview(originalDocContent)
-        s.updateActiveDocument({ content: originalDocContent })
+        // Put the start chapter back only if this run committed nothing to it:
+        // an earlier step's write is already a reviewable diff, and an error
+        // in a later step must not erase it. A selection preview did write
+        // through real transactions, so it is reverted when it never landed.
+        const latest = useAppStore.getState()
+        const startKept = !!toolCtx.run.docs.get(toolCtx.document.startId)?.dirty || toolCtx.run.selectionApplied
+        if (latest.activeDocumentId === toolCtx.document.startId && !startKept) {
+          settleCanvasPreview(originalDocContent)
+          s.updateActiveDocument({ content: originalDocContent })
+        } else {
+          settleCanvasPreview(latest.documents.find(d => d.id === latest.activeDocumentId)?.content ?? '')
+        }
         forceSave()
       }
     }
-  }, [setSaveStatus, settleCanvasPreview, keepCanvasPreview, forceSave])
+  }, [setSaveStatus, settleCanvasPreview, keepCanvasPreview, forceSave, paintStreamingBubble, markAgentRecord])
 
   // How a run reports to the chat: the corrective-retry status line, and the
   // final bubble once the run is over.
   const buildRunObserver = useCallback((info: RunInfo): RunObserver => ({
+    onStepExecuted: (progress) => {
+      priorChatRef.current = progress.chatText
+      progressLineRef.current = null
+      setAgentRecord(info.assistantMsgId, {
+        status: 'running',
+        steps: progress.steps,
+        trace: progress.trace,
+        touched: progress.touched,
+        timeline: progress.timeline,
+        prefix: info.attachmentsText || undefined
+      })
+    },
     onCorrective: (failure, attempt, max) => {
       settleCanvasPreview(info.originalDocContent)
       const s = useAppStore.getState()
@@ -633,6 +839,21 @@ export function useChatLLM({
     onFinish: (summary) => {
       const s = useAppStore.getState()
       s.setStreaming(false)
+      priorChatRef.current = ''
+      progressLineRef.current = null
+      // The record is completed below, once the warnings are known.
+      const status: AgentTurnRecord['status'] =
+        summary.endReason === 'step_limit' ? 'step_limit' : summary.endReason === 'cancelled' ? 'stopped' : 'done'
+      // Chapters the model chose to read are the conversation's subject now:
+      // the continuity signal admits them into next turn's cached ledger,
+      // instead of the model paying a read step for them again (D4, D7).
+      modelReadIdsRef.current = summary.readIds
+      // …and the model has seen their current bytes (D8).
+      const turn = turnCounterRef.current
+      for (const id of [...summary.readIds, ...summary.touched.map(t => t.documentId)]) {
+        const doc = s.documents.find(d => d.id === id)
+        if (doc) recordSeen(seenRef.current, id, doc.content, turn)
+      }
 
       // Built AFTER the document writes, not before: whether edits beside a
       // selection landed, and whether the selection was gone, are only known
@@ -656,10 +877,22 @@ export function useChatLLM({
       })
 
       const chatText = summary.chatText.trim() || 'Document updated successfully.'
-      const displayChatText = (info.attachmentsText ? `${info.attachmentsText}\n\n${chatText}` : chatText) + warningNote
+      const limitNote = summary.endReason === 'step_limit'
+        ? `\n\nℹ️ This turn stopped at its step limit (${summary.steps} steps). Reply "continue" to let it go on, or raise the limit in Settings.`
+        : ''
+      const displayChatText = (info.attachmentsText ? `${info.attachmentsText}\n\n${chatText}` : chatText) + warningNote + limitNote
       s.setMessages(useAppStore.getState().messages.map(m =>
         m.id === info.assistantMsgId ? { ...m, content: displayChatText } : m
       ))
+      setAgentRecord(info.assistantMsgId, {
+        status,
+        steps: summary.steps,
+        trace: summary.trace,
+        touched: summary.touched,
+        timeline: summary.timeline,
+        prefix: info.attachmentsText || undefined,
+        suffix: (warningNote + limitNote).trim() || undefined
+      })
 
       // Converge the editor with whatever the store ended up holding.
       // Required after a live preview: on the paths that keep the original
@@ -671,11 +904,11 @@ export function useChatLLM({
       )
       forceSave()
     }
-  }), [settleCanvasPreview, forceSave])
+  }), [settleCanvasPreview, forceSave, setAgentRecord])
 
   // One model call of a run: per-step resets, the abort controller, the
   // selection capture, and the request with the tools this step offers.
-  const streamStep = useCallback(async (messages: LLMMessage[], stepIndex: number, rc: StreamRenderContext) => {
+  const streamStep = useCallback(async (messages: LLMMessage[], stepIndex: number, rc: StreamRenderContext, final: boolean) => {
     const s = useAppStore.getState()
 
     // Clock for time-to-first-token. Reset per step, corrective ones
@@ -685,6 +918,9 @@ export function useChatLLM({
 
     // Start each step with no leftover tool calls or thinking on screen.
     toolCallsRef.current = new Map()
+    thinkingRef.current = []
+    accumulatedTextRef.current = ''
+    progressLineRef.current = null
     reasoningTailRef.current = ''
     lastReasoningPaintRef.current = 0
     s.setStreamingReasoning('')
@@ -699,8 +935,12 @@ export function useChatLLM({
     // Reset the live-preview throttle so the first chunk renders immediately.
     lastSelectionPreviewRef.current = 0
 
-    // Capture and store current selection indices before streaming starts
-    if (activeEditor && selectedText) {
+    // Capture the selection once, at the run's first step. Later steps keep
+    // it: the editor's selection moves when a rewrite lands, and the tools
+    // the run offers (replace_selection among them) must not change mid-run.
+    if (stepIndex > 0) {
+      // keep the range captured at step 0
+    } else if (activeEditor && selectedText) {
       selectionRangeRef.current = {
         from: activeEditor.state.selection.from,
         to: activeEditor.state.selection.to
@@ -730,6 +970,9 @@ export function useChatLLM({
           signal,
           conversationId: s.activeBookId,
           tools: offered.length > 0 ? toOpenAITools(toToolSpecs(offered)) : undefined,
+          // The last step the budget allows: tools stay in the request (earlier
+          // calls reference them), but no new call is allowed (D5).
+          toolChoice: final && offered.length > 0 ? 'none' as const : undefined,
           // Job description for the remote transport: a reloaded tab uses
           // it to find this generation and stream it back into this bubble.
           remoteMeta: {
@@ -761,16 +1004,19 @@ export function useChatLLM({
    */
   const createRun = useCallback((info: RunInfo, initialMessages: LLMMessage[], canContinue: boolean): StreamRenderContext => {
     const s = useAppStore.getState()
-    const toolCtx = buildToolContext(info.originalDocContent)
+    const toolCtx = buildToolContext(info)
     const rcRef: { current: StreamRenderContext | null } = { current: null }
+    const settings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider], canContinue)
+    priorChatRef.current = ''
     const run = new AgentRun({
       registry: CHAT_TOOLS,
       ctx: toolCtx,
       writeProtocol: resolveDocumentProtocol(s.activeProvider, s.providerConfigs[s.activeProvider]?.documentProtocol),
-      driver: (messages, stepIndex) => streamStep(messages, stepIndex, rcRef.current as StreamRenderContext),
+      driver: (messages, stepIndex, opts) => streamStep(messages, stepIndex, rcRef.current as StreamRenderContext, opts.final),
       observer: buildRunObserver(info),
-      budgets: { ...DEFAULT_BUDGETS, maxSteps: canContinue ? defaultMaxSteps(s.activeProvider) : 1 },
-      policy: DEFAULT_POLICY,
+      budgets: settings.budgets,
+      policy: settings.policy,
+      agentTools: settings.agentTools,
       canContinue,
       initialMessages
     })
@@ -847,8 +1093,11 @@ export function useChatLLM({
 
       abortControllerRef.current = new AbortController()
       accumulatedTextRef.current = ''
-      // A rejoin skips startLLMStreaming, so the per-turn reset lives here too.
+      // A rejoin skips streamStep, so the per-step reset lives here too. A
+      // resume replays every thinking block from the start, so the collected
+      // ones must start empty (or they would be replayed twice).
       toolCallsRef.current = new Map()
+      thinkingRef.current = []
       s.setStreaming(true)
 
       // Watchdog: if the job is gone or the stream never produces an event,
@@ -883,7 +1132,14 @@ export function useChatLLM({
       // No request to replay, so the run cannot continue: no corrective
       // step, no follow-up — this reader only renders what the job emits.
       const baseCallbacks = buildStreamCallbacks(createRun(
-        { assistantMsgId, originalDocContent, attachmentsText: '', estimatedInputTokens: 0 },
+        {
+          assistantMsgId,
+          startId: reloaded.activeDocumentId,
+          originalDocContent,
+          attachmentsText: '',
+          estimatedInputTokens: 0,
+          inContextIds: []
+        },
         [],
         false
       ))
@@ -974,6 +1230,8 @@ export function useChatLLM({
     apiMessages: LLMMessage[]
     attachmentsText: string
     estimatedInputTokens: number
+    /** Chapters whose full text this request carries — the run's `inContext`. */
+    inContextIds: string[]
   } | null> => {
     const { promptText, images, historySource, assistantMsgId, wholeBookPlan } = opts
 
@@ -991,6 +1249,7 @@ export function useChatLLM({
     if (ledgerScope !== ledgerScopeRef.current) {
       ledgerRef.current = EMPTY_LEDGER
       ledgerScopeRef.current = ledgerScope
+      seenRef.current = new Map()
     }
 
     // Layer 1 auto-selection: pinned chapters always attach; the scorer adds
@@ -1004,6 +1263,7 @@ export function useChatLLM({
       pinnedIds: s.pinnedReferenceIds,
       blockedIds: s.blockedReferenceIds,
       previousAttachedIds: previousAttachedIdsRef.current,
+      modelReadIds: modelReadIdsRef.current,
       ledgerIds: ledgerRef.current.entries.map(e => e.id)
     })
     previousAttachedIdsRef.current = selection.attachedIds
@@ -1022,7 +1282,7 @@ export function useChatLLM({
       .filter(m => m.id !== 'welcome')
       .map(m => ({
         role: m.role,
-        content: stripChatDisplayArtifacts(m.content),
+        content: stripChatDisplayArtifacts(m.content) + agentHistoryNote(m),
         images: m.images
       }))
     const activeDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content ?? ''
@@ -1058,6 +1318,15 @@ export function useChatLLM({
       historyMessages[historyMessages.length - 1].cacheHint = true
     }
 
+    // The agentic loop's view of the index (D8): which chapters this request
+    // carries in full, which the model saw before and whether they changed.
+    // Computed per branch below, because each attaches a different set.
+    const runSettings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider])
+    turnCounterRef.current += 1
+    const agentTail = (inContext: string[]): DynamicContextOptions => runSettings.agentTools
+      ? { agentTools: true, markers: freshnessMarkers(s.documents, s.activeDocumentId, inContext, seenRef.current, turnCounterRef.current) }
+      : {}
+
     // Execute the whole-book plan decided (and consented) before the message
     // entered the chat.
     let attachedIds = selection.attachedIds
@@ -1075,13 +1344,13 @@ export function useChatLLM({
       if (mode === 'full' && sticky) {
         bookPrefixMessages = buildStickyBookPrefix(docs)
         attachedIds = docs.map(d => d.id)
-        dynamicContext = buildTail()
+        dynamicContext = buildTail(agentTail(attachedIds))
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, sticky)]`
       } else if (mode === 'full') {
         // Rung 1: attach every chapter, single call.
         attachedIds = docs.map(d => d.id)
         dynamicContext = buildInlineReferenceBlock(s.documents, attachedIds, Number.MAX_SAFE_INTEGER) +
-          '\n' + buildTail()
+          '\n' + buildTail(agentTail(attachedIds))
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters)]`
       } else if (mode === 'batched') {
         // Rung 2: map-reduce over book-order batches, then answer from notes.
@@ -1097,12 +1366,12 @@ export function useChatLLM({
           return null
         }
         attachedIds = []
-        dynamicContext = buildTail({ notesBlock: notes })
+        dynamicContext = buildTail({ notesBlock: notes, ...agentTail([]) })
         attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, read in ${batches.length} batches)]`
       } else {
         // Rung 0 fast mode: structure + summaries, no full text.
         attachedIds = []
-        dynamicContext = buildTail({ includeWholeBookDigest: true })
+        dynamicContext = buildTail({ includeWholeBookDigest: true, ...agentTail([]) })
         attachmentsText = '[Attached Context: Whole-book digest (structure + summaries)]'
       }
       previousAttachedIdsRef.current = attachedIds
@@ -1123,24 +1392,34 @@ export function useChatLLM({
         bookOrder,
         s.activeDocumentId
       )
-      const docsForPlan = s.documents.map(d => ({
-        id: d.id,
-        chars: Math.min(d.content.length, MAX_LEDGER_DOC_CHARS),
-        hash: hashContent(d.content)
-      }))
+      // Hashed on the ACCEPTED reading, which is what the ledger renders:
+      // accepting a pending diff changes the HTML but not what the model
+      // reads, and must not cost a re-send (see ledgerBlock).
+      const docsForPlan = s.documents.map(d => {
+        const accepted = stripDiffMarkup(d.content)
+        return { id: d.id, chars: Math.min(accepted.length, MAX_LEDGER_DOC_CHARS), hash: hashContent(accepted) }
+      })
 
       // Removing a chapter used to raise a consent card here (the drop costs
       // a re-prefill of everything after it in the cached prefix). Removed by
       // request: the user's removal is honored silently and the cache pays
       // the one-turn re-prefill. The planner still reports the cost in
       // `resendChars` if a UI ever wants to show it non-blockingly.
-      const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId)
+      // With a renderer the planner appends a newer version of an edited
+      // chapter instead of cutting the ledger at its old copy, and every
+      // entry keeps the exact bytes it was sent with (contextLedger).
+      const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId, {
+        render: (id, kind) => {
+          const doc = s.documents.find(d => d.id === id)
+          return doc ? ledgerBlock(doc, kind) : ''
+        }
+      })
 
-      attachedIds = plan.ledger.entries.map(e => e.id)
-      bookPrefixMessages = buildLedgerMessages(s.documents, attachedIds)
+      attachedIds = ledgerChapterIds(plan.ledger)
+      bookPrefixMessages = buildLedgerMessages(s.documents, plan.ledger.entries, undefined, { agentTools: runSettings.agentTools })
       ledgerRef.current = plan.ledger
       previousAttachedIdsRef.current = attachedIds
-      dynamicContext = buildTail()
+      dynamicContext = buildTail(agentTail(attachedIds))
       attachmentsText = buildAttachmentsLabel(attachedIds, s.documents, autoIds)
     }
 
@@ -1155,7 +1434,8 @@ export function useChatLLM({
     return {
       apiMessages,
       attachmentsText,
-      estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4)
+      estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4),
+      inContextIds: [...attachedIds, s.activeDocumentId]
     }
   }, [buildSystemPrompt, buildTail, runWholeBookBatches, forceSave])
 
@@ -1229,9 +1509,11 @@ export function useChatLLM({
 
     await startTurn(request.apiMessages, {
       assistantMsgId,
+      startId: s.activeDocumentId,
       originalDocContent,
       attachmentsText: request.attachmentsText,
-      estimatedInputTokens: request.estimatedInputTokens
+      estimatedInputTokens: request.estimatedInputTokens,
+      inContextIds: request.inContextIds
     })
   }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, planWholeBook, assembleChatRequest, startTurn])
 
@@ -1295,11 +1577,115 @@ export function useChatLLM({
 
     await startTurn(request.apiMessages, {
       assistantMsgId,
+      startId: s.activeDocumentId,
       originalDocContent,
       attachmentsText: request.attachmentsText,
-      estimatedInputTokens: request.estimatedInputTokens
+      estimatedInputTokens: request.estimatedInputTokens,
+      inContextIds: request.inContextIds
     })
   }, [layoutMode, setIsChatExpanded, planWholeBook, assembleChatRequest, startTurn])
+
+  /**
+   * The Polish button (D9): polish a chapter directly, without the chat model
+   * — no first-token wait for a decision the user already made. It runs as a
+   * turn of its own (a user line, a reply with the chapter in its "changed
+   * this turn" block), so the result is reviewable, undoable through the
+   * version snapshot, and part of the conversation the model sees next.
+   */
+  const runPolish = useCallback(async (documentId: string) => {
+    if (useAppStore.getState().isStreaming) return
+    await useAppStore.getState().ensureDocumentContents([documentId])
+    const s = useAppStore.getState()
+    const doc = s.documents.find(d => d.id === documentId)
+    if (!doc) return
+    const base = stripDiffMarkup(doc.content)
+    if (isBlankContent(base)) return
+
+    const zh = s.language === 'zh'
+    imagePlaceholdersRef.current = []
+    s.addMessage({
+      id: getTimestampId('user'),
+      role: 'user',
+      content: zh ? `润色《${doc.title}》` : `Polish "${doc.title}"`,
+      timestamp: new Date().toISOString()
+    })
+    const assistantMsgId = getTimestampId('assistant')
+    s.addMessage({
+      id: assistantMsgId,
+      role: 'assistant',
+      content: ASSISTANT_PLACEHOLDER,
+      timestamp: new Date().toISOString(),
+      provider: s.activeProvider,
+      model: s.providerConfigs[s.activeProvider].polishModel?.trim() ||
+        defaultPolishModel(s.activeProvider, s.providerConfigs[s.activeProvider].model)
+    })
+    s.setStreaming(true)
+    s.createVersionSnapshot(`Auto-save before polishing "${doc.title}"`, documentId)
+    if (abortControllerRef.current) abortControllerRef.current.abort()
+    abortControllerRef.current = new AbortController()
+
+    const paint = (content: string) => {
+      const st = useAppStore.getState()
+      st.setMessages(st.messages.map(m => (m.id === assistantMsgId ? { ...m, content } : m)))
+    }
+    const outcome = await polishHtml(preserveImagesWithPlaceholders(base), {
+      transport: polishTransport,
+      prompt: s.polishPrompt,
+      writingPreset: s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)?.content,
+      signal: abortControllerRef.current.signal,
+      onProgress: (done, total) => paint(zh ? `✨ 润色中 ${done}/${total}…` : `✨ Polishing ${done}/${total}…`)
+    })
+
+    if (outcome.polished > 0) {
+      // One reviewable diff from the last CONFIRMED text, like every write: a
+      // change still under review stays under review (see docState).
+      const reviewBase = base === doc.content ? base : resolveDiffMarkupInHtml(doc.content, 'reject')
+      const diffed = diffHtml(reviewBase, restoreImagesFromPlaceholders(outcome.html))
+      const st = useAppStore.getState()
+      if (st.activeDocumentId === documentId) st.updateActiveDocument({ content: diffed })
+      else st.updateDocument(documentId, { content: diffed })
+    }
+    const line = `✨ polished "${doc.title}" (${outcome.polished} of ${outcome.chunks} chunk(s) rewritten)`
+    const notes = [
+      outcome.kept.length > 0
+        ? (zh ? `保留初稿的段落：${outcome.kept.join('；')}` : `Kept as drafted — ${outcome.kept.join('; ')}`)
+        : '',
+      outcome.stopped ? (zh ? '⏹️ 已停止，未完成的段落保留初稿。' : '⏹️ Stopped; unfinished chunks kept their draft.') : ''
+    ].filter(Boolean).join('\n\n')
+    const st = useAppStore.getState()
+    st.setMessages(st.messages.map(m => m.id !== assistantMsgId ? m : {
+      ...m,
+      content: [line, notes].filter(Boolean).join('\n\n'),
+      agent: {
+        status: outcome.stopped ? 'stopped' : 'done',
+        steps: 1,
+        trace: [line],
+        touched: [{
+          documentId,
+          titleAtRun: doc.title,
+          kind: 'polished',
+          changes: outcome.polished,
+          failed: outcome.chunks - outcome.polished
+        }],
+        timeline: [{ type: 'tool', line, ok: outcome.polished > 0 }],
+        suffix: notes || undefined
+      }
+    }))
+    st.setStreaming(false)
+    forceSave()
+  }, [polishTransport, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave])
+
+  // The Polish button asks through the store (it lives in the canvas header);
+  // run the request once, through a ref so the effect depends on nothing but
+  // the request itself (see the timeout note in CLAUDE.md).
+  const runPolishRef = useRef(runPolish)
+  useEffect(() => { runPolishRef.current = runPolish }, [runPolish])
+  const polishRequest = useAppStore(state => state.polishRequest)
+  useEffect(() => {
+    if (!polishRequest) return
+    useAppStore.getState().clearPolishRequest()
+    void runPolishRef.current(polishRequest.documentId)
+  }, [polishRequest])
 
   // Stop generation
   const handleStopGeneration = useCallback(() => {

@@ -44,14 +44,26 @@ export interface DocumentTool extends ToolSpec {
  * `<doc_status>` line and its three failure modes can retire for any provider
  * that supports tools.
  */
+/**
+ * Which chapter a write targets (agentic loop, spec D2). Listed FIRST so it
+ * tends to be written before `html`: the live preview can only be routed to
+ * the right chapter once it knows which one that is.
+ */
+const CHAPTER_PARAM: JsonSchema = {
+  type: 'string',
+  description:
+    'Optional. The chapter to change: its number in the CHAPTER INDEX (e.g. "3") or its exact title. Omit to change the active chapter. Write this argument first.'
+}
+
 export const DOCUMENT_TOOLS: DocumentTool[] = [
   {
     name: 'update_document',
     description:
-      'Replace the entire active document. Use for a brand-new document, a full rewrite, or restructuring where most of the text changes. For a small change to an existing document, prefer edit_document.',
+      'Replace the entire text of a chapter (the active one unless `chapter` names another). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.',
     parameters: {
       type: 'object',
       properties: {
+        chapter: CHAPTER_PARAM,
         html: {
           type: 'string',
           description:
@@ -64,10 +76,11 @@ export const DOCUMENT_TOOLS: DocumentTool[] = [
   {
     name: 'edit_document',
     description:
-      'Change specific passages of the active document, leaving everything else untouched. Preferred for rewriting a sentence or paragraph, fixing wording, or inserting and removing a section.',
+      'Change specific passages of a chapter (the active one unless `chapter` names another), leaving everything else untouched. Preferred for rewriting a sentence or paragraph, fixing wording, or inserting and removing a section. For another chapter, read its HTML with read_chapter first.',
     parameters: {
       type: 'object',
       properties: {
+        chapter: CHAPTER_PARAM,
         edits: {
           type: 'array',
           description: 'One entry per separate change.',

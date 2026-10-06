@@ -15,6 +15,7 @@
  * on every single turn.
  */
 import { stripDiffMarkup } from '../../utils/diff'
+import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { truncateWithNotice, htmlToPlainText } from '../../utils/llmContext'
 import { buildChapterIndex, buildWholeBookDigest } from '../../utils/chapterIndex'
 import type { LLMMessage } from '../../types/llm'
@@ -44,11 +45,36 @@ export interface DynamicContextOptions {
   perDocChars?: number
   includeWholeBookDigest?: boolean
   notesBlock?: string
+  /** The agentic loop's tools are on: the model may write any chapter. */
+  agentTools?: boolean
+  /** Freshness markers for the chapter index (agentic_chat_loop.md D8). */
+  markers?: Record<string, string>
 }
 
 /** One chapter as it is rendered into the ledger block. */
 export function renderLedgerChapter(title: string, content: string, perDocChars: number): string {
   return `--- DOCUMENT: ${title} ---\n${truncateWithNotice(htmlToPlainText(content), perDocChars)}\n`
+}
+
+/**
+ * A chapter's block in the ledger, from its ACCEPTED reading.
+ *
+ * Problem: chapters were rendered from their raw HTML. A chapter with an
+ *   unresolved review diff became plain text with the deleted and the
+ *   inserted words run together ("oldnew"), and accepting that diff changed
+ *   the bytes — so the chapter counted as edited and was re-sent.
+ * Fix: render (and hash, see useChatLLM) the text as it reads with every
+ *   pending change accepted — what read_chapter and the active document
+ *   already show the model.
+ *
+ * `update` marks a newer version appended after an older copy that stays in
+ * place for the prompt cache (contextLedger append-updates).
+ */
+export function ledgerBlock(doc: RenderableDoc, kind: 'fresh' | 'update' = 'fresh', perDocChars: number = MAX_REFERENCE_DOC_CHARS): string {
+  const title = kind === 'update'
+    ? `${doc.title} (UPDATED — this version replaces the earlier copy of this chapter above; disregard that one)`
+    : doc.title
+  return renderLedgerChapter(title, stripDiffMarkup(doc.content), perDocChars)
 }
 
 /**
@@ -61,25 +87,38 @@ export function renderLedgerChapter(title: string, content: string, perDocChars:
  */
 export function buildLedgerMessages(
   documents: RenderableDoc[],
-  ledgerIds: string[],
-  perDocChars: number = MAX_REFERENCE_DOC_CHARS
+  /**
+   * The ledger, in order: chapter ids, or entries carrying the exact block
+   * they were sent with (`text`) — an entry's bytes must not change between
+   * turns, even after its chapter did.
+   */
+  ledger: Array<string | { id: string; text?: string }>,
+  perDocChars: number = MAX_REFERENCE_DOC_CHARS,
+  opts: { agentTools?: boolean } = {}
 ): LLMMessage[] {
-  if (ledgerIds.length === 0) return []
+  if (ledger.length === 0) return []
 
-  const chapters = ledgerIds
-    .map(id => {
-      const doc = documents.find(d => d.id === id)
-      return doc ? renderLedgerChapter(doc.title, doc.content, perDocChars) : ''
+  const chapters = ledger
+    .map(item => {
+      const entry = typeof item === 'string' ? { id: item } : item
+      if (entry.text) return entry.text
+      const doc = documents.find(d => d.id === entry.id)
+      return doc ? ledgerBlock(doc, 'fresh', perDocChars) : ''
     })
     .filter(Boolean)
     .join('\n')
 
   if (!chapters) return []
 
+  // With the agent tools the model may change any chapter (agentic loop D2);
+  // telling it these are "never edit" would contradict its own tools.
+  const header = opts.agentTools
+    ? 'REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read_chapter and name it in your write):'
+    : 'REFERENCED CHAPTERS (read-only; use them for details and consistency, never edit them):'
   return [
     {
       role: 'user',
-      content: `REFERENCED CHAPTERS (read-only; use them for details and consistency, never edit them):\n\n${chapters}`,
+      content: `${header}\n\n${chapters}`,
       cacheHint: true
     },
     // Providers require alternating roles; the ack keeps history's leading
@@ -110,7 +149,7 @@ export function buildVolatileTail(
 ): string {
   const chapterIndex = opts?.includeWholeBookDigest
     ? buildWholeBookDigest(documents, activeDocumentId)
-    : buildChapterIndex(documents, activeDocumentId)
+    : buildChapterIndex(documents, activeDocumentId, { agentTools: opts?.agentTools, markers: opts?.markers })
   let chapterIndexBlock = chapterIndex ? `${chapterIndex}\n\n` : ''
   if (opts?.notesBlock) {
     chapterIndexBlock += `BOOK ANALYSIS NOTES (compiled by reading every chapter of this book in batches for this request — treat them as your own reading of the full text):\n${opts.notesBlock}\n\n`
@@ -121,6 +160,11 @@ export function buildVolatileTail(
   // "diff-addition">` into an edit's search string, which stops matching the
   // instant the user accepts or rejects that diff (observed on a real turn).
   const cleanActiveContent = preserveImages(stripDiffMarkup(activeDoc?.content || ''))
+  // …but what the pending changes REPLACED must, as now/was pairs, or "keep
+  // what it said before" is a guess (utils/pendingChanges). Empty — the same
+  // bytes as always — when nothing is pending.
+  const pending = renderPendingChanges(pendingChanges(activeDoc?.content || ''))
+  const pendingBlock = pending ? `\n\n${pending}` : ''
 
   if (selectedText) {
     const cleanSelectedText = preserveImages(selectedText)
@@ -134,14 +178,16 @@ ${cleanSelectedText}
 CURRENT ACTIVE DOCUMENT CONTENT (For context):
 """
 ${cleanActiveContent}
-"""`
+"""${pendingBlock}`
   }
   return `Here is the current state of my document.
 ${chapterIndexBlock}
-CURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):
+CURRENT ACTIVE DOCUMENT CONTENT (${opts?.agentTools
+    ? 'Your writes change this chapter unless you name another'
+    : 'This is the ONLY document you can update'}):
 """
 ${cleanActiveContent}
-"""`
+"""${pendingBlock}`
 }
 
 /**
@@ -157,7 +203,7 @@ export function buildInlineReferenceBlock(
   const body = referenceIds
     .map(id => {
       const doc = documents.find(d => d.id === id)
-      return doc ? renderLedgerChapter(doc.title, doc.content, perDocChars) : ''
+      return doc ? ledgerBlock(doc, 'fresh', perDocChars) : ''
     })
     .filter(Boolean)
     .join('\n')

@@ -125,4 +125,36 @@ describe('applyToolCallDelta / finishToolCalls', () => {
     applyToolCallDelta(a, { index: 0, function: { arguments: '{"html":"x"}' } })
     expect(finishToolCalls(a)).toEqual([])
   })
+
+  // Gemini's thoughtSignature must go back on the call it came with, or a
+  // Gemini 3 model rejects the next step (400).
+  describe('signature', () => {
+    it('is stored whole and carried to the finished call', () => {
+      const a = acc()
+      applyToolCallDelta(a, { index: 0, function: { name: 'read_chapter', arguments: '{"chapter":"3"}' }, signature: 'CiQB+/sig==' })
+      expect(finishToolCalls(a)).toEqual([
+        { id: undefined, name: 'read_chapter', args: { chapter: '3' }, argumentsText: '{"chapter":"3"}', signature: 'CiQB+/sig==' }
+      ])
+    })
+
+    it('keeps the last non-empty one: a later delta without one does not erase it', () => {
+      const a = acc()
+      applyToolCallDelta(a, { index: 0, function: { name: 'x', arguments: '{' }, signature: 'first' })
+      applyToolCallDelta(a, { index: 0, function: { arguments: '}' } })
+      applyToolCallDelta(a, { index: 0, function: { arguments: '' }, signature: '' })
+      expect(finishToolCalls(a)[0].signature).toBe('first')
+      // A replay carrying it again replaces rather than appends.
+      applyToolCallDelta(a, { index: 0, function: { name: 'x', arguments: '{}' }, replace: true, signature: 'second' })
+      expect(finishToolCalls(a)[0].signature).toBe('second')
+    })
+
+    it('is absent (not undefined-valued) on calls that never had one', () => {
+      const a = acc()
+      applyToolCallDelta(a, { index: 0, function: { name: 'first', arguments: '{}' }, signature: 'sig' })
+      applyToolCallDelta(a, { index: 1, function: { name: 'second', arguments: '{}' } })
+      const [first, second] = finishToolCalls(a)
+      expect(first.signature).toBe('sig')
+      expect('signature' in second).toBe(false)
+    })
+  })
 })

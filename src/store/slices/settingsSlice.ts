@@ -1,4 +1,5 @@
 import type { StateCreator } from 'zustand'
+import type { PolishPrompt } from '../../utils/polish'
 import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../../types/llm'
 import type { AppState } from '../types'
 import { localStorage } from '../persistence'
@@ -14,6 +15,8 @@ import {
   loadSavedLanguage,
   loadSavedDebugMode,
   loadSavedImageAnalysisPrompt,
+  loadSavedPolishPrompt,
+  savePolishPrompt,
   loadSavedImageGenConfig,
 } from '../settingsPersistence'
 
@@ -63,6 +66,9 @@ export interface SettingsSlice {
   // Image analysis prompt
   imageAnalysisPrompt: string
   setImageAnalysisPrompt: (prompt: string) => void
+  /** The polish pass's prompt (D9), user-editable; persisted locally. */
+  polishPrompt: PolishPrompt
+  setPolishPrompt: (prompt: PolishPrompt) => void
 
   // Image generation config
   imageGenConfig: ImageGenConfig
@@ -149,6 +155,11 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
       set({ debugMode: enabled })
     },
 
+    polishPrompt: loadSavedPolishPrompt(),
+    setPolishPrompt: (prompt) => {
+      savePolishPrompt(prompt)
+      set({ polishPrompt: prompt })
+    },
     imageAnalysisPrompt: loadSavedImageAnalysisPrompt(),
     setImageAnalysisPrompt: (prompt) => {
       localStorage.setItem('web_canvas_image_analysis_prompt', prompt)

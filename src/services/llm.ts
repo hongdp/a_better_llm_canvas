@@ -1,4 +1,4 @@
-import type { ProviderConfig, LLMMessage, StreamCallbacks } from '../types/llm'
+import type { ProviderConfig, LLMMessage, StreamCallbacks, ThinkingBlock } from '../types/llm'
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
 import { fromOpenAITools, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
 import { toOpenAIMessages, toAnthropicMessages, toGeminiContents } from './providerMessages'
@@ -164,6 +164,9 @@ async function streamOpenAI(
   // Already the internal shape — no translation needed for this family.
   if (config.tools?.length) {
     body['tools'] = config.tools
+    // The run's last step (agent/run.ts STEP_LIMIT_NOTE): the tools stay in
+    // the request — earlier calls reference them — but no new call is allowed.
+    if (config.toolChoice === 'none') body['tool_choice'] = 'none'
   }
 
   // llama.cpp rejects stream_options. It sits behind both `ollama` and
@@ -262,6 +265,7 @@ async function streamGemini(
   }
   if (config.tools?.length) {
     body['tools'] = toGeminiTools(fromOpenAITools(config.tools))
+    if (config.toolChoice === 'none') body['toolConfig'] = { functionCallingConfig: { mode: 'NONE' } }
   }
 
   // Gemini uses streamGenerateContent for streaming. Support model names with or without 'models/' prefix.
@@ -294,6 +298,9 @@ async function streamGemini(
   let fullText = ''
 
   let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number } | undefined
+  // Each functionCall part is one whole call, so each gets its own index —
+  // parallel calls sharing index 0 would merge into one garbage call.
+  let functionCallIndex = 0
 
   try {
     while (true) {
@@ -365,10 +372,16 @@ async function streamGemini(
                       // Gemini delivers a function call whole rather than in
                       // fragments, so it arrives as one delta carrying the
                       // complete arguments. The accumulator handles both.
+                      // A thinking model may put a thoughtSignature beside the
+                      // call (first of parallel calls only); the replay must
+                      // return it on the same part, so it travels with the call.
                       callbacks.onToolCallDelta?.({
-                        index: 0,
+                        index: functionCallIndex++,
                         name: part.functionCall.name,
-                        argumentsText: JSON.stringify(part.functionCall.args ?? {})
+                        argumentsText: JSON.stringify(part.functionCall.args ?? {}),
+                        ...(typeof part.thoughtSignature === 'string' && part.thoughtSignature
+                          ? { signature: part.thoughtSignature }
+                          : {})
                       })
                     }
                   }
@@ -420,6 +433,7 @@ async function streamAnthropic(
 
   if (config.tools?.length) {
     body['tools'] = toAnthropicTools(fromOpenAITools(config.tools))
+    if (config.toolChoice === 'none') body['tool_choice'] = { type: 'none' }
   }
 
   // Anthropic's extended thinking is a budget, and the API requires it to be
@@ -490,10 +504,36 @@ async function streamAnthropic(
     throw new Error(`Anthropic API error (${response.status}): ${errText || response.statusText}`)
   }
 
+  // Reasoning blocks being assembled, by content-block index. With extended
+  // thinking on, a step that called a tool must be replayed with these blocks
+  // verbatim (see providerMessages), so they are kept whole — text plus the
+  // signature_delta that arrives just before content_block_stop — and handed
+  // over once complete. redacted_thinking arrives whole in its start event.
+  const openThinking = new Map<number, ThinkingBlock>()
+
   await readSSEStream(response, (dataString) => {
     try {
       const json = JSON.parse(dataString)
-      if (json.type === 'content_block_start' && json.content_block?.type === 'tool_use') {
+      const blockType = json.content_block?.type
+      if (json.type === 'content_block_start' && (blockType === 'thinking' || blockType === 'redacted_thinking')) {
+        openThinking.set(json.index ?? 0, blockType === 'redacted_thinking'
+          ? { type: 'redacted_thinking', data: String(json.content_block.data ?? '') }
+          : {
+              type: 'thinking',
+              thinking: String(json.content_block.thinking ?? ''),
+              signature: String(json.content_block.signature ?? '')
+            })
+      } else if (json.type === 'content_block_delta' && json.delta?.type === 'thinking_delta') {
+        const block = openThinking.get(json.index ?? 0)
+        if (block?.type === 'thinking') block.thinking += json.delta.thinking ?? ''
+      } else if (json.type === 'content_block_delta' && json.delta?.type === 'signature_delta') {
+        const block = openThinking.get(json.index ?? 0)
+        if (block?.type === 'thinking') block.signature += json.delta.signature ?? ''
+      } else if (json.type === 'content_block_stop' && openThinking.has(json.index ?? 0)) {
+        const block = openThinking.get(json.index ?? 0)!
+        openThinking.delete(json.index ?? 0)
+        callbacks.onThinkingBlock?.(block)
+      } else if (json.type === 'content_block_start' && blockType === 'tool_use') {
         // Anthropic opens a block naming the tool, then streams its input as
         // JSON fragments: the same two parts, a different envelope.
         callbacks.onToolCallDelta?.({

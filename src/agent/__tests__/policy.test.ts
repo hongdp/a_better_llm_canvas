@@ -50,15 +50,15 @@ describe('decideAfterStep (spec D3)', () => {
   })
 
   it('continues after writes when the policy asks for a confirmation round', () => {
-    expect(decide([call('write')], { policy: { ...policy, continueAfterWrites: true } })).toEqual({ action: 'continue', corrective: false })
+    expect(decide([call('write')], { policy: { ...policy, continueAfterWrites: true } })).toEqual({ action: 'continue', corrective: false, final: false })
   })
 
   it('continues after a read — the model asked for information', () => {
-    expect(decide([call('read')])).toEqual({ action: 'continue', corrective: false })
+    expect(decide([call('read')])).toEqual({ action: 'continue', corrective: false, final: false })
   })
 
   it('continues after a write PLUS a read: how the model says there is more to do', () => {
-    expect(decide([call('write'), call('read')])).toEqual({ action: 'continue', corrective: false })
+    expect(decide([call('write'), call('read')])).toEqual({ action: 'continue', corrective: false, final: false })
   })
 
   it('reports a failed write without continuing unless feed-back is on', () => {
@@ -67,7 +67,7 @@ describe('decideAfterStep (spec D3)', () => {
 
   it('feeds a failed write back as a corrective step', () => {
     const p = { ...policy, feedBackFailedWrites: true }
-    expect(decide([call('write', failed)], { policy: p })).toEqual({ action: 'continue', corrective: true })
+    expect(decide([call('write', failed)], { policy: p })).toEqual({ action: 'continue', corrective: true, final: false })
     expect(decide([call('write', failed)], { policy: p, correctiveUsed: 3 })).toEqual({ action: 'end', reason: 'corrective_exhausted' })
   })
 
@@ -76,7 +76,7 @@ describe('decideAfterStep (spec D3)', () => {
   })
 
   it('treats a step limit of 0 as no limit', () => {
-    expect(decide([call('read')], { stepsTaken: 500, budgets: { ...budgets, maxSteps: 0 } })).toEqual({ action: 'continue', corrective: false })
+    expect(decide([call('read')], { stepsTaken: 500, budgets: { ...budgets, maxSteps: 0 } })).toEqual({ action: 'continue', corrective: false, final: false })
     expect(stepsLeft({ ...budgets, maxSteps: 0 }, 10_000)).toBe(Infinity)
   })
 
@@ -143,6 +143,71 @@ describe('planWrites', () => {
   it('puts the selection first, keeps edits beside it, and drops a rewrite', () => {
     const plan = planWrites([inv('update_document'), inv('edit_document'), inv('replace_selection')])
     expect(plan.run.map(w => w.name)).toEqual(['replace_selection', 'edit_document'])
+    expect(plan.dropped).toBe(1)
+  })
+})
+
+describe('resolveRunSettings', () => {
+  it('defaults: agent tools on, provider step limits, confirmation round only for local models', async () => {
+    const { resolveRunSettings } = await import('../policy')
+    expect(resolveRunSettings('grok', {})).toMatchObject({
+      agentTools: true,
+      budgets: { maxSteps: 6 },
+      policy: { continueAfterWrites: false, feedBackFailedWrites: true }
+    })
+    expect(resolveRunSettings('ollama', undefined).policy.continueAfterWrites).toBe(true)
+  })
+
+  it('honours the settings, with 0 meaning no step limit', async () => {
+    const { resolveRunSettings } = await import('../policy')
+    expect(resolveRunSettings('grok', { agentMaxSteps: 0, continueAfterWrites: true })).toMatchObject({
+      budgets: { maxSteps: 0 },
+      policy: { continueAfterWrites: true }
+    })
+    expect(resolveRunSettings('grok', { agentMaxSteps: -3 }).budgets.maxSteps).toBe(6)
+  })
+
+  it('turning the agent tools off restores the pre-loop turn', async () => {
+    const { resolveRunSettings } = await import('../policy')
+    expect(resolveRunSettings('grok', { agentTools: false, continueAfterWrites: true }).policy).toEqual({
+      continueAfterWrites: false,
+      feedBackFailedWrites: false
+    })
+  })
+
+  it('pins a rejoined stream to its one step', async () => {
+    const { resolveRunSettings } = await import('../policy')
+    expect(resolveRunSettings('grok', { agentMaxSteps: 0 }, false).budgets.maxSteps).toBe(1)
+  })
+})
+
+describe('markup invocations with a chapter attribute', () => {
+  const registry = new ToolRegistry([...DOCUMENT_WRITE_TOOLS])
+  it('groups edits by the chapter their <edit> names', () => {
+    const block = (s: string) => `<<<<<<< SEARCH\n<p>${s}</p>\n=======\n<p>${s}!</p>\n>>>>>>> REPLACE`
+    const text = `<edit chapter="3">\n${block('a')}\n${block('b')}\n</edit>\n<edit>\n${block('c')}\n</edit>\n<doc_status>updated</doc_status>`
+    const step = collectStep(text, [], registry, 0)
+    expect(step.invocations.map(i => i.args)).toEqual([
+      { chapter: '3', edits: [{ search: '<p>a</p>', replace: '<p>a!</p>' }, { search: '<p>b</p>', replace: '<p>b!</p>' }] },
+      { edits: [{ search: '<p>c</p>', replace: '<p>c!</p>' }] }
+    ])
+  })
+
+  it('applies further canvases that name a chapter; an unnamed second one stays stray', () => {
+    const text = 'Two.\n<canvas><p>active</p></canvas>\n<canvas chapter="4"><p>new</p></canvas>\n<canvas><p>?</p></canvas>\n<doc_status>updated</doc_status>'
+    const step = collectStep(text, [], registry, 0)
+    expect(step.invocations.map(i => [i.name, i.args?.chapter])).toEqual([
+      ['update_document', undefined],
+      ['update_document', '4']
+    ])
+    expect(step.strayMarkup).toBe(1)
+    expect(step.chatText).toBe('Two.')
+  })
+
+  it('keeps a rewrite of another chapter beside a selection rewrite', () => {
+    const inv = (name: string, args: Record<string, unknown>): ToolInvocation => ({ id: name, name, args, source: 'markup' })
+    const plan = planWrites([inv('replace_selection', { html: 'x' }), inv('update_document', { html: 'y', chapter: '2' }), inv('update_document', { html: 'z' })])
+    expect(plan.run.map(w => w.args?.chapter)).toEqual([undefined, '2'])
     expect(plan.dropped).toBe(1)
   })
 })

@@ -10,8 +10,19 @@
  * Wire contract (docs/features/agentic_chat_loop.md §5.5): an assistant
  * message may carry `toolCalls`, and each result is a `tool` message naming
  * the call it answers.
+ *
+ * Reasoning artifacts ride along for the providers that check them on replay:
+ * - Anthropic (extended thinking): the assistant turn holding `tool_use` must
+ *   carry its `thinking` / `redacted_thinking` blocks complete, unmodified and
+ *   in order, ahead of the text and tool_use blocks
+ *   (platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks).
+ * - Gemini (thinking models): a `functionCall` part may come with a sibling
+ *   `thoughtSignature`, which must go back on that same part; Gemini 3 rejects
+ *   a step whose first call lacks it
+ *   (ai.google.dev/gemini-api/docs/generate-content/thought-signatures).
+ * OpenAI / xAI have no equivalent, so their shape is unchanged.
  */
-import type { LLMMessage } from '../types/llm'
+import type { LLMMessage, ThinkingBlock } from '../types/llm'
 
 const DATA_URL_RE = /^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/
 
@@ -63,6 +74,11 @@ export function toOpenAIMessages(messages: LLMMessage[]): unknown[] {
 export interface AnthropicContentPart {
   type: string
   text?: string
+  /** thinking blocks: the reasoning text (may be '') and its signature. */
+  thinking?: string
+  signature?: string
+  /** redacted_thinking blocks: the encrypted payload. */
+  data?: string
   source?: { type: string; media_type: string; data: string }
   id?: string
   name?: string
@@ -85,6 +101,16 @@ export interface AnthropicMessage {
  * user message (Anthropic requires every result of a turn together), so input
  * and output indices stop lining up after the first tool exchange.
  */
+/**
+ * A reasoning block exactly as it streamed. Copied field by field, never
+ * spread: a stray key would be rejected, and the values are opaque.
+ */
+function anthropicThinkingPart(block: ThinkingBlock): AnthropicContentPart {
+  return block.type === 'redacted_thinking'
+    ? { type: 'redacted_thinking', data: block.data }
+    : { type: 'thinking', thinking: block.thinking, signature: block.signature }
+}
+
 export function toAnthropicMessages(nonSystem: LLMMessage[]): {
   messages: AnthropicMessage[]
   sourceIndex: number[]
@@ -107,9 +133,13 @@ export function toAnthropicMessages(nonSystem: LLMMessage[]): {
       continue
     }
 
-    if (m.role === 'assistant' && m.toolCalls?.length) {
-      const content: AnthropicContentPart[] = m.content ? [{ type: 'text', text: m.content }] : []
-      for (const call of m.toolCalls) {
+    if (m.role === 'assistant' && (m.toolCalls?.length || m.thinking?.length)) {
+      // Reasoning first, verbatim: Anthropic checks each block's signature
+      // and their order, and manual extended thinking also requires the
+      // replayed turn to BEGIN with a thinking block.
+      const content: AnthropicContentPart[] = (m.thinking ?? []).map(anthropicThinkingPart)
+      if (m.content) content.push({ type: 'text', text: m.content })
+      for (const call of m.toolCalls ?? []) {
         content.push({ type: 'tool_use', id: call.id, name: call.name, input: parseArguments(call.argumentsText) })
       }
       out.push({ role: 'assistant', content })
@@ -141,7 +171,8 @@ export function toAnthropicMessages(nonSystem: LLMMessage[]): {
 type GeminiPart =
   | { text: string }
   | { inlineData: { mimeType: string; data: string } }
-  | { functionCall: { name: string; args: Record<string, unknown> } }
+  // thoughtSignature is a SIBLING of functionCall on the part, not inside it.
+  | { functionCall: { name: string; args: Record<string, unknown> }; thoughtSignature?: string }
   | { functionResponse: { name: string; response: { content: string } } }
 
 export interface GeminiContent {
@@ -169,7 +200,11 @@ export function toGeminiContents(nonSystem: LLMMessage[]): GeminiContent[] {
     if (m.role === 'assistant' && m.toolCalls?.length) {
       const parts: GeminiPart[] = m.content ? [{ text: m.content }] : []
       for (const call of m.toolCalls) {
-        parts.push({ functionCall: { name: call.name, args: parseArguments(call.argumentsText) } })
+        const part: GeminiPart = { functionCall: { name: call.name, args: parseArguments(call.argumentsText) } }
+        // Back on the part it came on. Only present on the first of parallel
+        // calls, so the others are left without one — as Gemini sent them.
+        if (call.signature) part.thoughtSignature = call.signature
+        parts.push(part)
       }
       out.push({ role: 'model', parts })
       continue

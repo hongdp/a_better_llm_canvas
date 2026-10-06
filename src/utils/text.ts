@@ -41,6 +41,18 @@ export interface TaggedBlock {
   before: string
   /** Text after the closing tag (empty if `closed` is false). */
   after: string
+  /** The `chapter="…"` attribute of the opening tag, if any (agentic loop, spec D2). */
+  chapter?: string
+}
+
+/**
+ * The `chapter="…"` attribute of an opening tag, if present. Single or double
+ * quotes; an empty value counts as absent (the active chapter).
+ */
+export function chapterAttribute(openingTag: string): string | undefined {
+  const m = /\bchapter\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(openingTag)
+  const value = (m?.[1] ?? m?.[2] ?? '').trim()
+  return value || undefined
 }
 
 /**
@@ -62,13 +74,14 @@ export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
     return { found: false, closed: false, inner: '', before: text, after: '' }
   }
 
+  const chapter = chapterAttribute(openMatch[0])
   const before = text.substring(0, openMatch.index)
   const rest = text.substring(openMatch.index + openMatch[0].length)
 
   const closeRe = new RegExp(`</${tag}\\s*>`, 'i')
   const closeMatch = closeRe.exec(rest)
   if (!closeMatch) {
-    return { found: true, closed: false, inner: rest, before, after: '' }
+    return { found: true, closed: false, inner: rest, before, after: '', chapter }
   }
 
   const inner = rest.substring(0, closeMatch.index)
@@ -81,7 +94,8 @@ export function extractTaggedBlock(text: string, tag: string): TaggedBlock {
     closed: true,
     inner: fenced ? fenced[1] : inner,
     before,
-    after
+    after,
+    chapter
   }
 }
 
@@ -142,6 +156,12 @@ export interface EditBlock {
   search: string
   /** Text to substitute in its place (may be empty for a deletion). */
   replace: string
+  /**
+   * The chapter named by the enclosing `<edit chapter="…">`, if any. Absent
+   * = the active chapter, which is all the protocol could target before the
+   * agentic loop.
+   */
+  chapter?: string
 }
 
 /** Result of parsing `<edit>` / conflict-marker blocks from an LLM response. */
@@ -183,10 +203,18 @@ export function parseEditBlocks(text: string): ParsedEdits {
   const blocks: EditBlock[] = []
   let firstStart = -1
   let lastEnd = -1
+  // The chapter of the <edit …> wrapper we are inside, tracked across the
+  // gaps between blocks: one wrapper may hold several blocks.
+  let currentChapter: string | undefined
+  let scannedTo = 0
 
   EDIT_SEARCH_RE.lastIndex = 0
   let m: RegExpExecArray | null
   while ((m = EDIT_SEARCH_RE.exec(text)) !== null) {
+    const gap = text.slice(scannedTo, m.index)
+    for (const tag of gap.match(/<\/?edits?\b[^>]*>/gi) ?? []) {
+      currentChapter = tag.startsWith('</') ? undefined : chapterAttribute(tag)
+    }
     const searchStart = m.index + m[0].length
     const rest = text.slice(searchStart)
 
@@ -201,7 +229,9 @@ export function parseEditBlocks(text: string): ParsedEdits {
     if (!terminator) continue
 
     if (search.trim()) {
-      blocks.push({ search, replace: afterDivider.slice(0, terminator.index) })
+      const block: EditBlock = { search, replace: afterDivider.slice(0, terminator.index) }
+      if (currentChapter) block.chapter = currentChapter
+      blocks.push(block)
     }
     if (firstStart === -1) firstStart = m.index
     // When the terminator IS the next block's SEARCH marker, stop short of it
@@ -209,6 +239,8 @@ export function parseEditBlocks(text: string): ParsedEdits {
     const startsNextBlock = /SEARCH/i.test(terminator[0])
     lastEnd = searchStart + afterDividerStart +
       (startsNextBlock ? terminator.index : terminator.index + terminator[0].length)
+    if (/<\/edits?/i.test(terminator[0])) currentChapter = undefined
+    scannedTo = lastEnd
     EDIT_SEARCH_RE.lastIndex = lastEnd
   }
 
@@ -216,7 +248,7 @@ export function parseEditBlocks(text: string): ParsedEdits {
     return { blocks, before: '', after: '' }
   }
 
-  const stripSugar = (s: string) => s.replace(/<\/?edits?\s*>/gi, '').trim()
+  const stripSugar = (s: string) => s.replace(/<\/?edits?(?:\s[^>]*)?>/gi, '').trim()
   return {
     blocks,
     before: stripSugar(text.slice(0, firstStart)),
@@ -241,6 +273,14 @@ export interface ParsedAssistantResponse {
   canvasText: string
   /** kind === 'canvas': whether the closing tag arrived (guards truncation). */
   canvasClosed: boolean
+  /** kind === 'canvas': the chapter its `chapter="…"` attribute names, if any. */
+  canvasChapter?: string
+  /**
+   * Further `<canvas chapter="…">` blocks — full rewrites of OTHER chapters
+   * written in the same reply (agentic loop, spec D2). Only attributed blocks
+   * count; a second attribute-less canvas is still stray, as it always was.
+   */
+  extraCanvases: { text: string; closed: boolean; chapter: string }[]
   /**
    * Document-markup regions removed from `chatText` because no channel took
    * them (a second channel's block, or markup too broken to parse). Never
@@ -257,12 +297,12 @@ export interface ParsedAssistantResponse {
 // Document markup that must never reach the chat bubble. Order matters: an
 // <edit> wrapper contains conflict markers, so wrappers are removed first.
 const STRAY_MARKUP_PATTERNS: RegExp[] = [
-  /<edits?>[\s\S]*?(?:<\/edits?>|$)/gi,
+  /<edits?(?:\s[^>]*)?>[\s\S]*?(?:<\/edits?>|$)/gi,
   /<{5,}\s*SEARCH[\s\S]*?(?:>{5,}\s*REPLACE[^\n]*|$)/gi,
-  /<canvas>[\s\S]*?(?:<\/canvas>|$)/gi,
+  /<canvas(?:\s[^>]*)?>[\s\S]*?(?:<\/canvas>|$)/gi,
   /<selection_replace>[\s\S]*?(?:<\/selection_replace>|$)/gi
 ]
-const LONE_MARKUP_TAG_RE = /<\/?(?:edits?|canvas|selection_replace)>/gi
+const LONE_MARKUP_TAG_RE = /<\/?(?:edits?|canvas|selection_replace)(?:\s[^>]*)?>/gi
 
 /**
  * Remove document markup that no channel consumed, so it can never be shown
@@ -281,6 +321,36 @@ export function stripStrayDocumentMarkup(text: string): { text: string; removed:
   return { text: out.replace(/\n{3,}/g, '\n\n').trim(), removed }
 }
 
+/**
+ * Pull every `<canvas chapter="…">` block out of `text`. Attribute-less
+ * canvases are left in place for the stray pass. A block with no closing tag
+ * is taken as unclosed (truncated) and ends the scan.
+ */
+function takeChapterCanvases(text: string): {
+  blocks: { text: string; closed: boolean; chapter: string }[]
+  rest: string
+} {
+  const blocks: { text: string; closed: boolean; chapter: string }[] = []
+  let rest = text
+  const openRe = /<canvas\s[^>]*>/gi
+  let m: RegExpExecArray | null
+  openRe.lastIndex = 0
+  while ((m = openRe.exec(rest)) !== null) {
+    const chapter = chapterAttribute(m[0])
+    if (!chapter) continue
+    const after = rest.slice(m.index + m[0].length)
+    const close = /<\/canvas\s*>/i.exec(after)
+    const inner = close ? after.slice(0, close.index) : after
+    const fenced = inner.match(/^\s*```(?:html)?\s*([\s\S]*?)\s*```\s*$/i)
+    blocks.push({ text: fenced ? fenced[1] : inner, closed: !!close, chapter })
+    const tail = close ? after.slice(close.index + close[0].length) : ''
+    rest = (rest.slice(0, m.index).trim() + '\n\n' + tail.trim()).trim()
+    openRe.lastIndex = 0
+    if (!close) break
+  }
+  return { blocks, rest }
+}
+
 export function parseAssistantResponse(fullText: string): ParsedAssistantResponse {
   // The status trailer is protocol; it never reaches the bubble or the doc.
   fullText = stripDocStatus(fullText)
@@ -291,6 +361,7 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
     editBlocks: [],
     canvasText: '',
     canvasClosed: false,
+    extraCanvases: [],
     strayMarkup: 0
   }
 
@@ -329,8 +400,14 @@ export function parseAssistantResponse(fullText: string): ParsedAssistantRespons
     result.kind = 'canvas'
     result.canvasText = canvasBlock.inner
     result.canvasClosed = canvasBlock.closed
+    if (canvasBlock.chapter) result.canvasChapter = canvasBlock.chapter
     result.chatText = joinAround(canvasBlock.before, canvasBlock.after)
   }
+
+  // Rewrites of other chapters ride along with whichever channel led.
+  const chapterCanvases = takeChapterCanvases(result.chatText)
+  result.extraCanvases = chapterCanvases.blocks
+  result.chatText = chapterCanvases.rest
 
   // Whatever no channel took is dropped from the bubble and counted.
   const stray = stripStrayDocumentMarkup(result.chatText)
@@ -1086,4 +1163,15 @@ export function trimIncompleteHtmlTail(html: string): string {
     out = out.slice(0, lastAmp)
   }
   return out
+}
+
+/**
+ * "Nothing there" as the editor writes it: an empty string, or the empty
+ * paragraph ProseMirror keeps because a document must contain one block.
+ */
+export function isBlankContent(html: string): boolean {
+  // Media carries no text but is very much content — a chapter holding only a
+  // generated illustration must not read as empty to the blanking guard.
+  if (/<(img|video|audio|iframe)\b/i.test(html)) return false
+  return !html.replace(/<[^>]+>/g, '').replace(/&nbsp;|\s/g, '')
 }

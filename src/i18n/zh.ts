@@ -2,6 +2,8 @@ import type { TranslationDictionary } from './index'
 
 export const zh: TranslationDictionary = {
   app: {
+    polish: '润色',
+    polishHint: '用润色模型逐段改写本章里零碎的叙述，对话一句不改；结果是一份可审阅的 diff。',
     sidebarToggle: '切换侧边栏',
     activeModel: '模型:',
     settingsTitle: '设置',
@@ -56,6 +58,18 @@ export const zh: TranslationDictionary = {
     instructPlaceholder: '向 {provider} ({model}) 发送指令...',
   },
   settings: {
+    agentTools: '允许助手阅读和修改整本书',
+    agentToolsHint: '助手可以读取其他章节、搜索全书、新建章节、修改任意章节——需要什么由它自己决定。关闭后它只能看到附带的内容，也只能修改当前打开的章节。',
+    agentMaxSteps: '每次回复的步数上限',
+    agentMaxStepsHint: (fallback: number) => `一次回复最多调用模型几次（先读、再写）。0 表示不限。默认 ${fallback}。`,
+    continueAfterWrites: '修改后再确认一次',
+    polishModel: '润色模型',
+    polishModelHint: (fallback: string) => `润色按钮、以及你让助手润色章节时使用的模型（同一 provider）。留空即 ${fallback}。`,
+    polishPrompt: '润色提示词',
+    polishSystem: '系统提示（会接上你当前的写作预设）',
+    polishTemplate: '逐段提示词 —— {n} 段落字数，{prev} 上一段最后一句，{part} 要改写的段落',
+    polishReset: '恢复默认',
+    continueAfterWritesHint: '修改落地后，再给模型一次调用来确认或继续。每次回复多等一次。',
     documentProtocol: '文档编辑协议',
     protocolAuto: (resolved: string) => `自动（${resolved}）`,
     protocolTools: '工具调用',
@@ -84,6 +98,22 @@ export const zh: TranslationDictionary = {
     baseUrl: '基础 URL',
     modelName: '模型名称',
     save: '保存更改',
+  },
+  agent: {
+    changedThisTurn: '本轮修改',
+    kindCreated: '新建章节',
+    kindRewrite: '整章重写',
+    kindSelection: '选区改写',
+    kindPolished: (n: number) => `润色（${n} 段）`,
+    kindEdits: (n: number) => `${n} 处修改`,
+    failed: (n: number) => `${n} 处未能定位`,
+    keptDraft: (n: number) => `${n} 段保留初稿`,
+    pending: '有待审阅修改',
+    resolved: '已处理',
+    view: '查看',
+    deleted: '章节已删除',
+    trace: (steps: number, calls: number) => `${steps} 步 · ${calls} 次工具调用`,
+    running: '进行中…'
   },
   overview: {
     title: '全书总览——共 {count} 章',

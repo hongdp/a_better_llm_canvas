@@ -374,23 +374,46 @@ describe('useChatLLM — document tools', () => {
     })()
   })
 
-  it('says so when a tool call yields nothing applicable', () => {
-    // A called-but-unusable tool used to end the turn in silence: no change,
-    // no explanation, indistinguishable from the model deciding not to edit.
-    return (async () => {
+  it('hands an unusable tool call back to the model, which then gets it right', async () => {
+    // A called-but-unusable tool used to end the turn in silence. The loop
+    // feeds the error back (spec D3) and the model corrects itself.
+    useAppStore.setState({ documents: [doc('doc-1', 'Chapter 1', '<p>one</p><p>two</p>')], activeDocumentId: 'doc-1' })
+    responses.push({
+      text: '好的。',
+      toolCalls: [{ index: 0, name: 'edit_document', argumentsText: '{"edits": []}' }]
+    } as never)
+    responses.push({
+      text: '改好了。',
+      toolCalls: [{ index: 0, name: 'edit_document', argumentsText: '{"edits":[{"search":"<p>two</p>","replace":"<p>TWO</p>"}]}' }]
+    } as never)
+    const harness = renderChatHook()
+
+    await send(harness, '改一下第二段')
+
+    expect(calls).toHaveLength(2)
+    expect(calls[1].at(-1)).toMatchObject({ role: 'tool', content: expect.stringContaining('was not run') })
+    const { stripDiffMarkup } = await import('../../utils/diff')
+    expect(stripDiffMarkup(activeContent())).toBe('<p>one</p><p>TWO</p>')
+    expect(assistantBubble()[0]).not.toContain('⚠️')
+    harness.unmount()
+  })
+
+  it('says so when the model never produces a usable call (corrective budget spent)', async () => {
+    for (let i = 0; i < 4; i++) {
       responses.push({
         text: '好的。',
         toolCalls: [{ index: 0, name: 'edit_document', argumentsText: '{"edits": []}' }]
       } as never)
-      const harness = renderChatHook()
+    }
+    const harness = renderChatHook()
 
-      await send(harness, '改一下第二段')
+    await send(harness, '改一下第二段')
 
-      expect(assistantBubble()[0]).toContain('⚠️')
-      expect(assistantBubble()[0]).toContain('could not be used')
-      expect(activeContent()).toBe('<p>old text</p>')
-      harness.unmount()
-    })()
+    expect(calls).toHaveLength(4)
+    expect(assistantBubble()[0]).toContain('⚠️')
+    expect(assistantBubble()[0]).toContain('could not be used')
+    expect(activeContent()).toBe('<p>old text</p>')
+    harness.unmount()
   })
 
   it('does not retry a tool-call turn for a missing doc_status', () => {
@@ -445,8 +468,14 @@ describe('useChatLLM — edits against a pending diff', () => {
     harness.unmount()
   })
 
-  it('bases a full <canvas> rewrite on the accepted reading, not the markup', async () => {
+  it('keeps the previous turn\'s change under review: the rewrite is diffed from the last CONFIRMED text', async () => {
+    // User-reported 2026-10-06: asking for another change while the previous
+    // one was still under review silently accepted the previous one. The
+    // model still writes from the accepted reading (beta), but the review is
+    // drawn from what the user last confirmed (alpha), so both changes stay
+    // pending and reject-all returns alpha.
     const { diffHtml, stripDiffMarkup } = await import('../../utils/diff')
+    const { resolveDiffMarkupInHtml } = await import('../../utils/diffResolution')
     const pending = diffHtml('<p>alpha</p>', '<p>beta</p>')
     useAppStore.setState({
       documents: [doc('doc-1', 'Chapter 1', pending)],
@@ -457,11 +486,11 @@ describe('useChatLLM — edits against a pending diff', () => {
 
     await send(harness, '重写')
 
-    // A diff of clean-vs-markup would nest <del> inside <del>; the accepted
-    // reading yields exactly one proposal: beta -> gamma.
     const content = activeContent()
     expect(stripDiffMarkup(content)).toBe('<p>gamma</p>')
-    expect(content).not.toContain('alpha') // the rejected-side text is gone
+    expect(resolveDiffMarkupInHtml(content, 'reject')).toBe('<p>alpha</p>')
+    // One diff, not a diff nested inside the pending one.
+    expect(content).not.toContain('beta')
     harness.unmount()
   })
 })

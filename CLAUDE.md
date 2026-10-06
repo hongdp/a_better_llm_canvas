@@ -68,7 +68,9 @@ src/
     useRoleplayLLM.ts     # Roleplay game-master mode streaming
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
   agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
-                          #   step policy, invocation collection, tools/ (document writes)
+                          #   step policy, invocation collection, freshness (D8),
+                          #   tools/documentWrites (3 writes), tools/bookReads (read/search/
+                          #   list/open/create chapters)
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
     providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored
@@ -217,7 +219,13 @@ executed from one registry — add a tool with `defineTool` and register it in
 `useChatLLM`'s `CHAT_TOOLS`. Tools reach the editor and store only through the
 ports in `src/agent/types.ts`. A run never rebuilds an earlier message: each
 step appends, so follow-up steps hit grok's exact-prefix cache, and tool-call
-arguments are replayed byte-for-byte (`argumentsText`).
+arguments are replayed byte-for-byte (`argumentsText`). The same goes for
+Anthropic thinking blocks and Gemini thought signatures. The tools offered are
+fixed at a run's first step. Writes reach any chapter through `chapter` (a
+`chapter="…"` attribute on grok's markup). An edit on a chapter whose HTML the
+model has not seen this run is refused, and a live preview must never paint
+another chapter's text into the open editor (`previewRewrite`). Per-provider
+settings: `agentTools`, `agentMaxSteps` (0 = unlimited), `continueAfterWrites`.
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

@@ -26,6 +26,15 @@ provider (`_anthropic_tools`, `_gemini_tools` mirror `toAnthropicTools` /
 replays them in its provider's native shape; every stream reader reports
 tool-call deltas through `GenerationJob.note_tool_call`.
 
+Reasoning artifacts are part of that replay (`providerMessages.ts` header):
+an assistant message may carry `thinking` (Anthropic thinking /
+redacted_thinking blocks, replayed verbatim BEFORE its text and tool_use
+blocks) and a toolCalls entry may carry `signature` (Gemini thoughtSignature,
+replayed as a sibling of that call's `functionCall`). The stream readers
+capture both: completed thinking blocks become `thinking_block` events
+(`GenerationJob.note_thinking_block`), and a call's signature rides on its
+`tool_call` event. Both are kept on the job so a late reader gets them too.
+
 Tests that stub the network should patch `server_generation._http_stream`
 (this module reads its own global) and may clear `server_generation.registry`.
 """
@@ -196,6 +205,10 @@ class GenerationJob:
         #: replay offsets stay tied to document text alone — but kept, because
         #: a reconnect that cannot see them loses the whole edit.
         self.tool_calls: Dict[int, Dict[str, Any]] = {}
+        #: Completed Anthropic reasoning blocks, in stream order. Kept for the
+        #: same reason as tool_calls: the next step must replay them verbatim,
+        #: and a reader that attaches after they streamed has no other source.
+        self.thinking_blocks: List[Dict[str, Any]] = []
         #: Reasoning the model streamed before (or between) visible tokens.
         #: Counted, never buffered — it is not document text and must not move
         #: the replay offsets.
@@ -227,13 +240,25 @@ class GenerationJob:
         self.updated_at = _now_iso()
         self._publish({"type": "delta", "text": text, "offset": self.length})
 
-    def note_tool_call(self, index: int, call_id: Optional[str], name: Optional[str], arguments: str) -> None:
+    def note_tool_call(
+        self,
+        index: int,
+        call_id: Optional[str],
+        name: Optional[str],
+        arguments: str,
+        signature: Optional[str] = None,
+    ) -> None:
         """Forward a tool-call argument delta live.
 
         Not buffered, for the same reason reasoning is not: it is not document
         text, and putting it in the buffer would shift every replay offset. A
         reconnect re-reads the whole call from the provider's final message
         instead.
+
+        `signature` is Gemini's thoughtSignature for the call. Opaque and
+        whole, so it is stored (last non-empty wins), never appended to; the
+        key exists only once one arrived, so other providers' entries keep
+        their exact shape.
         """
         if self.status != "running":
             return
@@ -243,14 +268,33 @@ class GenerationJob:
         if name:
             entry["name"] = name
         entry["arguments"] += arguments or ""
+        if signature:
+            entry["signature"] = signature
 
-        self._publish({
+        event: Dict[str, Any] = {
             "type": "tool_call",
             "index": index,
             "id": call_id,
             "name": name,
             "text": arguments or "",
-        })
+        }
+        if signature:
+            event["signature"] = signature
+        self._publish(event)
+
+    def note_thinking_block(self, block: Dict[str, Any]) -> None:
+        """Keep one COMPLETED Anthropic reasoning block and pass it on.
+
+        Informational (never in TERMINAL_EVENT_TYPES) and never buffered. The
+        event carries the block's position so a reader that reconnects
+        mid-turn — and is replayed every block again — can skip the ones it
+        already has: a duplicated block makes Anthropic reject the replay.
+        """
+        if self.status != "running" or not isinstance(block, dict):
+            return
+        index = len(self.thinking_blocks)
+        self.thinking_blocks.append(block)
+        self._publish({"type": "thinking_block", "index": index, "block": block})
 
     def note_reasoning(self, text: str) -> None:
         """Record a reasoning delta and pass it on live.
@@ -446,6 +490,33 @@ def _assistant_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     if not isinstance(calls, list):
         return []
     return [call for call in calls if isinstance(call, dict)]
+
+
+def _thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """An assistant message's Anthropic reasoning blocks, copied verbatim.
+
+    Mirrors `anthropicThinkingPart` in providerMessages.ts: the known fields
+    only, values untouched — Anthropic checks each signature and rejects a
+    modified block (400). Anything malformed is skipped rather than sent.
+    """
+    if message.get("role") != "assistant":
+        return []
+    raw = message.get("thinking")
+    if not isinstance(raw, list):
+        return []
+    blocks: List[Dict[str, Any]] = []
+    for block in raw:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "redacted_thinking" and isinstance(block.get("data"), str):
+            blocks.append({"type": "redacted_thinking", "data": block["data"]})
+        elif (
+            block.get("type") == "thinking"
+            and isinstance(block.get("thinking"), str)
+            and isinstance(block.get("signature"), str)
+        ):
+            blocks.append({"type": "thinking", "thinking": block["thinking"], "signature": block["signature"]})
+    return blocks
 
 
 def _arguments_text(call: Dict[str, Any]) -> str:
@@ -644,6 +715,10 @@ def build_openai_request(
     # representation, since four of five providers speak it natively.
     if config.get("tools"):
         body["tools"] = config["tools"]
+        # The agentic run's last step: tools stay (earlier calls reference
+        # them) but no new call is allowed. Mirrors streamOpenAI.
+        if config.get("toolChoice") == "none":
+            body["tool_choice"] = "none"
 
     # llama.cpp rejects stream_options, and it sits behind both `ollama` and
     # `runpod`. Detected the same way the client detects it (services/llm.ts):
@@ -704,9 +779,16 @@ def build_gemini_request(
         if tool_calls:
             model_parts: List[Dict[str, Any]] = [{"text": content}] if content else []
             for call in tool_calls:
-                model_parts.append({
+                part: Dict[str, Any] = {
                     "functionCall": {"name": call.get("name") or "", "args": _parsed_arguments(call)}
-                })
+                }
+                # Back on the part it came on, as a sibling of functionCall.
+                # Gemini 3 rejects a step whose first call lacks it; only the
+                # first of parallel calls ever has one.
+                signature = call.get("signature")
+                if isinstance(signature, str) and signature:
+                    part["thoughtSignature"] = signature
+                model_parts.append(part)
             contents.append({"role": "model", "parts": model_parts})
             continue
 
@@ -738,6 +820,8 @@ def build_gemini_request(
     gemini_tools = _gemini_tools(config.get("tools"))
     if gemini_tools:
         body["tools"] = gemini_tools
+        if config.get("toolChoice") == "none":
+            body["toolConfig"] = {"functionCallingConfig": {"mode": "NONE"}}
 
     # Support model names with or without the 'models/' prefix.
     model = config.get("model") or ""
@@ -787,8 +871,14 @@ def build_anthropic_request(
         source_index.append(len(anthropic_messages))
 
         tool_calls = _assistant_tool_calls(message)
-        if tool_calls:
-            blocks: List[Dict[str, Any]] = [{"type": "text", "text": content}] if content else []
+        thinking = _thinking_blocks(message)
+        if tool_calls or thinking:
+            # Reasoning first, verbatim, then text, then tool_use — the order
+            # Anthropic streamed them in; manual extended thinking also needs
+            # the replayed turn to BEGIN with a thinking block.
+            blocks: List[Dict[str, Any]] = list(thinking)
+            if content:
+                blocks.append({"type": "text", "text": content})
             for call in tool_calls:
                 blocks.append({
                     "type": "tool_use",
@@ -826,6 +916,8 @@ def build_anthropic_request(
     anthropic_tools = _anthropic_tools(config.get("tools"))
     if anthropic_tools:
         body["tools"] = anthropic_tools
+        if config.get("toolChoice") == "none":
+            body["tool_choice"] = {"type": "none"}
 
     # Extended thinking is a budget, and the API requires it to stay under
     # max_tokens — clamp rather than let the request 400.
@@ -988,6 +1080,11 @@ async def _stream_anthropic(
     input_tokens = 0
     output_tokens = 0
     cached_prompt_tokens = 0
+    # Reasoning blocks being assembled, by content-block index (streamAnthropic's
+    # `openThinking`): thinking_delta text plus the signature_delta that comes
+    # just before content_block_stop. redacted_thinking arrives whole in its
+    # start event. Published once complete, never half-built.
+    open_thinking: Dict[int, Dict[str, Any]] = {}
 
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
@@ -1013,7 +1110,25 @@ async def _stream_anthropic(
             block_index = parsed.get("index")
             if block_index is None:
                 block_index = 0
-            if event_type == "content_block_start" and block.get("type") == "tool_use":
+            if event_type == "content_block_start" and block.get("type") == "redacted_thinking":
+                open_thinking[block_index] = {"type": "redacted_thinking", "data": str(block.get("data") or "")}
+            elif event_type == "content_block_start" and block.get("type") == "thinking":
+                open_thinking[block_index] = {
+                    "type": "thinking",
+                    "thinking": str(block.get("thinking") or ""),
+                    "signature": str(block.get("signature") or ""),
+                }
+            elif event_type == "content_block_delta" and delta.get("type") == "thinking_delta":
+                building = open_thinking.get(block_index)
+                if building is not None and building["type"] == "thinking":
+                    building["thinking"] += delta.get("thinking") or ""
+            elif event_type == "content_block_delta" and delta.get("type") == "signature_delta":
+                building = open_thinking.get(block_index)
+                if building is not None and building["type"] == "thinking":
+                    building["signature"] += delta.get("signature") or ""
+            elif event_type == "content_block_stop" and block_index in open_thinking:
+                job.note_thinking_block(open_thinking.pop(block_index))
+            elif event_type == "content_block_start" and block.get("type") == "tool_use":
                 # Anthropic opens a block naming the tool, then streams its
                 # input as JSON fragments.
                 job.note_tool_call(block_index, block.get("id"), block.get("name"), "")
@@ -1122,12 +1237,15 @@ def _handle_gemini_chunk(
             function_call = part.get("functionCall") if isinstance(part, dict) else None
             if isinstance(function_call, dict):
                 # Gemini delivers a call whole, not in fragments, so it is one
-                # delta carrying the complete arguments. Index 0 and compact,
-                # non-ASCII-preserving JSON mirror streamGemini's
-                # `index: 0` / `JSON.stringify(args ?? {})` byte for byte.
+                # delta carrying the complete arguments — and each call gets
+                # the next index (streamGemini's `functionCallIndex++`), since
+                # parallel calls sharing index 0 merge into one garbage call.
+                # Compact, non-ASCII-preserving JSON mirrors
+                # `JSON.stringify(args ?? {})` byte for byte.
                 args = function_call.get("args")
+                signature = part.get("thoughtSignature")
                 job.note_tool_call(
-                    0,
+                    len(job.tool_calls),
                     None,
                     function_call.get("name"),
                     json.dumps(
@@ -1135,6 +1253,9 @@ def _handle_gemini_chunk(
                         ensure_ascii=False,
                         separators=(",", ":"),
                     ),
+                    # Sits beside functionCall on the part; first of parallel
+                    # calls only. Must go back on the same part.
+                    signature if isinstance(signature, str) else None,
                 )
     return usage
 
@@ -1261,6 +1382,7 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
     snapshot = job.buffer
     snapshot_offset = job.length
     tool_calls_snapshot = {i: dict(c) for i, c in job.tool_calls.items()}
+    thinking_snapshot = list(job.thinking_blocks)
     terminal = job.terminal_event() if job.status != "running" else None
 
     try:
@@ -1277,19 +1399,29 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
         #   so replay stays exact; unknown types are ignored by older clients.
         yield _sse({"type": "attached", "offset": from_offset, "status": job.status})
 
+        # Completed reasoning blocks, every one, in order and ahead of the
+        # calls they preceded: the next step replays them to Anthropic and a
+        # missing one is a 400. Each keeps its position so a reconnecting
+        # reader can skip what it already has.
+        for index, block in enumerate(thinking_snapshot):
+            yield _sse({"type": "thinking_block", "index": index, "block": block})
+
         # Tool calls are replayed WHOLE, not by offset: they are not document
         # text, so there is no offset to resume from. A reader that reconnects
         # mid-call would otherwise see the tail of an argument it never saw the
         # start of — or, after a reload, nothing at all.
         for index, call in sorted(tool_calls_snapshot.items()):
-            yield _sse({
+            replay_event: Dict[str, Any] = {
                 "type": "tool_call",
                 "index": index,
                 "id": call.get("id"),
                 "name": call.get("name"),
                 "text": call.get("arguments") or "",
                 "replay": True,
-            })
+            }
+            if call.get("signature"):
+                replay_event["signature"] = call["signature"]
+            yield _sse(replay_event)
 
         sent_offset = from_offset
         start = max(0, min(from_offset, len(snapshot)))
@@ -1325,7 +1457,8 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
                 job.result_delivered = True  # same rule as the replay above
                 return
             else:
-                # Informational (reasoning, and anything added later). Passing
+                # Informational (reasoning, tool_call, thinking_block, and
+                # anything added later). Passing
                 # it through the terminal branch closed the stream on the FIRST
                 # reasoning delta — the job kept generating server-side while
                 # every client saw "disconnected before completion".

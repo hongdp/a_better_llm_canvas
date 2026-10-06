@@ -50,3 +50,20 @@ describe('buildCompletionWarnings — markup no channel could take', () => {
     expect(buildCompletionWarnings({ ...base, strayMarkup: 0 })).toBe('')
   })
 })
+
+describe('splitStreamingResponse — a canvas that names a chapter', () => {
+  it('reports the target and streams the body', () => {
+    const split = splitStreamingResponse('Writing it.\n<canvas chapter="4"><p>第一章正')
+    expect(split.canvasChapter).toBe('4')
+    expect(split.canvasText).toBe('<p>第一章正')
+    expect(split.chatText).toBe('Writing it.')
+  })
+
+  it('keeps a half-arrived opening tag out of the bubble', () => {
+    expect(splitStreamingResponse('Writing it.\n<canvas chap').chatText).toBe('Writing it.')
+  })
+
+  it('has no target for a plain canvas', () => {
+    expect(splitStreamingResponse('<canvas><p>x').canvasChapter).toBeUndefined()
+  })
+})

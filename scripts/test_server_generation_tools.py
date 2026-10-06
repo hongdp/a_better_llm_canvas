@@ -492,3 +492,276 @@ def test_gemini_stream_reports_function_call_like_streamGemini():
     assert job.tool_calls == {
         0: {"id": None, "name": "update_document", "arguments": '{"html":"<p>新</p>","n":2}'},
     }
+
+
+# ── Reasoning artifacts: Anthropic thinking blocks, Gemini thoughtSignature ──
+#
+# Both providers check these on replay when reasoning is on: Anthropic wants
+# the tool_use turn back with its thinking blocks verbatim and first, Gemini 3
+# wants the first call of each step back with its thoughtSignature (400
+# otherwise). Mirrors the TS side (providerMessages.test.ts,
+# llmReasoningReplay.test.ts, remoteGeneration.test.ts).
+
+THINKING = {"type": "thinking", "thinking": "Need chapter 3 first.", "signature": "EqQBCgIYAhIM1gbc+/=="}
+REDACTED = {"type": "redacted_thinking", "data": "EmwKAhgBEgy3va3pzix/LafPsn4a"}
+
+
+def _parse_sse_frames(frames):
+    return [json.loads(f[len("data: "):]) for f in frames if f.startswith("data: ")]
+
+
+def test_anthropic_request_replays_thinking_first_and_verbatim():
+    history = _tool_history()
+    history[2]["thinking"] = [THINKING, REDACTED]
+    _, _, body = server_generation.build_anthropic_request(
+        {"model": "claude", "baseUrl": "https://api.anthropic.com/v1", "apiKey": "k"},
+        history,
+    )
+    assert body["messages"][1]["content"] == [
+        THINKING,
+        REDACTED,
+        {"type": "text", "text": "Reading it first."},
+        {"type": "tool_use", "id": "call_1", "name": "read_chapter", "input": {"chapter": "第三章"}},
+        {"type": "tool_use", "id": "call_2", "name": "read_chapter", "input": {"chapter": "第四章"}},
+    ]
+    # Signature bytes untouched.
+    assert body["messages"][1]["content"][0]["signature"] == "EqQBCgIYAhIM1gbc+/=="
+
+
+def test_anthropic_request_keeps_an_omitted_thinking_block_and_drops_malformed_ones():
+    # display: "omitted" streams an EMPTY thinking string; the block still has
+    # to go back (its signature is what the API checks).
+    omitted = {"type": "thinking", "thinking": "", "signature": "sig"}
+    _, _, body = server_generation.build_anthropic_request(
+        {"model": "claude", "baseUrl": "https://api.anthropic.com/v1", "apiKey": "k"},
+        [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": "",
+                "thinking": [
+                    omitted,
+                    {"type": "thinking", "thinking": "no signature"},
+                    {"type": "redacted_thinking"},
+                    "garbage",
+                    {"type": "thinking", "thinking": "t", "signature": "s", "extra": "dropped"},
+                ],
+                "toolCalls": [{"id": "a", "name": "list_chapters", "argumentsText": "{}"}],
+            },
+        ],
+    )
+    assert body["messages"][1]["content"] == [
+        omitted,
+        {"type": "thinking", "thinking": "t", "signature": "s"},
+        {"type": "tool_use", "id": "a", "name": "list_chapters", "input": {}},
+    ]
+
+
+def test_gemini_request_puts_thought_signature_beside_its_function_call():
+    history = _tool_history()
+    # Parallel calls: only the FIRST carries a signature.
+    history[2]["toolCalls"][0]["signature"] = "CiQBVt+/sig=="
+    _, _, body = server_generation.build_gemini_request(
+        {"model": "gemini-3-pro", "baseUrl": "https://g/v1beta", "apiKey": "k"},
+        history,
+    )
+    assert body["contents"][1]["parts"] == [
+        {"text": "Reading it first."},
+        {
+            "functionCall": {"name": "read_chapter", "args": {"chapter": "第三章"}},
+            "thoughtSignature": "CiQBVt+/sig==",
+        },
+        {"functionCall": {"name": "read_chapter", "args": {"chapter": "第四章"}}},
+    ]
+
+
+def test_openai_request_ignores_reasoning_artifacts():
+    history = _tool_history()
+    history[2]["thinking"] = [THINKING]
+    history[2]["toolCalls"][0]["signature"] = "sig"
+    _, _, body = server_generation.build_openai_request(
+        {"model": "grok-4", "baseUrl": "https://api.x.ai/v1", "apiKey": "k"}, history, "grok",
+    )
+    assistant = body["messages"][2]
+    assert set(assistant) == {"role", "content", "tool_calls"}
+    assert set(assistant["tool_calls"][0]) == {"id", "type", "function"}
+
+
+def _anthropic_thinking_lines():
+    return [
+        _sse({"type": "message_start", "message": {"usage": {"input_tokens": 10, "output_tokens": 1}}}),
+        _sse({"type": "content_block_start", "index": 0,
+              "content_block": {"type": "thinking", "thinking": "", "signature": ""}}),
+        _sse({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "thinking_delta", "thinking": "Need chapter "}}),
+        _sse({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "thinking_delta", "thinking": "3 first."}}),
+        _sse({"type": "content_block_delta", "index": 0,
+              "delta": {"type": "signature_delta", "signature": "EqQBCgIYAhIM1gbc+/=="}}),
+        _sse({"type": "content_block_stop", "index": 0}),
+        _sse({"type": "content_block_start", "index": 1, "content_block": REDACTED}),
+        _sse({"type": "content_block_stop", "index": 1}),
+        _sse({"type": "content_block_start", "index": 2, "content_block": {"type": "text", "text": ""}}),
+        _sse({"type": "content_block_delta", "index": 2, "delta": {"type": "text_delta", "text": "Reading."}}),
+        _sse({"type": "content_block_stop", "index": 2}),
+        _sse({"type": "content_block_start", "index": 3,
+              "content_block": {"type": "tool_use", "id": "toolu_1", "name": "read_chapter", "input": {}}}),
+        _sse({"type": "content_block_delta", "index": 3,
+              "delta": {"type": "input_json_delta", "partial_json": '{"chapter":"3"}'}}),
+        _sse({"type": "content_block_stop", "index": 3}),
+        _sse({"type": "message_delta", "delta": {"stop_reason": "tool_use"}, "usage": {"output_tokens": 30}}),
+    ]
+
+
+def _run_job_watching(provider, config, response):
+    """Run a job with a live subscriber attached, return (job, live events)."""
+    job = server_generation.GenerationJob("gen-reasoning", "alice", {})
+    live: asyncio.Queue = asyncio.Queue()
+    job.subscribers.add(live)
+
+    @asynccontextmanager
+    async def fake_stream(url, headers, body):
+        yield response
+
+    with patch.object(server_generation, "_http_stream", fake_stream):
+        asyncio.run(server_generation.run_job(job, provider, config, [{"role": "user", "content": "go"}]))
+    events = []
+    while not live.empty():
+        events.append(live.get_nowait())
+    return job, events
+
+
+def test_anthropic_stream_publishes_completed_thinking_blocks_in_order():
+    job, events = _run_job_watching(
+        "anthropic",
+        {"model": "claude", "baseUrl": "https://api.anthropic.com/v1", "apiKey": "k", "tools": [READ_TOOL]},
+        _FakeStreamResponse(lines=_anthropic_thinking_lines()),
+    )
+    assert job.status == "done", job.error
+    assert job.thinking_blocks == [THINKING, REDACTED]
+    published = [e for e in events if e["type"] == "thinking_block"]
+    assert published == [
+        {"type": "thinking_block", "index": 0, "block": THINKING},
+        {"type": "thinking_block", "index": 1, "block": REDACTED},
+    ]
+    # Text and the tool call are unaffected, and thinking is not document text.
+    assert job.buffer == "Reading."
+    assert job.tool_calls == {3: {"id": "toolu_1", "name": "read_chapter", "arguments": '{"chapter":"3"}'}}
+    # Both blocks completed BEFORE the tool call opened, the terminal event last.
+    kinds = [e["type"] for e in events]
+    assert kinds.index("thinking_block") < kinds.index("tool_call")
+    assert kinds[-1] == "done"
+    assert "thinking_block" not in server_generation.TERMINAL_EVENT_TYPES
+
+
+def test_a_late_reader_receives_thinking_blocks_and_signatures_before_the_terminal_event():
+    job, _ = _run_job_watching(
+        "anthropic",
+        {"model": "claude", "baseUrl": "https://api.anthropic.com/v1", "apiKey": "k"},
+        _FakeStreamResponse(lines=_anthropic_thinking_lines()),
+    )
+    assert job.status == "done", job.error
+
+    async def read_all():
+        return [frame async for frame in server_generation._job_event_stream(job, 0)]
+
+    events = _parse_sse_frames(asyncio.run(read_all()))
+    assert [e["type"] for e in events] == [
+        "attached", "thinking_block", "thinking_block", "tool_call", "delta", "done",
+    ]
+    assert events[1] == {"type": "thinking_block", "index": 0, "block": THINKING}
+    assert events[2] == {"type": "thinking_block", "index": 1, "block": REDACTED}
+
+
+def test_a_live_reader_keeps_streaming_after_a_thinking_block():
+    async def scenario():
+        job = server_generation.registry.create("alice", {})
+        stream = server_generation._job_event_stream(job, 0)
+        seen = [await anext(stream)]                 # attached
+        job.note_thinking_block(dict(THINKING))
+        seen.append(await anext(stream))             # must NOT end the stream
+        job.append("Answer")
+        seen.append(await anext(stream))
+        job.finish("done")
+        seen.append(await anext(stream))
+        await stream.aclose()
+        return seen
+
+    events = _parse_sse_frames(asyncio.run(scenario()))
+    assert [e["type"] for e in events] == ["attached", "thinking_block", "delta", "done"]
+
+
+def _gemini_parallel_calls_chunk():
+    return {
+        "candidates": [{
+            "content": {"role": "model", "parts": [
+                {"functionCall": {"name": "read_chapter", "args": {"chapter": "三"}},
+                 "thoughtSignature": "CiQBVt+/sig=="},
+                {"functionCall": {"name": "read_chapter", "args": {"chapter": "四"}}},
+            ]},
+            "finishReason": "STOP",
+        }],
+    }
+
+
+def test_gemini_stream_carries_thought_signature_on_its_tool_call_event():
+    raw = "[" + json.dumps(_gemini_parallel_calls_chunk(), ensure_ascii=False) + "]"
+    job, events = _run_job_watching(
+        "gemini",
+        {"model": "gemini-3-pro", "baseUrl": "https://g/v1beta", "apiKey": "k", "tools": [READ_TOOL]},
+        _FakeStreamResponse(text_chunks=[raw[:50], raw[50:]]),
+    )
+    assert job.status == "done", job.error
+    calls = [e for e in events if e["type"] == "tool_call"]
+    # One index per call: parallel calls on a shared index 0 would be merged
+    # into a single call with unparseable arguments.
+    assert calls == [
+        {"type": "tool_call", "index": 0, "id": None, "name": "read_chapter",
+         "text": '{"chapter":"三"}', "signature": "CiQBVt+/sig=="},
+        {"type": "tool_call", "index": 1, "id": None, "name": "read_chapter", "text": '{"chapter":"四"}'},
+    ]
+    assert job.tool_calls == {
+        0: {"id": None, "name": "read_chapter", "arguments": '{"chapter":"三"}', "signature": "CiQBVt+/sig=="},
+        1: {"id": None, "name": "read_chapter", "arguments": '{"chapter":"四"}'},
+    }
+
+    # A reader that attaches later is replayed the signature with the call.
+    async def read_all():
+        return [frame async for frame in server_generation._job_event_stream(job, 0)]
+
+    replayed = [e for e in _parse_sse_frames(asyncio.run(read_all())) if e["type"] == "tool_call"]
+    assert replayed[0]["signature"] == "CiQBVt+/sig=="
+    assert replayed[0]["replay"] is True
+    assert "signature" not in replayed[1]
+
+
+def test_note_tool_call_keeps_the_last_non_empty_signature():
+    job = server_generation.GenerationJob("gen-sig", "alice", {})
+    job.note_tool_call(0, None, "read_chapter", "{}", "first")
+    job.note_tool_call(0, None, None, "", None)
+    assert job.tool_calls[0]["signature"] == "first"
+    job.note_tool_call(0, None, None, "", "second")
+    assert job.tool_calls[0]["signature"] == "second"
+
+
+def test_tool_choice_none_keeps_tools_but_forbids_a_new_call_per_provider():
+    """The agentic run's final step (agent/run.ts STEP_LIMIT_NOTE): tools stay
+    in the request — earlier calls reference them — but no new call is allowed.
+    Mirrors streamOpenAI / streamAnthropic / streamGemini."""
+    tools = [{"type": "function", "function": {"name": "read_chapter", "description": "d", "parameters": {"type": "object"}}}]
+    config = {"apiKey": "k", "model": "m", "baseUrl": "https://x", "tools": tools, "toolChoice": "none"}
+    messages = [{"role": "user", "content": "hi"}]
+
+    openai_body = server_generation.build_openai_request(config, messages, "grok")[2]
+    assert openai_body["tool_choice"] == "none"
+    assert openai_body["tools"] == tools
+
+    assert server_generation.build_anthropic_request(config, messages)[2]["tool_choice"] == {"type": "none"}
+    assert server_generation.build_gemini_request(config, messages)[2]["toolConfig"] == {
+        "functionCallingConfig": {"mode": "NONE"}
+    }
+
+    # Without it, nothing is forced.
+    plain = dict(config)
+    plain.pop("toolChoice")
+    assert "tool_choice" not in server_generation.build_openai_request(plain, messages, "grok")[2]

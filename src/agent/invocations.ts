@@ -10,7 +10,7 @@
  * So the rest of the loop never asks which protocol a write came from.
  */
 import type { FinishedToolCall } from '../utils/toolCallStream'
-import { parseAssistantResponse, stripStrayDocumentMarkup, type ParsedAssistantResponse } from '../utils/text'
+import { parseAssistantResponse, stripStrayDocumentMarkup, type EditBlock, type ParsedAssistantResponse } from '../utils/text'
 import type { ToolRegistry } from './registry'
 import type { ToolInvocation } from './types'
 
@@ -27,32 +27,50 @@ export interface CollectedStep {
   markupKind: ParsedAssistantResponse['kind'] | null
 }
 
-function markupInvocations(parsed: ParsedAssistantResponse, step: number): ToolInvocation[] {
-  const id = (i: number) => `markup_${step}_${i}`
-  switch (parsed.kind) {
-    case 'selection': {
-      const out: ToolInvocation[] = [
-        { id: id(0), name: 'replace_selection', args: { html: parsed.selectionText }, source: 'markup' }
-      ]
-      // Edits written beside a selection rewrite (they target text outside it).
-      if (parsed.editBlocks.length > 0) {
-        out.push({ id: id(1), name: 'edit_document', args: { edits: parsed.editBlocks }, source: 'markup' })
-      }
-      return out
-    }
-    case 'edits':
-      return [{ id: id(0), name: 'edit_document', args: { edits: parsed.editBlocks }, source: 'markup' }]
-    case 'canvas':
-      return [{
-        id: id(0),
-        name: 'update_document',
-        args: { html: parsed.canvasText },
-        source: 'markup',
-        unclosed: !parsed.canvasClosed
-      }]
-    default:
-      return []
+/**
+ * Edit blocks, one edit_document call per chapter they name (`<edit
+ * chapter="…">`), in the order each chapter first appears.
+ */
+function editsByChapter(blocks: EditBlock[]): Record<string, unknown>[] {
+  const groups = new Map<string, EditBlock[]>()
+  for (const block of blocks) {
+    const key = block.chapter ?? ''
+    const { chapter: _chapter, ...edit } = block
+    void _chapter
+    groups.set(key, [...(groups.get(key) ?? []), edit])
   }
+  return [...groups.entries()].map(([chapter, edits]) => (chapter ? { chapter, edits } : { edits }))
+}
+
+function markupInvocations(parsed: ParsedAssistantResponse, step: number): ToolInvocation[] {
+  let n = 0
+  const make = (name: string, args: Record<string, unknown>, unclosed?: boolean): ToolInvocation => ({
+    id: `markup_${step}_${n++}`,
+    name,
+    args,
+    source: 'markup',
+    ...(unclosed === undefined ? {} : { unclosed })
+  })
+  const out: ToolInvocation[] = []
+  if (parsed.kind === 'selection') {
+    out.push(make('replace_selection', { html: parsed.selectionText }))
+  }
+  if (parsed.kind === 'canvas') {
+    out.push(make('update_document', {
+      html: parsed.canvasText,
+      ...(parsed.canvasChapter ? { chapter: parsed.canvasChapter } : {})
+    }, !parsed.canvasClosed))
+  }
+  // Edits: the 'edits' channel, or written beside a selection rewrite (they
+  // target text outside it).
+  if (parsed.kind === 'selection' || parsed.kind === 'edits') {
+    for (const args of editsByChapter(parsed.editBlocks)) out.push(make('edit_document', args))
+  }
+  // Rewrites of other chapters that rode along (`<canvas chapter="…">`).
+  for (const extra of parsed.extraCanvases) {
+    out.push(make('update_document', { html: extra.text, chapter: extra.chapter }, !extra.closed))
+  }
+  return out
 }
 
 export function collectStep(
@@ -68,7 +86,8 @@ export function collectStep(
     name: c.name,
     args: c.args,
     source: 'native',
-    argumentsText: c.argumentsText
+    argumentsText: c.argumentsText,
+    ...(c.signature ? { signature: c.signature } : {})
   }))
   const unknownCalls = nativeCalls.filter(c => !registry.get(c.name)).length
 
@@ -108,6 +127,9 @@ export function planWrites(
 ): { run: ToolInvocation[]; dropped: number } {
   const selection = writes.find(w => w.name === 'replace_selection')
   if (!selection) return { run: writes, dropped: 0 }
-  const run = [selection, ...writes.filter(w => w.name === 'edit_document')]
+  // A rewrite that names a chapter targets another chapter (the tool refuses
+  // it if that chapter is the selection's); only an unnamed one collides.
+  const run = [selection, ...writes.filter(w =>
+    w.name === 'edit_document' || (w.name === 'update_document' && w.args?.chapter !== undefined))]
   return { run, dropped: writes.length - run.length }
 }

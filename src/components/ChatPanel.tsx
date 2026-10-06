@@ -11,6 +11,7 @@ import { useImageUpload } from '../hooks/useImageUpload'
 import { useChatLLM } from '../hooks/useChatLLM'
 import { useRoleplayLLM } from '../hooks/useRoleplayLLM'
 import { useTranslation } from '../i18n'
+import { AgentTimeline, AgentTurnSummary } from './AgentTurnSummary'
 import { RoleplayBanner } from './RoleplayBanner'
 import { RoleplaySetupModal } from './RoleplaySetupModal'
 
@@ -290,7 +291,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         ))}
                       </div>
                     )}
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                    {msg.role === 'assistant' && msg.agent?.timeline
+                      ? <AgentTimeline record={msg.agent} />
+                      : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
+                    {msg.role === 'assistant' && msg.agent && <AgentTurnSummary record={msg.agent} />}
 
                     {/* RP Choices — clickable action buttons */}
                     {msg.rpChoices && msg.rpChoices.length > 0 && !isStreaming && (

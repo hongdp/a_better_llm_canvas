@@ -103,7 +103,7 @@ describe('edit_document arguments', () => {
       edits: [{ search: '<p>drop</p>' }, null, { replace: 'no search' }, 'text']
     }), f.ctx)
 
-    expect(result).toMatchObject({ ok: true, trace: 'edit_document: 1/1' })
+    expect(result).toMatchObject({ ok: true, trace: '✏️ edited #1 "Chapter 1" (1 change)' })
     expect(stripDiffMarkup(f.lastCommit())).toBe('<p>keep</p>')
   })
 
@@ -155,5 +155,77 @@ describe('replace_selection', () => {
     expect(placed).toMatchObject({ ok: false })
     expect((placed as { effects?: unknown }).effects).toBeUndefined()
     expect(f.ctx.run.selectionAttempted).toBe(true)
+  })
+})
+
+describe('writes to another chapter (D2)', () => {
+  const twoChapters = () => fakeContext('<p>start</p>', {
+    chapters: [{ id: 'doc-2', title: '故事线', content: '<p>outline</p>' }]
+  })
+
+  it('refuses an edit on a chapter whose HTML the model has not seen, as retryable', async () => {
+    const f = twoChapters()
+    const r = await editDocumentTool.invoke(call('edit_document', { chapter: '2', ...edit('<p>outline</p>', '<p>x</p>') }), f.ctx)
+    expect(r).toMatchObject({ ok: false, retryable: true })
+    expect(r.content).toContain('read_chapter')
+    expect(f.writes).toEqual([])
+  })
+
+  it('edits it once seen: diffed against its own accepted reading, snapshotted first', async () => {
+    const f = twoChapters()
+    f.ctx.run.htmlShown.add('doc-2')
+    const r = await editDocumentTool.invoke(call('edit_document', { chapter: 2, ...edit('<p>outline</p>', '<p>OUTLINE</p>') }), f.ctx)
+    expect(r).toMatchObject({ ok: true })
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>OUTLINE</p>')
+    expect(f.snapshots).toEqual(['doc-2'])
+    expect(f.commits).toEqual([])
+    expect(f.ctx.run.touched.get('doc-2')).toMatchObject({ kind: 'edits', changes: 1 })
+  })
+
+  it('loads a lazy chapter before writing it, and never blanks it from an empty base', async () => {
+    const f = fakeContext('<p>start</p>', {
+      chapters: [{ id: 'doc-2', title: 'Lazy', content: '' }],
+      lazy: { 'doc-2': '<p>real text</p>' }
+    })
+    f.ctx.run.htmlShown.add('doc-2')
+    await editDocumentTool.invoke(call('edit_document', { chapter: 2, ...edit('<p>real text</p>', '<p>new text</p>') }), f.ctx)
+    expect(f.ensureLoaded).toHaveBeenCalledWith(['doc-2'])
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>new text</p>')
+  })
+
+  it('rewrites a chapter created this run without a read, opening it first (D6)', async () => {
+    const f = twoChapters()
+    const id = f.ctx.document.create('第一章')
+    f.ctx.run.created.add(id)
+    f.ctx.run.htmlShown.add(id)
+    const r = await updateDocumentTool.invoke(call('update_document', { chapter: '3', html: '<p>第一章正文</p>' }), f.ctx)
+    expect(r).toMatchObject({ ok: true })
+    expect(f.opened).toEqual([id])
+    expect(f.snapshots).toEqual([])
+    expect(f.ctx.run.touched.get(id)).toMatchObject({ kind: 'created' })
+  })
+
+  it('routes a rewrite preview: another chapter shows progress, never the editor', () => {
+    const f = twoChapters()
+    updateDocumentTool.preview?.('{"chapter": "2", "html": "<p>new outline', f.ctx)
+    expect(f.previewDocument).not.toHaveBeenCalled()
+    expect(f.progress.at(-1)).toContain('#2 "故事线"')
+  })
+
+  it('takes back a preview painted before the target was known', async () => {
+    const f = twoChapters()
+    f.ctx.run.htmlShown.add('doc-2')
+    // `html` arrived before `chapter`, so the preview assumed the open chapter…
+    updateDocumentTool.preview?.('{"html": "<p>new outline', f.ctx)
+    expect(f.previewDocument).toHaveBeenCalled()
+    // …and the call turned out to target chapter 2.
+    await updateDocumentTool.invoke(call('update_document', { html: '<p>new outline</p>', chapter: 2 }), f.ctx)
+    expect(f.discardPreview).toHaveBeenCalled()
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>new outline</p>')
+  })
+
+  it('names a chapter that does not exist as a retryable error', async () => {
+    const r = await updateDocumentTool.invoke(call('update_document', { chapter: 9, html: '<p>x</p>' }), twoChapters().ctx)
+    expect(r).toMatchObject({ ok: false, retryable: true })
   })
 })

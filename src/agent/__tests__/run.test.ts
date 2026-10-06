@@ -139,6 +139,11 @@ describe('a multi-step turn', () => {
       { role: 'tool', toolCallId: 'call_a', name: 'read_chapter', content: 'TEXT OF 第三章' }
     ])
     expect(h.summary()).toMatchObject({ endReason: 'answered', steps: 2, chatText: 'Let me look.\n\nIt is about a cat.', trace: ['read 第三章'] })
+    expect(h.summary()?.timeline).toEqual([
+      { type: 'text', text: 'Let me look.' },
+      { type: 'tool', line: 'read 第三章', ok: true },
+      { type: 'text', text: 'It is about a cat.' }
+    ])
   })
 
   it('lets grok write with tags and read natively in the same step, then continue (D1 + D3)', async () => {
@@ -154,7 +159,7 @@ describe('a multi-step turn', () => {
     const tail = h.requests[1].slice(h.requests[0].length)
     expect(tail.map(m => m.role)).toEqual(['assistant', 'tool', 'user'])
     // The tag write has no call id to answer; its outcome goes in a user note.
-    expect(tail[2].content).toContain('update_document: The document was rewritten.')
+    expect(tail[2].content).toContain('update_document: #1 "Chapter 1" was rewritten.')
   })
 
   it('answers a call to an unknown tool instead of leaving its id unanswered', async () => {
