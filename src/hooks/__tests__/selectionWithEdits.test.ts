@@ -124,8 +124,7 @@ beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   useAppStore.setState({
-    messages: [], versions: [], isStreaming: false, user: null, activeBookId: 'book-test',
-    wholeBookMode: 'off', pinnedReferenceIds: [], blockedReferenceIds: [], debugMode: false,
+    messages: [], versions: [], isStreaming: false, user: null, activeBookId: 'book-test', debugMode: false,
     activeSystemPromptId: 'prompt-none', customSystemPrompts: [{ id: 'prompt-none', name: 'None', content: '' }]
   })
 })

@@ -72,8 +72,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] })
   vi.spyOn(console, 'error').mockImplementation(() => {})
   useAppStore.setState({
-    messages: [], versions: [], isStreaming: false, user: null, activeBookId: 'book-test',
-    wholeBookMode: 'off', pinnedReferenceIds: [], blockedReferenceIds: [], debugMode: false,
+    messages: [], versions: [], isStreaming: false, user: null, activeBookId: 'book-test', debugMode: false,
     activeSystemPromptId: 'prompt-none', customSystemPrompts: [{ id: 'prompt-none', name: 'None', content: '' }]
   })
 })

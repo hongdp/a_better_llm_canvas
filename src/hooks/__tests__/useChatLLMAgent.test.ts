@@ -129,8 +129,7 @@ beforeEach(() => {
     ],
     activeDocumentId: 'doc-1',
     activeProvider: 'grok',
-    messages: [], versions: [], isStreaming: false, user: null, activeBookId: 'book-test',
-    wholeBookMode: 'off', pinnedReferenceIds: [], blockedReferenceIds: [], debugMode: false,
+    messages: [], versions: [], isStreaming: false, user: null, activeBookId: 'book-test', debugMode: false,
     activeSystemPromptId: 'prompt-none', customSystemPrompts: [{ id: 'prompt-none', name: 'None', content: '' }]
   })
 })
@@ -146,7 +145,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter'])
+    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter', 'analyze_book'])
     // …and the system prompt teaches the chapter attribute.
     expect(calls[0][0].content).toContain('<canvas chapter="3">')
     h.unmount()
@@ -158,7 +157,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter'])
+    expect(offered(0)).toEqual(['update_document', 'edit_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'create_chapter', 'delete_chapter', 'polish_chapter', 'analyze_book'])
     h.unmount()
   })
 
@@ -258,12 +257,12 @@ describe('the ledger when a chapter in it is edited (append-update)', () => {
         doc('doc-x', '人物表', body('人物')),
         doc('doc-2', '故事线', body('大纲v1')),
         doc('doc-3', '世界观', body('世界'))
-      ],
-      pinnedReferenceIds: ['doc-2', 'doc-3']
+      ]
     })
     responses.push('好。\n<doc_status>unchanged</doc_status>', '好。\n<doc_status>unchanged</doc_status>')
     const h = renderChatHook()
-    await send(h, '看看')
+    // Named in the request, so the prefetch puts both in the ledger (D7).
+    await send(h, '看看故事线和世界观')
     const ledger1 = calls[0].find(m => m.content.startsWith('REFERENCED CHAPTERS'))?.content ?? ''
     // The first entry is the one whose edit used to re-send everything after it.
     const first = /--- DOCUMENT: (.+?) ---/.exec(ledger1)?.[1]

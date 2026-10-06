@@ -22,7 +22,7 @@ import {
 import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
-import { buildLedgerMessages, buildVolatileTail, buildInlineReferenceBlock, ledgerBlock, type DynamicContextOptions } from './chat/dynamicContext'
+import { buildLedgerMessages, buildVolatileTail, ledgerBlock, type DynamicContextOptions } from './chat/dynamicContext'
 import { stripDiffMarkup, diffHtml } from '../utils/diff'
 import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
@@ -31,6 +31,9 @@ import { ToolRegistry, toToolSpecs } from '../agent/registry'
 import { DOCUMENT_WRITE_TOOLS, previewRewrite } from '../agent/tools/documentWrites'
 import { BOOK_TOOLS } from '../agent/tools/bookReads'
 import { polishChapterTool } from '../agent/tools/polishChapter'
+import { analyzeBookTool } from '../agent/tools/analyzeBook'
+import { analyzeInBatches } from '../agent/analyzeBook'
+import { WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
 import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
 import { resolveRunSettings } from '../agent/policy'
 import { createRunState, type ToolContext } from '../agent/types'
@@ -46,19 +49,6 @@ import {
   type ContextLedger,
   type LedgerPlan
 } from '../utils/contextLedger'
-import {
-  planWholeBook as planWholeBookFlow,
-  runWholeBookBatches as runWholeBookBatchesFlow,
-  buildStickyBookPrefix,
-  type WholeBookDoc,
-  type WholeBookPlan,
-  type WholeBookConsentRequest,
-  type WholeBookConsentChoice
-} from './chat/wholeBook'
-
-// Consent types are re-exported so consumers (ChatPanel) keep importing them
-// from the hook module after the split into hooks/chat/.
-export type { WholeBookConsentRequest, WholeBookConsentChoice }
 
 // Per-chapter cap in the ledger. Mirrors the reference-doc cap the renderer
 // applies, so the planner's cost arithmetic matches the bytes actually sent.
@@ -96,7 +86,7 @@ interface StreamRenderContext extends RunInfo {
  * The chat's tools (docs/features/agentic_chat_loop.md). Module-level: the
  * registry is static, so it can never destabilise a callback's identity.
  */
-const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool])
+const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool])
 
 /** The chat text of a record's finished steps, joined as the bubble shows it. */
 const recordText = (record: AgentTurnRecord | undefined) =>
@@ -237,24 +227,6 @@ export function useChatLLM({
   const [errorMsg, setErrorMsg] = useState<string | null>(null)
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null)
   const [editingMessageText, setEditingMessageText] = useState('')
-  const [wholeBookConsent, setWholeBookConsent] = useState<WholeBookConsentRequest | null>(null)
-  const consentResolveRef = useRef<((choice: WholeBookConsentChoice) => void) | null>(null)
-  // Sticky whole-book mode asks for consent only on its first send; the ref
-  // resets whenever a send happens with the mode off.
-  const stickyConsentGivenRef = useRef(false)
-
-  const requestWholeBookConsent = useCallback((req: WholeBookConsentRequest): Promise<WholeBookConsentChoice> => {
-    setWholeBookConsent(req)
-    return new Promise<WholeBookConsentChoice>(resolve => {
-      consentResolveRef.current = resolve
-    })
-  }, [])
-
-  const resolveWholeBookConsent = useCallback((choice: WholeBookConsentChoice) => {
-    setWholeBookConsent(null)
-    consentResolveRef.current?.(choice)
-    consentResolveRef.current = null
-  }, [])
 
   // Refs
   const chatInputRef = useRef<HTMLDivElement>(null)
@@ -503,19 +475,6 @@ export function useChatLLM({
     )
   }, [selectedText, preserveImagesWithPlaceholders])
 
-  // Whole-book Rung 2 batched read (implementation in chat/wholeBook). The
-  // hook owns the abort controller so Stop cancels the batch loop exactly
-  // like it cancels a stream.
-  const runWholeBookBatches = useCallback(async (
-    promptText: string,
-    batches: WholeBookDoc[][],
-    assistantMsgId: string,
-    perBatchChars: number
-  ): Promise<string | null> => {
-    if (abortControllerRef.current) abortControllerRef.current.abort()
-    abortControllerRef.current = new AbortController()
-    return runWholeBookBatchesFlow(promptText, batches, assistantMsgId, perBatchChars, abortControllerRef.current.signal)
-  }, [])
 
   // The bubble while a run streams: attachments, the chat of finished steps,
   // the step in flight, and the progress line of an off-screen rewrite.
@@ -567,6 +526,32 @@ export function useChatLLM({
     )
   }), [])
 
+  /** One analyze_book batch: the chat model, no tools, its own cache key. */
+  const analyzeTransport = useCallback((system: string, user: string, signal?: AbortSignal) => new Promise<string>((resolve, reject) => {
+    const s = useAppStore.getState()
+    void streamLLM(
+      [{ role: 'system', content: system }, { role: 'user', content: user }],
+      {
+        ...s.providerConfigs[s.activeProvider],
+        provider: s.activeProvider,
+        tools: undefined,
+        debug: s.debugMode,
+        signal,
+        conversationId: `${s.activeBookId ?? 'book'}:analyze`,
+        // Not a chat job: a reload must not try to stream it into a bubble.
+        remoteMeta: { bookId: s.activeBookId ?? undefined, kind: 'batch' }
+      },
+      {
+        onChunk: () => {},
+        onDone: (text, usage) => {
+          if (usage) useAppStore.getState().addSessionTokens(usage.promptTokens, usage.completionTokens, usage.cachedPromptTokens || 0)
+          resolve(text)
+        },
+        onError: reject
+      }
+    )
+  }), [])
+
   // The ports the turn's tools work through (src/agent/types). Built once per
   // run; every member reads refs or the store, so a resumed turn whose editor
   // mounts later still reaches the live editor.
@@ -578,6 +563,22 @@ export function useChatLLM({
     const view = { expected: info.startId, moved: false }
     return {
     getState: useAppStore.getState,
+    // analyze_book (D7): the chat model, one call per batch, on a cache key
+    // of its own — batches share no prefix with the conversation.
+    analyze: {
+      run: (task, chapters, onProgress) => {
+        const s = useAppStore.getState()
+        return analyzeInBatches({
+          task,
+          chapters,
+          budgetChars: WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000,
+          transport: analyzeTransport,
+          // The step's controller: Stop aborts the batch in flight.
+          signal: abortControllerRef.current?.signal,
+          onProgress
+        })
+      }
+    },
     polish: {
       run: (html, onProgress) => {
         const s = useAppStore.getState()
@@ -735,7 +736,7 @@ export function useChatLLM({
     }
     // selectionRefs is a ref's `.current`, so it never changes identity — it is
     // listed only to satisfy exhaustive-deps (see the timeout note in CLAUDE.md).
-  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, setSaveStatus, selectionRefs, settleCanvasPreview, paintStreamingBubble, polishTransport, publishEditLock])
+  }, [preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, setSaveStatus, selectionRefs, settleCanvasPreview, paintStreamingBubble, polishTransport, analyzeTransport, publishEditLock])
 
   // The agent record on a bubble (types/chat AgentTurnRecord): trace, steps,
   // chapters changed. Only turns that ran a tool get one.
@@ -1351,12 +1352,6 @@ export function useChatLLM({
     })()
   }, [buildStreamCallbacks, createRun])
 
-  // Whole-book planning (escalation ladder, spec §6 — implementation in
-  // chat/wholeBook): plan + consent happen BEFORE anything enters the chat so
-  // 'cancelled' has zero side effects.
-  const planWholeBook = useCallback((): Promise<WholeBookPlan | null | 'cancelled'> => {
-    return planWholeBookFlow(requestWholeBookConsent, stickyConsentGivenRef)
-  }, [requestWholeBookConsent])
 
   // ── Shared request assembly ─────────────────────────────────────────────
   // Single source of truth for both send and resubmit: Layer 1 selection,
@@ -1371,7 +1366,6 @@ export function useChatLLM({
     historySource: HistorySourceMessage[]
     assistantMsgId: string
     originalDocContent: string
-    wholeBookPlan: WholeBookPlan | null
   }): Promise<{
     apiMessages: LLMMessage[]
     attachmentsText: string
@@ -1379,16 +1373,7 @@ export function useChatLLM({
     /** Chapters whose full text this request carries — the run's `inContext`. */
     inContextIds: string[]
   } | null> => {
-    const { promptText, images, historySource, assistantMsgId, wholeBookPlan } = opts
-
-    // Pinned chapters are an explicit user choice — make sure their content
-    // is loaded (server books lazy-load metadata-only chapters) BEFORE Layer 1
-    // selection, otherwise attachable() silently drops them and the pin is a
-    // no-op. Usually instant: pinning already triggered the eager load.
-    const pinnedAtSend = useAppStore.getState().pinnedReferenceIds
-    if (pinnedAtSend.length > 0) {
-      await useAppStore.getState().ensureDocumentContents(pinnedAtSend)
-    }
+    const { promptText, images, historySource } = opts
     const s = useAppStore.getState()
 
     const ledgerScope = `${s.activeBookId ?? ''}|${s.activeProvider}|${s.providerConfigs[s.activeProvider]?.model ?? ''}`
@@ -1398,16 +1383,15 @@ export function useChatLLM({
       seenRef.current = new Map()
     }
 
-    // Layer 1 auto-selection: pinned chapters always attach; the scorer adds
-    // relevant ones (title mentions, adjacency, keyword overlap, continuity)
-    // under the context budget. Blocked chapters never auto-attach.
+    // The prefetch (agentic_chat_loop.md D7): the scorer attaches what the
+    // request is likely to need — title mentions, adjacency, keyword overlap,
+    // continuity — under the context budget. Nothing is chosen by hand; the
+    // model reads anything else it needs with its tools.
     const selection = selectReferenceChapters({
       promptText,
       recentHistory: historySource.filter(m => m.id !== 'welcome').map(m => m.content),
       documents: s.documents,
       activeDocumentId: s.activeDocumentId,
-      pinnedIds: s.pinnedReferenceIds,
-      blockedIds: s.blockedReferenceIds,
       previousAttachedIds: previousAttachedIdsRef.current,
       modelReadIds: modelReadIdsRef.current,
       ledgerIds: ledgerRef.current.entries.map(e => e.id)
@@ -1466,108 +1450,55 @@ export function useChatLLM({
 
     // The agentic loop's view of the index (D8): which chapters this request
     // carries in full, which the model saw before and whether they changed.
-    // Computed per branch below, because each attaches a different set.
     const runSettings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider])
     turnCounterRef.current += 1
     const agentTail = (inContext: string[]): DynamicContextOptions => runSettings.agentTools
       ? { agentTools: true, markers: freshnessMarkers(s.documents, s.activeDocumentId, inContext, seenRef.current, turnCounterRef.current) }
       : {}
 
-    // Execute the whole-book plan decided (and consented) before the message
-    // entered the chat.
-    let attachedIds = selection.attachedIds
     const autoIds = selection.autoIds
-    let dynamicContext: string
-    let attachmentsText: string
-    // The stable block ahead of the history: either the whole-book sticky
-    // prefix or the context ledger. Both are cacheable; they never coexist,
-    // since whole-book already provides every chapter.
-    let bookPrefixMessages: LLMMessage[] = []
+    // Cache-first assembly: chapters go into an append-only block ahead of
+    // the history, so an unchanged set costs nothing to re-send. New
+    // admissions are ordered most-stable-first, because removing an entry
+    // re-sends everything after it — so the documents the writer revises
+    // constantly (the outline) belong at the END, where invalidating them
+    // costs only themselves. See docs/features/cache_first_context.md.
+    const bookOrder = s.documents.map(d => d.id)
+    const desiredIds = orderAdmissionsByStability(
+      selection.attachedIds,
+      s.documents.map(d => ({ id: d.id, updatedAt: d.updatedAt })),
+      bookOrder,
+      s.activeDocumentId
+    )
+    // Hashed on the ACCEPTED reading, which is what the ledger renders:
+    // accepting a pending diff changes the HTML but not what the model
+    // reads, and must not cost a re-send (see ledgerBlock).
+    const docsForPlan = s.documents.map(d => {
+      const accepted = stripDiffMarkup(d.content)
+      return { id: d.id, chars: Math.min(accepted.length, MAX_LEDGER_DOC_CHARS), hash: hashContent(accepted) }
+    })
 
-    if (wholeBookPlan) {
-      const { mode, sticky, docs, batches, budgetChars } = wholeBookPlan
-
-      if (mode === 'full' && sticky) {
-        bookPrefixMessages = buildStickyBookPrefix(docs)
-        attachedIds = docs.map(d => d.id)
-        dynamicContext = buildTail(agentTail(attachedIds))
-        attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, sticky)]`
-      } else if (mode === 'full') {
-        // Rung 1: attach every chapter, single call.
-        attachedIds = docs.map(d => d.id)
-        dynamicContext = buildInlineReferenceBlock(s.documents, attachedIds, Number.MAX_SAFE_INTEGER) +
-          '\n' + buildTail(agentTail(attachedIds))
-        attachmentsText = `[Attached Context: Whole book (${docs.length} chapters)]`
-      } else if (mode === 'batched') {
-        // Rung 2: map-reduce over book-order batches, then answer from notes.
-        const notes = await runWholeBookBatches(promptText, batches, assistantMsgId, budgetChars)
-        if (notes === null) {
-          s.setStreaming(false)
-          s.setMessages(useAppStore.getState().messages.map(m =>
-            m.id === assistantMsgId
-              ? { ...m, content: '⚠️ Whole-book processing was cancelled or failed before completion. No answer was generated.' }
-              : m
-          ))
-          forceSave()
-          return null
-        }
-        attachedIds = []
-        dynamicContext = buildTail({ notesBlock: notes, ...agentTail([]) })
-        attachmentsText = `[Attached Context: Whole book (${docs.length} chapters, read in ${batches.length} batches)]`
-      } else {
-        // Rung 0 fast mode: structure + summaries, no full text.
-        attachedIds = []
-        dynamicContext = buildTail({ includeWholeBookDigest: true, ...agentTail([]) })
-        attachmentsText = '[Attached Context: Whole-book digest (structure + summaries)]'
+    // Removing a chapter used to raise a consent card here (the drop costs
+    // a re-prefill of everything after it in the cached prefix). Removed by
+    // request: the user's removal is honored silently and the cache pays
+    // the one-turn re-prefill. The planner still reports the cost in
+    // `resendChars` if a UI ever wants to show it non-blockingly.
+    // With a renderer the planner appends a newer version of an edited
+    // chapter instead of cutting the ledger at its old copy, and every
+    // entry keeps the exact bytes it was sent with (contextLedger).
+    const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId, {
+      render: (id, kind) => {
+        const doc = s.documents.find(d => d.id === id)
+        return doc ? ledgerBlock(doc, kind) : ''
       }
-      previousAttachedIdsRef.current = attachedIds
-      // Whole-book replaces the stable block with its own; whatever the ledger
-      // had cached is no longer in the prefix.
-      ledgerRef.current = EMPTY_LEDGER
-    } else {
-      // Cache-first assembly: chapters go into an append-only block ahead of
-      // the history, so an unchanged set costs nothing to re-send. New
-      // admissions are ordered most-stable-first, because removing an entry
-      // re-sends everything after it — so the documents the writer revises
-      // constantly (the outline) belong at the END, where invalidating them
-      // costs only themselves. See docs/features/cache_first_context.md.
-      const bookOrder = s.documents.map(d => d.id)
-      const desiredIds = orderAdmissionsByStability(
-        attachedIds,
-        s.documents.map(d => ({ id: d.id, updatedAt: d.updatedAt })),
-        bookOrder,
-        s.activeDocumentId
-      )
-      // Hashed on the ACCEPTED reading, which is what the ledger renders:
-      // accepting a pending diff changes the HTML but not what the model
-      // reads, and must not cost a re-send (see ledgerBlock).
-      const docsForPlan = s.documents.map(d => {
-        const accepted = stripDiffMarkup(d.content)
-        return { id: d.id, chars: Math.min(accepted.length, MAX_LEDGER_DOC_CHARS), hash: hashContent(accepted) }
-      })
+    })
 
-      // Removing a chapter used to raise a consent card here (the drop costs
-      // a re-prefill of everything after it in the cached prefix). Removed by
-      // request: the user's removal is honored silently and the cache pays
-      // the one-turn re-prefill. The planner still reports the cost in
-      // `resendChars` if a UI ever wants to show it non-blockingly.
-      // With a renderer the planner appends a newer version of an edited
-      // chapter instead of cutting the ledger at its old copy, and every
-      // entry keeps the exact bytes it was sent with (contextLedger).
-      const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId, {
-        render: (id, kind) => {
-          const doc = s.documents.find(d => d.id === id)
-          return doc ? ledgerBlock(doc, kind) : ''
-        }
-      })
-
-      attachedIds = ledgerChapterIds(plan.ledger)
-      bookPrefixMessages = buildLedgerMessages(s.documents, plan.ledger.entries, undefined, { agentTools: runSettings.agentTools })
-      ledgerRef.current = plan.ledger
-      previousAttachedIdsRef.current = attachedIds
-      dynamicContext = buildTail(agentTail(attachedIds))
-      attachmentsText = buildAttachmentsLabel(attachedIds, s.documents, autoIds)
-    }
+    const attachedIds = ledgerChapterIds(plan.ledger)
+    const bookPrefixMessages = buildLedgerMessages(s.documents, plan.ledger.entries, undefined, { agentTools: runSettings.agentTools })
+    ledgerRef.current = plan.ledger
+    previousAttachedIdsRef.current = attachedIds
+    const dynamicContext = buildTail(agentTail(attachedIds))
+    const attachmentsText = buildAttachmentsLabel(attachedIds, s.documents, autoIds)
 
     const finalUserMessage: LLMMessage = {
       role: 'user',
@@ -1583,7 +1514,7 @@ export function useChatLLM({
       estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4),
       inContextIds: [...attachedIds, s.activeDocumentId]
     }
-  }, [buildSystemPrompt, buildTail, runWholeBookBatches, forceSave])
+  }, [buildSystemPrompt, buildTail])
 
   // Send message handler
   const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
@@ -1600,9 +1531,6 @@ export function useChatLLM({
     }
 
     setErrorMsg(null)
-
-    const wholeBookPlan = await planWholeBook()
-    if (wholeBookPlan === 'cancelled') return
 
     const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
     const originalDocContent = activeDoc?.content || ''
@@ -1648,8 +1576,7 @@ export function useChatLLM({
       // History = the conversation BEFORE this turn (s was captured pre-add).
       historySource: s.messages,
       assistantMsgId,
-      originalDocContent,
-      wholeBookPlan
+      originalDocContent
     })
     if (!request) return
 
@@ -1661,7 +1588,7 @@ export function useChatLLM({
       estimatedInputTokens: request.estimatedInputTokens,
       inContextIds: request.inContextIds
     })
-  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, planWholeBook, assembleChatRequest, startTurn])
+  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, assembleChatRequest, startTurn])
 
   // Edit and Resubmit message handler
   const handleResubmitMessage = useCallback(async (msgId: string, newContent: string) => {
@@ -1688,10 +1615,6 @@ export function useChatLLM({
       return m
     })
 
-    // Resubmit honors whole-book mode the same way a fresh send does.
-    const wholeBookPlan = await planWholeBook()
-    if (wholeBookPlan === 'cancelled') return
-
     const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
     const originalDocContent = activeDoc?.content || ''
     s.createVersionSnapshot(`Auto-save before edit: "${trimmed.substring(0, 30)}${trimmed.length > 30 ? '...' : ''}"`)
@@ -1716,8 +1639,7 @@ export function useChatLLM({
       // History = everything before the edited (resubmitted) message.
       historySource: truncatedMessages.slice(0, -1),
       assistantMsgId,
-      originalDocContent,
-      wholeBookPlan
+      originalDocContent
     })
     if (!request) return
 
@@ -1729,7 +1651,7 @@ export function useChatLLM({
       estimatedInputTokens: request.estimatedInputTokens,
       inContextIds: request.inContextIds
     })
-  }, [layoutMode, setIsChatExpanded, planWholeBook, assembleChatRequest, startTurn])
+  }, [layoutMode, setIsChatExpanded, assembleChatRequest, startTurn])
 
   /**
    * The Polish button (D9): polish a chapter directly, without the chat model
@@ -1862,8 +1784,6 @@ export function useChatLLM({
     setEditingMessageText,
     handleSendMessage,
     handleResubmitMessage,
-    handleStopGeneration,
-    wholeBookConsent,
-    resolveWholeBookConsent
+    handleStopGeneration
   }
 }

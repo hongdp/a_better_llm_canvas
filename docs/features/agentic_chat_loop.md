@@ -72,6 +72,7 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
 | `polish_chapter`, `delete_chapter` | write | native (no tag form) | native |
 | `read_chapter`, `grep`, `list_chapters` | read | native | native |
 | `open_chapter`, `create_chapter` | navigate | native | native |
+| `analyze_book` | read | native | native |
 
 - A tool with a tag form (`markupForm`) is never also offered natively to a
   markup model; offering a write both ways invites mixing. A native call of
@@ -775,7 +776,30 @@ existing chapter was considered and declined: new chapters stay an explicit
 
 ### D7. No manual context selection
 
-**Decided (user, 2026-10-05).** The user no longer picks context by hand.
+**Decided (user, 2026-10-05); implemented 2026-10-06.** The user no longer picks context by hand.
+
+As built, against the plan below:
+- **Removed:** the attach bar (pin, block, and the live preview of
+  auto-selected tags), the whole-book toggle and the consent card, together
+  with `wholeBook.ts`, `planWholeBook`, the sticky prefix, `cycleReferenceState`,
+  `pinnedReferenceIds` / `blockedReferenceIds` and `wholeBookMode`. Its
+  localStorage key is deleted on init (`clearRetiredSettings`).
+- **Migration:** the per-document IndexedDB records get a **v3 → v4**
+  migration that drops the reference fields, with a test that feeds a v3
+  index. The legacy whole-array shapes (v0–v2) drop them too.
+- **`analyze_book`** is the batched map-reduce: `agent/analyzeBook.ts` does
+  the batching, and the hook's `analyze` port supplies the chat model with a
+  cache key of its own. There is no consent card; the trace shows the call
+  count.
+- **Not built:** the digest tool ("fast mode"). `list_chapters` already
+  returns the index with every chapter's summary, so `buildWholeBookDigest`
+  was removed.
+- **Not done yet:** a provider-sized ledger budget. The prefetch still works
+  within the fixed 60k selection budget.
+- **Tests:** the cache-first flow tests put chapters in the ledger by naming
+  them in the request instead of pinning them.
+
+The original plan:
 The model decides what to read, and the user steers it in the conversation
 ("参考第三章" (refer to chapter 3), "别看番外" (skip the side stories)).
 
@@ -1282,6 +1306,7 @@ interface AgentTouchedChapter {
 | `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one; anything with text is refused ("ask the user"). Runs last in its reply; reports the renumbering (§0.4) |
 | `create_chapter` | navigate | native | `addDocument(title)`, opened at once (D6) unless a selection rewrite is pending. Its result names the next write in the model's form (`<canvas chapter="N">` or `update_document` with `chapter`). Chapters are never created implicitly by a write |
 | `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
+| `analyze_book` | read | native | D7. Notes from reading the whole book (or the chapters named) in batches, one model call per batch, for a task that needs all of it at once. Batches are packed by `WHOLE_BOOK_CONTEXT_CHARS` per provider. Stop ends it between batches, keeping the notes so far. Replaced the whole-book toggle and its consent card |
 
 Phase 3+: `analyze_book` (Rung 2 map-reduce, approval-gated, replaces the
 consent card for that rung), `update_chapter_summary`, `rename_chapter`,
@@ -1365,7 +1390,7 @@ stay, each already a reviewable diff.
 
 | Phase | Scope | Behavior change |
 |---|---|---|
-| | **Status (2026-10-06):** 0, 1 and 2 are done, and so are D9 polish, `grep`, paragraph numbering, the append-update ledger, writes continuing the turn, and changes kept under review. 2b, 3 and 4 have not started. | |
+| | **Status (2026-10-06):** 0, 1, 2 and 2b are done (2b without the digest tool and the provider-sized ledger budget; see D7), and so are D9 polish, `grep`, paragraph numbering, the append-update ledger, writes continuing the turn, and changes kept under review. 3 and 4 continue in [backend_authority.md](backend_authority.md). | |
 | 0. Plumbing | `LLMMessage` tool fields; adapters in `llm.ts` + `server_generation.py` with parity tests; Anthropic/Gemini adapters translate arbitrary schemas | none |
 | 1. Extract | `src/agent/` registry + loop + `EditorPort`; port the 3 write tools and `MarkupToolSource`; `useChatLLM.onDone` becomes "run loop with `maxSteps` covering the corrective retries only" | none — existing `useChatLLM.test.ts` must pass unmodified |
 | 2. Read/navigate + cross-chapter writes | `list_chapters`, `read_chapter`, `grep` (was `search_book`), `open_chapter`, `create_chapter`; D8 freshness markers; `chapter` target on writes (tools + markup attribute) with preview routing; seen-content rule; blanking guard moved into `updateDocument`; per-document version snapshots; 本轮修改 (changed this turn) block; D3 policy; edit-failure feedback; trace UI; history trace line + continuity feed; settings `agentMaxSteps` (0 = unlimited) and `continueAfterWrites` | the loop, behind a per-provider setting `agentTools: auto/on/off` (grok `auto` = on only after M2 passes) |

@@ -108,24 +108,9 @@ export function extractHeadingTree(html: string): string {
 }
 
 /**
- * Rung 0 material: heading tree + summary for every chapter. Sent when
- * whole-book mode runs in "fast mode" (or alongside batched processing) so
- * the model sees the full book structure without full text.
- */
-export function buildWholeBookDigest(documents: IndexableDoc[], activeDocumentId: string | null): string {
-  const sections = documents.map((doc, idx) => {
-    const active = doc.id === activeDocumentId ? ' (ACTIVE)' : ''
-    const headings = extractHeadingTree(doc.content)
-    const digest = getChapterDigest(doc)
-    return `${idx + 1}. "${doc.title}"${active}\n${headings ? `${headings}\n` : ''}Summary: ${digest}`
-  })
-  return `WHOLE-BOOK DIGEST (structure and summaries of every chapter; full text NOT included):\n${sections.join('\n\n')}`
-}
-
-/**
  * Approximate context-window budgets per provider, in characters (~4 chars
- * per token), used to decide whether a whole book fits a single request
- * (Rung 1) or needs batched processing (Rung 2). Conservative: roughly 60%
+ * per token): how much chapter text one analyze_book batch carries
+ * (agent/analyzeBook). Conservative: roughly 60%
  * of the window is left for the book, the rest for history, the active
  * document, instructions, and output.
  */

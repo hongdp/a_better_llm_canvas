@@ -1,5 +1,10 @@
 # Cache-first context strategy
 
+> **Note (2026-10-06):** pins and the sticky whole-book prefix mentioned
+> below were retired ([agentic_chat_loop.md D7](agentic_chat_loop.md)).
+> Chapters now enter the ledger only through the prefetch and through what
+> the model reads.
+
 Status: **implemented** for the layout and the ledger (§4–§7); the history
 windowing changes (breakers 3–5) are **not done** — see §11.
 Supersedes the layout half of the 2026-07-07 "Cache-Friendly Prompt Layout"

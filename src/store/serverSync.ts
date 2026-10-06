@@ -11,7 +11,7 @@
  */
 import type { CanvasDocument, DocumentVersion } from '../types/document'
 import type { AppState, ServerDocumentMeta, ServerVersionMeta } from './types'
-import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, loadDocumentsFromIndexedDB } from './persistence'
+import { localStorage, db, safeIndexedDBSet, saveDocumentsToIndexedDB, loadDocumentsFromIndexedDB, clearRetiredSettings } from './persistence'
 import { MOCK_DOCUMENTS } from './defaults'
 import { loadSavedConfigs, mergeProviderConfigs, saveConfigsToCookie, saveSystemPromptsToCookie } from './settingsPersistence'
 import { getIsInitialized, setIsInitialized } from './syncRuntime'
@@ -23,8 +23,7 @@ import { mergeVersions, versionsMissingOnServer, backfillVersions } from './vers
  * Rebuilding the document list from server metadata would wipe client-side
  * fields the server doesn't round-trip. Summaries ARE server-synced now, so
  * a server value wins; the local one only fills gaps (e.g. generated while
- * logged out and not yet pushed). Pin/block reference lists remain
- * local-only and always carry over. Staleness is re-checked lazily against
+ * logged out and not yet pushed). Staleness is re-checked lazily against
  * content once it loads.
  */
 export const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: CanvasDocument[]): CanvasDocument[] => {
@@ -34,9 +33,7 @@ export const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: 
     if (!prev) return doc
     return {
       ...doc,
-      ...(!doc.summary && prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {}),
-      ...(prev.pinnedReferenceIds ? { pinnedReferenceIds: prev.pinnedReferenceIds } : {}),
-      ...(prev.blockedReferenceIds ? { blockedReferenceIds: prev.blockedReferenceIds } : {})
+      ...(!doc.summary && prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {})
     }
   })
 }
@@ -46,6 +43,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
 
   // 1. Load local state from IndexedDB first (fast, zero network overhead)
   if (!getIsInitialized()) {
+    clearRetiredSettings()
     // Perform LocalStorage to IndexedDB migration if not done yet
     const isMigrated = localStorage.getItem('web_canvas_indexeddb_migrated') === 'true'
     if (!isMigrated) {
@@ -80,12 +78,9 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
     const documentsToSet = (loadedDocs && loadedDocs.length > 0) ? loadedDocs : MOCK_DOCUMENTS
     const versionsToSet = loadedVersions || []
 
-    const activeLoadedDoc = documentsToSet.find(d => d.id === useAppStore.getState().activeDocumentId)
     useAppStore.setState({
       documents: documentsToSet,
-      versions: versionsToSet,
-      pinnedReferenceIds: activeLoadedDoc?.pinnedReferenceIds || [],
-      blockedReferenceIds: activeLoadedDoc?.blockedReferenceIds || []
+      versions: versionsToSet
     })
 
     // Set isStoreInitialized immediately so the UI boots up instantly using offline/local cache

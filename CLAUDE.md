@@ -63,7 +63,7 @@ src/
     RoleplaySetupModal.tsx  RoleplayBanner.tsx
   hooks/
     useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core)
-    chat/                 # Extracted chat-flow modules: wholeBook, streamHandlers,
+    chat/                 # Extracted chat-flow modules: streamHandlers,
                           #   dynamicContext, types
     useRoleplayLLM.ts     # Roleplay game-master mode streaming
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts

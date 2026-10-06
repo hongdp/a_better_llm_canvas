@@ -26,8 +26,6 @@ const baseInput = (overrides: Partial<SelectionInput> = {}): SelectionInput => (
   recentHistory: [],
   documents: baseDocs,
   activeDocumentId: 'b',
-  pinnedIds: [],
-  blockedIds: [],
   ...overrides
 })
 
@@ -119,31 +117,6 @@ describe('selectReferenceChapters signals', () => {
   })
 })
 
-// ── selectReferenceChapters: pin/block precedence ─────────────────────────────
-describe('selectReferenceChapters pin/block precedence', () => {
-  it('always attaches pinned chapters regardless of score', () => {
-    const result = selectReferenceChapters(baseInput({ pinnedIds: ['d'] }))
-    expect(result.attachedIds).toContain('d')
-    expect(result.autoIds).not.toContain('d')
-  })
-
-  it('never auto-attaches blocked chapters even with a title mention', () => {
-    const result = selectReferenceChapters(baseInput({
-      promptText: 'Compare with Chapter 3: Ashfall',
-      blockedIds: ['c']
-    }))
-    expect(result.attachedIds).not.toContain('c')
-  })
-
-  it('lists pinned chapters before autos', () => {
-    const result = selectReferenceChapters(baseInput({
-      promptText: 'Compare with Chapter 3: Ashfall',
-      pinnedIds: ['d']
-    }))
-    expect(result.attachedIds.indexOf('d')).toBeLessThan(result.attachedIds.indexOf('c'))
-  })
-})
-
 // ── selectReferenceChapters: budget ───────────────────────────────────────────
 describe('selectReferenceChapters budget', () => {
   it('drops lowest-score autos first when over budget', () => {
@@ -158,8 +131,6 @@ describe('selectReferenceChapters budget', () => {
         recentHistory: ['We were just talking about Chapter 1: Archive'],
         documents: bigDocs,
         activeDocumentId: 'active',
-        pinnedIds: [],
-        blockedIds: []
       },
       { maxTotalChars: 20_000 }
     )
@@ -178,8 +149,6 @@ describe('selectReferenceChapters budget', () => {
         recentHistory: [],
         documents: docs,
         activeDocumentId: 'active',
-        pinnedIds: [],
-        blockedIds: []
       },
       { perDocChars: 20_000 }
     )
@@ -187,25 +156,6 @@ describe('selectReferenceChapters budget', () => {
     expect(result.autoIds).toContain('huge')
   })
 
-  it('pinned chapters are never dropped even when they exceed the budget', () => {
-    const docs = [
-      makeDoc('active', 'Chapter 0'),
-      makeDoc('p1', 'Chapter 1', { content: 'y'.repeat(20_000) }),
-      makeDoc('p2', 'Chapter 2', { content: 'z'.repeat(20_000) })
-    ]
-    const result = selectReferenceChapters(
-      {
-        promptText: '',
-        recentHistory: [],
-        documents: docs,
-        activeDocumentId: 'active',
-        pinnedIds: ['p1', 'p2'],
-        blockedIds: []
-      },
-      { maxTotalChars: 10_000 }
-    )
-    expect(result.attachedIds).toEqual(['p1', 'p2'])
-  })
 })
 
 // ── selectReferenceChapters: unloaded/empty content ───────────────────────────
@@ -220,8 +170,6 @@ describe('selectReferenceChapters content availability', () => {
       recentHistory: [],
       documents: docs,
       activeDocumentId: 'active',
-      pinnedIds: ['lazy'],
-      blockedIds: []
     })
     expect(result.attachedIds).toEqual([])
   })

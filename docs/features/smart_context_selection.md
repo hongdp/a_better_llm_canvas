@@ -1,5 +1,12 @@
 # Feature Specification — Smart Context Selection
 
+> **Manual control retired (2026-10-06,
+> [agentic_chat_loop.md D7](agentic_chat_loop.md)).** Pinning, blocking, the
+> tag bar and whole-book mode (Layer 3, §6) are gone. The Layer 1 scorer
+> remains as the prefetch, without its pinned/blocked inputs, and the
+> batched reading of §6 lives on as the `analyze_book` tool. The sections
+> below describe the design as it was.
+
 > Layer 2 (agentic chapter lookup) was **removed on 2026-08-17** after shipping
 > unused — see §5. Layers 0, 1 and 3 are live.
 

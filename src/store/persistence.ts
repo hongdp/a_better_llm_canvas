@@ -116,22 +116,38 @@ export const safeIndexedDBSet = (key: string, value: unknown): void => {
 //   v1 — envelope introduced; docs gained optional summary fields
 //   v2 — per-doc selectedReferenceIds replaced by pinnedReferenceIds (sticky
 //        pins) + blockedReferenceIds (never auto-attach)
+//   v3 — one record per document plus a small index (below)
+//   v4 — manual reference selection retired (agentic_chat_loop.md D7): the
+//        per-document selected/pinned/blocked reference ids are dropped
+/** Newest whole-array envelope; later versions are per-document (v3+). */
 export const DOCUMENTS_ENVELOPE_VERSION = 2
+/** The per-document index's version (see v3 below). */
+export const DOCUMENTS_INDEX_VERSION = 4
 
 export interface DocumentsEnvelope {
   version: number
   data: CanvasDocument[]
 }
 
-/** v1 → v2: the old manual selection becomes sticky pins. */
-const migrateDocsV1toV2 = (docs: CanvasDocument[]): CanvasDocument[] =>
-  docs.map(doc => {
-    if (doc.pinnedReferenceIds !== undefined || doc.selectedReferenceIds === undefined) {
-      return doc
-    }
-    const { selectedReferenceIds, ...rest } = doc
-    return { ...rest, pinnedReferenceIds: selectedReferenceIds, blockedReferenceIds: [] }
-  })
+/** The retired per-document reference fields, as old payloads carry them. */
+type LegacyReferenceFields = {
+  selectedReferenceIds?: unknown
+  pinnedReferenceIds?: unknown
+  blockedReferenceIds?: unknown
+}
+
+/**
+ * → v4: manual reference selection is retired (D7), so its per-document
+ * fields go. (v1 → v2 used to turn the oldest one into pins; there is
+ * nothing left to turn it into.)
+ */
+export const dropReferenceFields = (doc: CanvasDocument): CanvasDocument => {
+  const rest: CanvasDocument & LegacyReferenceFields = { ...doc }
+  delete rest.selectedReferenceIds
+  delete rest.pinnedReferenceIds
+  delete rest.blockedReferenceIds
+  return rest
+}
 
 /**
  * Migrate a raw persisted documents payload (any historical shape) to the
@@ -162,8 +178,8 @@ export const migrateDocumentsPayload = (raw: unknown): CanvasDocument[] | null =
   }
 
   // Sequential migrations to the current version.
-  if (version < 2) docs = migrateDocsV1toV2(docs)
-  return docs
+  void version
+  return docs.map(dropReferenceFields)
 }
 
 // ── v3: per-document records ──────────────────────────────────────────────────
@@ -176,15 +192,15 @@ export const migrateDocumentsPayload = (raw: unknown): CanvasDocument[] | null =
 //   reference so a save touches ONLY the documents that actually changed.
 const DOC_KEY_PREFIX = 'web_canvas_doc:'
 
-interface DocumentsIndexV3 {
-  version: 3
+interface DocumentsIndex {
+  version: number
   ids: string[]
 }
 
-const isV3Index = (raw: unknown): raw is DocumentsIndexV3 =>
+const isDocumentsIndex = (raw: unknown): raw is DocumentsIndex =>
   typeof raw === 'object' && raw !== null &&
-  (raw as DocumentsIndexV3).version === 3 &&
-  Array.isArray((raw as DocumentsIndexV3).ids)
+  ((raw as DocumentsIndex).version === 3 || (raw as DocumentsIndex).version === DOCUMENTS_INDEX_VERSION) &&
+  Array.isArray((raw as DocumentsIndex).ids)
 
 /** Last-written snapshot, by doc id. Reference equality is enough: the store
  * replaces a document object whenever it changes. */
@@ -218,7 +234,7 @@ const writeDocuments = (documents: CanvasDocument[]) => {
     void db.remove(DOC_KEY_PREFIX + id)
   }
   if (indexChanged || lastWrittenById === null) {
-    safeIndexedDBSet('web_canvas_documents', { version: 3, ids: documents.map(d => d.id) } satisfies DocumentsIndexV3)
+    safeIndexedDBSet('web_canvas_documents', { version: DOCUMENTS_INDEX_VERSION, ids: documents.map(d => d.id) } satisfies DocumentsIndex)
   }
   lastWrittenById = new Map(documents.map(d => [d.id, d]))
 }
@@ -231,10 +247,17 @@ const writeDocuments = (documents: CanvasDocument[]) => {
 export const loadDocumentsFromIndexedDB = async (): Promise<CanvasDocument[] | null> => {
   const raw = await db.get<unknown>('web_canvas_documents')
 
-  if (isV3Index(raw)) {
+  if (isDocumentsIndex(raw)) {
     const docs = await Promise.all(raw.ids.map(id => db.get<CanvasDocument>(DOC_KEY_PREFIX + id)))
-    const documents = docs.filter((d): d is CanvasDocument => d !== null)
-    lastWrittenById = new Map(documents.map(d => [d.id, d]))
+    let documents = docs.filter((d): d is CanvasDocument => d !== null)
+    if (raw.version < DOCUMENTS_INDEX_VERSION) {
+      // v3 → v4: rewrite every record without the retired fields, once.
+      documents = documents.map(dropReferenceFields)
+      lastWrittenById = null
+      writeDocuments(documents)
+    } else {
+      lastWrittenById = new Map(documents.map(d => [d.id, d]))
+    }
     return documents.length > 0 ? documents : null
   }
 
@@ -297,29 +320,13 @@ export const clearCookie = (name: string) => {
   }
 }
 
-// ── Whole-book mode ───────────────────────────────────────────────────────────
-/** Whole-book context mode: off, one-shot, or sticky across turns. */
-export type WholeBookMode = 'off' | 'once' | 'sticky'
-
-const WHOLE_BOOK_MODE_KEY = 'web_canvas_whole_book_mode'
-
+// ── Retired settings ──────────────────────────────────────────────────────────
 /**
- * Restore the whole-book mode chosen in a previous session.
- *
- * Only `sticky` survives a reload: it is an explicit standing choice ("keep
- * sending the whole book"), whereas `once` is consumed by the very next send
- * and would be a surprise if it came back. Anything unrecognized reads as off.
+ * Forget settings whose features are gone, once per load: the whole-book
+ * mode (agentic_chat_loop.md D7).
  */
-export const loadWholeBookMode = (): WholeBookMode =>
-  localStorage.getItem(WHOLE_BOOK_MODE_KEY) === 'sticky' ? 'sticky' : 'off'
-
-/** Persist `sticky`; any other mode clears the stored preference. */
-export const saveWholeBookMode = (mode: WholeBookMode) => {
-  if (mode === 'sticky') {
-    localStorage.setItem(WHOLE_BOOK_MODE_KEY, 'sticky')
-  } else {
-    localStorage.removeItem(WHOLE_BOOK_MODE_KEY)
-  }
+export const clearRetiredSettings = () => {
+  localStorage.removeItem('web_canvas_whole_book_mode')
 }
 
 
@@ -346,7 +353,7 @@ export const setCachedWorkspaceOwner = (username: string | null): void => {
 export const clearWorkspaceCache = async (): Promise<void> => {
   try {
     const raw = await db.get<unknown>('web_canvas_documents')
-    if (isV3Index(raw)) {
+    if (isDocumentsIndex(raw)) {
       await Promise.all(raw.ids.map(id => db.remove(DOC_KEY_PREFIX + id)))
     }
   } catch (e) {

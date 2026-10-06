@@ -196,9 +196,6 @@ beforeEach(() => {
     isStreaming: false,
     user: null,
     activeBookId: 'book-test',
-    wholeBookMode: 'off',
-    pinnedReferenceIds: [],
-    blockedReferenceIds: [],
     debugMode: false,
     activeSystemPromptId: 'prompt-none',
     customSystemPrompts: [{ id: 'prompt-none', name: 'None', content: '' }]
@@ -257,16 +254,17 @@ describe('useChatLLM — cache-first prompt layout', () => {
         { ...doc('doc-2', 'Chapter 2', '<p>the betrayal</p>'), summary: 'A betrayal.' },
         { ...doc('doc-3', 'Chapter 3', '<p>the return</p>'), summary: 'A return.' }
       ],
-      activeDocumentId: 'doc-1',
-      pinnedReferenceIds: ['doc-2']
+      activeDocumentId: 'doc-1'
     })
   })
+  // Chapters reach the ledger by the prefetch now — a title named in the
+  // request — not by pinning (agentic_chat_loop.md D7).
 
   it('keeps every message before the tail byte-identical across turns', async () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     const harness = renderChatHook()
 
-    await send(harness, '第一个问题')
+    await send(harness, '关于 Chapter 2 的第一个问题')
     const firstTail = calls[0].length
     // Each turn takes two steps (write, then close); compare the turns' FIRST
     // requests.
@@ -289,11 +287,11 @@ describe('useChatLLM — cache-first prompt layout', () => {
     harness.unmount()
   })
 
-  it('puts the pinned chapter ahead of the history, not in the final message', async () => {
+  it('puts a chapter the request names ahead of the history, not in the final message', async () => {
     responses.push('<canvas><p>a</p></canvas>')
     const harness = renderChatHook()
 
-    await send(harness, '写下去')
+    await send(harness, '照着 Chapter 2 写下去')
 
     const ledger = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))
     expect(ledger).toBeDefined()
@@ -309,11 +307,10 @@ describe('useChatLLM — cache-first prompt layout', () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     const harness = renderChatHook()
 
-    await send(harness, '第一轮')
-    // Pin a second chapter: it must be APPENDED, never inserted or re-sorted.
-    useAppStore.setState({ pinnedReferenceIds: ['doc-2', 'doc-3'] })
+    await send(harness, '先看 Chapter 2')
+    // A second chapter joins: it must be APPENDED, never inserted or re-sorted.
     const second = calls.length
-    await send(harness, '第二轮')
+    await send(harness, '再看 Chapter 3')
 
     const before = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
     const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
@@ -326,11 +323,10 @@ describe('useChatLLM — cache-first prompt layout', () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     const harness = renderChatHook()
 
-    useAppStore.setState({ pinnedReferenceIds: ['doc-2', 'doc-3'] })
-    await send(harness, '第一轮')
+    await send(harness, '对照 Chapter 2 和 Chapter 3')
     // Now edit chapter 2 — it must leave the ledger rather than sit there as a
     // stale duplicate of the document in the tail.
-    useAppStore.setState({ activeDocumentId: 'doc-2', pinnedReferenceIds: ['doc-3'] })
+    useAppStore.setState({ activeDocumentId: 'doc-2' })
     const second = calls.length
     await send(harness, '第二轮')
 
