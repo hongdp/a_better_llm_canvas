@@ -262,6 +262,11 @@ class GenerationJob:
         #: same reason as tool_calls: the next step must replay them verbatim,
         #: and a reader that attaches after they streamed has no other source.
         self.thinking_blocks: List[Dict[str, Any]] = []
+        #: grok (xAI Responses API): this step's output items, verbatim and in
+        #: order — reasoning (with its encrypted_content), message,
+        #: function_call. The next step sends them back unchanged so the model
+        #: keeps its reasoning (see _stream_grok_responses).
+        self.response_items: List[Dict[str, Any]] = []
         #: Reasoning the model streamed before (or between) visible tokens.
         #: Counted, never buffered — it is not document text and must not move
         #: the replay offsets.
@@ -353,6 +358,30 @@ class GenerationJob:
         index = len(self.thinking_blocks)
         self.thinking_blocks.append(block)
         self._publish({"type": "thinking_block", "index": index, "block": block})
+
+    def note_response_item(self, item: Dict[str, Any]) -> None:
+        """Keep one COMPLETED xAI Responses output item and pass it on.
+
+        Same rules as thinking blocks: informational, never buffered, and the
+        event carries the item's position so a reconnecting reader skips what
+        it already has — a duplicated reasoning item would be replayed twice.
+        """
+        if self.status != "running" or not isinstance(item, dict):
+            return
+        index = len(self.response_items)
+        self.response_items.append(item)
+        self._publish({"type": "response_item", "index": index, "item": item})
+
+    def replace_tool_call_arguments(self, index: int, arguments: str) -> None:
+        """The provider's final arguments for a call, when the deltas disagree."""
+        entry = self.tool_calls.get(index)
+        if self.status != "running" or entry is None or entry.get("arguments") == arguments:
+            return
+        entry["arguments"] = arguments
+        self._publish({
+            "type": "tool_call", "index": index, "id": entry.get("id"), "name": entry.get("name"),
+            "text": arguments, "replay": True,
+        })
 
     def note_reasoning(self, text: str) -> None:
         """Record a reasoning delta and pass it on live.
@@ -1080,7 +1109,7 @@ def _fingerprint(value: Any) -> str:
 def describe_prefix(conversation: str, body: Dict[str, Any], now: Optional[float] = None) -> str:
     """How this request's prefix relates to the conversation's previous one."""
     now = time.monotonic() if now is None else now
-    messages = body.get("messages") or []
+    messages = body.get("messages") or body.get("input") or []
     hashes = [_fingerprint(m) for m in messages]
     tools = _fingerprint(body.get("tools") or [])
     model = str(body.get("model") or "")
@@ -1110,6 +1139,160 @@ def describe_prefix(conversation: str, body: Dict[str, Any], now: Optional[float
             f"{len(content) if isinstance(content, str) else 0} chars) differs"
         )
     return "; ".join(parts)
+
+
+def _response_items(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """An assistant message's xAI Responses output items, verbatim.
+
+    Mirrors `responseItemsOf` in providerMessages.ts. The items are opaque
+    (the reasoning ciphertext above all) and go back exactly as they came.
+    """
+    if message.get("role") != "assistant":
+        return []
+    raw = message.get("responseItems")
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict) and isinstance(item.get("type"), str)]
+
+
+def build_grok_responses_request(
+    config: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
+    """grok over the xAI Responses API (mirrors toGrokResponsesInput in providerMessages.ts).
+
+    Problem: on Chat Completions a step's reasoning is gone by the next step.
+      grok planned a chapter for 83 s, called a tool, and the next step — with
+      0 reasoning tokens and only its own one-line announcement to go on —
+      looped on list_chapters 13 times (2026-10-06). xAI also names omitted
+      reasoning "the top cause of cache misses", and lists Chat Completions as
+      deprecated.
+    Fix: the Responses API returns each step's reasoning as an encrypted item;
+      every step sends the previous steps' items back unchanged. `store` is
+      false and the ciphertext is requested explicitly, so nothing of the
+      book is kept on xAI's side for later retrieval.
+    """
+    api_key = config.get("apiKey") or ""
+    base_url = (config.get("baseUrl") or "").rstrip("/")
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    if config.get("conversationId"):
+        headers["x-grok-conv-id"] = str(config["conversationId"])
+
+    items: List[Dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role")
+        content = message.get("content") or ""
+        if role == "tool":
+            items.append({"type": "function_call_output", "call_id": message.get("toolCallId") or "", "output": content})
+            continue
+        if role == "assistant":
+            replay = _response_items(message)
+            if replay:
+                items.extend(replay)
+                continue
+            calls = _assistant_tool_calls(message)
+            if content or not calls:
+                items.append({"role": "assistant", "content": content})
+            for call in calls:
+                items.append({
+                    "type": "function_call",
+                    "call_id": call.get("id") or "",
+                    "name": call.get("name") or "",
+                    "arguments": _arguments_text(call),
+                })
+            continue
+        images = message.get("images") or []
+        if images:
+            parts: List[Dict[str, Any]] = [{"type": "input_text", "text": content}]
+            for idx, img in enumerate(images):
+                parts.append({"type": "input_text", "text": f"\n[Image {idx + 1}]:"})
+                parts.append({"type": "input_image", "image_url": img})
+            items.append({"role": role, "content": parts})
+        else:
+            items.append({"role": role, "content": content})
+
+    body: Dict[str, Any] = {
+        "model": config.get("model"),
+        "input": items,
+        "stream": True,
+        "store": False,
+        "include": ["reasoning.encrypted_content"],
+    }
+    if config.get("maxOutputTokens"):
+        body["max_output_tokens"] = config["maxOutputTokens"]
+    effort = _reasoning_effort(config)
+    if effort:
+        body["reasoning"] = {"effort": effort}
+    if config.get("conversationId"):
+        body["prompt_cache_key"] = str(config["conversationId"])
+    tools = _tool_specs(config.get("tools"))
+    if tools:
+        body["tools"] = [{"type": "function", **spec} for spec in tools]
+        if config.get("toolChoice") == "none":
+            body["tool_choice"] = "none"
+    return f"{base_url}/responses", headers, body
+
+
+async def _stream_grok_responses(
+    job: GenerationJob,
+    config: Dict[str, Any],
+    messages: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    url, headers, body = build_grok_responses_request(config, messages)
+    _debug_log("xAI Responses", url, headers, body, config)
+    if config.get("conversationId"):
+        logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"grok:{config['conversationId']}", body))
+
+    usage: Optional[Dict[str, Any]] = None
+    async with _http_stream(url, headers, body) as response:
+        if response.status_code >= 400:
+            err = await _read_error_text(response)
+            raise ProviderError(f"xAI API error ({response.status_code}): {err or 'request failed'}")
+        async for line in response.aiter_lines():
+            _check_abort(job)
+            trimmed = (line or "").strip()
+            if not trimmed.startswith("data:"):
+                continue
+            data = trimmed[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                event = json.loads(data)
+            except ValueError:
+                logger.warning("Failed to parse xAI Responses SSE chunk for job %s", job.job_id)
+                continue
+            kind = event.get("type")
+            index = event.get("output_index") or 0
+            if kind == "response.output_text.delta":
+                job.append(event.get("delta") or "")
+            elif kind == "response.reasoning_summary_text.delta":
+                job.note_reasoning(event.get("delta") or "")
+            elif kind == "response.output_item.added":
+                item = event.get("item") or {}
+                if item.get("type") == "function_call":
+                    job.note_tool_call(index, item.get("call_id"), item.get("name"), item.get("arguments") or "")
+            elif kind == "response.function_call_arguments.delta":
+                job.note_tool_call(index, None, None, event.get("delta") or "")
+            elif kind == "response.output_item.done":
+                item = event.get("item")
+                if isinstance(item, dict):
+                    if item.get("type") == "function_call" and isinstance(item.get("arguments"), str):
+                        job.replace_tool_call_arguments(index, item["arguments"])
+                    job.note_response_item(item)
+            elif kind in ("response.completed", "response.incomplete"):
+                u = (event.get("response") or {}).get("usage") or {}
+                usage = {
+                    "promptTokens": u.get("input_tokens") or 0,
+                    "completionTokens": u.get("output_tokens") or 0,
+                    "cachedPromptTokens": (u.get("input_tokens_details") or {}).get("cached_tokens") or 0,
+                    "reasoningTokens": (u.get("output_tokens_details") or {}).get("reasoning_tokens") or 0,
+                }
+            elif kind in ("response.failed", "error"):
+                failure = (event.get("response") or {}).get("error") or event
+                raise ProviderError(f"xAI API error: {failure.get('message') or failure.get('code') or 'response failed'}")
+    return usage
 
 
 async def _stream_openai(
@@ -1426,7 +1609,9 @@ async def _dispatch_provider(
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if provider in ("openai", "ollama", "runpod", "grok"):
+    if provider == "grok":
+        return await _stream_grok_responses(job, config, messages)
+    if provider in ("openai", "ollama", "runpod"):
         return await _stream_openai(job, config, messages, provider)
     if provider == "gemini":
         return await _stream_gemini(job, config, messages)
@@ -1497,6 +1682,7 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
     snapshot_offset = job.length
     tool_calls_snapshot = {i: dict(c) for i, c in job.tool_calls.items()}
     thinking_snapshot = list(job.thinking_blocks)
+    response_items_snapshot = list(job.response_items)
     terminal = job.terminal_event() if job.status != "running" else None
 
     try:
@@ -1519,6 +1705,10 @@ async def _job_event_stream(job: GenerationJob, from_offset: int):
         # reader can skip what it already has.
         for index, block in enumerate(thinking_snapshot):
             yield _sse({"type": "thinking_block", "index": index, "block": block})
+        # grok's output items (reasoning with its ciphertext), for the same
+        # reason: the next step sends them back.
+        for index, item in enumerate(response_items_snapshot):
+            yield _sse({"type": "response_item", "index": index, "item": item})
 
         # Tool calls are replayed WHOLE, not by offset: they are not document
         # text, so there is no offset to resume from. A reader that reconnects

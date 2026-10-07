@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import type { LLMMessage, ThinkingBlock } from '../../types/llm'
-import { toOpenAIMessages, toAnthropicMessages, toGeminiContents } from '../providerMessages'
+import { toOpenAIMessages, toAnthropicMessages, toGeminiContents, toGrokResponsesInput, toResponsesTools } from '../providerMessages'
 import { fromOpenAITools, toOpenAITools, toAnthropicTools, toGeminiTools, type ToolSpec } from '../../utils/documentTools'
 
 // Arguments with unusual spacing: a replay must carry these bytes unchanged,
@@ -263,10 +263,100 @@ describe('streamLLM request bodies', () => {
     expect(declarations.map(d => d.name)).toEqual(['read_chapter'])
   })
 
-  it('grok: sends the tool exchange in OpenAI shape', async () => {
+  it('grok: goes over the xAI Responses API, the tool exchange as items', async () => {
     const body = await captureBody('grok')
-    const messages = body.messages as Array<Record<string, unknown>>
-    expect(messages[3]).toEqual({ role: 'tool', tool_call_id: 'call_1', content: 'text of 3' })
+    const input = body.input as Array<Record<string, unknown>>
+    expect(input[4]).toEqual({ type: 'function_call_output', call_id: 'call_1', output: 'text of 3' })
+    expect(body).toMatchObject({ store: false, include: ['reasoning.encrypted_content'], stream: true })
+    expect(body.tools).toEqual([{ type: 'function', name: 'read_chapter', description: 'Read one chapter.', parameters: { type: 'object', properties: { chapter: { type: 'string' } } } }])
+  })
+})
+
+describe('toGrokResponsesInput (xAI Responses API)', () => {
+  const REASONING = { id: 'rs_1', summary: [], type: 'reasoning', status: 'completed', encrypted_content: 'CIPHER==' }
+  const CALL = { arguments: ARGS, call_id: 'call_1', name: 'read_chapter', type: 'function_call', id: 'fc_1', status: 'completed' }
+
+  it('sends a reply that kept its output items as exactly those items, reasoning first', () => {
+    const history: LLMMessage[] = [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', toolCalls: [{ id: 'call_1', name: 'read_chapter', argumentsText: ARGS }], responseItems: [REASONING, CALL] },
+      { role: 'tool', toolCallId: 'call_1', name: 'read_chapter', content: 'text of 3' }
+    ]
+    expect(toGrokResponsesInput(history)).toEqual([
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'q' },
+      REASONING,
+      CALL,
+      { type: 'function_call_output', call_id: 'call_1', output: 'text of 3' }
+    ])
+  })
+
+  it('rebuilds a reply without items from its text and calls, arguments byte for byte', () => {
+    const out = toGrokResponsesInput(toolHistory) as Array<Record<string, unknown>>
+    expect(out[2]).toEqual({ type: 'function_call', call_id: 'call_1', name: 'read_chapter', arguments: ARGS })
+    expect(out[3]).toEqual({ type: 'function_call', call_id: 'call_2', name: 'read_chapter', arguments: '{"chapter":"第四章"}' })
+    expect(toGrokResponsesInput([{ role: 'assistant', content: '好的。' }])).toEqual([{ role: 'assistant', content: '好的。' }])
+  })
+
+  it('sends images as input_image parts', () => {
+    expect(toGrokResponsesInput([{ role: 'user', content: '看', images: ['data:image/png;base64,AAA'] }])).toEqual([{
+      role: 'user',
+      content: [{ type: 'input_text', text: '看' }, { type: 'input_text', text: '\n[Image 1]:' }, { type: 'input_image', image_url: 'data:image/png;base64,AAA' }]
+    }])
+  })
+
+  it('flattens OpenAI-shaped tools', () => {
+    expect(toResponsesTools(toOpenAITools([{ name: 'grep', description: 'd', parameters: { type: 'object' } }]))).toEqual([
+      { type: 'function', name: 'grep', description: 'd', parameters: { type: 'object' } }
+    ])
+  })
+})
+
+describe('streamLLM over the xAI Responses API (direct transport)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('streams text, reasoning and calls, and hands over every output item', async () => {
+    const REASONING = { id: 'rs_1', summary: [], type: 'reasoning', status: 'completed', encrypted_content: 'CIPHER==' }
+    const CALL = { arguments: '{"chapter":2}', call_id: 'call-1', name: 'read_chapter', type: 'function_call', id: 'fc_1', status: 'completed' }
+    const events = [
+      { type: 'response.reasoning_summary_text.delta', output_index: 0, delta: '先读。' },
+      { type: 'response.output_item.done', output_index: 0, item: REASONING },
+      { type: 'response.output_text.delta', output_index: 1, delta: '好的。' },
+      { type: 'response.output_item.added', output_index: 2, item: { type: 'function_call', call_id: 'call-1', name: 'read_chapter', arguments: '' } },
+      { type: 'response.function_call_arguments.delta', output_index: 2, delta: '{"chapter":2}' },
+      { type: 'response.output_item.done', output_index: 2, item: CALL },
+      { type: 'response.completed', response: { usage: { input_tokens: 100, output_tokens: 20, input_tokens_details: { cached_tokens: 90 } } } }
+    ]
+    const sse = events.map(e => `data: ${JSON.stringify(e)}\n\n`).join('') + 'data: [DONE]\n\n'
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(sse, { status: 200 })))
+    const { streamLLM } = await import('../llm')
+    const got = { chunks: '', reasoning: '', items: [] as unknown[], deltas: [] as unknown[], done: null as null | { text: string; usage: unknown } }
+    await streamLLM([{ role: 'user', content: 'q' }], { provider: 'grok', apiKey: 'k', model: 'grok-4.7', baseUrl: 'https://api.x.ai/v1', forceDirect: true }, {
+      onChunk: c => { got.chunks += c },
+      onReasoning: r => { got.reasoning += r },
+      onResponseItem: item => { got.items.push(item) },
+      onToolCallDelta: d => { got.deltas.push(d) },
+      onDone: (text, usage) => { got.done = { text, usage } },
+      onError: e => { throw e }
+    })
+    expect(got.chunks).toBe('好的。')
+    expect(got.reasoning).toBe('先读。')
+    expect(got.items).toEqual([REASONING, CALL])
+    expect(got.deltas[0]).toEqual({ index: 2, id: 'call-1', name: 'read_chapter', argumentsText: '' })
+    expect(got.deltas.at(-1)).toMatchObject({ index: 2, argumentsText: '{"chapter":2}', replace: true })
+    expect(got.done).toEqual({ text: '好的。', usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: 90 } })
+  })
+
+  it('reports a failed response as an error', async () => {
+    const sse = `data: ${JSON.stringify({ type: 'response.failed', response: { error: { message: 'boom' } } })}\n\n`
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(sse, { status: 200 })))
+    const { streamLLM } = await import('../llm')
+    let error: Error | null = null
+    await streamLLM([{ role: 'user', content: 'q' }], { provider: 'grok', apiKey: 'k', model: 'grok-4.7', baseUrl: 'https://api.x.ai/v1', forceDirect: true }, {
+      onChunk: () => {}, onDone: () => {}, onError: e => { error = e }
+    })
+    expect(String(error)).toContain('boom')
   })
 })
 

@@ -166,7 +166,8 @@ async function attachToJob(
   signal?: AbortSignal,
   reconnectsLeft: number = MAX_STREAM_RECONNECTS,
   carryText: string = '',
-  carryThinkingBlocks: number = 0
+  carryThinkingBlocks: number = 0,
+  carryResponseItems: number = 0
 ): Promise<void> {
   let offset = fromOffset
   // Thinking blocks already handed to onThinkingBlock by THIS logical attach.
@@ -175,6 +176,8 @@ async function attachToJob(
   // a duplicated block makes Anthropic reject the replay. Carried forward
   // like fullText; a fresh resume starts at 0 and gets them all.
   let thinkingBlocksSeen = carryThinkingBlocks
+  // grok's output items: the same replay-from-the-first rule, the same guard.
+  let responseItemsSeen = carryResponseItems
   // Text THIS reader rendered. On a resume it deliberately excludes the
   // replayed-before-the-offset prefix — onDone reports what was streamed here.
   // A mid-turn reconnect carries it forward: one logical attach must report
@@ -202,6 +205,7 @@ async function attachToJob(
         replay?: boolean
         signature?: string
         block?: unknown
+        item?: unknown
         offset?: number
         message?: string
         usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }
@@ -243,6 +247,14 @@ async function attachToJob(
         if (!block) return
         thinkingBlocksSeen = position + 1
         callbacks.onThinkingBlock?.(block)
+      } else if (event.type === 'response_item') {
+        // A completed grok output item (reasoning ciphertext above all), for
+        // the next step. Skipped when a reconnect replays one already given.
+        const position = typeof event.index === 'number' ? event.index : responseItemsSeen
+        if (position < responseItemsSeen) return
+        if (!event.item || typeof event.item !== 'object') return
+        responseItemsSeen = position + 1
+        callbacks.onResponseItem?.(event.item)
       } else if (event.type === 'reasoning') {
         // Thinking, not text: it never joins fullText and never advances the
         // offset, so a reconnect simply misses what was thought while away.
@@ -275,7 +287,7 @@ async function attachToJob(
       // a pause, and only a job that is really gone becomes an error.
       if (reconnectsLeft > 0 && !signal?.aborted) {
         await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
-        return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen)
+        return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen, responseItemsSeen)
       }
       // Keep the persisted record: a later page load can still pick the job up
       // if it survived. Reporting beats pretending a truncated answer is whole.
@@ -293,7 +305,7 @@ async function attachToJob(
     const retryable = !signal?.aborted && !(error instanceof StreamRefusedError)
     if (retryable && reconnectsLeft > 0) {
       await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
-      return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen)
+      return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen, responseItemsSeen)
     }
     callbacks.onError(error instanceof Error ? error : new Error(String(error)))
   }

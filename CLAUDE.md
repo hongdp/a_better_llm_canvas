@@ -232,7 +232,10 @@ executed from one registry — add a tool with `defineTool` and register it in
 ports in `src/agent/types.ts`. A run never rebuilds an earlier message: each
 step appends, so follow-up steps hit grok's exact-prefix cache, and tool-call
 arguments are replayed byte-for-byte (`argumentsText`). The same goes for
-Anthropic thinking blocks and Gemini thought signatures. The tools offered are
+Anthropic thinking blocks, Gemini thought signatures, and grok's output items:
+grok runs on the xAI **Responses API** (not Chat Completions), and each step's
+reasoning item, with its `encrypted_content`, goes back unchanged in the next
+step (`LLMMessage.responseItems`), so the model keeps its plan. The tools offered are
 fixed at a run's first step. Writes reach any chapter through `chapter` (a
 `chapter="…"` attribute on grok's markup). An edit on a chapter whose HTML the
 model has not seen this run is refused, and a live preview must never paint

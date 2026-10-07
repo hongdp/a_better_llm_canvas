@@ -968,7 +968,7 @@ def test_generation_retries_without_effort_when_the_provider_rejects_it():
             return 400 if self.calls == 1 else 200
 
         async def aiter_lines(self):
-            for line in ['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"]:
+            for line in ['data: {"type":"response.output_text.delta","delta":"ok","output_index":0}', "data: [DONE]"]:
                 yield line
 
         async def aread(self):
@@ -993,8 +993,9 @@ def test_generation_retries_without_effort_when_the_provider_rejects_it():
         ))
 
     assert len(attempts) == 2
-    assert attempts[0]["reasoning_effort"] == "xhigh"
-    assert "reasoning_effort" not in attempts[1]   # dropped, not repeated
+    # grok goes over the Responses API: the effort is `reasoning.effort`.
+    assert attempts[0]["reasoning"] == {"effort": "xhigh"}
+    assert "reasoning" not in attempts[1]   # dropped, not repeated
     assert job.status == "done"
     assert job.buffer == "ok"
 
@@ -1076,14 +1077,18 @@ def test_generation_grok_request_sets_conversation_cache_header():
             "baseUrl": "https://api.x.ai/v1", "conversationId": "conv-9",
         },
         [{"role": "user", "content": "hi"}],
-        _FakeStreamResponse(lines=['data: {"choices":[{"delta":{"content":"ok"}}]}']),
+        _FakeStreamResponse(lines=['data: {"type":"response.output_text.delta","delta":"ok","output_index":0}']),
         captured,
     )
 
     request = captured[0]
+    assert request["url"] == "https://api.x.ai/v1/responses"
     assert request["headers"]["x-grok-conv-id"] == "conv-9"
     assert request["headers"]["Authorization"] == "Bearer xai-key"
-    assert request["body"]["stream_options"] == {"include_usage": True}
+    assert request["body"]["prompt_cache_key"] == "conv-9"
+    # Nothing kept on xAI's side; the reasoning comes back to us instead.
+    assert request["body"]["store"] is False
+    assert request["body"]["include"] == ["reasoning.encrypted_content"]
     assert job.status == "done"
 
 

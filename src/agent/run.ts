@@ -32,6 +32,12 @@ export interface StepOutput {
    * without them is rejected.
    */
   thinking?: ThinkingBlock[]
+  /**
+   * grok's output items of this step (xAI Responses API), verbatim: the
+   * reasoning ciphertext the next step sends back so the model keeps its
+   * plan (LLMMessage.responseItems).
+   */
+  responseItems?: unknown[]
 }
 
 /**
@@ -197,7 +203,7 @@ export class AgentRun {
       wroteThisRun: this.wrote
     })
     if (failure) {
-      this.handleProtocolFailure(failure, out.text, collected)
+      this.handleProtocolFailure(failure, out, collected)
       return
     }
 
@@ -251,7 +257,8 @@ export class AgentRun {
     }
   }
 
-  private handleProtocolFailure(failure: DocumentUpdateFailure, text: string, collected: CollectedStep): void {
+  private handleProtocolFailure(failure: DocumentUpdateFailure, out: StepOutput, collected: CollectedStep): void {
+    const text = out.text
     const canCorrect =
       this.o.canContinue &&
       !this.cancelled &&
@@ -263,7 +270,9 @@ export class AgentRun {
       // The failed reply is quoted back, then the correction: append-only.
       this.messages = [
         ...this.messages,
-        { role: 'assistant', content: text },
+        // With its reasoning (grok): the retry should know what it planned,
+        // and xAI's prefix cache counts the reasoning as part of the prefix.
+        { role: 'assistant', content: text, ...(out.responseItems?.length ? { responseItems: out.responseItems } : {}) },
         { role: 'user', content: NO_ACTION_RETRY_INSTRUCTION }
       ]
       void this.o.driver(this.messages, this.stepsTaken, { final: stepsLeft(this.o.budgets, this.stepsTaken) === 1 })
@@ -362,7 +371,8 @@ export class AgentRun {
             ...(inv.signature ? { signature: inv.signature } : {})
           }))
         : undefined,
-      ...(out.thinking?.length ? { thinking: out.thinking } : {})
+      ...(out.thinking?.length ? { thinking: out.thinking } : {}),
+      ...(out.responseItems?.length ? { responseItems: out.responseItems } : {})
     }]
     for (const { inv, result } of native) {
       messages.push({ role: 'tool', toolCallId: inv.id, name: inv.name, content: result.content })

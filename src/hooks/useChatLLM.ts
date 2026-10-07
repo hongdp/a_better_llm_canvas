@@ -337,6 +337,8 @@ export function useChatLLM({
   const progressLineRef = useRef<string | null>(null)
   // The step's Anthropic thinking blocks, replayed with its tool calls.
   const thinkingRef = useRef<ThinkingBlock[]>([])
+  // grok's output items of the step in flight (xAI Responses API).
+  const responseItemsRef = useRef<unknown[]>([])
   // D8: what the model has been shown of each chapter (accepted-reading hash
   // and turn). Same scope as the ledger: a different book or model starts over.
   const seenRef = useRef<SeenRecord>(new Map())
@@ -788,6 +790,9 @@ export function useChatLLM({
       onThinkingBlock: (block: ThinkingBlock) => {
         thinkingRef.current.push(block)
       },
+      onResponseItem: (item: unknown) => {
+        responseItemsRef.current.push(item)
+      },
       onReasoning: (text: string) => {
         if (firstTokenAtRef.current === 0) firstTokenAtRef.current = Date.now()
         // Thinking, shown live so a minute of reasoning is not dead air.
@@ -853,7 +858,8 @@ export function useChatLLM({
         run.stepDone({
           text: fullText,
           nativeCalls: finishToolCalls(toolCallsRef.current),
-          thinking: thinkingRef.current.length > 0 ? [...thinkingRef.current] : undefined
+          thinking: thinkingRef.current.length > 0 ? [...thinkingRef.current] : undefined,
+          responseItems: responseItemsRef.current.length > 0 ? [...responseItemsRef.current] : undefined
         })
       },
       onError: (err: Error) => {
@@ -1066,6 +1072,7 @@ export function useChatLLM({
     // Start each step with no leftover tool calls or thinking on screen.
     toolCallsRef.current = new Map()
     thinkingRef.current = []
+    responseItemsRef.current = []
     accumulatedTextRef.current = ''
     progressLineRef.current = null
     reasoningTailRef.current = ''
@@ -1257,6 +1264,7 @@ export function useChatLLM({
       // ones must start empty (or they would be replayed twice).
       toolCallsRef.current = new Map()
       thinkingRef.current = []
+      responseItemsRef.current = []
       s.setStreaming(true)
 
       // Watchdog: if the job is gone or the stream never produces an event,
