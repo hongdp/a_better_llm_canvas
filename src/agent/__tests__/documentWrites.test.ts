@@ -546,6 +546,23 @@ describe('rename_chapter', () => {
     expect([...f.ctx.run.touched.values()].map(t => [t.documentId, t.kind])).toEqual([['doc-2', 'rewrite']])
   })
 
+  it('answers a "create" in disguise with how a chapter is added (replayed 2026-10-06)', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第一章', content: '<p>一</p>' }] })
+    f.ctx.run.writeProtocol = 'markup'
+    const r = await rename(f, { chapter: '人物卡', title: '人物卡' })
+    expect(r).toMatchObject({ ok: false, retryable: true })
+    expect(r.content).toContain('rename_chapter only renames a chapter that exists, and nothing was renamed.')
+    expect(r.content).toContain('No chapter is titled "人物卡"')
+    expect(r.content).toContain('To add a new chapter titled "人物卡", write it: <canvas new_chapter="人物卡">…</canvas>.')
+    expect(f.book()).toHaveLength(2)
+  })
+
+  it('says in its description that it never adds a chapter and whose chapters it may rename', () => {
+    expect(renameChapterTool.description).toContain('It never adds a chapter')
+    expect(renameChapterTool.description).toContain('Rename only a chapter the user asked you to rename, or one you added in this turn')
+    expect(renameChapterTool.description).not.toContain('you created a chapter')
+  })
+
   it('never lets a chapter the run did not create take another\'s place', async () => {
     const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '甲', content: '<p>a</p>' }, { id: 'doc-3', title: '乙', content: '<p>b</p>' }] })
     const r = await rename(f, { chapter: 3, title: '甲', replace: true })

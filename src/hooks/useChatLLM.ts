@@ -36,7 +36,7 @@ import { analyzeInBatches } from '../agent/analyzeBook'
 import { WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
 import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
 import { resolveRunSettings } from '../agent/policy'
-import { createRunState, restoreSeen, type ToolContext } from '../agent/types'
+import { chapterOutline, createRunState, restoreSeen, type ToolContext } from '../agent/types'
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
 import type { AgentTurnRecord } from '../types/chat'
 import type { ThinkingBlock } from '../types/llm'
@@ -734,7 +734,12 @@ export function useChatLLM({
       }
     },
     run: restoreSeen(
-      createRunState({ startId: info.startId, inContext: info.inContextIds, startContent: info.originalDocContent }),
+      createRunState({
+        startId: info.startId,
+        inContext: info.inContextIds,
+        startContent: info.originalDocContent,
+        startOutline: chapterOutline(useAppStore.getState().documents)
+      }),
       info.rejoined?.prior?.seen,
       id => useAppStore.getState().documents.find(d => d.id === id && d.contentLoaded !== false)?.content
     )

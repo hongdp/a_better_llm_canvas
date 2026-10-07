@@ -43,6 +43,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 from urllib.parse import urlparse
 import secrets
@@ -63,6 +64,56 @@ logger = logging.getLogger("web_canvas.generation")
 router = APIRouter()
 
 # ── Retention and limits (spec §4) ────────────────────────────────────────────
+# Problem: a run that looped (grok announced a chapter and called
+#   list_chapters 13 times, 2026-10-06) could not be explained afterwards. The
+#   83 s of reasoning in which it chose that call existed only in the job's
+#   live stream, and a finished job is forgotten after ten minutes.
+# Fix: every finished step is appended to a local journal: its reasoning,
+#   its visible text and its tool calls. One JSON line per step, one file per
+#   day, kept JOURNAL_KEEP_DAYS days, beside the metadata DB (local disk,
+#   git-ignored, like the stories themselves).
+JOURNAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".local_db", "step-journal")
+JOURNAL_KEEP_DAYS = 7
+JOURNAL_MAX_CHARS = 200_000
+_journal_pruned_on: Optional[str] = None
+
+
+def journal_step(job: "GenerationJob") -> None:
+    """Append a finished job to the step journal. Never raises."""
+    global _journal_pruned_on
+    try:
+        os.makedirs(JOURNAL_DIR, exist_ok=True)
+        today = datetime.now().strftime("%Y-%m-%d")
+        if _journal_pruned_on != today:
+            _journal_pruned_on = today
+            cutoff = time.time() - JOURNAL_KEEP_DAYS * 86400
+            for name in os.listdir(JOURNAL_DIR):
+                path = os.path.join(JOURNAL_DIR, name)
+                if name.endswith(".jsonl") and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+        record = {
+            "at": _now_iso(),
+            "job": job.job_id,
+            "kind": job.meta.get("kind"),
+            "message": job.meta.get("assistantMessageId"),
+            "conversation": job.conversation,
+            "model": job.model,
+            "status": job.status,
+            "firstTokenSeconds": round(job.first_delta_latency, 2) if job.first_delta_latency is not None else None,
+            "reasoning": job.reasoning_text,
+            "text": job.buffer[:JOURNAL_MAX_CHARS],
+            "toolCalls": [
+                {"name": call.get("name"), "arguments": (call.get("arguments") or "")[:JOURNAL_MAX_CHARS]}
+                for _, call in sorted(job.tool_calls.items())
+            ],
+            "error": job.error,
+        }
+        with open(os.path.join(JOURNAL_DIR, f"{today}.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:  # the journal must never fail a job
+        logger.warning("Step journal write failed for %s: %s", job.job_id, exc)
+
+
 FINISHED_JOB_TTL_SECONDS = 10 * 60
 # Problem: every finished job expired after ten minutes, read or not. A turn
 #   whose only reader was gone when it finished (phone locked, tab discarded,
@@ -215,6 +266,11 @@ class GenerationJob:
         #: Counted, never buffered — it is not document text and must not move
         #: the replay offsets.
         self.reasoning_chars = 0
+        #: The reasoning text itself, for the step journal only (capped).
+        self.reasoning_text = ""
+        #: Set at start, for the step journal: the cache conversation and model.
+        self.conversation: Optional[str] = None
+        self.model: Optional[str] = None
         self.first_reasoning_latency: Optional[float] = None
         # One queue per attached SSE reader. Everything here runs on the single
         # event loop, so plain set mutation is safe without a lock.
@@ -314,6 +370,8 @@ class GenerationJob:
                 self.job_id, self.first_reasoning_latency,
             )
         self.reasoning_chars += len(text)
+        if len(self.reasoning_text) < JOURNAL_MAX_CHARS:
+            self.reasoning_text += text[: JOURNAL_MAX_CHARS - len(self.reasoning_text)]
         self._publish({"type": "reasoning", "text": text})
 
     def finish(
@@ -351,6 +409,7 @@ class GenerationJob:
             cache_note,
         )
         self.finished_at = _monotonic()
+        journal_step(self)
         self._publish(self.terminal_event())
         return True
 
@@ -1554,6 +1613,8 @@ async def start_generation(request: Request):
 
     job = registry.create(username, meta if isinstance(meta, dict) else {})
     job.input_chars = sum(len(str(m.get("content") or "")) for m in messages if isinstance(m, dict))
+    job.conversation = str(config["conversationId"]) if config.get("conversationId") else None
+    job.model = str(config.get("model") or "") or None
     job.task = asyncio.create_task(run_job(job, provider, config, messages))
     logger.info("Started generation job %s (provider=%s)", job.job_id, provider)
     return {"jobId": job.job_id, "createdAt": job.created_at}

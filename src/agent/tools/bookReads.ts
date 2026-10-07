@@ -10,7 +10,7 @@
  */
 import { defineTool } from '../registry'
 import { citeChapter, resolveChapter, type ResolvedChapter } from '../chapters'
-import type { ToolContext, ToolResult } from '../types'
+import { chapterOutline, type ToolContext, type ToolResult } from '../types'
 import { stripDiffMarkup } from '../../utils/diff'
 import { htmlToPlainText } from '../../utils/llmContext'
 import { hashContent } from '../../utils/contextLedger'
@@ -392,7 +392,11 @@ export const grepTool = defineTool<GrepArgs>({
 export const listChaptersTool = defineTool<Record<string, never>>({
   name: 'list_chapters',
   description:
-    'The current list of chapters with their numbers, sizes and summaries. The CHAPTER INDEX in the request already has this as of the start of the turn; call this only after creating chapters, or when you need sizes.',
+    // Problem: "call this only after creating chapters" read, once creating
+    //   became writing, as a step of creating one. grok announced a new
+    //   chapter and called this 13 times instead of writing it (2026-10-06).
+    'The current list of chapters with their numbers, sizes and summaries. The CHAPTER INDEX in the request already has this as of the start of the turn; call this only when chapters were added, removed or renamed during the turn, or when you need their sizes. ' +
+    'It changes nothing in the book: a new chapter is added by writing it (new_chapter).',
   parameters: { type: 'object', properties: {} },
   kind: 'read',
   isAvailable: () => true,
@@ -410,7 +414,27 @@ export const listChaptersTool = defineTool<Record<string, never>>({
       const summary = c.summary?.trim() ? ` — ${c.summary.trim().replace(/\s+/g, ' ').slice(0, 200)}` : ''
       return `${i + 1}. "${c.title}" (${paras} paragraphs, ${chars} chars${marks.length ? `; ${marks.join('; ')}` : ''})${summary}`
     })
-    return { ok: true, content: lines.join('\n'), trace: '📚 list chapters' }
+    const list = lines.join('\n')
+    /*
+     * Problem: the list was right and told the model nothing. grok announced
+     *   "人物卡单独成章" and called this 13 times (2026-10-06), getting the
+     *   same nine lines every time — the CHAPTER INDEX it already had, plus
+     *   sizes — with nothing saying that no chapter had been added, or that
+     *   none would be until it wrote one.
+     * Fix: say what the list means for the turn: whether anything changed
+     *   since it began, and since the last list.
+     */
+    const notes: string[] = []
+    if (ctx.run.lastList === list) notes.push('This is identical to your previous list_chapters result: nothing has changed since then.')
+    if (ctx.run.startOutline !== undefined && ctx.run.startOutline === chapterOutline(ctx.document.chapters())) {
+      const write = ctx.run.writeProtocol === 'markup'
+        ? '<canvas new_chapter="its title">…</canvas>'
+        : 'update_document with new_chapter'
+      notes.push(`No chapter has been added, removed or renamed in this turn: this is the CHAPTER INDEX of your request, with sizes. ` +
+        `Listing changes nothing in the book. A new chapter appears here only after you write it, with ${write}.`)
+    }
+    ctx.run.lastList = list
+    return { ok: true, content: notes.length > 0 ? `${list}\n\n${notes.join('\n')}` : list, trace: '📚 list chapters' }
   }
 })
 

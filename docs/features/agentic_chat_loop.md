@@ -197,7 +197,11 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   for confirmation yet (`approval`, phase 3), so the tool says to ask the
   user. The result tells the model the chapters after it moved up.
 - **Renaming, and undoing a wrongly titled new chapter** (user request,
-  2026-10-06). `rename_chapter` renames any chapter. Its result says when the
+  2026-10-06). `rename_chapter` renames an existing chapter. Its description
+  says to rename only what the user asked for, or a chapter added this turn,
+  and that it never adds a chapter. A rename of a chapter that does not exist
+  answers with how a chapter is added (`new_chapter`), because it is most
+  often a "create" in disguise (see "Why a run loops" below). Its result says when the
   chapter's first heading still reads the old title. A title another chapter
   has is refused.
   - With `replace=true`, a chapter this run created gives its text to the
@@ -211,6 +215,34 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
     the book, and a chapter with text is the user's to delete.
   - Only a chapter the run created may take another's place. Its text is the
     model's own, so a rejected review loses nothing of the user's.
+- **Why a run loops, measured** (2026-10-06). grok announced
+  "人物卡单独成章" and called `list_chapters` 13 times, getting the same list
+  each time, until the user pressed Stop. The run was replayed against grok
+  from the app's own code on the book's real data: the first four steps were
+  reproduced byte for byte, then each case was sampled three times.
+  - The `list_chapters` description ("call this only after creating
+    chapters") was not the trigger. At the deciding step, neither the old nor
+    the new description led to it (0/6). The model wanted to read chapter 1
+    first (5/6), the only chapter it had not read.
+  - The mechanism is steps without reasoning. After a tool result grok often
+    reasons 0 tokens (5 of 6 replays of the next step; every step of the real
+    loop after the first). The plan from the step before is not carried over,
+    because Chat Completions cannot send reasoning back. Wanting to "create
+    the card chapter", the model reaches for a call that sounds like it:
+    `list_chapters` in the real run, and `rename_chapter("人物卡" → "人物卡")`
+    twice in the replays. Twice more it renamed the user's chapters, unasked.
+    Only one no-reasoning reply wrote `<canvas new_chapter>`.
+  - Each misused tool answered with a plain chapter list, so the next
+    no-reasoning step had nothing new and repeated itself.
+  - So the tools a "create" lands on now say how a chapter is added
+    (`list_chapters` when nothing changed, `rename_chapter` of a missing
+    chapter), and `rename_chapter` says whose chapters it may rename. Run
+    steps are not stopped or refused: the user chose to fix causes, not cap
+    loops. Carrying reasoning across steps (xAI Responses API, encrypted
+    reasoning) is the structural fix, and is not built.
+  - Every finished step's reasoning, text and tool calls now go to
+    `.local_db/step-journal/<date>.jsonl` (kept 7 days, `journal_step`), so
+    the next case is read, not reconstructed.
 - **Creating and rewriting answer differently.** A new chapter's result
   says "Created a NEW chapter … at the end of the book" with the book's new
   chapter count. When another chapter's title looks like it (the same
@@ -1376,12 +1408,12 @@ interface AgentTouchedChapter {
 | `update_document` | write | markup `<canvas chapter="…">` | optional `chapter` (D2); guards: truncation, elision, image reinsertion; seen-content rule when the chapter has content |
 | `edit_document` | write | markup `<edit chapter="…">` | optional `chapter` (D2); seen-content rule; failures fed back (§5.3) |
 | `replace_selection` | write | markup `<selection_replace>` | always the chapter the selection was made in; once per run |
-| `list_chapters` | read | native | index + summaries + char counts. Cheap; the volatile tail already has the index, so this mostly serves long books whose index is digested |
+| `list_chapters` | read | native | index + summaries + char counts. Cheap; the volatile tail already has the index, so this mostly serves long books whose index is digested. Its result says when no chapter was added, removed or renamed in the turn (it is then the request's CHAPTER INDEX, with sizes), how a chapter is added, and when it is identical to the previous list: grok announced a chapter and listed 13 times, getting the same nine lines with nothing saying none had been added (2026-10-06) |
 | `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-" \| "-15"}` ("-15" is the first 15: grok asked that way and was refused, 2026-10-06). Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant in the first two steps; a range read never is. A repeat of the same read is refused only within one step of the first |
 | `grep` | read | native | regex over every chapter's text, or only those named (lazy contents loaded first). Output "snippets" (chapter, offset, context) or "chapters" (counts). A broken regex is searched literally. Its trace names the scope ("in the whole book" or "in #13"); "→ 30 in 1 chapter(s)" without it read as "grep only searches one chapter". Chapters whose text could not be loaded are listed as not searched, not reported as having no match. Replaced `search_book` (user request, 2026-10-06): grep is the search interface models already know |
 | `open_chapter` | navigate | native | ONLY to show the user a chapter (`setActiveDocumentId`); writing never needs it (D2). Says "already open" when it is. Refused while a selection rewrite is pending |
 | `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one; anything with text is refused ("ask the user"). Runs last in its reply; reports the renumbering (§0.4) |
-| `rename_chapter` | write | native (no tag form) | `{chapter, title, replace?}`. Renames; a taken title is refused. `replace=true` moves a chapter created this run into the one with that title (in place, reviewable) and removes it (§0). Runs last in its reply |
+| `rename_chapter` | write | native (no tag form) | `{chapter, title, replace?}`. Renames an existing chapter (only what the user asked for, or one added this turn); a taken title is refused; a missing chapter is answered with how one is added. `replace=true` moves a chapter created this run into the one with that title (in place, reviewable) and removes it (§0). Runs last in its reply |
 | `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
 | `analyze_book` | read | native | D7. Notes from reading the whole book (or the chapters named) in batches, one model call per batch, for a task that needs all of it at once. Batches are packed by `WHOLE_BOOK_CONTEXT_CHARS` per provider. Stop ends it between batches, keeping the notes so far. Replaced the whole-book toggle and its consent card |
 

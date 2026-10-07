@@ -117,7 +117,9 @@ server's own output (including `web_canvas.*` log lines — job starts,
 time-to-first-token, per-job summaries with prompt-cache hits, and a
 `prefix:` line saying where a request departs from the conversation's
 previous one) goes to **`api-server.log`**. Grepping
-`app.log` for API behavior finds nothing.
+`app.log` for API behavior finds nothing. Every finished step's reasoning,
+visible text and tool calls go to **`.local_db/step-journal/<date>.jsonl`**
+(kept 7 days): read it to learn WHY a run did something, instead of guessing.
 
 **Vite does not watch `.claude/`** (`server.watch.ignored`): agent worktrees
 live there, and their builds used to reload the open app mid-turn. Keep it so.
