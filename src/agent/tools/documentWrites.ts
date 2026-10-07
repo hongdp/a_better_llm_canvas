@@ -119,11 +119,6 @@ export function similarChapters(title: string, excludeId: string, chapters: Arra
   return out.slice(0, 3)
 }
 
-/** How to write a whole existing chapter, in the form this model uses. */
-const fullWrite = (ctx: ToolContext, number: number) => ctx.run.writeProtocol === 'markup'
-  ? `<canvas chapter="${number}">…</canvas>`
-  : `update_document with chapter="${number}"`
-
 /** Open a chapter the run is about to write into — unless the user is elsewhere. */
 function openForWriting(ctx: ToolContext, id: string): void {
   // Not while a selection rewrite is pending: the selection lives in the
@@ -148,20 +143,25 @@ function openForWriting(ctx: ToolContext, id: string): void {
  *   preview runs in it. Every later sight in the run (each chunk's preview,
  *   the write, a retry) finds the same chapter.
  *
- * A chapter of that title the run did not create is written only if it is
- * empty (the user made it to be filled, or a reload restarted the run after
- * the preview created it). One with text is refused: rewriting it is a
- * write to its number.
+ * A chapter of that title the run did not create is never duplicated. An
+ * empty one is filled (the user made it to be filled, or a reload restarted
+ * the run after the preview created it). One with text is rewritten: the
+ * model named it exactly, and that is the chapter it means.
+ *   Problem: refusing it threw the whole reply away. Measured 2026-10-06:
+ *     asked to expand chapter 2, grok called create_chapter("第二章 …") on
+ *     the chapter it was expanding. With create_chapter that cost one
+ *     refused call; with new_chapter the same mistake would have discarded
+ *     a 4,362-character rewrite, and the model writes it all again.
+ *   Fix: write it as the rewrite it is, under every rule a rewrite has (the
+ *     seen-content rule, the user-edit rule, a reviewable diff, a snapshot),
+ *     and say so in the result: no chapter was added.
  */
 function claimNewChapter(title: string, ctx: ToolContext): Target | string {
   const chapters = ctx.document.chapters()
   const index = chapters.findIndex(c => titleKey(c.title) === titleKey(title))
   if (index !== -1) {
     const chapter = chapters[index]
-    if (!ctx.run.created.has(chapter.id)) {
-      if (chapter.loaded === false || !isBlankContent(chapter.content)) {
-        return `A chapter titled "${chapter.title}" already exists as #${index + 1}. To rewrite it, write to it by number: ${fullWrite(ctx, index + 1)}.`
-      }
+    if (!ctx.run.created.has(chapter.id) && chapter.loaded !== false && isBlankContent(chapter.content)) {
       // Empty: nothing to read before writing, nothing to lose.
       ctx.run.htmlShown.add(chapter.id)
       ctx.run.inContext.add(chapter.id)
@@ -436,7 +436,19 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
         return { ok: false, retryable: false, content: `${citeChapter(target)} has a selection rewrite in this turn; a full rewrite would overwrite it.`, trace: '⚠️ rewrite skipped: it would overwrite the selection rewrite' }
       }
       const st = docState(ctx, target)
-      if (!ctx.run.htmlShown.has(target.id) && !isBlankContent(st.html)) return unseen(target)
+      if (!ctx.run.htmlShown.has(target.id) && !isBlankContent(st.html)) {
+        if (isNewChapterRef(chapter)) {
+          // A rewrite of text the model never saw could destroy the user's.
+          return {
+            ok: false,
+            retryable: true,
+            content: `A chapter titled "${target.title}" already exists as #${target.number} and has text you have not read in this turn, so it was NOT overwritten and no chapter was added. ` +
+              `To rewrite it, read it first (read_chapter with chapters=[${target.number}]); to add a new chapter, give it a title no chapter has.`,
+            trace: `⛔ new_chapter "${target.title}" is #${target.number}, not read — not overwritten`
+          }
+        }
+        return unseen(target)
+      }
 
       // Guard the destructive full-document replacement: a response that was
       // cut off, or that abbreviates unchanged regions with placeholders,
@@ -493,7 +505,10 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
       }
       return {
         ok: true,
-        content: `Rewrote the EXISTING chapter ${citeChapter(target)}: it had ${charsBefore} characters and now has ${chars}. No chapter was added.`,
+        content: (isNewChapterRef(chapter)
+          ? `A chapter titled "${target.title}" already existed as #${target.number}, so your new_chapter text rewrote it. `
+          : '') +
+          `Rewrote the EXISTING chapter ${citeChapter(target)}: it had ${charsBefore} characters and now has ${chars}. No chapter was added.`,
         trace: `✏️ rewrote ${citeChapter(target)} (${chars} chars)`,
         effects: { reinsertedImages: reinserted }
       }

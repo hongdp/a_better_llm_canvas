@@ -21,6 +21,15 @@ export default defineConfig({
   server: {
     host: true,
     port: 5173,
+    // Problem: agent worktrees live inside the project (.claude/worktrees),
+    //   so this server watched them. Every `vite build` there wrote a
+    //   dist/index.html, and each one fully reloaded the open app — 91 times
+    //   in one night (vite-server.log, 2026-10-06), ending any chat turn that
+    //   was running at the time.
+    // Fix: never watch .claude; nothing the app serves lives there.
+    watch: {
+      ignored: ['**/.claude/**']
+    },
     https: {
       key: readFileSync(certPath('dev-key.pem')),
       cert: readFileSync(certPath('dev-cert.pem')),

@@ -124,9 +124,16 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
     (105–158 s to the first token, measured), and grok's reasoning does not
     carry to the next call. So the writing step planned again (up to 33 s),
     or claimed the chapter was written and wrote nothing.
-  - A title already taken by a chapter with text is refused, with the write
-    that rewrites it. An empty chapter of that title (titles compared
-    ignoring whitespace) is filled instead of duplicated.
+  - A title that an existing chapter already has (titles compared ignoring
+    whitespace) never creates a duplicate. An empty chapter is filled. A
+    chapter with text is rewritten as an ordinary rewrite if the model has
+    read it this run: reviewable, snapshot first, and the result says no
+    chapter was added. If the model has not read it, the write is refused
+    and the chapter is not overwritten.
+    - Why not refuse it outright, as at first: measured 2026-10-06, asked to
+      expand chapter 2, grok "created" the chapter it was expanding. With
+      `create_chapter` that cost one refused call. With `new_chapter` a
+      refusal would throw away the whole rewrite (4,362 characters there).
   - A chapter created for a write that never landed (cut off, refused) is
     removed when the run ends; on Stop it is left, with its draft.
 - **Live preview, routed by target.**

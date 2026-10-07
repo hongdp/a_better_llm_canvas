@@ -119,6 +119,9 @@ time-to-first-token, per-job summaries with prompt-cache hits, and a
 previous one) goes to **`api-server.log`**. Grepping
 `app.log` for API behavior finds nothing.
 
+**Vite does not watch `.claude/`** (`server.watch.ignored`): agent worktrees
+live there, and their builds used to reload the open app mid-turn. Keep it so.
+
 **Editing `scripts/*.py` requires restarting the API server** — Vite hot-reloads
 the frontend, the Python process does not reload itself. A backend running code
 from before your change looks exactly like a code defect, and cost three
