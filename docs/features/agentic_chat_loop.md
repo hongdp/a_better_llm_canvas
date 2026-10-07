@@ -304,7 +304,27 @@ A request is laid out cache-first (cache_first_context.md):
 How the context behaves:
 - **Within a run, nothing already sent is rebuilt**, so every follow-up step
   is an exact-prefix cache hit on grok. Tool-call arguments, Anthropic
-  thinking blocks and Gemini thought signatures are replayed byte-exact.
+  thinking blocks, Gemini thought signatures and grok's output items are
+  replayed byte-exact.
+- **grok keeps its reasoning from step to step** (2026-10-07). grok goes over
+  the xAI Responses API instead of Chat Completions, which xAI lists as
+  deprecated and which has no field for reasoning.
+  - Each step's output items come back verbatim and the next step sends them
+    back unchanged (`LLMMessage.responseItems`, `response_item` job events):
+    the reasoning item with its `encrypted_content`, the message, and the
+    function calls.
+  - The request sets `store: false` and asks for the ciphertext explicitly,
+    so nothing of the book is kept on xAI's side.
+  - Why: a step's plan was lost at the next step. grok planned for 83 s,
+    called a tool, then looped with 0 reasoning tokens on its own one-line
+    announcement (see "Why a run loops"). xAI also names omitted reasoning
+    the top cause of prompt-cache misses.
+  - Live check: a second step carrying the first's reasoning was accepted,
+    with 92% of its prompt cached.
+  - Across turns nothing changes: history still carries each turn's text,
+    not its steps (D4). Keeping reasoning across turns is a separate
+    decision, pending measured sizes (one step's reasoning was 1–3k tokens in
+    the replays).
 - **The model chooses what to read** from the index (D6); the user steers it
   in the conversation (D7). A chapter the model read is carried into the
   next turn's ledger (`modelReadIds`, score 60).
@@ -423,8 +443,9 @@ How the context behaves:
   (`src/agent/freshness.ts`). The "changed this turn" block and the step
   trace (`AgentTurnSummary.tsx`). Settings `agentTools`, `agentMaxSteps`
   (0 = unlimited) and `continueAfterWrites`, per provider.
-- Anthropic thinking blocks and Gemini `thoughtSignature` are captured and
-  replayed byte-exact in both transports. Parallel Gemini calls now get one
+- Anthropic thinking blocks, Gemini `thoughtSignature` and (since
+  2026-10-07) grok's Responses output items are captured and replayed
+  byte-exact in both transports. Parallel Gemini calls now get one
   index each.
 - Found while testing: a chapter the model read scored only 30 (continuity),
   under the 40 threshold, so D4's "the ledger carries it next turn" did not

@@ -335,3 +335,23 @@ describe('a chapter created for a write that never landed', () => {
     expect(h.fake.removed).toEqual([])
   })
 })
+
+// grok over the xAI Responses API: a step's reasoning must reach the next
+// step, or the model plans again from its one-line announcement (2026-10-06).
+describe('a step\'s output items (grok reasoning) go back with it', () => {
+  const ITEMS = [{ type: 'reasoning', id: 'rs_1', encrypted_content: 'CIPHER==' }, { type: 'function_call', call_id: 'r', name: 'read_chapter', arguments: '{"chapter":"1"}' }]
+
+  it('on the assistant message the next request carries', async () => {
+    const h = harness({ writeProtocol: 'tools', replies: [{ ...calls('', ['r', 'read_chapter', '{"chapter":"1"}']), responseItems: ITEMS }, text('done')] })
+    await h.run.start()
+    const assistant = h.requests[1].find(m => m.role === 'assistant')
+    expect(assistant?.responseItems).toEqual(ITEMS)
+  })
+
+  it('also on a reply sent back for a corrective retry', async () => {
+    const h = harness({ writeProtocol: 'markup', replies: [{ text: '我改好了。', nativeCalls: [], responseItems: ITEMS }, text('好了。\n<doc_status>unchanged</doc_status>')] })
+    await h.run.start()
+    expect(h.corrective).toHaveLength(1)
+    expect(h.requests[1].find(m => m.role === 'assistant')?.responseItems).toEqual(ITEMS)
+  })
+})

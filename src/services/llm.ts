@@ -1,7 +1,7 @@
 import type { ProviderConfig, LLMMessage, StreamCallbacks, ThinkingBlock } from '../types/llm'
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
 import { fromOpenAITools, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
-import { toOpenAIMessages, toAnthropicMessages, toGeminiContents } from './providerMessages'
+import { toGrokResponsesInput, toResponsesTools, toOpenAIMessages, toAnthropicMessages, toGeminiContents } from './providerMessages'
 
 /**
  * A base URL typed with a trailing slash is normal; the resulting `//path`
@@ -105,7 +105,9 @@ export async function streamLLM(
       }
     }
 
-    if (provider === 'openai' || provider === 'ollama' || provider === 'runpod' || provider === 'grok') {
+    if (provider === 'grok') {
+      await streamGrokResponses(messages, config, debugCallbacks)
+    } else if (provider === 'openai' || provider === 'ollama' || provider === 'runpod') {
       await streamOpenAI(messages, config, debugCallbacks)
     } else if (provider === 'gemini') {
       await streamGemini(messages, config, debugCallbacks)
@@ -224,6 +226,125 @@ async function streamOpenAI(
       console.warn('Failed to parse OpenAI SSE chunk', e, dataString)
     }
   }, callbacks, config.signal)
+}
+
+/**
+ * grok over the xAI Responses API — the direct-transport twin of
+ * server_generation._stream_grok_responses (see there for why). Each step's
+ * output items come back through onResponseItem and go into the next step's
+ * input unchanged (providerMessages.toGrokResponsesInput).
+ */
+async function streamGrokResponses(
+  messages: LLMMessage[],
+  config: ProviderConfig & { provider?: string; debug?: boolean; signal?: AbortSignal; conversationId?: string },
+  callbacks: StreamCallbacks
+): Promise<void> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (config.apiKey) headers['Authorization'] = `Bearer ${config.apiKey}`
+  if (config.conversationId) headers['x-grok-conv-id'] = config.conversationId
+
+  const url = `${trimBaseUrl(config.baseUrl)}/responses`
+  const body: Record<string, unknown> = {
+    model: config.model,
+    input: toGrokResponsesInput(messages),
+    stream: true,
+    // Nothing kept on xAI's side: the reasoning comes back to us instead.
+    store: false,
+    include: ['reasoning.encrypted_content']
+  }
+  if (config.maxOutputTokens) body['max_output_tokens'] = config.maxOutputTokens
+  const effort = resolveReasoningEffort('grok', config.model, config.reasoningEffort)
+  if (effort) body['reasoning'] = { effort }
+  if (config.conversationId) body['prompt_cache_key'] = config.conversationId
+  if (config.tools?.length) {
+    body['tools'] = toResponsesTools(config.tools)
+    if (config.toolChoice === 'none') body['tool_choice'] = 'none'
+  }
+
+  if (config.debug) {
+    console.log('[DEBUG] Outgoing xAI Responses Request:', maskRequestDetails(url, headers, body))
+  }
+  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: config.signal })
+  if (!response.ok) {
+    const errText = await response.text()
+    throw new Error(`xAI API error (${response.status}): ${errText || response.statusText}`)
+  }
+
+  let fullText = ''
+  let usage: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number } | undefined
+  let failure: string | null = null
+  try {
+    await readSSEDataLines(response, (data) => {
+      if (!data || data === '[DONE]') return
+      let event: {
+        type?: string
+        delta?: string
+        output_index?: number
+        item?: { type?: string; call_id?: string; name?: string; arguments?: string }
+        response?: { usage?: { input_tokens?: number; output_tokens?: number; input_tokens_details?: { cached_tokens?: number } }; error?: { message?: string } }
+        message?: string
+      }
+      try {
+        event = JSON.parse(data)
+      } catch (e) {
+        console.warn('Failed to parse xAI Responses SSE chunk', e, data)
+        return
+      }
+      const index = typeof event.output_index === 'number' ? event.output_index : 0
+      switch (event.type) {
+        case 'response.output_text.delta':
+          if (event.delta) {
+            fullText += event.delta
+            callbacks.onChunk(event.delta)
+          }
+          break
+        case 'response.reasoning_summary_text.delta':
+          if (event.delta) callbacks.onReasoning?.(event.delta)
+          break
+        case 'response.output_item.added':
+          if (event.item?.type === 'function_call') {
+            callbacks.onToolCallDelta?.({ index, id: event.item.call_id, name: event.item.name, argumentsText: event.item.arguments ?? '' })
+          }
+          break
+        case 'response.function_call_arguments.delta':
+          callbacks.onToolCallDelta?.({ index, argumentsText: event.delta ?? '' })
+          break
+        case 'response.output_item.done':
+          if (event.item && typeof event.item === 'object') {
+            if (event.item.type === 'function_call' && typeof event.item.arguments === 'string') {
+              // The whole call, in case the deltas fell short of it.
+              callbacks.onToolCallDelta?.({ index, id: event.item.call_id, name: event.item.name, argumentsText: event.item.arguments, replace: true })
+            }
+            callbacks.onResponseItem?.(event.item)
+          }
+          break
+        case 'response.completed':
+        case 'response.incomplete': {
+          const u = event.response?.usage
+          if (u) {
+            usage = {
+              promptTokens: u.input_tokens ?? 0,
+              completionTokens: u.output_tokens ?? 0,
+              cachedPromptTokens: u.input_tokens_details?.cached_tokens ?? 0
+            }
+          }
+          break
+        }
+        case 'response.failed':
+        case 'error':
+          failure = event.response?.error?.message || event.message || 'response failed'
+          break
+      }
+    }, config.signal)
+  } catch (error) {
+    callbacks.onError(error instanceof Error ? error : new Error(String(error)))
+    return
+  }
+  if (failure) {
+    callbacks.onError(new Error(`xAI API error: ${failure}`))
+    return
+  }
+  callbacks.onDone(fullText, usage)
 }
 
 /**

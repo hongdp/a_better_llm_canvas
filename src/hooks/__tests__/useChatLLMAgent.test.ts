@@ -15,6 +15,8 @@ type Scripted = string | {
   /** Deliver `text` in these pieces instead of one chunk (they must join to `text`). */
   chunks?: string[]
   toolCalls?: ToolDelta[]
+  /** grok's output items (xAI Responses API), delivered before the step ends. */
+  responseItems?: unknown[]
   /** Runs after the text streamed, before the step ends (the user acting mid-turn). */
   between?: () => void
   /** End the step with this error instead of completing it. */
@@ -33,6 +35,7 @@ vi.mock('../../services/llm', () => ({
       onDone: (t: string, u?: { promptTokens: number; completionTokens: number }) => void
       onError: (e: Error) => void
       onToolCallDelta?: (d: ToolDelta) => void
+      onResponseItem?: (item: unknown) => void
     }
   ) => {
     calls.push(messages)
@@ -45,6 +48,7 @@ vi.mock('../../services/llm', () => ({
       callbacks.onToolCallDelta?.(d)
       vi.setSystemTime(Date.now() + 300)
     }
+    for (const item of ('responseItems' in r && r.responseItems) || []) callbacks.onResponseItem?.(item)
     if ('between' in r) r.between?.()
     if ('error' in r && r.error) {
       callbacks.onError(r.error)
@@ -647,6 +651,26 @@ describe('editing other chapters while the assistant writes (§0.4)', () => {
     // Created and written, but the view stays where the user put it.
     expect(useAppStore.getState().activeDocumentId).toBe('doc-2')
     expect(stripDiffMarkup(useAppStore.getState().documents[3].content)).toBe('<p>第一章正文。</p>')
+    h.unmount()
+  })
+})
+
+describe('grok keeps its reasoning from step to step (xAI Responses API)', () => {
+  it('sends each step\'s output items back on its assistant message in the next request', async () => {
+    const ITEMS = [
+      { type: 'reasoning', id: 'rs_1', summary: [], encrypted_content: 'CIPHER==' },
+      { type: 'function_call', call_id: 'r1', name: 'read_chapter', arguments: '{"chapters":[3]}' }
+    ]
+    responses.push({ text: '', toolCalls: [{ index: 0, id: 'r1', name: 'read_chapter', argumentsText: '{"chapters":[3]}' }], responseItems: ITEMS })
+    responses.push('读完了。\n<doc_status>unchanged</doc_status>')
+    const h = renderChatHook()
+    await send(h, '读大纲')
+
+    expect(calls).toHaveLength(2)
+    // The step's own reply: the last assistant message (history comes first).
+    const assistant = calls[1].filter(m => m.role === 'assistant').at(-1)
+    expect(assistant?.responseItems).toEqual(ITEMS)
+    expect(assistant?.toolCalls?.[0]).toMatchObject({ id: 'r1', name: 'read_chapter' })
     h.unmount()
   })
 })

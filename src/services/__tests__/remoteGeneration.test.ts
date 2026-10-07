@@ -829,6 +829,35 @@ describe('reasoning artifacts over the backend transport', () => {
     expect(rec.blocks).toEqual([THINKING, REDACTED])
   })
 
+  it('hands grok\'s output items to onResponseItem, once each across a mid-turn reconnect', async () => {
+    const R1 = { type: 'reasoning', id: 'rs_1', encrypted_content: 'CIPHER==' }
+    const R2 = { type: 'function_call', call_id: 'c', name: 'grep', arguments: '{}' }
+    const streamCalls: string[] = []
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-items' }) : undefined,
+      url => {
+        if (!url.includes('/stream')) return undefined
+        streamCalls.push(url)
+        return streamCalls.length === 1
+          ? streamingResponse(sse([{ type: 'response_item', index: 0, item: R1 }]))   // cut off
+          : streamingResponse(sse([
+              { type: 'response_item', index: 0, item: R1 },   // replay
+              { type: 'response_item', index: 1, item: R2 },   // new
+              { type: 'done', offset: 0 }
+            ]))
+      }
+    ]
+    const rec = artifactRecorder()
+    const items: unknown[] = []
+    rec.callbacks.onResponseItem = item => items.push(item)
+
+    await startRemoteGeneration(messages, { ...config, provider: 'grok' }, {}, rec.callbacks)
+
+    expect(streamCalls).toHaveLength(2)
+    expect(rec.errors).toEqual([])
+    expect(items).toEqual([R1, R2])
+  })
+
   it('gives a fresh resume every block from the start', async () => {
     routes = [
       url => url.includes('/api/generate/gen-resume/stream')

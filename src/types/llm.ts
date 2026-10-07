@@ -107,6 +107,14 @@ export interface LLMMessage {
    * order. Replayed BEFORE the text and tool_use blocks (providerMessages).
    */
   thinking?: ThinkingBlock[]
+  /**
+   * Assistant only, grok (xAI Responses API): this reply's output items
+   * exactly as returned — reasoning (with its encrypted_content), message,
+   * function_call — in order. The next step of the same turn sends them back
+   * unchanged, so the model keeps its reasoning (providerMessages
+   * toGrokResponsesInput). Opaque: never inspect or rebuild them.
+   */
+  responseItems?: unknown[]
   images?: string[] // base64 Data URLs
   /**
    * Marks the end of a stable prompt prefix for providers with explicit
@@ -164,6 +172,12 @@ export interface StreamCallbacks {
    * a fresh resume of a remote job replays every block from the start.
    */
   onThinkingBlock?: (block: ThinkingBlock) => void
+  /**
+   * One COMPLETED grok output item (xAI Responses API), in stream order —
+   * keep them for the next step (LLMMessage.responseItems). Delivered once
+   * per attach, like thinking blocks.
+   */
+  onResponseItem?: (item: unknown) => void
 }
 
 export type ImageGenProvider = 'openai' | 'gemini' | 'stabilityai' | 'grok'

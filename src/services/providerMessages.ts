@@ -20,7 +20,12 @@
  *   `thoughtSignature`, which must go back on that same part; Gemini 3 rejects
  *   a step whose first call lacks it
  *   (ai.google.dev/gemini-api/docs/generate-content/thought-signatures).
- * OpenAI / xAI have no equivalent, so their shape is unchanged.
+ * - grok (xAI Responses API): each reply's output items — reasoning with its
+ *   `encrypted_content`, message, function_call — go back unchanged in the
+ *   next step's `input`, so the model keeps its reasoning; xAI also counts
+ *   omitted reasoning as the top cause of prompt-cache misses
+ *   (docs.x.ai, Reasoning → Encrypted Reasoning Content).
+ * OpenAI Chat Completions has no equivalent, so its shape is unchanged.
  */
 import type { LLMMessage, ThinkingBlock } from '../types/llm'
 
@@ -66,6 +71,65 @@ export function toOpenAIMessages(messages: LLMMessage[]): unknown[] {
       return { role: m.role, content: parts }
     }
     return { role: m.role, content: m.content }
+  })
+}
+
+// ── grok: xAI Responses API ─────────────────────────────────────────────────
+
+/** An assistant message's grok output items, verbatim (mirrors server_generation._response_items). */
+function responseItemsOf(m: LLMMessage): unknown[] {
+  if (m.role !== 'assistant' || !Array.isArray(m.responseItems)) return []
+  return m.responseItems.filter(item =>
+    !!item && typeof item === 'object' && typeof (item as { type?: unknown }).type === 'string')
+}
+
+/**
+ * History → xAI Responses `input` (mirrors server_generation.build_grok_responses_request).
+ * An assistant reply that carries its output items is sent as those items,
+ * unchanged; one without (an earlier turn's text) is rebuilt from its text
+ * and calls. Tool results answer their call by `call_id`.
+ */
+export function toGrokResponsesInput(messages: LLMMessage[]): unknown[] {
+  const items: unknown[] = []
+  for (const m of messages) {
+    if (m.role === 'tool') {
+      items.push({ type: 'function_call_output', call_id: m.toolCallId ?? '', output: m.content })
+      continue
+    }
+    if (m.role === 'assistant') {
+      const replay = responseItemsOf(m)
+      if (replay.length > 0) {
+        items.push(...replay)
+        continue
+      }
+      const calls = m.toolCalls ?? []
+      if (m.content || calls.length === 0) items.push({ role: 'assistant', content: m.content })
+      for (const call of calls) {
+        // Byte-for-byte as received: see LLMToolCall.argumentsText.
+        items.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.argumentsText })
+      }
+      continue
+    }
+    if (m.images && m.images.length > 0) {
+      const parts: unknown[] = [{ type: 'input_text', text: m.content }]
+      m.images.forEach((img, idx) => {
+        parts.push({ type: 'input_text', text: `\n[Image ${idx + 1}]:` })
+        parts.push({ type: 'input_image', image_url: img })
+      })
+      items.push({ role: m.role, content: parts })
+      continue
+    }
+    items.push({ role: m.role, content: m.content })
+  }
+  return items
+}
+
+/** OpenAI-shaped tools (`{type, function: {...}}`) → the Responses API's flat shape. */
+export function toResponsesTools(tools: unknown[]): unknown[] {
+  return tools.flatMap(t => {
+    const fn = (t as { function?: { name?: unknown; description?: unknown; parameters?: unknown } })?.function
+    if (!fn || typeof fn.name !== 'string' || !fn.parameters || typeof fn.parameters !== 'object') return []
+    return [{ type: 'function', name: fn.name, description: typeof fn.description === 'string' ? fn.description : '', parameters: fn.parameters }]
   })
 }
 
