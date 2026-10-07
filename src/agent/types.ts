@@ -238,14 +238,27 @@ export interface RunState {
   reads: Map<string, number>
   /** What each chapter received this run — the bubble's "changed this turn" rows. */
   touched: Map<string, AgentTouchedChapter>
+  /**
+   * The book's chapters (ids and titles, in order) when the run began, so
+   * list_chapters can say whether any were added, removed or renamed since.
+   */
+  startOutline?: string
+  /** The last list_chapters result of this run, to say when nothing changed since. */
+  lastList?: string
   /** A selection rewrite was executed this run (placed or not). */
   selectionAttempted: boolean
   /** …and it landed. Edits beside it then apply locally around it. */
   selectionApplied: boolean
 }
 
-export function createRunState(init: { startId: string; inContext?: Iterable<string>; startContent?: string }): RunState {
+/** A book's chapter list as a comparable string: ids and titles, in order. */
+export function chapterOutline(chapters: Array<{ id: string; title: string }>): string {
+  return chapters.map(c => `${c.id}\u0000${c.title}`).join('\u0001')
+}
+
+export function createRunState(init: { startId: string; inContext?: Iterable<string>; startContent?: string; startOutline?: string }): RunState {
   return {
+    ...(init.startOutline !== undefined ? { startOutline: init.startOutline } : {}),
     step: 0,
     docs: new Map(),
     known: new Map(init.startContent === undefined ? [] : [[init.startId, init.startContent]]),

@@ -727,15 +727,21 @@ export const DOCUMENT_WRITE_TOOLS = [updateDocumentTool, editDocumentTool, repla
  */
 export const renameChapterTool = defineTool<{ chapter: unknown; title: string; replace: boolean }>({
   name: 'rename_chapter',
+  // Problem: replayed 2026-10-06, grok with no reasoning wanted to "create"
+  //   a character-card chapter and called rename_chapter("人物卡" → "人物卡")
+  //   twice in six tries — "you created a chapter" in this description read
+  //   as creating — and twice renamed the user's chapters, unasked.
+  // Fix: say what it is for and that it never adds a chapter; the replace
+  //   case is described on its own parameter.
   description:
-    'Rename a chapter. If another chapter already has that title — typically you created a chapter under a slightly different title when you meant to rewrite that one — ' +
-    'set replace=true: the chapter you created this turn gives its text to the one with that title (in place, as a change the user reviews) and is removed. Nothing needs to be written again.',
+    'Rename an existing chapter. Rename only a chapter the user asked you to rename, or one you added in this turn. ' +
+    'It never adds a chapter: a new chapter is added by writing it (new_chapter).',
   parameters: {
     type: 'object',
     properties: {
       chapter: { type: 'string', description: 'The chapter to rename: its number in the CHAPTER INDEX, or its exact title.' },
       title: { type: 'string', description: 'The new title.' },
-      replace: { type: 'boolean', description: 'Only when another chapter has this title: move this chapter\'s text into that one and remove this chapter. Only for a chapter you created this turn.' }
+      replace: { type: 'boolean', description: 'Only for a chapter you added in this turn, when another chapter already has this title because that is the one you meant to rewrite: true moves this chapter\'s text into it (in place, as a change the user reviews) and removes this chapter, so nothing is written again.' }
     },
     required: ['chapter', 'title']
   },
@@ -752,7 +758,20 @@ export const renameChapterTool = defineTool<{ chapter: unknown; title: string; r
   },
   execute: ({ chapter, title, replace }, ctx): ToolResult | Promise<ToolResult> => {
     const source = resolveTarget(chapter, ctx)
-    if (typeof source === 'string') return { ok: false, retryable: true, content: source, trace: `⚠️ rename: ${source.split('\n')[0]}` }
+    if (typeof source === 'string') {
+      // Most often a "create" in disguise (renaming "人物卡" to "人物卡"):
+      // say what adds a chapter, not only which chapters exist.
+      const write = ctx.run.writeProtocol === 'markup'
+        ? `<canvas new_chapter="${title}">…</canvas>`
+        : `update_document with new_chapter="${title}"`
+      return {
+        ok: false,
+        retryable: true,
+        content: `rename_chapter only renames a chapter that exists, and nothing was renamed. ${source}\n` +
+          `To add a new chapter titled "${title}", write it: ${write}.`,
+        trace: `⚠️ rename: ${source.split('\n')[0]}`
+      }
+    }
     const chapters = ctx.document.chapters()
     const holderIndex = chapters.findIndex(c => c.id !== source.id && titleKey(c.title) === titleKey(title))
 

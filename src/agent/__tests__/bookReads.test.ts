@@ -4,6 +4,7 @@ import { updateDocumentTool } from '../tools/documentWrites'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 import { resolveChapter } from '../chapters'
+import { chapterOutline } from '../types'
 
 const call = (name: string, args: Record<string, unknown> | null): ToolInvocation => ({ id: `c-${name}`, name, args, source: 'native' })
 const run = async (r: ToolResult | Promise<ToolResult>) => r
@@ -232,6 +233,37 @@ describe('list_chapters', () => {
     expect(r.content).toContain('open in the editor')
     expect(r.content).toContain('changed this turn')
     expect(r.content).toContain('全书分章计划')
+  })
+
+  // 2026-10-06: grok announced "人物卡单独成章" and called this 13 times; the
+  // list was right every time and never said that nothing had been added.
+  it('says when no chapter was added, removed or renamed in this turn, and how one is added', async () => {
+    const f = book()
+    f.ctx.run.writeProtocol = 'markup'
+    f.ctx.run.startOutline = chapterOutline(f.ctx.document.chapters())
+    const r = await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
+    expect(r.content).toContain('No chapter has been added, removed or renamed in this turn')
+    expect(r.content).toContain('A new chapter appears here only after you write it, with <canvas new_chapter="its title">…</canvas>.')
+    expect(r.content).not.toContain('identical to your previous')
+  })
+
+  it('says when the list is identical to the last one', async () => {
+    const f = book()
+    await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
+    const again = await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
+    expect(again.content).toContain('This is identical to your previous list_chapters result')
+  })
+
+  it('makes no such claim once the book changed in the turn', async () => {
+    const f = book()
+    f.ctx.run.startOutline = chapterOutline(f.ctx.document.chapters())
+    await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
+    await updateDocumentTool.invoke(call('update_document', { new_chapter: '人物卡', html: '<p>阿青</p>' }), f.ctx)
+    const r = await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
+    expect(r.content).toContain('"人物卡"')
+    expect(r.content).toContain('created this turn')
+    expect(r.content).not.toContain('No chapter has been added')
+    expect(r.content).not.toContain('identical to your previous')
   })
 })
 
