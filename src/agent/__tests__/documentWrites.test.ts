@@ -403,17 +403,32 @@ describe('a new chapter is created by the write that fills it', () => {
     expect(f.previewDocument).toHaveBeenLastCalledWith('<p>流水')
   })
 
-  it('refuses a title a chapter with text already has, and creates nothing', async () => {
+  it('writes a title an existing chapter has into THAT chapter, as a rewrite, when the model has read it', async () => {
+    // 2026-10-06: asked to expand chapter 2, grok "created" the chapter it
+    // was expanding. Refusing would have thrown away the whole rewrite.
     const f = book()
-    f.ctx.run.writeProtocol = 'markup'
+    await readChapterTool.invoke(call('read_chapter', { chapters: [2], format: 'html' }), f.ctx)
     previewRewrite(f.ctx, { create: '大纲' }, '<p>x</p>')
     const r = await write(f, { new_chapter: ' 大 纲', html: '<p>new outline</p>' })
-    expect(r.ok).toBe(false)
-    expect(r.content).toContain('already exists as #2')
-    expect(r.content).toContain('<canvas chapter="2">')
+    expect(r.ok).toBe(true)
+    expect(r.content).toBe('A chapter titled "大纲" already existed as #2, so your new_chapter text rewrote it. ' +
+      'Rewrote the EXISTING chapter #2 "大纲": it had 7 characters and now has 11. No chapter was added.')
+    expect(f.book()).toHaveLength(2)
+    expect(stripDiffMarkup(f.lastWrite('doc-2') ?? '')).toBe('<p>new outline</p>')
+    // Reviewable, with the old text kept.
+    expect(f.snapshots).toEqual(['doc-2'])
+    // An existing chapter the user is not looking at is not opened for it.
+    expect(f.opened).toEqual([])
+    expect(f.previewDocument).not.toHaveBeenCalled()
+  })
+
+  it('never overwrites an existing chapter the model has not read: refused, nothing added', async () => {
+    const f = book()
+    const r = await write(f, { new_chapter: '大纲', html: '<p>new outline</p>' })
+    expect(r).toMatchObject({ ok: false, retryable: true })
+    expect(r.content).toContain('already exists as #2 and has text you have not read in this turn, so it was NOT overwritten')
     expect(f.book()).toHaveLength(2)
     expect(f.lastWrite('doc-2')).toBeUndefined()
-    expect(f.previewDocument).not.toHaveBeenCalled()
   })
 
   it('fills an empty chapter of that title instead of adding a second one', async () => {
