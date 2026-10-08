@@ -85,6 +85,22 @@ del.diff-deletion:hover {
   border-color: var(--diff-remove-text);
 }
 
+.diff-banner-btn.neutral {
+  background-color: var(--bg-tertiary, var(--bg-primary));
+  color: var(--text-primary);
+  border-color: var(--border-color);
+}
+
+.diff-banner-btn.neutral:hover {
+  border-color: var(--accent);
+}
+
+/* Another copy of a chapter was saved first (store/documentSync). */
+.sync-notice-banner {
+  border-left: 3px solid var(--accent);
+  gap: 0.75rem;
+}
+
 /* The assistant is writing into this chapter: review waits until it is done. */
 .diff-banner-btn:disabled {
   opacity: 0.5;

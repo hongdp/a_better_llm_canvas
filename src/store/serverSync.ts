@@ -18,6 +18,7 @@ import { getIsInitialized, setIsInitialized } from './syncRuntime'
 import { normalizeBrParagraphs } from '../utils/convert'
 import { useAppStore } from './useAppStore'
 import { mergeVersions, versionsMissingOnServer, backfillVersions } from './versionMerge'
+import { mergeServerChapters, recordServerCopy, saveOtherBookEdits } from './documentSync'
 
 /**
  * Rebuilding the document list from server metadata would wipe client-side
@@ -134,10 +135,17 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
     const activeBookId = serverLastActiveBookId
       || localStorage.getItem('web_canvas_active_book_id')
       || 'default'
+    // The local cache holds the book this device had open last; read its id
+    // before the pointer moves.
+    const cachedBookId = localStorage.getItem('web_canvas_active_book_id')
     if (useAppStore.getState().activeBookId !== activeBookId) {
       useAppStore.setState({ activeBookId })
     }
     localStorage.setItem('web_canvas_active_book_id', activeBookId)
+    const cacheIsThisBook = cachedBookId === activeBookId
+    if (!cacheIsThisBook && cachedBookId) {
+      await saveOtherBookEdits(cachedBookId, useAppStore.getState().documents)
+    }
 
     useAppStore.setState({ serverSaveStatus: 'saving' })
     try {
@@ -151,7 +159,9 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
 
           // Build documents from metadata (without content — lazy-loaded)
           if (serverData.documents) {
-            const docs: CanvasDocument[] = carryOverLocalSummaries(
+            // Unsynced chapters survive only into their own book.
+            const local = cacheIsThisBook ? useAppStore.getState().documents : []
+            const docs: CanvasDocument[] = mergeServerChapters(carryOverLocalSummaries(
               serverData.documents.map((d: ServerDocumentMeta) => ({
                 id: d.id,
                 title: d.title,
@@ -161,9 +171,10 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
                 updatedAt: d.updatedAt,
                 summary: d.summary ?? undefined,
                 summaryContentHash: d.summaryContentHash ?? undefined,
+                ...(typeof d.revision === 'number' ? { revision: d.revision } : {}),
               })),
-              useAppStore.getState().documents
-            )
+              local
+            ), local)
             updates.documents = docs
             saveDocumentsToIndexedDB(docs, true)
           }
@@ -228,7 +239,9 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
 
           // Lazy-load the active document's content
           const activeDocId = updates.activeDocumentId || serverData.activeDocumentId
-          if (activeDocId) {
+          // An unsynced chapter keeps its local text (mergeServerChapters).
+          const keptLocal = useAppStore.getState().documents.find(d => d.id === activeDocId)?.unsynced
+          if (activeDocId && !keptLocal) {
             try {
               const docRes = await fetch(`/api/books/${activeBookId}/documents/${activeDocId}`)
               if (docRes.ok) {
@@ -238,9 +251,13 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
                 const loadedContent = normalizeBrParagraphs(docData.content || '')
                 useAppStore.setState((s) => ({
                   documents: s.documents.map(d =>
-                    d.id === activeDocId ? { ...d, content: loadedContent, contentLoaded: true } : d
+                    d.id === activeDocId
+                      ? { ...d, content: loadedContent, contentLoaded: true, ...(typeof docData.revision === 'number' ? { revision: docData.revision } : {}) }
+                      : d
                   )
                 }))
+                const loadedDoc = useAppStore.getState().documents.find(d => d.id === activeDocId)
+                if (loadedDoc) recordServerCopy(activeDocId, loadedDoc)
                 saveDocumentsToIndexedDB(useAppStore.getState().documents, true)
               }
             } catch (e) {

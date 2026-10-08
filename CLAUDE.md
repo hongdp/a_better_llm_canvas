@@ -51,6 +51,8 @@ src/
     serverSync.ts         # initializeStoreFromServer / performSync
     syncRuntime.ts        # Module-level isInitialized/saveTimeout (single owner)
     persistence.ts        # localStorage / IndexedDB wrappers + documents envelope
+    documentSync.ts       # Chapter revisions: unsynced flag, server copies, 409 conflicts
+    bookEvents.ts         # SSE subscription: other tabs'/devices' writes, live
     __tests__/            # persistence + storage API tests
   components/             # React UI components
     Editor.tsx            # TipTap editor host (fragile editor↔store sync — see SKILL.md)
@@ -89,6 +91,7 @@ scripts/
   api_server.py           # FastAPI app entry: books/documents/versions routes
   server_config.py  server_db.py  server_content.py   # Backend helper modules
   server_auth.py  server_scrape.py  server_migration.py
+  server_events.py      # Per-book event hub behind /api/books/{id}/events (SSE)
   test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
 docs/
   design.md               # Architecture + Decision Log (register new design docs here)
@@ -282,6 +285,15 @@ and versions, legacy `/api/storage`, and scraping (`/api/import-url`,
 `/api/import-file`). **Performance**: list endpoints extract metadata by regex
 over the first few KB of large JSON files rather than full-parsing; the save
 endpoint reorders JSON keys so `bookTitle`/`updatedAt` stay within that window.
+**Chapter revisions** (`docs/features/backend_authority.md` §4.1): every
+chapter has a server `revision`. A text save sends `baseRevision`, and a
+stale one gets `409` with the current chapter; the client keeps its text as
+a version and adopts the server's (`src/store/documentSync.ts`). Never
+re-send an unchanged chapter's text, because it bumps the revision and
+turns other tabs' saves into conflicts. `serverCopies` decides what is
+unchanged, so record it wherever content loads. Writes send `X-Client-Id`.
+`/api/books/{id}/events` streams every change to the book's open tabs
+(`src/store/bookEvents.ts`).
 A `user_state` table holds each account's **last active book**: every
 book write records it, `/api/auth/session` returns it as
 `lastActiveBookId`, and the client's init opens that book ahead of the

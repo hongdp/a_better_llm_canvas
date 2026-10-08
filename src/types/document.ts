@@ -3,6 +3,19 @@ export interface CanvasDocument {
   title: string
   content: string
   contentLoaded?: boolean
+  /**
+   * The server revision this text is based on (backend_authority.md §2.1);
+   * sent with a save so the server can refuse it if another write landed
+   * first. Absent: never synced (local-only, or a server without revisions).
+   */
+  revision?: number
+  /**
+   * An edit of the text or title the server has not confirmed. Persisted
+   * with the chapter, so a reload or a closed tab cannot drop it — on the
+   * next load the local text is kept and saved, instead of being replaced
+   * by the server's copy.
+   */
+  unsynced?: boolean
   createdAt: string
   updatedAt: string
   /**

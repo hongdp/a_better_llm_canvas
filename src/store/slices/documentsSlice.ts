@@ -12,6 +12,7 @@ import { useAppStore } from '../useAppStore'
 // Pure, so it lives with the other HTML helpers; re-exported for the guard's
 // existing callers and tests.
 import { isBlankContent } from '../../utils/text'
+import { CLIENT_ID, CLIENT_ID_HEADER, markSaved, recordServerCopy } from '../documentSync'
 export { isBlankContent }
 
 export interface DocumentsSlice {
@@ -42,6 +43,11 @@ export interface DocumentsSlice {
   ensureDocumentContents: (ids: string[]) => Promise<void>
 }
 
+/** Does this update change the chapter itself (its text or title)? */
+const changesText = (doc: CanvasDocument, updates: Partial<CanvasDocument>) =>
+  (updates.content !== undefined && updates.content !== doc.content) ||
+  (updates.title !== undefined && updates.title !== doc.title)
+
 export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice> = (set) => {
   const initialDocs = MOCK_DOCUMENTS
   const initialActiveId = loadSavedActiveDocId(initialDocs)
@@ -65,12 +71,15 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
       const needed = idsNeedingContent(ids, state.documents)
       if (needed.length === 0) return
       await loadDocumentContents(state.activeBookId, needed, {
-        onLoaded: (id, content) => {
+        onLoaded: (id, content, revision) => {
           useAppStore.setState((s) => ({
             documents: s.documents.map(d =>
-              d.id === id ? { ...d, content, contentLoaded: true } : d
+              d.id === id ? { ...d, content, contentLoaded: true, ...(revision !== undefined ? { revision } : {}) } : d
             )
           }))
+          // The server's copy: not something to send back (documentSync).
+          const loaded = useAppStore.getState().documents.find(d => d.id === id)
+          if (loaded) recordServerCopy(id, loaded)
           // Update local cache
           saveDocumentsToIndexedDB(useAppStore.getState().documents, true)
         }
@@ -85,6 +94,9 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
         title,
         content,
         contentLoaded: true,
+        // Not on the server until its POST lands; kept across a reload
+        // until then (documentSync.mergeServerChapters).
+        ...(useAppStore.getState().user ? { unsynced: true } : {}),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       }
@@ -109,13 +121,18 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-CSRF-Token': state.csrfToken || ''
+            'X-CSRF-Token': state.csrfToken || '',
+            [CLIENT_ID_HEADER]: CLIENT_ID
           },
           body: JSON.stringify({
             documents: [{ id: newDoc.id, title: newDoc.title, content: newDoc.content, createdAt: newDoc.createdAt, updatedAt: newDoc.updatedAt }]
           })
         }).then(res => res.ok ? res.json() : null)
-          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+          .then(body => {
+            useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt)
+            // Created: the server holds this text at revision 1.
+            if (body) markSaved(newDoc.id, newDoc, body.revision ?? 1)
+          })
           .catch(e => console.error('Failed to sync new document to server', e))
       }
 
@@ -158,7 +175,8 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'X-CSRF-Token': state.csrfToken || ''
+            'X-CSRF-Token': state.csrfToken || '',
+            [CLIENT_ID_HEADER]: CLIENT_ID
           },
           body: JSON.stringify({ documentIds: docIds })
         }).then(res => res.ok ? res.json() : null)
@@ -230,6 +248,7 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
             return {
               ...d,
               ...updates,
+              ...(changesText(d, updates) ? { unsynced: true } : {}),
               updatedAt: new Date().toISOString(),
             }
           }
@@ -272,6 +291,7 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
             return {
               ...d,
               ...updates,
+              ...(changesText(d, updates) ? { unsynced: true } : {}),
               updatedAt: new Date().toISOString(),
             }
           }
@@ -303,7 +323,8 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'X-CSRF-Token': state.csrfToken || ''
+            'X-CSRF-Token': state.csrfToken || '',
+            [CLIENT_ID_HEADER]: CLIENT_ID
           },
           body: JSON.stringify({ summary, summaryContentHash: contentHash })
         }).then(res => res.ok ? res.json() : null)

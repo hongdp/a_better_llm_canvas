@@ -28,6 +28,7 @@ export interface ServerDocumentMeta {
   updatedAt: string
   summary?: string | null
   summaryContentHash?: string | null
+  revision?: number
 }
 
 export interface ServerVersionMeta {

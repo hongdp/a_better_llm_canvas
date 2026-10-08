@@ -146,6 +146,15 @@ def init_db():
             conn.execute("ALTER TABLE documents ADD COLUMN summary_content_hash TEXT")
             print("[Init] Migrated documents table: added summary columns.")
 
+        # Schema migration: a chapter's revision (backend_authority.md §2.1).
+        # Every write of its text or title bumps it; a write that names the
+        # revision it was based on is refused when another landed first, so a
+        # stale tab can no longer silently overwrite a newer chapter.
+        doc_columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "revision" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
+            print("[Init] Migrated documents table: added revision column.")
+
         # Schema migration: an agentic turn's record (timeline, chapters it
         # changed — src/types/chat.ts AgentTurnRecord), stored as JSON. Without
         # it the bubble lost its tool timeline and "changed this turn" block on

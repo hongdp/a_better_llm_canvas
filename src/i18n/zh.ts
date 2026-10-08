@@ -15,6 +15,10 @@ export const zh: TranslationDictionary = {
       acceptAll: '全部接受',
       rejectAll: '全部拒绝',
     },
+    syncConflict: {
+      message: '「{title}」已被另一处先保存，现在显示的是那一版。你未同步的版本已存入版本历史。',
+      openHistory: '打开历史',
+    },
     errorTitle: '错误',
     dismiss: '忽略',
     systemPrompt: '系统提示词:',

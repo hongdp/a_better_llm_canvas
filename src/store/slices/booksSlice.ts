@@ -8,14 +8,17 @@ import { clearPendingSave, getIsInitialized, setIsInitialized } from '../syncRun
 import { carryOverLocalSummaries } from '../serverSync'
 import { normalizeBrParagraphs } from '../../utils/convert'
 
-// Fields of each document as last successfully PUT to the server, keyed by
-// doc id. Lets syncToServer skip unchanged chapters (see the comment at the
-// sync site). Keyed by doc id, so switching books naturally misses and
-// re-pushes; stale entries are harmless (worst case one redundant PUT).
-const lastPushedDocsById = new Map<string, Pick<CanvasDocument, 'title' | 'content' | 'summary' | 'summaryContentHash'>>()
+// What each chapter looked like when the server last confirmed it now lives
+// in documentSync (serverCopies), recorded on load as well as on save.
+import { CLIENT_ID, CLIENT_ID_HEADER, markSaved, mergeServerChapters, needsTextSync, recordServerCopy, resolveConflict, serverCopies } from '../documentSync'
 // Benign import cycle: this module only references useAppStore inside action
 // bodies, which run long after both modules have finished evaluating.
 import { useAppStore } from '../useAppStore'
+
+export interface SyncNotice {
+  kind: 'conflict'
+  documentTitle: string
+}
 
 export interface BooksSlice {
   bookTitle: string
@@ -26,6 +29,12 @@ export interface BooksSlice {
   setIsStoreInitialized: (initialized: boolean) => void
   serverSaveStatus: 'saved' | 'saving' | 'failed' | 'local-only'
   setServerSaveStatus: (status: 'saved' | 'saving' | 'failed' | 'local-only') => void
+  /**
+   * Something the user must know about a save: another copy of a chapter
+   * was saved first, so theirs went to version history (documentSync).
+   */
+  syncNotice: SyncNotice | null
+  setSyncNotice: (notice: SyncNotice | null) => void
   syncToServer: () => Promise<void>
   lastSyncedAt: string | null
   /**
@@ -194,9 +203,18 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
     }
   },
   switchBook: async (id) => {
-    const state = useAppStore.getState()
-    if (!state.user) return
+    if (!useAppStore.getState().user) return
 
+    // Problem: the pending (debounced) save was cancelled, so an edit made
+    //   in the seconds before switching books — or before a focus-time pull
+    //   reloaded this one — never reached the server.
+    // Fix: save what is unsynced first. Reloading the SAME book then also
+    //   keeps any chapter that is still unsynced (mergeServerChapters).
+    if (useAppStore.getState().documents.some(d => d.unsynced)) {
+      await useAppStore.getState().syncToServer()
+    }
+    const state = useAppStore.getState()
+    const sameBook = state.activeBookId === id
     clearPendingSave()
 
     set({ serverSaveStatus: 'saving' })
@@ -216,7 +234,7 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
 
           // Build document list from server metadata (content not loaded yet)
           if (server.documents) {
-            const docs: CanvasDocument[] = carryOverLocalSummaries(
+            const stubs: CanvasDocument[] = carryOverLocalSummaries(
               server.documents.map((d: ServerDocumentMeta) => ({
                 id: d.id,
                 title: d.title,
@@ -226,9 +244,12 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
                 updatedAt: d.updatedAt,
                 summary: d.summary ?? undefined,
                 summaryContentHash: d.summaryContentHash ?? undefined,
+                ...(typeof d.revision === 'number' ? { revision: d.revision } : {}),
               })),
               state.documents
             )
+            // Another book's chapters are not this one's to keep.
+            const docs = sameBook ? mergeServerChapters(stubs, state.documents) : stubs
             updates.documents = docs
             saveDocumentsToIndexedDB(docs, true)
           }
@@ -283,7 +304,8 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
 
           // Now lazy-load the active document's content
           const activeDocId = updates.activeDocumentId || server.activeDocumentId
-          if (activeDocId) {
+          const keptLocal = useAppStore.getState().documents.find(d => d.id === activeDocId)?.unsynced
+          if (activeDocId && !keptLocal) {
             try {
               const docRes = await fetch(`/api/books/${id}/documents/${activeDocId}`)
               if (docRes.ok) {
@@ -293,9 +315,13 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
                 const loadedContent = normalizeBrParagraphs(docData.content || '')
                 useAppStore.setState((s) => ({
                   documents: s.documents.map(d =>
-                    d.id === activeDocId ? { ...d, content: loadedContent, contentLoaded: true } : d
+                    d.id === activeDocId
+                      ? { ...d, content: loadedContent, contentLoaded: true, ...(typeof docData.revision === 'number' ? { revision: docData.revision } : {}) }
+                      : d
                   )
                 }))
+                const loadedDoc = useAppStore.getState().documents.find(d => d.id === activeDocId)
+                if (loadedDoc) recordServerCopy(activeDocId, loadedDoc)
                 saveDocumentsToIndexedDB(useAppStore.getState().documents, true)
               }
             } catch (e) {
@@ -351,6 +377,8 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
   setIsStoreInitialized: (initialized) => set({ isStoreInitialized: initialized }),
   serverSaveStatus: 'local-only',
   setServerSaveStatus: (status) => set({ serverSaveStatus: status }),
+  syncNotice: null,
+  setSyncNotice: (notice) => set({ syncNotice: notice }),
   lastSyncedAt: null,
   lastSeenServerUpdatedAt: null,
   setLastSeenServerUpdatedAt: (value) => set({ lastSeenServerUpdatedAt: value }),
@@ -440,44 +468,58 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
       // Fix: skip documents whose synced fields are reference-identical to
       //   what the last successful PUT sent (the store replaces a document
       //   object whenever it changes, so reference checks are sufficient).
+      // Only what the server does not hold yet: a chapter whose text differs
+      // from its server copy (or is flagged unsynced) sends text and the
+      // revision it is based on; one whose summary alone changed sends just
+      // the summary, which does not bump its revision (documentSync).
       const docsToSync = state.documents
         .filter(d => d.contentLoaded !== false)
         .filter(d => {
-          const prev = lastPushedDocsById.get(d.id)
-          return !prev || prev.title !== d.title || prev.content !== d.content ||
+          const prev = serverCopies.get(d.id)
+          return needsTextSync(d) || !prev ||
             prev.summary !== d.summary || prev.summaryContentHash !== d.summaryContentHash
         })
+      const sentCopies = docsToSync.map(d => ({ title: d.title, content: d.content, summary: d.summary, summaryContentHash: d.summaryContentHash }))
       const docSyncPromises = docsToSync
-        .map(d =>
-          fetch(`/api/books/${bookId}/documents/${d.id}`, {
+        .map((d, i) => {
+          const sendText = needsTextSync(d)
+          return fetch(`/api/books/${bookId}/documents/${d.id}`, {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
-              'X-CSRF-Token': state.csrfToken || ''
+              'X-CSRF-Token': state.csrfToken || '',
+              [CLIENT_ID_HEADER]: CLIENT_ID
             },
             body: JSON.stringify({
-              title: d.title,
-              content: d.content,
+              ...(sendText
+                ? { title: d.title, content: d.content, ...(d.revision !== undefined ? { baseRevision: d.revision } : {}) }
+                : {}),
               summary: d.summary ?? null,
               summaryContentHash: d.summaryContentHash ?? null
             })
           }).then(async res => {
             if (res.ok) {
-              lastPushedDocsById.set(d.id, {
-                title: d.title, content: d.content,
-                summary: d.summary, summaryContentHash: d.summaryContentHash
-              })
+              let body: { updatedAt?: string; revision?: number } | null = null
+              try { body = await res.clone().json() } catch { /* older server: no body */ }
+              useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt)
+              const prev = serverCopies.get(d.id)
+              markSaved(d.id, sendText ? sentCopies[i] : { ...sentCopies[i], title: prev?.title ?? d.title, content: prev?.content ?? d.content },
+                sendText ? body?.revision : undefined)
+            } else if (res.status === 409) {
+              // Another tab or device saved this chapter first.
               try {
-                const body = await res.clone().json()
-                useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt)
-              } catch { /* older server: no body */ }
+                const server = await res.clone().json()
+                if (typeof server?.content === 'string' && typeof server?.revision === 'number') resolveConflict(d, server)
+              } catch (e) {
+                console.error(`Conflict on document ${d.id} could not be resolved`, e)
+              }
             }
             return res
           }).catch(e => {
             console.error(`Failed to sync document ${d.id}`, e)
             return null
           })
-        )
+        })
 
       const docResults = await Promise.all(docSyncPromises)
 
@@ -491,13 +533,17 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'X-CSRF-Token': state.csrfToken || ''
+                'X-CSRF-Token': state.csrfToken || '',
+                [CLIENT_ID_HEADER]: CLIENT_ID
               },
               body: JSON.stringify({
                 documents: [{ id: doc.id, title: doc.title, content: doc.content, createdAt: doc.createdAt, updatedAt: doc.updatedAt }]
               })
             }).then(res => res.ok ? res.json() : null)
-              .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+              .then(body => {
+                useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt)
+                if (body) markSaved(doc.id, sentCopies[i], body.revision ?? 1)
+              })
               .catch(e => console.error(`Failed to create document ${doc.id}`, e))
           }
         }
