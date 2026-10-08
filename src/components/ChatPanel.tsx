@@ -11,6 +11,7 @@ import { useChatLLM } from '../hooks/useChatLLM'
 import { useRoleplayLLM } from '../hooks/useRoleplayLLM'
 import { useTranslation } from '../i18n'
 import { AgentTimeline, AgentTurnSummary } from './AgentTurnSummary'
+import { RunControls } from './RunControls'
 import { RoleplayBanner } from './RoleplayBanner'
 import { RoleplaySetupModal } from './RoleplaySetupModal'
 
@@ -49,6 +50,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [isRpSetupOpen, setIsRpSetupOpen] = useState(false)
   const activeConfig = providerConfigs[activeProvider]
+  const user = useAppStore(state => state.user)
+  // Turns run on the server (backend_authority.md §4.3): a request sent
+  // mid-turn queues, so the input stays open while a run streams.
+  const serverRunsOn = !roleplayMode && !!user && activeConfig.serverRuns === true
+  const inputBlocked = isStreaming && !serverRunsOn
 
   const {
     uploadedImages,
@@ -268,6 +274,17 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       ? <AgentTimeline record={msg.agent} />
                       : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
                     {msg.role === 'assistant' && msg.agent && <AgentTurnSummary record={msg.agent} />}
+                    {msg.role === 'assistant' && msg.agent && (msg.agent.run || msg.agent.question) && (
+                      <RunControls
+                        record={msg.agent}
+                        onAction={chatLLM.handleRunAction}
+                        disabled={isStreaming && !msg.agent.run}
+                        onAnswer={(record, answer) => {
+                          if (record.run && record.run.status === 'paused') void chatLLM.handleRunAnswer(record.run.id, answer)
+                          else handleSendMessage(undefined, answer)
+                        }}
+                      />
+                    )}
 
                     {/* RP Choices — clickable action buttons */}
                     {msg.rpChoices && msg.rpChoices.length > 0 && !isStreaming && (
@@ -431,7 +448,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
             <div
               ref={chatInputRef}
-              contentEditable={!isStreaming}
+              contentEditable={!inputBlocked}
               onInput={async e => {
                 const container = e.currentTarget
                 const imgs = Array.from(container.getElementsByTagName('img'))
@@ -522,7 +539,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className="btn-icon"
             title={t.app.uploadImage}
             onClick={() => fileInputRef.current?.click()}
-            disabled={isStreaming}
+            disabled={inputBlocked}
             style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
           >
             <Image size={18} />
@@ -532,7 +549,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className="btn-icon"
             title={t.app.pasteImage}
             onClick={handlePasteFromClipboard}
-            disabled={isStreaming}
+            disabled={inputBlocked}
             style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
           >
             <Clipboard size={18} />
@@ -545,7 +562,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             multiple
             style={{ display: 'none' }}
           />
-          {isStreaming ? (
+          {isStreaming && (
             <button 
               type="button" 
               className="btn-icon animate-pulse" 
@@ -560,7 +577,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             >
               <Square size={16} fill="#ef4444" />
             </button>
-          ) : (
+          )}
+          {(!isStreaming || serverRunsOn) && (
             <button 
               type="submit" 
               className="btn-icon" 

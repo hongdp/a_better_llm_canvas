@@ -354,7 +354,7 @@ describe('delete_chapter: only what nothing would be lost from', () => {
     const f = book()
     const r = await del(f, 2)
     expect(r).toMatchObject({ ok: false, retryable: false })
-    expect(r.content).toContain('ask them to delete it from the chapter list')
+    expect(r.content).toContain('ask them with ask_user')
     expect(f.removed).toEqual([])
   })
 

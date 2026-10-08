@@ -1,0 +1,105 @@
+"""Port of src/agent/types.ts — the loop's vocabulary.
+
+Tool results and invocations are plain dicts (they are persisted and sent as
+events); the run's working state is a dataclass. Ports are duck-typed: see
+the server's implementation in server_runs.py and the fake in test_agent.py.
+"""
+from dataclasses import dataclass, field
+from typing import Any, Callable, Dict, List, Optional, Set
+
+from wc_text.context_ledger import hash_content
+
+
+def result(ok: bool, content: str, trace: str, retryable: Optional[bool] = None, effects: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"ok": ok, "content": content, "trace": trace}
+    if retryable is not None:
+        out["retryable"] = retryable
+    if effects is not None:
+        out["effects"] = effects
+    return out
+
+
+@dataclass
+class DocState:
+    original: str
+    base: str
+    review_base: str
+    html: str
+    dirty: bool = False
+
+
+@dataclass
+class RunState:
+    step: int = 0
+    write_protocol: Optional[str] = None
+    continues_after_writes: Optional[bool] = None
+    docs: Dict[str, DocState] = field(default_factory=dict)
+    known: Dict[str, str] = field(default_factory=dict)
+    html_shown: Set[str] = field(default_factory=set)
+    in_context: Set[str] = field(default_factory=set)
+    created: Set[str] = field(default_factory=set)
+    snapshotted: Set[str] = field(default_factory=set)
+    read_ids: Dict[str, None] = field(default_factory=dict)  # ordered set
+    reads: Dict[str, int] = field(default_factory=dict)
+    touched: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    start_outline: Optional[str] = None
+    last_list: Optional[str] = None
+    selection_attempted: bool = False
+    selection_applied: bool = False
+    #: The model's checklist for this turn (the `plan` tool).
+    plan: List[Dict[str, str]] = field(default_factory=list)
+    #: A question the model asked the user this step (`ask_user`): {question, options}.
+    question: Optional[Dict[str, Any]] = None
+
+
+def chapter_outline(chapters: List[Dict[str, Any]]) -> str:
+    return "\u0001".join(f"{c['id']}\u0000{c['title']}" for c in chapters)
+
+
+def create_run_state(start_id: str, in_context: Optional[List[str]] = None, start_content: Optional[str] = None,
+                     start_outline: Optional[str] = None) -> RunState:
+    st = RunState(start_outline=start_outline)
+    if start_content is not None:
+        st.known[start_id] = start_content
+    st.html_shown.add(start_id)
+    st.in_context = {start_id, *(in_context or [])}
+    return st
+
+
+def seen_chapters(run: RunState) -> List[Dict[str, str]]:
+    return [{"id": i, "hash": hash_content(run.known[i])} for i in run.html_shown if i in run.known]
+
+
+def restore_seen(run: RunState, seen: Optional[List[Dict[str, str]]], stored: Callable[[str], Optional[str]]) -> RunState:
+    for entry in seen or []:
+        content = stored(entry["id"])
+        if content is None or hash_content(content) != entry["hash"]:
+            continue
+        run.html_shown.add(entry["id"])
+        run.known[entry["id"]] = content
+        run.in_context.add(entry["id"])
+    return run
+
+
+class ToolContext:
+    """The ports one run's tools work through (src/agent/types.ts ToolContext).
+
+    document: start_id, original, chapters(), open_id(), user_moved(), ensure_loaded(ids) [async],
+              commit(id, html), open(id), create(title) -> id, rename(id, title), remove(id), snapshot(id, label)
+    editor:   preview_document(html), preview_selection(html), discard_preview()
+    selection: range() -> bool-ish (a selection exists), original_text() -> str
+    images:   preserve(html), restore(html)
+    ui:       progress(line|None), writing(id|None)
+    polish:   optional, run(html, on_progress) -> outcome dict [async]
+    analyze:  optional, run(task, chapters, on_progress) -> outcome dict [async]
+    """
+
+    def __init__(self, document, editor, selection, images, ui, run: RunState, polish=None, analyze=None) -> None:
+        self.document = document
+        self.editor = editor
+        self.selection = selection
+        self.images = images
+        self.ui = ui
+        self.run = run
+        self.polish = polish
+        self.analyze = analyze

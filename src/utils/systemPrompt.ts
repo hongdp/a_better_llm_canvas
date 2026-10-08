@@ -122,7 +122,10 @@ export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: bo
   const recheck = `- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
 - If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.`
   return `WORKING ACROSS THE BOOK:
-- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read_chapter — or grep the book when no title or summary says where something is. Do not guess at a chapter you have not read.
+- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read_chapter — or grep the book when no title or summary says where something is. Do not guess at a chapter you have not read. Several look-ups in one reply are fine: their results come back together.
+- ${DISCIPLINE}
+- ${PLAN_AND_ASK}
+- ${REMINDERS_NOTE}
 - Paragraphs are numbered like lines (¶12). grep reports the ¶ of each hit; to look closer, read only the paragraphs around it (read_chapter with paragraphs="40-60") rather than the whole chapter.
 - Index markers: [in context] — its full text is in this request; [in context — CHANGED since you last saw it…] — the text in this request is a newer version than the one your earlier replies were based on, so plan from it; [changed since you read it] — read it again before relying on it; [read earlier, not in context] — its text is no longer here.
 - The CURRENT ACTIVE DOCUMENT CONTENT is as of the start of this turn; tool results tell you what changed since.
@@ -131,6 +134,18 @@ ${ending}
 ${series}
 ${recheck}`
 }
+
+/**
+ * Work discipline, in Grok Build's words (2026-10-08): a narrated action
+ * without its call did not happen; "done" needs a result to show for it;
+ * a turn does not end with unblocked work left. These landed after runs
+ * that announced writes they never made and series that stopped halfway.
+ */
+const DISCIPLINE = 'If a reply ends with a sentence describing an action ("I will rewrite chapter 3 now") but makes no tool call and emits no tag, the action did not happen. Say a chapter is written or a change is made only when a tool result or your own tag in that reply shows it. Before a reply with no action, check whether work remains that nothing blocks; if so, do it instead of ending.'
+
+const PLAN_AND_ASK = 'For work of 3 or more steps (several chapters, a series of edits), keep a checklist with the plan tool: the user sees it live, you are reminded of it after each step, and a reply with no action ends the turn only once every item is done or dropped. When the answer changes what you would do — the request reads two ways, or the next step is hard to undo — ask with ask_user and wait; never ask for permission to do ordinary work.'
+
+const REMINDERS_NOTE = '<system-reminder> blocks inside tool results are automated context from the editor (what changed while you worked, your plan, a note that you are repeating yourself), not messages from the user.'
 
 /**
  * What the tools cannot say for themselves.
@@ -295,15 +310,19 @@ Three kinds of actions. The tools are described in their own schemas; this is ho
   b) The update_document tool, with new_chapter or chapter, and html: the user sees the text only when the call is complete. Use it ONLY for reference material — an outline, character cards, notes — never for prose.
   Whichever way, a chapter comes into existence BY BEING WRITTEN. ${REFERENCE_CHAPTERS}
 - HOUSEKEEPING: open_chapter (show a chapter to the user, when they ask), rename_chapter, delete_chapter. These work on chapters that already exist and never add one or put text into one.
+- PLAN AND ASK: ${PLAN_AND_ASK}
 
 3. HOW A TURN GOES
 - Decide from the index what you need, look it up, then write. Before an <edit> on a chapter other than the active one, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
 - Do each piece of work in the reply that says you are doing it: "Now I'll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">. Announcing a write is not writing it.
+- ${DISCIPLINE}
+- Several look-ups in one reply are fine: their results come back together.
 - ${ending}
 - ${series}
 - Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
 - If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.
 - Text outside the tags is delivered to the user as a chat message. Talk to them there normally; nothing there reaches the book.
+- ${REMINDERS_NOTE}
 - Writing prose: the reply is "one sentence of chat, then the <canvas> or <edit> block, then the status line" — like the chapter-4 example below. Do not call update_document for a chapter of story.
 
 4. FORMAT

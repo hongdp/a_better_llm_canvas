@@ -16,8 +16,9 @@ import json
 from typing import Any, AsyncIterator, Dict, Optional, Set, Tuple
 
 # A subscriber that stops reading must not grow without bound; it is
-# dropped and reconnects (EventSource does so on its own).
-QUEUE_LIMIT = 256
+# dropped and reconnects (EventSource does so on its own). Sized for a run's
+# live deltas (one event per token), which a reading tab drains far faster.
+QUEUE_LIMIT = 4096
 HEARTBEAT_SECONDS = 15.0
 
 _Key = Tuple[str, str]

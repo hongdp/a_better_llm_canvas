@@ -43,6 +43,7 @@ import { reinsertMissingImages } from '../../utils/imagePreservation'
 import { htmlToPlainText } from '../../utils/llmContext'
 import { chapterChars } from '../../utils/paragraphs'
 import { contentWithRenamedHeading, leadingH1Text } from '../../utils/titleSync'
+import { nearestHint } from '../../utils/editHints'
 
 const schemaOf = (name: DocumentToolName) => {
   const tool = DOCUMENT_TOOLS.find(t => t.name === name)
@@ -538,7 +539,7 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
     if (typeof target === 'string') return { ok: false, retryable: true, content: target, trace: `⚠️ edit: ${target.split('\n')[0]}` }
     if (!ctx.run.htmlShown.has(target.id)) return unseen(target)
 
-    const report = (failed: EditBlock[], where: string, chars?: number, underReview: EditBlock[] = []): ToolResult => {
+    const report = (failed: EditBlock[], where: string, chars?: number, underReview: EditBlock[] = [], haystack = ''): ToolResult => {
       if (failed.length > 0) {
         // Surface the unmatched SEARCH text for diagnosis — the usual cause
         // is the model paraphrasing instead of copying verbatim.
@@ -553,13 +554,17 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       // SEARCH that was right only gets the same SEARCH back.
       const notFound = failed.filter(f => !underReview.includes(f))
       const list = (blocks: EditBlock[]) => blocks.map(f => `- ${f.search}`).join('\n')
+      // The paragraph that comes closest, as exact HTML to copy, and what
+      // kept the two apart (curly quotes, &nbsp;, an inline tag): this is
+      // what saves the re-read step (utils/editHints).
+      const near = (blocks: EditBlock[]) => blocks.map(f => [`- ${f.search}`, haystack ? nearestHint(haystack, f.search) : ''].filter(Boolean).join('\n')).join('\n')
       return {
         ok: failed.length === 0,
         content: failed.length === 0
           ? `Applied ${applied} edit(s) to ${citeChapter(target)}.${chars === undefined ? '' : ` It now has ${chars} characters.`}`
           : `Applied ${applied} of ${edits.length} edit(s) to ${citeChapter(target)}.` +
             (notFound.length > 0
-              ? ` These SEARCH texts were not found in its current HTML — copy them exactly from the document, or read it again:\n${list(notFound)}`
+              ? ` These SEARCH texts were not found in its current HTML — copy them exactly from the document, or read it again:\n${near(notFound)}`
               : '') +
             (underReview.length > 0
               ? `\nThese were found, but they change text that is still under review — text a pending change deletes, or across the edge of a pending change — so they were not applied. Change only text that lies wholly inside the new wording, or wholly outside any pending change:\n${list(underReview)}`
@@ -586,7 +591,7 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       const current = editor && ctx.document.openId() === target.id ? editor.getHTML() : storedContent(ctx, target.id)
       const local = applyEditBlocksLocally(ctx.images.preserve(current), edits)
       if (local.failed.length < edits.length) commitHtml(ctx, target.id, ctx.images.restore(local.html))
-      return report(local.failed, ' beside the selection', undefined, local.underReview)
+      return report(local.failed, ' beside the selection', undefined, local.underReview, ctx.images.preserve(current))
     }
 
     return withLoaded(ctx, target, () => {
@@ -594,13 +599,14 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       // Edits whose SEARCH text can't be located are skipped (never
       // destructive) and reported.
       const st = docState(ctx, target)
-      const { html, failed } = applyEditBlocks(ctx.images.preserve(st.html), edits)
+      const before = ctx.images.preserve(st.html)
+      const { html, failed } = applyEditBlocks(before, edits)
       if (failed.length < edits.length) {
         st.html = stripBlankParagraphs(ctx.images.restore(html))
         st.dirty = true
       }
       commitDoc(ctx, target, st)
-      return report(failed, '', chapterChars(st.html))
+      return report(failed, '', chapterChars(st.html), [], before)
     })
   }
 })

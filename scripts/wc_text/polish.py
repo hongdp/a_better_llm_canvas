@@ -4,6 +4,7 @@ import math
 import re
 from typing import Dict, List, Optional
 
+from .jsstr import js_replace
 from .llm_context import _js_trim
 from .paragraphs import top_level_blocks
 
@@ -32,35 +33,6 @@ def _decode_entities(s: str) -> str:
 
 def _text_of(html: str) -> str:
     return _js_trim(_decode_entities(re.sub(r"<[^>]+>", "", html)))
-
-
-def _js_replace_all(s: str, token: str, repl: str) -> str:
-    """String.prototype.replace with a string replacement: `$$`, `$&`, `` $` `` and
-    `$'` in the replacement are patterns, not text (the regexes here have no groups)."""
-    out = []
-    pos = 0
-    while True:
-        i = s.find(token, pos)
-        if i == -1:
-            out.append(s[pos:])
-            return "".join(out)
-        out.append(s[pos:i])
-        expanded = []
-        j = 0
-        while j < len(repl):
-            if repl[j] == "$" and j + 1 < len(repl):
-                nxt = repl[j + 1]
-                if nxt == "$":
-                    expanded.append("$"); j += 2; continue
-                if nxt == "&":
-                    expanded.append(token); j += 2; continue
-                if nxt == "`":
-                    expanded.append(s[:i]); j += 2; continue
-                if nxt == "'":
-                    expanded.append(s[i + len(token):]); j += 2; continue
-            expanded.append(repl[j]); j += 1
-        out.append("".join(expanded))
-        pos = i + len(token)
 
 
 def split_for_polish(html: str, target: int = POLISH_CHUNK_CHARS) -> List[Dict]:
@@ -95,9 +67,9 @@ def _last_sentence(paras: List[str]) -> str:
 
 def build_polish_prompt(template: str, chunk: List[str], previous: Optional[List[str]]) -> str:
     part = "\n".join(f"<p>{p}</p>" for p in chunk)
-    out = _js_replace_all(template, "{n}", str(len(bare(_text_of("".join(chunk))))))
-    out = _js_replace_all(out, "{prev}", _last_sentence(previous) if previous is not None else "（本段是开头）")
-    return _js_replace_all(out, "{part}", part)
+    out = js_replace(template, "{n}", str(len(bare(_text_of("".join(chunk))))))
+    out = js_replace(out, "{prev}", _last_sentence(previous) if previous is not None else "（本段是开头）")
+    return js_replace(out, "{part}", part)
 
 
 def parse_polished(output: str) -> List[str]:

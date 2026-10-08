@@ -571,3 +571,14 @@ describe('rename_chapter', () => {
     expect(f.lastWrite('doc-2')).toBeUndefined()
   })
 })
+
+describe('a SEARCH that was not found names the nearest paragraph (utils/editHints)', () => {
+  it('quotes the closest paragraph as exact HTML and says what differed', async () => {
+    const fake = fakeContext('<p>她说：“我们走吧。”他没有回头。</p><p>第二段。</p>')
+    // The matcher forgives quotes alone; a changed punctuation mark makes it miss.
+    const out = await editDocumentTool.invoke({ id: 'e', name: 'edit_document', source: 'native', args: { edits: [{ search: '<p>她说："我们走吧。"他没有回头！</p>', replace: '<p>x</p>' }] } }, fake.ctx)
+    expect(out.ok).toBe(false)
+    expect(out.content).toContain('Nearest: ¶1 — copy this HTML exactly: <p>她说：“我们走吧。”他没有回头。</p>')
+    expect(out.content).toContain('curly quotes')
+  })
+})

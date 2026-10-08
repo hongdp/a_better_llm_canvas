@@ -16,10 +16,12 @@ import { useAppStore } from './useAppStore'
 import { saveDocumentsToIndexedDB } from './persistence'
 import { CLIENT_ID, adoptServerChapter, mergeServerChapters } from './documentSync'
 import { normalizeBrParagraphs } from '../utils/convert'
+import { emitRunEvent } from './runEvents'
+import type { ServerRunEvent } from '../services/serverRuns'
 
 export interface BookEvent {
   id: number
-  type: 'document' | 'documents'
+  type: 'document' | 'documents' | 'run'
   kind: 'updated' | 'deleted' | 'created' | 'replaced' | 'reordered'
   documentId?: string
   documentIds?: string[]
@@ -89,6 +91,12 @@ export async function resyncBook(deps: BookEventDeps): Promise<void> {
 
 /** Apply one event. Exported for tests. */
 export async function applyBookEvent(event: BookEvent, deps: BookEventDeps): Promise<void> {
+  // A server-side run's events go to the chat hook (store/runEvents); the
+  // document events its writes raise arrive beside them and are applied here.
+  if (event.type === 'run') {
+    emitRunEvent(event as unknown as ServerRunEvent)
+    return
+  }
   if (event.clientId === CLIENT_ID) return
   if (event.type === 'document' && event.kind === 'updated' && event.documentId) {
     const doc = docOf(event.documentId)

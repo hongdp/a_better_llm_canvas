@@ -268,3 +268,29 @@
   font-style: italic;
   border-style: dashed;
 }
+
+/* A server-side run's queue / pause controls under its bubble (RunControls). */
+.run-controls {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px dashed var(--border-color);
+  border-radius: 8px;
+  font-size: 0.8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.run-controls-text { color: var(--text-secondary); white-space: pre-wrap; }
+.run-controls-steps { margin-top: 0.3rem; }
+.run-controls-steps summary { cursor: pointer; }
+.run-controls-steps ol { margin: 0.3rem 0 0 1.2rem; padding: 0; }
+.run-controls-reasoning { color: var(--text-muted); font-size: 0.75rem; white-space: pre-wrap; }
+.run-controls-actions { display: flex; gap: 0.4rem; flex-wrap: wrap; }
+
+/* The model's checklist for a turn (AgentTurnSummary, utils/plan). */
+.agent-plan { list-style: none; margin: 0.4rem 0 0.2rem; padding: 0.4rem 0.6rem; border-left: 2px solid var(--border-color); font-size: 0.8rem; }
+.agent-plan-item { display: flex; gap: 0.4rem; line-height: 1.5; }
+.agent-plan-item.done { color: var(--text-muted); text-decoration: line-through; }
+.agent-plan-item.dropped { color: var(--text-muted); }
+.agent-plan-item.in_progress .agent-plan-title { font-weight: 600; }
+.agent-plan-mark { flex: none; }

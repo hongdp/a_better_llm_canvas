@@ -10,8 +10,9 @@ import re
 
 import pytest
 
-from wc_text import (chapter_index, context_ledger, context_selection, diff, diff_resolution, document_tools, dynamic_context,
-                     image_preservation, llm_context, paragraphs, pending_changes, polish, system_prompt, text)
+from wc_text import (chapter_index, chapters, context_ledger, context_selection, context_window, diff, diff_resolution, document_tools,
+                     dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes, plan, policy,
+                     polish, protocol_choice, provider_profile, reminders, stream_handlers, system_prompt, text, title_sync, tool_call_stream)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -45,6 +46,34 @@ def _plan_ledger(current, desired, docs, active, o=None):
 def _volatile_tail(docs, active, selected, opts=None):
     registry = []
     return dynamic_context.build_volatile_tail(docs, active, selected, lambda h: image_preservation.replace_images_with_placeholders(h, registry), opts)
+
+
+def _freshness(docs, active, in_context, seen, turn):
+    record = {k: dict(v) for k, v in seen.items()}
+    markers = freshness.freshness_markers(docs, active, in_context, record, turn)
+    return {"markers": markers, "seen": record}
+
+
+def _apply_deltas(deltas):
+    acc = {}
+    for d in deltas:
+        tool_call_stream.apply_tool_call_delta(acc, d)
+    return {"accumulators": {str(k): v for k, v in acc.items()}, "finished": tool_call_stream.finish_tool_calls(acc)}
+
+
+_TOOL_DESCRIPTORS = {
+    "update_document": {"kind": "write", "markupForm": True}, "edit_document": {"kind": "write", "markupForm": True},
+    "replace_selection": {"kind": "write", "markupForm": True}, "polish_chapter": {"kind": "write"},
+    "read_chapter": {"kind": "read"}, "open_chapter": {"kind": "navigate"},
+}
+
+
+def _collect(text, native_calls, step, opts=None):
+    return invocations.collect_step(text, native_calls, _TOOL_DESCRIPTORS.get, step, opts)
+
+
+def _decide(executed, steps_taken, corrective_used, budgets, pol):
+    return policy.decide_after_step({"executed": executed, "stepsTaken": steps_taken, "correctiveUsed": corrective_used, "budgets": budgets, "policy": pol})
 
 
 def _apply_locally(html, blocks):
@@ -112,6 +141,56 @@ FUNCTIONS = {
     ("context_selection", "extract_keywords"): context_selection.extract_keywords,
     ("context_selection", "select_reference_chapters"): context_selection.select_reference_chapters,
     ("system_prompt", "build_chat_system_prompt"): system_prompt.build_chat_system_prompt,
+    ("edit_hints", "text_similarity"): edit_hints.text_similarity,
+    ("edit_hints", "describe_differences"): edit_hints.describe_differences,
+    ("edit_hints", "nearest_paragraph"): edit_hints.nearest_paragraph,
+    ("edit_hints", "nearest_hint"): edit_hints.nearest_hint,
+    ("plan", "apply_plan_update"): plan.apply_plan_update,
+    ("plan", "render_plan"): plan.render_plan,
+    ("plan", "next_plan_item"): plan.next_plan_item,
+    ("plan", "unfinished_plan_items"): plan.unfinished_plan_items,
+    ("reminders", "constants"): lambda: {"REMINDERS_ARE_CONTEXT": reminders.REMINDERS_ARE_CONTEXT, "REPEAT_NUDGE_STEPS": reminders.REPEAT_NUDGE_STEPS,
+                                        "REPEAT_PAUSE_STEPS": reminders.REPEAT_PAUSE_STEPS, "PLAN_NUDGE_BUDGET": reminders.PLAN_NUDGE_BUDGET},
+    ("reminders", "wrap_reminder"): reminders.wrap_reminder,
+    ("reminders", "append_reminders"): reminders.append_reminders,
+    ("reminders", "repeat_nudge"): reminders.repeat_nudge,
+    ("reminders", "long_reasoning_reminder"): reminders.long_reasoning_reminder,
+    ("reminders", "plan_unfinished_nudge"): reminders.plan_unfinished_nudge,
+    ("reminders", "user_edited_reminder"): reminders.user_edited_reminder,
+    ("reminders", "structure_changed_reminder"): reminders.structure_changed_reminder,
+    ("reminders", "queued_request_reminder"): reminders.queued_request_reminder,
+    ("reminders", "call_signature"): tool_call_stream.call_signature,
+    ("freshness", "accepted_hash"): freshness.accepted_hash,
+    ("freshness", "freshness_markers"): _freshness,
+    ("context_window", "resolve_context_window_tokens"): context_window.resolve_context_window_tokens,
+    ("context_window", "estimate_tokens"): context_window.estimate_tokens,
+    ("context_window", "tokens_to_chars"): context_window.tokens_to_chars,
+    ("context_window", "history_budget_chars"): context_window.history_budget_chars,
+    ("context_window", "cjk_ratio_of"): context_window.cjk_ratio_of,
+    ("provider_profile", "get_cache_profile"): provider_profile.get_cache_profile,
+    ("provider_profile", "target_prompt_tokens"): provider_profile.target_prompt_tokens,
+    ("provider_profile", "check_threshold"): provider_profile.check_threshold,
+    ("provider_profile", "read_cached_tokens"): provider_profile.read_cached_tokens,
+    ("protocol_choice", "resolve_document_protocol"): protocol_choice.resolve_document_protocol,
+    ("title_sync", "leading_h1_text"): title_sync.leading_h1_text,
+    ("title_sync", "title_following_heading"): title_sync.title_following_heading,
+    ("title_sync", "content_with_renamed_heading"): title_sync.content_with_renamed_heading,
+    ("tool_call_stream", "partial_string_argument"): tool_call_stream.partial_string_argument,
+    ("tool_call_stream", "apply_tool_call_delta"): _apply_deltas,
+    ("stream_handlers", "constants"): lambda: {
+        "NO_ACTION_RETRY_INSTRUCTION": stream_handlers.NO_ACTION_RETRY_INSTRUCTION, "MAX_NO_ACTION_RETRIES": stream_handlers.MAX_NO_ACTION_RETRIES,
+        "ASSISTANT_PLACEHOLDER": stream_handlers.ASSISTANT_PLACEHOLDER, "INTERRUPTED_NOTICE": stream_handlers.INTERRUPTED_NOTICE,
+        "RECONNECT_FAILED_NOTICE": stream_handlers.RECONNECT_FAILED_NOTICE, "STEP_LIMIT_NOTE": stream_handlers.STEP_LIMIT_NOTE},
+    ("stream_handlers", "split_streaming_response"): stream_handlers.split_streaming_response,
+    ("stream_handlers", "build_completion_warnings"): stream_handlers.build_completion_warnings,
+    ("policy", "default_max_steps"): policy.default_max_steps,
+    ("policy", "resolve_run_settings"): policy.resolve_run_settings,
+    ("policy", "detect_step_failure"): policy.detect_step_failure,
+    ("policy", "decide_after_step"): _decide,
+    ("chapters", "cite_chapter"): chapters.cite_chapter,
+    ("chapters", "resolve_chapter"): chapters.resolve_chapter,
+    ("invocations", "collect_step"): _collect,
+    ("invocations", "plan_writes"): invocations.plan_writes,
     ("document_tools", "document_tools"): lambda: document_tools.DOCUMENT_TOOLS,
     ("document_tools", "to_openai_tools"): document_tools.to_openai_tools,
     ("document_tools", "to_anthropic_tools"): document_tools.to_anthropic_tools,

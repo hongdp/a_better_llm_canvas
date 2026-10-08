@@ -518,7 +518,7 @@ function buildFuzzyPattern(search: string): string {
  * entities decoded, quotes straightened, whitespace collapsed. Used for the
  * last-resort block-level text match.
  */
-function htmlToComparableText(html: string): string {
+export function htmlToComparableText(html: string): string {
   return html
     .replace(/<[^>]*>/g, ' ')
     .replace(/&nbsp;/gi, ' ')
@@ -578,7 +578,7 @@ function blockTextRuns(
 }
 
 /** Comparable text with every quote mark removed, not just straightened. */
-function quoteBlindText(html: string): string {
+export function quoteBlindText(html: string): string {
   return htmlToComparableText(html).replace(/["'“”‘’「」『』]/g, '').replace(/\s+/g, ' ').trim()
 }
 

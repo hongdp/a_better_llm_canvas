@@ -14,6 +14,7 @@ import type { AgentTouchedChapter } from '../types/chat'
 import type { PolishOutcome } from './polish'
 import type { AnalyzeChapter, AnalyzeOutcome } from './analyzeBook'
 import { hashContent } from '../utils/contextLedger'
+import type { PlanItem } from '../utils/plan'
 
 export type { JsonSchema, ToolSpec }
 
@@ -249,6 +250,17 @@ export interface RunState {
   selectionAttempted: boolean
   /** …and it landed. Edits beside it then apply locally around it. */
   selectionApplied: boolean
+  /** The model's checklist for this turn (the `plan` tool), shown under the bubble. */
+  plan: PlanItem[]
+  /** A question the model asked the user this step (`ask_user`); the loop stops for the answer. */
+  question: AskedQuestion | null
+}
+
+/** What `ask_user` put to the user. */
+export interface AskedQuestion {
+  question: string
+  /** Choices, the recommended one first; the user may also answer freely. */
+  options: string[]
 }
 
 /** A book's chapter list as a comparable string: ids and titles, in order. */
@@ -270,7 +282,9 @@ export function createRunState(init: { startId: string; inContext?: Iterable<str
     reads: new Map(),
     touched: new Map(),
     selectionAttempted: false,
-    selectionApplied: false
+    selectionApplied: false,
+    plan: [],
+    question: null
   }
 }
 

@@ -505,7 +505,7 @@ export const openChapterTool = defineTool<{ chapter: unknown }>({
 export const deleteChapterTool = defineTool<{ chapter: unknown }>({
   name: 'delete_chapter',
   description:
-    'Delete a chapter you created by mistake, or an empty chapter. A chapter that has text can only be deleted by the user — ask them to; never empty a chapter to get around this. ' +
+    'Delete a chapter you created by mistake, or an empty chapter. A chapter that has text can only be deleted by the user — ask them with ask_user; never empty a chapter to get around this. ' +
     'Deleting renumbers the chapters after it.',
   parameters: {
     type: 'object',
@@ -539,7 +539,7 @@ export const deleteChapterTool = defineTool<{ chapter: unknown }>({
         return refuse(`${citeChapter(target)} could not be loaded, so it is not known to be empty. It was not deleted.`, 'not loaded')
       }
       if (!isBlankContent(now.content)) {
-        return refuse(`${citeChapter(target)} has text. Only the user can delete a chapter with text: ask them to delete it from the chapter list.`, 'it has text')
+        return refuse(`${citeChapter(target)} has text. Only the user can delete a chapter with text: ask them with ask_user whether to, and tell them it is #${target.number} in the chapter list.`, 'it has text')
       }
     }
     ctx.document.remove(target.id)
