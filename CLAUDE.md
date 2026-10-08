@@ -211,7 +211,12 @@ to OpenAI/Ollama/Grok (OpenAI-compatible), Gemini, or Anthropic. All responses
 updates in `<canvas>...</canvas>` blocks so the frontend can route document
 content to the editor and conversational text to chat. The static system
 prompt (`utils/systemPrompt.ts`) carries the protocol ONLY — channels, markup,
-status line. Persona, task, and style guidance belong to the user's preset and
+status line. With the agent tools on, a markup model gets ONE consolidated
+text (`agentMarkupPrompt`: what you edit / what you can do / how a turn goes /
+format / examples); the legacy single-document rules stay byte-identical for
+the tools-off configuration. grok also gets `update_document` natively beside
+its tag (`nativeOnMarkup`): grok-4.7 delivers reference documents through a
+tool call and would not write them as tags. Persona, task, and style guidance belong to the user's preset and
 their message; do not add writing instructions to the system prompt. Every reply must also end with a
 `<doc_status>updated|unchanged</doc_status>` declaration — **mandatory, on
 every reply**, including ones that change nothing. The model decides whether an

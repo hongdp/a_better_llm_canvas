@@ -157,12 +157,39 @@ describe('agent rules: writing several chapters', () => {
     // step then repeated (105–158 s measured, 2026-10-06).
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
-    expect(markup).toContain('<canvas new_chapter="its title">…its full text…</canvas> creates it at the end of the book and fills it in one go')
+    expect(markup).toContain('<canvas new_chapter="its title">…</canvas> — a NEW chapter at the end of the book, created and filled by this one block')
     const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
     expect(tools).toContain('call update_document with `new_chapter` set to its title')
     for (const prompt of [markup, tools]) {
       expect(prompt).toContain('There is no separate step for creating a chapter')
       expect(prompt).not.toContain('create_chapter')
+    }
+  })
+
+  it('says reference material is a chapter like any other, that no tool creates one, and that two documents are two replies', async () => {
+    // Live replays (2026-10-07): asked for an outline and character cards,
+    // grok reached for open_chapter / rename_chapter to "create" the card,
+    // and weighed merging the two documents to obey one-chapter-per-reply.
+    const { buildChatSystemPrompt } = await import('../systemPrompt')
+    const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
+    expect(markup).toContain('Reference material — an outline, character cards, notes — is a chapter too, added the same way.')
+    expect(markup).toContain('These work on chapters that already exist and never add one or put text into one.')
+    // The native write is offered beside the tag, and the prompt says what each costs.
+    // User decision (2026-10-07, option 3): prose by tags, the tool only for reference material — as a rule.
+    expect(markup).toContain('PROSE IS ALWAYS WRITTEN WITH TAGS')
+    expect(markup).toContain('Use it ONLY for reference material — an outline, character cards, notes — never for prose.')
+    expect(markup).toContain('Do not call update_document for a chapter of story.')
+    // One text in reading order, not the legacy single-document rules plus patches.
+    expect(markup).toContain('1. WHAT YOU ARE EDITING')
+    expect(markup).not.toContain('WORKING ACROSS THE BOOK')
+    expect(markup).not.toContain('PROTOCOL RULES:')
+    // The warning that fed a 127-step fact-checking loop (2026-10-07) is gone.
+    expect(markup).not.toContain('easy to lose track of')
+    const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
+    expect(tools).toContain('Reference material — an outline, character cards, notes — is a chapter too, added the same way. No other tool creates a chapter.')
+    for (const continueAfterWrites of [true, false]) {
+      expect(buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites }))
+        .toContain('Two documents (say an outline and character cards) are two chapters: write one now and the other in your next reply; never merge them to fit one reply.')
     }
   })
 
@@ -174,7 +201,10 @@ describe('agent rules: writing several chapters', () => {
     const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
     expect(markup).toContain('Do each piece of work in the reply that says you are doing it: "Now I\'ll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">')
     expect(markup).not.toContain('is not your final reply')
-    expect(markup).toContain('The <doc_status> line is required only on a reply that calls no tool')
+    expect(markup).toContain('A reply that calls a tool needs no status line.')
+    // The guard at the end agrees with both write channels (it used to say tags only).
+    expect(markup).toContain('or in an update_document / edit_document call')
+    expect(markup).not.toContain('MUST be inside <canvas>, <edit>, or <selection_replace> tags')
     const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
     expect(tools).toContain('goes in the same reply as its update_document call')
     expect(tools).not.toContain('doc_status')

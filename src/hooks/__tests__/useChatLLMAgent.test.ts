@@ -156,12 +156,12 @@ afterEach(() => {
 })
 
 describe('what a step offers', () => {
-  it('offers grok (markup) only the read/navigate tools natively; writes stay tags', async () => {
+  it('offers grok (markup) the read/navigate tools and update_document natively; other writes stay tags', async () => {
     responses.push('好的。\n<doc_status>unchanged</doc_status>')
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['read_chapter', 'grep', 'list_chapters', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'analyze_book'])
+    expect(offered(0)).toEqual(['update_document', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'analyze_book'])
     // …and the system prompt teaches the chapter attribute.
     expect(calls[0][0].content).toContain('<canvas chapter="3">')
     h.unmount()

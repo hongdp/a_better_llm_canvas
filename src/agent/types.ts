@@ -344,6 +344,15 @@ export interface AgentTool<A = Record<string, unknown>> extends ToolSpec {
    */
   markupForm?: boolean
   /**
+   * Offered natively to a markup model too (with the agent tools on), beside
+   * its tag form. update_document only: measured 2026-10-07, grok asked for
+   * an outline and character cards announced "writing it now" and called a
+   * tool instead, run after run — even a create_chapter tool, which it called
+   * again and again without ever writing. It wants to deliver such a document
+   * through a call; the tag stays for prose, where the text previews live.
+   */
+  nativeOnMarkup?: boolean
+  /**
    * Runs after every other call of its step. A deletion renumbers the
    * chapters after it, and the model numbered the other calls of the same
    * reply from the index as it was.

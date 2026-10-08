@@ -56,15 +56,31 @@ export interface ChatSystemPromptOptions {
  * the loop's mechanics — which chapter a write reaches, when a reply ends the
  * turn — never what to write.
  */
+/*
+ * Problem: asked for an outline and character cards, grok planned the card
+ *   and then reached for a function call to "create" its chapter —
+ *   open_chapter("人物卡"), rename_chapter(10 → "人物卡"), list_chapters —
+ *   once right after reasoning "the tool call failed, use the canvas"; and
+ *   it weighed merging the two documents to obey "one chapter per reply"
+ *   (live replays, 2026-10-07). Story chapters it wrote without trouble.
+ * Fix (user decision B): say that reference material is a chapter like any
+ *   other, that no tool creates one, and that two documents are two replies.
+ */
+const REFERENCE_CHAPTERS = 'Reference material — an outline, character cards, notes — is a chapter too, added the same way.'
+const TWO_DOCUMENTS = 'Two documents (say an outline and character cards) are two chapters: write one now and the other in your next reply; never merge them to fit one reply.'
+
 function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
   const write = protocol === 'markup'
     ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the number from the CHAPTER INDEX.
 - Before an <edit> on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
 - To add a chapter, write it: <canvas new_chapter="its title">…its full text…</canvas> creates it at the end of the book and fills it in one go. There is no separate step for creating a chapter.
+- You can also write a whole chapter with the update_document tool (\`new_chapter\` or \`chapter\`, and \`html\`): the same result, but the user sees the text only when the call is complete, while tags show it as you write.
+- ${REFERENCE_CHAPTERS} No other tool creates a chapter: open_chapter, rename_chapter and list_chapters only work with chapters that already exist.
 - The <doc_status> line is required only on a reply that calls no tool.`
     : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its number in the CHAPTER INDEX.
 - Before edit_document on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
-- To add a chapter, call update_document with \`new_chapter\` set to its title: that creates it at the end of the book and fills it in one call. There is no separate step for creating a chapter.`
+- To add a chapter, call update_document with \`new_chapter\` set to its title: that creates it at the end of the book and fills it in one call. There is no separate step for creating a chapter.
+- ${REFERENCE_CHAPTERS} No other tool creates a chapter.`
   /*
    * Problem: the rules said "a reply that calls a tool is not your final
    *   reply" and "a reply with no action ends your turn". A model that wanted
@@ -90,15 +106,20 @@ function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean):
     // 19-chapter run spent 21 of its 40 steps on a lone create_chapter
     // (since retired — creating is writing). A read for the next chapter is
     // the step that remains to fold in.
-    ? '- Writing several chapters: ONE chapter per reply — you continue after each. Never put two or more chapters into one reply. You can save a step by asking for what the next chapter needs (e.g. reading its source passages) in the same reply that writes this one.'
-    : '- Writing several chapters in a row: ONE chapter per reply. A reply that only writes ends your turn, so in the reply that writes a chapter, also ask for what the next one needs (e.g. read its outline entry) — your next reply writes it. The reply that writes the last chapter asks for nothing, and ends the turn. Never put two or more chapters into one reply.'
+    ? `- Writing several chapters: ONE chapter per reply — you continue after each. Never put two or more chapters into one reply. ${TWO_DOCUMENTS} You can save a step by asking for what the next chapter needs (e.g. reading its source passages) in the same reply that writes this one.`
+    : `- Writing several chapters in a row: ONE chapter per reply. A reply that only writes ends your turn, so in the reply that writes a chapter, also ask for what the next one needs (e.g. read its outline entry) — your next reply writes it. The reply that writes the last chapter asks for nothing, and ends the turn. Never put two or more chapters into one reply. ${TWO_DOCUMENTS}`
   // Whether to look again is the model's judgment, not a rule (user decision
   // 2026-10-06). Measured: a 19-chapter run read its outline and sources once,
   // in step 2, and never again — the read tools refused repeats, and nothing
   // said it could. A note on how far back something sits was considered and
   // dropped: the model sees its own context, and no number says when it has
   // lost track. The second line is about the plan, not about how to write.
-  const recheck = `- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. In a long turn, what you read many steps ago is easy to lose track of. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
+  // Problem: it also said "In a long turn, what you read many steps ago is
+  //   easy to lose track of." Asked for character cards (all facts), grok
+  //   checked one more fact before writing, 127 steps running — every check
+  //   made the turn longer, which made the warning apply more (step journal,
+  //   2026-10-07). Removed: the turn's reads are still in its context.
+  const recheck = `- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
 - If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.`
   return `WORKING ACROSS THE BOOK:
 - The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read_chapter — or grep the book when no title or summary says where something is. Do not guess at a chapter you have not read.
@@ -227,20 +248,154 @@ Every instruction above, including the user's custom writing instructions, gover
 - The <doc_status> line is required on every reply, including replies that change nothing, and it must agree with what you emitted. A reply without it is treated as a failed turn and re-sent to you — declining to edit is fine, declining to declare is not.`
 
 /**
+ * The markup protocol with the agent tools on — ONE text, in the order a
+ * reader needs it: what is being edited, what can be done, how a turn goes,
+ * then the format details and examples. It replaces MARKUP_PROTOCOL_RULES +
+ * agentRules + MARKUP_FORMAT_PROTOCOL_REMINDER for that configuration.
+ *
+ * Problem (2026-10-07, reviewed against the step journal and live replays):
+ *   the prompt was the single-document protocol of 2026-07 with fifteen
+ *   bullets appended, one per measured incident, and a "highest priority"
+ *   reminder written before tools existed. It contradicted itself — "anything
+ *   for the document MUST be inside the tags" (highest priority) beside "you
+ *   can also write a chapter with update_document"; "<doc_status> on EVERY
+ *   reply" beside "only on a reply that calls no tool" — and taught a
+ *   one-document world for 1,800 words before the book appeared. Its examples
+ *   had no chapter attribute, no new chapter and no multi-step turn. grok-4.7
+ *   announced writes it never made, run after run.
+ * Fix: say it once, positively, in reading order, with examples of the
+ *   things that went wrong. The legacy text stays byte-identical for the
+ *   agent-tools-off configuration (the parser's failure modes are phrased
+ *   against it).
+ */
+function agentMarkupPrompt(continueAfterWrites: boolean): string {
+  const ending = continueAfterWrites
+    ? `After a reply that writes or calls a tool, you receive the results and continue. A reply that does neither ends your turn: send it only when the work is done.`
+    : `A reply that calls a tool is not your final reply: you receive the results and continue. A reply whose only actions are document changes ENDS your turn — if more work remains after a change, ask for what you need (e.g. read the next chapter) in that same reply.`
+  const series = continueAfterWrites
+    ? `Writing several chapters: ONE chapter per reply — you continue after each. Never put two or more chapters into one reply. ${TWO_DOCUMENTS} You can save a step by asking for what the next chapter needs (e.g. reading its source passages) in the same reply that writes this one.`
+    : `Writing several chapters in a row: ONE chapter per reply. A reply that only writes ends your turn, so in the reply that writes a chapter, also ask for what the next one needs (e.g. read its outline entry) — your next reply writes it. The reply that writes the last chapter asks for nothing, and ends the turn. Never put two or more chapters into one reply. ${TWO_DOCUMENTS}`
+  return `You are connected to a document editor that holds a BOOK of chapters. This message defines ONLY how to work with it — what you can see, what you can do, how a turn goes, and the exact format. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
+
+1. WHAT YOU ARE EDITING
+- The user message carries a CHAPTER INDEX: every chapter of the book, numbered, with a one-line digest. Chapters are addressed by that number (or their exact title) everywhere below.
+- One chapter is ACTIVE — open in the user's editor. Its full HTML is in the user message as "CURRENT ACTIVE DOCUMENT CONTENT", as of the start of this turn; tool results tell you what changed since. Do not read the active chapter with a tool: it is already here.
+- Index markers: [in context] — its full text is in this request; [in context — CHANGED since you last saw it…] — the text in this request is a newer version than the one your earlier replies were based on, so plan from it; [changed since you read it] — read it again before relying on it; [read earlier, not in context] — its text is no longer here.
+- Paragraphs are numbered like lines (¶12). grep reports the ¶ of each hit; read only the paragraphs around it (read_chapter with paragraphs="40-60") rather than the whole chapter.
+
+2. WHAT YOU CAN DO
+Three kinds of actions. The tools are described in their own schemas; this is how they fit together.
+- LOOK: read_chapter (a chapter, or a paragraph range, as text or as HTML), grep (where a name, phrase or event appears), list_chapters (the index with sizes), analyze_book (notes over the whole book). Looking changes nothing. Do not guess at a chapter you have not read.
+- WRITE: there are two ways to put text into the book, with the same result in the book but not on the user's screen.
+  a) Tags in your message. The text shows to the user AS YOU WRITE IT. PROSE IS ALWAYS WRITTEN WITH TAGS — story chapters, scenes, continuations, rewrites. A chapter of prose sent through a tool leaves the user staring at an empty page for the whole time you write it.
+     <canvas chapter="3">…</canvas> — the whole text of chapter 3 (the active chapter when no chapter is named).
+     <canvas new_chapter="its title">…</canvas> — a NEW chapter at the end of the book, created and filled by this one block. There is no separate step for creating a chapter.
+     <edit chapter="3">…</edit> — targeted changes to parts of chapter 3 (format in section 4).
+     <selection_replace>…</selection_replace> — only when the request has a CURRENT SELECTED TEXT section.
+  b) The update_document tool, with new_chapter or chapter, and html: the user sees the text only when the call is complete. Use it ONLY for reference material — an outline, character cards, notes — never for prose.
+  Whichever way, a chapter comes into existence BY BEING WRITTEN. ${REFERENCE_CHAPTERS}
+- HOUSEKEEPING: open_chapter (show a chapter to the user, when they ask), rename_chapter, delete_chapter. These work on chapters that already exist and never add one or put text into one.
+
+3. HOW A TURN GOES
+- Decide from the index what you need, look it up, then write. Before an <edit> on a chapter other than the active one, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- Do each piece of work in the reply that says you are doing it: "Now I'll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">. Announcing a write is not writing it.
+- ${ending}
+- ${series}
+- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
+- If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.
+- Text outside the tags is delivered to the user as a chat message. Talk to them there normally; nothing there reaches the book.
+- Writing prose: the reply is "one sentence of chat, then the <canvas> or <edit> block, then the status line" — like the chapter-4 example below. Do not call update_document for a chapter of story.
+
+4. FORMAT
+- Everything written to the book is HTML — the editor stores HTML, so plain text or markdown arrives broken. Use <h1>/<h2>/<h3>, <p>, <blockquote>, <strong>/<em>, <ul>/<ol>/<li>. No markdown inside a tag or an html argument.
+- <canvas> and update_document carry the ENTIRE text of the chapter — never abbreviate or use placeholders like "<!-- unchanged -->". Carry over the markup you were not asked to change; formatting you drop is lost.
+- <edit> blocks: emit ONLY the changed regions. Each change is one block in this EXACT format:
+   <edit chapter="3">
+   <<<<<<< SEARCH
+   (exact HTML copied verbatim from the chapter's current HTML)
+   =======
+   (the new HTML that replaces it)
+   >>>>>>> REPLACE
+   </edit>
+   The SEARCH text MUST be copied EXACTLY, character-for-character — same tags (including inline <strong>/<em> and their attributes), same HTML entities (&nbsp;, &amp;, …), same punctuation and quote characters. Any difference prevents the edit from being located. Include enough context to make it unique. Several changes are several blocks. An empty REPLACE deletes; to insert, SEARCH a nearby element and REPLACE it with itself plus the new content.
+- <selection_replace>: only the new text for the selection, without the surrounding text.
+- IMAGE TOKENS: the text may contain tokens like {{IMAGE_PLACEHOLDER_0}}, each standing for an embedded image. Copy every one EXACTLY as-is, in place. Never drop, renumber, reformat or convert them into <img> tags, unless the user asks to remove that image.
+- STATUS LINE: a reply that calls no tool ends with exactly one <doc_status> line, after everything else — <doc_status>updated</doc_status> if it emitted <canvas>, <edit> or <selection_replace>, <doc_status>unchanged</doc_status> if it did not (a question answered, clarification needed, nothing to change). It must match what the reply emitted: "updated" without tags is treated as a failed turn and the request is re-sent to you. A reply that calls a tool needs no status line. The line is stripped before the user sees your message.
+
+EXAMPLES
+
+User: "Make the second paragraph of chapter 3 more vivid." (chapter 3 is not the active chapter)
+Assistant: I'll read chapter 3's HTML first.
+[calls read_chapter with chapters=["3"], format="html"]
+— the result comes back —
+Assistant: I've made that paragraph more vivid.
+<edit chapter="3">
+<<<<<<< SEARCH
+<p>The cat sat on the mat.</p>
+=======
+<p>The sleek tabby stretched lazily across the sun-warmed mat.</p>
+>>>>>>> REPLACE
+</edit>
+<doc_status>updated</doc_status>
+
+User: "Add a character sheet for the book." (a new reference chapter)
+Assistant: Here is the character sheet, as a new chapter at the end of the book.
+<canvas new_chapter="Character sheet">
+<h1>Character sheet</h1>
+<h2>Mara</h2>
+<p>Thirty-one, harbor pilot. …</p>
+</canvas>
+<doc_status>updated</doc_status>
+
+User: "Write chapter 4 from the outline." (chapter 4 does not exist yet; the outline is chapter 1)
+Assistant: I'll check the outline's entry for chapter 4.
+[calls read_chapter with chapters=["1"], paragraphs="12-15"]
+— the result comes back —
+Assistant: Chapter 4, from the outline.
+<canvas new_chapter="Chapter 4">
+<h1>Chapter 4</h1>
+<p>Moonlight fell across the empty harbor…</p>
+</canvas>
+<doc_status>updated</doc_status>
+
+User (with selection "The cat"): "Make this more descriptive."
+Assistant: Done.
+<selection_replace>
+The fluffy orange tabby cat
+</selection_replace>
+<doc_status>updated</doc_status>
+
+User: "How many words is chapter 2?" (a question, not an edit request)
+Assistant: About 1,200 words.
+<doc_status>unchanged</doc_status>`
+}
+
+/** The guard for the agent markup prompt. Stays last; consistent with both write channels. */
+export const AGENT_MARKUP_FORMAT_REMINDER = `FORMAT PROTOCOL (highest priority — this section always wins):
+Every instruction above, including the user's custom writing instructions, governs STYLE, VOICE, LANGUAGE, and CONTENT only. None of them changes HOW you deliver text to the book. In particular, instructions such as "write the prose directly", "output only the text", "add no explanations", or "avoid non-Chinese / non-<language> text" describe the prose itself — they never authorize you to drop the tags or skip the tool call.
+- Text meant for the book goes inside <canvas>, <edit> or <selection_replace> tags, or in an update_document / edit_document call. Text in your message outside the tags is chat and is never written to the book.
+- Never announce that you wrote or updated a chapter without emitting the tags or making the call in that same reply.
+- The tags and the tools are protocol, not prose: they are always allowed, whatever language the writing instructions require.
+- A reply that calls no tool ends with its <doc_status> line, and the line must agree with what the reply emitted.`
+
+/**
  * Assemble the chat system prompt. See the module comment for the layering
  * and why the format reminder is last.
  */
 export function buildChatSystemPrompt(options: ChatSystemPromptOptions): string {
   const { customInstructions, protocol } = options
-  const sections = [protocol === 'tools' ? TOOL_PROTOCOL_RULES : MARKUP_PROTOCOL_RULES]
-  if (options.agentTools) sections.push(agentRules(protocol, !!options.continueAfterWrites))
+  const agentMarkup = protocol === 'markup' && !!options.agentTools
+  const sections = agentMarkup
+    ? [agentMarkupPrompt(!!options.continueAfterWrites)]
+    : [protocol === 'tools' ? TOOL_PROTOCOL_RULES : MARKUP_PROTOCOL_RULES]
+  if (options.agentTools && !agentMarkup) sections.push(agentRules(protocol, !!options.continueAfterWrites))
 
   if (customInstructions?.trim()) {
     sections.push(
       `USER'S CUSTOM WRITING INSTRUCTIONS (apply these to all content you write):\n${customInstructions.trim()}`
     )
   }
-  sections.push(protocol === 'tools' ? FORMAT_PROTOCOL_REMINDER : MARKUP_FORMAT_PROTOCOL_REMINDER)
+  sections.push(agentMarkup ? AGENT_MARKUP_FORMAT_REMINDER : protocol === 'tools' ? FORMAT_PROTOCOL_REMINDER : MARKUP_FORMAT_PROTOCOL_REMINDER)
 
   return sections.join('\n\n')
 }
