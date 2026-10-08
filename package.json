@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepare": "git config core.hooksPath .githooks || true",
-    "test:acceptance": "vitest run --config vitest.acceptance.config.ts"
+    "test:acceptance": "vitest run --config vitest.acceptance.config.ts",
+    "parity:fixtures": "WRITE_FIXTURES=1 vitest run src/parity"
   },
   "dependencies": {
     "@tiptap/extension-placeholder": "^3.23.6",

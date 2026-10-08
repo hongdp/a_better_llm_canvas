@@ -1,0 +1,358 @@
+{
+ "module": "paragraphs",
+ "cases": {
+  "block_text": [
+   {
+    "input": [
+     "<p>a&nbsp;b<br>c</p>"
+    ],
+    "output": "a b\nc"
+   },
+   {
+    "input": [
+     "<ul><li>x</li><li>y &amp; z</li></ul>"
+    ],
+    "output": "x\ny & z"
+   },
+   {
+    "input": [
+     "<p>  tail \t\n</p>"
+    ],
+    "output": "tail"
+   },
+   {
+    "input": [
+     "plain"
+    ],
+    "output": "plain"
+   }
+  ],
+  "top_level_blocks": [
+   {
+    "input": [
+     "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>"
+    ],
+    "output": [
+     "<h1>第三章 风起</h1>",
+     "<p>阿青推开门，<strong>风</strong>从巷口灌进来。</p>",
+     "<p>她想：“该走了。”</p>",
+     "<blockquote><p>门外无人。</p></blockquote>",
+     "<ul><li>一</li><li>二 &amp; 三</li></ul>",
+     "<p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p>",
+     "<p>{{IMAGE_PLACEHOLDER_0}}</p>",
+     "<p></p>",
+     "<p>loose text here</p>",
+     "<hr>",
+     "<p>a&nbsp;b<br>c</p>"
+    ]
+   },
+   {
+    "input": [
+     "<h2>Title</h2><p>The cat sat on the mat.</p><p>It was <em>warm</em>, and &lt;quiet&gt; &quot;outside&quot; &#39;then&#39;.</p>"
+    ],
+    "output": [
+     "<h2>Title</h2>",
+     "<p>The cat sat on the mat.</p>",
+     "<p>It was <em>warm</em>, and &lt;quiet&gt; \"outside\" 'then'.</p>"
+    ]
+   },
+   {
+    "input": [
+     ""
+    ],
+    "output": []
+   },
+   {
+    "input": [
+     "loose only"
+    ],
+    "output": [
+     "<p>loose only</p>"
+    ]
+   },
+   {
+    "input": [
+     "<p>a</p> between <p>b</p>"
+    ],
+    "output": [
+     "<p>a</p>",
+     "<p>between</p>",
+     "<p>b</p>"
+    ]
+   },
+   {
+    "input": [
+     "<p>un &amp; closed"
+    ],
+    "output": [
+     "<p>un &amp; closed</p>"
+    ]
+   },
+   {
+    "input": [
+     "<img src=\"x\"><p>after</p>"
+    ],
+    "output": [
+     "<img src=\"x\">",
+     "<p>after</p>"
+    ]
+   },
+   {
+    "input": [
+     "<p><img src=\"y\"/></p>text &amp; more"
+    ],
+    "output": [
+     "<p><img src=\"y\"></p>",
+     "<p>text & more</p>"
+    ]
+   }
+  ],
+  "chapter_paragraphs": [
+   {
+    "input": [
+     "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>"
+    ],
+    "output": [
+     {
+      "number": 1,
+      "html": "<h1>第三章 风起</h1>",
+      "text": "第三章 风起",
+      "kind": "heading"
+     },
+     {
+      "number": 2,
+      "html": "<p>阿青推开门，<strong>风</strong>从巷口灌进来。</p>",
+      "text": "阿青推开门，风从巷口灌进来。",
+      "kind": "paragraph"
+     },
+     {
+      "number": 3,
+      "html": "<p>她想：“该走了。”</p>",
+      "text": "她想：“该走了。”",
+      "kind": "paragraph"
+     },
+     {
+      "number": 4,
+      "html": "<blockquote><p>门外无人。</p></blockquote>",
+      "text": "门外无人。",
+      "kind": "other"
+     },
+     {
+      "number": 5,
+      "html": "<ul><li>一</li><li>二 &amp; 三</li></ul>",
+      "text": "一\n二 & 三",
+      "kind": "other"
+     },
+     {
+      "number": 6,
+      "html": "<p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p>",
+      "text": "",
+      "kind": "image"
+     },
+     {
+      "number": 7,
+      "html": "<p>{{IMAGE_PLACEHOLDER_0}}</p>",
+      "text": "",
+      "kind": "image"
+     },
+     {
+      "number": 8,
+      "html": "<p>loose text here</p>",
+      "text": "loose text here",
+      "kind": "paragraph"
+     },
+     {
+      "number": 9,
+      "html": "<p>a&nbsp;b<br>c</p>",
+      "text": "a b\nc",
+      "kind": "paragraph"
+     }
+    ]
+   },
+   {
+    "input": [
+     "<h2>Title</h2><p>The cat sat on the mat.</p><p>It was <em>warm</em>, and &lt;quiet&gt; &quot;outside&quot; &#39;then&#39;.</p>"
+    ],
+    "output": [
+     {
+      "number": 1,
+      "html": "<h2>Title</h2>",
+      "text": "Title",
+      "kind": "heading"
+     },
+     {
+      "number": 2,
+      "html": "<p>The cat sat on the mat.</p>",
+      "text": "The cat sat on the mat.",
+      "kind": "paragraph"
+     },
+     {
+      "number": 3,
+      "html": "<p>It was <em>warm</em>, and &lt;quiet&gt; \"outside\" 'then'.</p>",
+      "text": "It was warm, and <quiet> \"outside\" 'then'.",
+      "kind": "paragraph"
+     }
+    ]
+   },
+   {
+    "input": [
+     "<p>{{IMAGE_PLACEHOLDER_3}}</p>"
+    ],
+    "output": [
+     {
+      "number": 1,
+      "html": "<p>{{IMAGE_PLACEHOLDER_3}}</p>",
+      "text": "",
+      "kind": "image"
+     }
+    ]
+   },
+   {
+    "input": [
+     "<h1>标题</h1><p>一。</p><p></p><p><img src=\"x\"></p><ul><li>a</li><li>b</li></ul>loose"
+    ],
+    "output": [
+     {
+      "number": 1,
+      "html": "<h1>标题</h1>",
+      "text": "标题",
+      "kind": "heading"
+     },
+     {
+      "number": 2,
+      "html": "<p>一。</p>",
+      "text": "一。",
+      "kind": "paragraph"
+     },
+     {
+      "number": 3,
+      "html": "<p><img src=\"x\"></p>",
+      "text": "",
+      "kind": "image"
+     },
+     {
+      "number": 4,
+      "html": "<ul><li>a</li><li>b</li></ul>",
+      "text": "a\nb",
+      "kind": "other"
+     },
+     {
+      "number": 5,
+      "html": "<p>loose</p>",
+      "text": "loose",
+      "kind": "paragraph"
+     }
+    ]
+   },
+   {
+    "input": [
+     "<p>before <ins class=\"diff-addition\" data-diff-id=\"diff-a\">added</ins> after</p><p><del class=\"diff-deletion\" data-diff-id=\"diff-b\">gone</del>kept text</p><p><ins class=\"diff-addition\" data-diff-id=\"diff-c\">whole new paragraph</ins></p><ul><li><ins class=\"diff-addition\" data-diff-id=\"diff-d\">new item</ins></li></ul><p>old <del class=\"diff-deletion\" data-diff-id=\"diff-e\">word</del><ins data-diff-id=\"diff-e\" class=\"diff-addition\">term</ins> here</p><p><ins class=\"diff-addition\" data-diff-id=\"diff-f\">X </ins>A<ins class=\"diff-addition\" data-diff-id=\"diff-f\"> Y</ins></p>"
+    ],
+    "output": [
+     {
+      "number": 1,
+      "html": "<p>before <ins class=\"diff-addition\" data-diff-id=\"diff-a\">added</ins> after</p>",
+      "text": "before added after",
+      "kind": "paragraph"
+     },
+     {
+      "number": 2,
+      "html": "<p><del class=\"diff-deletion\" data-diff-id=\"diff-b\">gone</del>kept text</p>",
+      "text": "gonekept text",
+      "kind": "paragraph"
+     },
+     {
+      "number": 3,
+      "html": "<p><ins class=\"diff-addition\" data-diff-id=\"diff-c\">whole new paragraph</ins></p>",
+      "text": "whole new paragraph",
+      "kind": "paragraph"
+     },
+     {
+      "number": 4,
+      "html": "<ul><li><ins class=\"diff-addition\" data-diff-id=\"diff-d\">new item</ins></li></ul>",
+      "text": "new item",
+      "kind": "other"
+     },
+     {
+      "number": 5,
+      "html": "<p>old <del class=\"diff-deletion\" data-diff-id=\"diff-e\">word</del><ins data-diff-id=\"diff-e\" class=\"diff-addition\">term</ins> here</p>",
+      "text": "old wordterm here",
+      "kind": "paragraph"
+     },
+     {
+      "number": 6,
+      "html": "<p><ins class=\"diff-addition\" data-diff-id=\"diff-f\">X </ins>A<ins class=\"diff-addition\" data-diff-id=\"diff-f\"> Y</ins></p>",
+      "text": "X A Y",
+      "kind": "paragraph"
+     }
+    ]
+   }
+  ],
+  "chapter_chars": [
+   {
+    "input": [
+     "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>"
+    ],
+    "output": 61
+   },
+   {
+    "input": [
+     "<h2>Title</h2><p>The cat sat on the mat.</p><p>It was <em>warm</em>, and &lt;quiet&gt; &quot;outside&quot; &#39;then&#39;.</p>"
+    ],
+    "output": 70
+   },
+   {
+    "input": [
+     ""
+    ],
+    "output": 0
+   }
+  ],
+  "numbered_line": [
+   {
+    "input": [
+     {
+      "number": 1,
+      "html": "<h2>T</h2>",
+      "text": "T",
+      "kind": "heading"
+     }
+    ],
+    "output": "¶1 # T"
+   },
+   {
+    "input": [
+     {
+      "number": 2,
+      "html": "<p>a &amp; b</p>",
+      "text": "a & b",
+      "kind": "paragraph"
+     }
+    ],
+    "output": "¶2 a & b"
+   },
+   {
+    "input": [
+     {
+      "number": 3,
+      "html": "<p><img src=\"x\"></p>",
+      "text": "",
+      "kind": "image"
+     }
+    ],
+    "output": "¶3 [image]"
+   },
+   {
+    "input": [
+     {
+      "number": 4,
+      "html": "<ul><li>x</li><li>y</li></ul>",
+      "text": "x\ny",
+      "kind": "other"
+     }
+    ],
+    "output": "¶4 x / y"
+   }
+  ]
+ }
+}

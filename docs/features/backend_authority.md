@@ -143,10 +143,12 @@ Measured on `claude/chat-agentic-loop-tools-26ee78` (non-test lines):
 
 **HTML parsing.** Several of these use the browser's `DOMParser`
 (paragraphs, image handling, plain-text extraction). Python uses one parser
-for all of them; `html5lib` follows the same HTML5 algorithm as browsers.
-TipTap's own normalization (what the editor stores after a round trip) is
-NOT reproduced. The server stores what it is sent, and the editor's
-normalized output arrives as an ordinary user patch.
+for all of them. As built (§4.2) it is the standard library's `html.parser`
+driving a small tree builder, `scripts/wc_text/dom.py`, whose serializer
+reproduces what a browser's `innerHTML` gives back — `html5lib` was
+considered and not needed. TipTap's own normalization (what the editor
+stores after a round trip) is NOT reproduced. The server stores what it is
+sent, and the editor's normalized output arrives as an ordinary user patch.
 
 **Parity before replacement.** The TypeScript suites are the
 specification:
@@ -244,6 +246,66 @@ Each phase ships on its own and leaves the app working.
 - the focus-time check still reloads the whole book through `switchBook`
   when another device wrote. It also brings chat and settings, which have
   no events yet.
+
+### 4.2 Phase 2 as built
+
+**The port** is the Python package `scripts/wc_text/`, one module per
+TypeScript file, function for function, with the same names in snake case:
+
+| Module | Source | What it holds |
+|---|---|---|
+| `text.py` | `utils/text.ts` | tag parsing (`<canvas>`, `<edit>`, `<selection_replace>`), the six-level edit matcher, local edit application with diff markup, doc-status parsing, word counts |
+| `diff.py`, `diff_resolution.py` | `utils/diff.ts`, `utils/diffResolution.ts` | the block-then-token LCS diff with its cell cap, markup stripping, accept/reject on HTML |
+| `paragraphs.py`, `pending_changes.py` | `utils/paragraphs.ts`, `utils/pendingChanges.ts` | numbered paragraphs, the was/now list of pending changes |
+| `image_preservation.py` | `utils/imagePreservation.ts` | placeholders in and out, and the re-insertion of images a rewrite dropped |
+| `llm_context.py`, `chapter_index.py`, `context_selection.py`, `context_ledger.py` | the matching `utils/*.ts` | plain text, the history budget, the chapter index, the prefetch scorer, the append-only ledger planner (FNV-1a hash included) |
+| `dynamic_context.py` | `hooks/chat/dynamicContext.ts` | the ledger block and the volatile tail |
+| `system_prompt.py`, `document_tools.py` | `utils/systemPrompt.ts`, `utils/documentTools.ts` | prompt assembly, the three document tools and the provider adapters |
+| `polish.py` | `utils/polish.ts` | chunking, prompt, parsing, validation and reassembly of the polish pass |
+| `dom.py` | — | the fragment parser and browser-style serializer the above share |
+
+Not ported, by kind: browser-only helpers (blob URL and GIF conversion,
+`getTimestampId`), `collectDiffRanges` (it walks a ProseMirror document, so
+it belongs to the editor), and the React halves of the hooks.
+
+**The harness.** `src/parity/__tests__/parity.test.ts` holds every case:
+it runs each through the TypeScript and writes `{input, output}` to
+`scripts/parity/fixtures/<module>.json` when `WRITE_FIXTURES=1`
+(`npm run parity:fixtures`), and otherwise asserts that the committed
+fixtures still equal what the TypeScript produces — so a change to a
+ported function cannot pass `npm test` without regenerating them.
+`scripts/test_parity.py` runs the same inputs through the Python and
+compares byte for byte; it also fails when a fixture names a function the
+Python has no port for. The prompt's fixed texts travel the same way:
+`promptTexts()` writes them to `scripts/wc_text/data/prompt_texts.json`,
+and `system_prompt.py` assembles from that file with the ported logic. One
+source for the bytes, because grok's cache is exact-prefix. Where a
+function takes a callback the JSON cannot carry (the ledger renderer, the
+image preserver), both sides use the same fixed stand-in. Random diff ids
+are renumbered in order of appearance on both sides before comparing.
+
+Fourteen fixture files, 533 cases, all green on both sides.
+
+**What the harness caught**, each now a comment at the place it matters:
+JavaScript's `\w` and `\d` are ASCII-only while Python's are not;
+`String.prototype.trim` strips U+FEFF and Python's `strip()` does not
+(`_js_trim`); `DOMParser` decodes entities, drops `/>` and closes an open
+`<p>` on the way back out, so slicing the source never matched
+`outerHTML`; a document's leading whitespace never reaches the body;
+`Math.round` rounds halves up, Python's `round` to even; `Date.parse`
+reads a zone-less date as UTC, `fromisoformat` as local time; the ledger
+hash walks UTF-16 code units; a string replacement interprets `$&` and
+`$$`; and `undefined` vanishes from JSON while `None` does not.
+
+**Known difference.** Lengths and slices count code points in Python and
+UTF-16 units in JavaScript, so a truncation boundary can move by one next
+to an astral character (an emoji). The hash is exact; the rest is
+tolerated until a fixture shows it mattering.
+
+**Exit criterion.** The fixtures are green. The second half — a replay of
+real stored turns — waits for phase 3: the step journal records what each
+step did, not the request it sent, and the server will only assemble a
+real request once it owns the run.
 
 ## 5. Risks
 
