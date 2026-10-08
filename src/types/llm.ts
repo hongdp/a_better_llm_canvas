@@ -48,6 +48,24 @@ export interface ProviderConfig {
    */
   polishModel?: string
   /**
+   * Run chat turns on the server (backend_authority.md §4.3): the loop, the
+   * tools and the document writes happen in the API process, so a turn
+   * survives a reload, a closed tab and an API restart, and a request sent
+   * mid-turn queues. Absent = off: the turn runs in this tab as before.
+   */
+  serverRuns?: boolean
+  /**
+   * Server runs only: prompt + completion tokens one run may spend before it
+   * is paused for the user to look at (0 or absent = no budget).
+   */
+  runTokenBudget?: number
+  /**
+   * Hidden reasoning tokens in one step that wrote nothing, past which the
+   * step after next is told to act instead of think (agent/reminders).
+   * Only where the provider reports reasoning tokens (grok). 0 or absent = off.
+   */
+  longReasoningReminderTokens?: number
+  /**
    * Per request, not a setting: 'none' forbids new tool calls while keeping
    * the tools in the request (the agentic run's final step).
    */
@@ -137,9 +155,17 @@ export interface LLMMessage {
  * time producing a generation that streamed correctly and changed nothing.
  * The compiler cannot catch it — every field here except three is optional.
  */
+/** What a step cost. `reasoningTokens` only where the provider reports it (grok's Responses API). */
+export interface StreamUsage {
+  promptTokens: number
+  completionTokens: number
+  cachedPromptTokens?: number
+  reasoningTokens?: number
+}
+
 export interface StreamCallbacks {
   onChunk: (chunk: string) => void
-  onDone: (fullText: string, usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }) => void
+  onDone: (fullText: string, usage?: StreamUsage) => void
   onError: (error: Error) => void
   /**
    * The transport is connected but the model has produced nothing yet.

@@ -403,6 +403,64 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 </>
               )}
 
+              {supportsReasoningEffort(activeTab, currentConfig.model) && (
+                <div className="form-group">
+                  <label htmlFor="long-reasoning-input">{t.settings.longReasoningReminder}</label>
+                  <input
+                    id="long-reasoning-input"
+                    type="number"
+                    min={0}
+                    step={500}
+                    className="form-input"
+                    value={currentConfig.longReasoningReminderTokens ?? ''}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      const n = Number(raw)
+                      updateProviderConfig(activeTab, { longReasoningReminderTokens: raw === '' || !Number.isFinite(n) || n <= 0 ? undefined : Math.floor(n) })
+                    }}
+                  />
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                    {t.settings.longReasoningReminderHint}
+                  </p>
+                </div>
+              )}
+
+              {/* Server-side runs (backend_authority.md §4.3), per provider. */}
+              <div className="form-group">
+                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                  <input
+                    type="checkbox"
+                    checked={currentConfig.serverRuns === true}
+                    onChange={(e) => updateProviderConfig(activeTab, { serverRuns: e.target.checked })}
+                  />
+                  {t.settings.serverRuns}
+                </label>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                  {t.settings.serverRunsHint}
+                </p>
+              </div>
+              {currentConfig.serverRuns === true && (
+                <div className="form-group">
+                  <label htmlFor="run-token-budget-input">{t.settings.runTokenBudget}</label>
+                  <input
+                    id="run-token-budget-input"
+                    type="number"
+                    min={0}
+                    step={1000}
+                    className="form-input"
+                    value={currentConfig.runTokenBudget ?? ''}
+                    onChange={(e) => {
+                      const raw = e.target.value
+                      const n = Number(raw)
+                      updateProviderConfig(activeTab, { runTokenBudget: raw === '' || !Number.isFinite(n) || n <= 0 ? undefined : Math.floor(n) })
+                    }}
+                  />
+                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                    {t.settings.runTokenBudgetHint}
+                  </p>
+                </div>
+              )}
+
               {/* Debug Mode Checkbox */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>
                 <input 

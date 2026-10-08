@@ -98,7 +98,7 @@ generalizes them to the book.
   - a selection rewrite is placed by text (`alignSelectionBlocks`, already
     built this way), from the request's captured selection text.
 
-#### Runaway runs (user decision, 2026-10-08)
+#### Runaway runs (user decision, 2026-10-08; built in phase 3, §4.3)
 
 On the client, three things end a run that does no useful work: the user
 presses Stop, a reload or a closed tab kills it, and `agentMaxSteps`. On the
@@ -306,6 +306,121 @@ tolerated until a fixture shows it mattering.
 real stored turns — waits for phase 3: the step journal records what each
 step did, not the request it sent, and the server will only assemble a
 real request once it owns the run.
+
+### 4.3 Phase 3 as built
+
+**The switch.** `ProviderConfig.serverRuns` (Settings, per provider; off
+by default). With it on and the user logged in, a chat turn is posted to
+`POST /api/books/{id}/runs` and the loop runs in the API process. Off, the
+turn runs in the tab exactly as before. Roleplay, the Polish button,
+summaries and imports are untouched.
+
+**Server** (`scripts/server_runs.py`, `server_context.py`,
+`server_documents.py`, the `wc_agent/` package):
+
+- `wc_agent/` is the port of `src/agent`: the run controller as an async
+  loop (`run.py`), the registry, and every tool — the three writes,
+  `rename_chapter`, `read_chapter`, `grep`, `list_chapters`,
+  `open_chapter`, `delete_chapter`, `polish_chapter`, `analyze_book` —
+  over the ports of `wc_agent/types.py`. Two things differ from the client
+  by construction: there is no editor, so a selection rewrite is always
+  placed by its text in the stored chapter, and edits beside a selection
+  read the stored chapter. `test_agent.py` runs the tools and the loop
+  against an in-memory book.
+- `server_context.py` assembles the request (the port of
+  `assembleChatRequest`): the prefetch scorer, the system prompt, the
+  history budget, the append-only ledger, the freshness markers and the
+  volatile tail, all from `wc_text`. The ledger and the seen record live
+  in the `run_context` table per book and provider|model — the context a
+  browser tab used to hold in refs — so a reload or another device keeps
+  the cached prefix.
+- `server_documents.py` holds the revision-checked write, creation,
+  deletion and snapshot the run's ports use; each publishes its book
+  event, so every open tab (the sending one included) applies the run's
+  writes as it applies another device's.
+- Each step is a `GenerationJob` (`server_generation`), so the transports,
+  the decrypt and effort retries and the step journal are the ones the
+  client path uses. The job's events are forwarded live as `run.*` events;
+  the markup preview is computed server-side (`split_streaming_response`,
+  `preview_rewrite`) and sent as `run.preview {documentId, html}`.
+- `run.*` events on the book's event stream: `queued`, `started`,
+  `step_started`, `delta`, `reasoning`, `preview`, `preview_selection`,
+  `progress`, `lock`, `open`, `corrective`, `step` (the record so far),
+  `paused`, `finished` (the final content, record, reasoning items and the
+  version snapshots taken). The hub's queue is sized for per-token deltas.
+- **Persisted after every step** (`runs` table: request, the loop's
+  snapshot, the record): `AgentRun.snapshot()` carries the append-only
+  messages, what the model has seen (by content hash, as a reload does),
+  the chapters created and touched, and whether a step follows. The
+  lifespan hook re-launches every run that was running when the process
+  died, from its last completed step — the step in flight is made again,
+  which the exact-prefix cache makes cheap (`test_runs.py`).
+- **Messages**: the server inserts the turn's two messages at submission
+  (the record carries `run: {id, status}`) and writes the final content,
+  record, reasoning items and usage at the end, so another device loads a
+  finished turn without ever having seen its events.
+- **One run per book; the rest queue** (§6.3). A request posted while a
+  run is active is `queued` and starts when the current one finishes. Its
+  history is the client's snapshot corrected on start: a bubble that was
+  still a placeholder is read from the messages table, and turns that
+  landed meanwhile are appended. **Stop holds the queue**: the step in
+  flight is aborted, the run ends as `stopped`, and queued requests stay
+  listed with "send now" and "remove" (`/start`, `DELETE`); a new request
+  while nothing runs still starts at once.
+- **Pause, never kill** ("Runaway runs"). Between steps the engine
+  suspends a run, with a `paused` event naming why and the last three
+  steps' calls, answers and reasoning heads: `repeating` — the last three
+  steps made the same calls with the same arguments and wrote nothing
+  (the calls, not the answers: `list_chapters` answers "identical to your
+  previous result" from the second time, and the 13× loop of 2026-10-06
+  is the same call either way); `unattended` — no tab was subscribed to the
+  book for more than 12 steps; `token_budget` — prompt plus completion
+  tokens passed `runTokenBudget` (Settings; absent = none). `/resume`
+  continues from the next step; the guard then judges only steps after
+  the resume. A budget in money waits for a price table (none exists in
+  the app yet); tokens stand in for it.
+- The sending tab reports the chapter it shows (`/view`) and follows the
+  run's `open` events; other tabs only watch. The server locks the
+  chapters the run writes into (`lock`: the selection turn's chapter, the
+  previewed one, one being polished), and the client merges them into its
+  edit lock.
+
+**Client** (`src/services/serverRuns.ts`, `store/runEvents.ts`,
+`hooks/chat/serverRunEvents.ts`, `useChatLLM.ts`, `RunControls.tsx`):
+
+- `bookEvents` hands `run` events to an emitter; the chat hook renders
+  them: the bubble through pure reducers (`applyRunEvent`: the server's
+  record replaces the bubble's at every `step`, `paused` and `finished`;
+  the step in flight is painted from the deltas with the same splitter as
+  a local turn), the editor through the ports a local run uses (previews,
+  the lock, opening a chapter).
+- On load and on every book switch the hook lists the book's runs: a
+  queued, running or paused run gets its bubbles (created if another
+  device sent it) and its live text; a run that finished while the tab was
+  away settles its bubble from the result. The job-list reconcile skips
+  bubbles that belong to a run.
+- Stop keeps the draft on screen as one undo step, as before, and tells
+  the server; the run's `finished` event then settles the bubble, and the
+  note says the draft was kept.
+- The chat input stays open while a server run streams (a request queues),
+  and a bubble whose run is queued or paused shows its controls.
+- Versions the run took are merged into the store from `finished` as
+  metadata (their text loads on demand, as every server version does).
+
+**Added 2026-10-08** (agentic_chat_loop.md §0.8): the engine's repeat guard
+pauses at six identical steps, after the loop's own nudge at three; a
+`paused` event with `reason: "question"` carries an `ask_user` question and
+its options, and `POST …/runs/{id}/answer` continues the run with the
+answer as the next message; before each step's results the engine checks
+the chapters the model has seen for a newer revision, the chapter list for
+a change, and the queue for waiting requests, and tells the model in
+reminders; `longReasoningReminderTokens` in the request config enables the
+long-reasoning reminder.
+
+**Not in phase 3**, by choice: event resume by id (a reconnect lists the
+runs again), a money budget, approval for destructive tools, retiring
+`src/agent` (phase 4). The `PUT /documents/{id}` route keeps its own copy
+of the revision check beside `server_documents.write_document`.
 
 ## 5. Risks
 

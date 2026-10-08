@@ -129,3 +129,21 @@ export function finishToolCalls(accumulators: Map<number, ToolCallAccumulator>):
       return finished
     })
 }
+
+/**
+ * One call's identity for "did the model just make this same call again?":
+ * the name plus its arguments with keys sorted at every level, so the order
+ * the model happened to serialize them in does not make two calls differ
+ * (Grok Build canonicalizes the same way). Unparseable arguments compare by
+ * their text.
+ */
+export function callSignature(name: string, args: Record<string, unknown> | null, argumentsText?: string): string {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical)
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort().map(k => [k, canonical((value as Record<string, unknown>)[k])]))
+    }
+    return value
+  }
+  return `${name}:${args ? JSON.stringify(canonical(args)) : (argumentsText ?? '')}`
+}

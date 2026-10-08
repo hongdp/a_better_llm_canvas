@@ -21,8 +21,38 @@ export type AgentTimelineItem =
   | { type: 'text'; text: string }
   | { type: 'tool'; line: string; ok: boolean }
 
+/**
+ * Why a server-side run is suspended (backend_authority.md "Runaway runs"):
+ * it repeated itself, nobody was watching, or it passed its token budget.
+ */
+export interface AgentRunPause {
+  reason: 'repeating' | 'unattended' | 'token_budget' | 'question' | string
+  message: string
+  /** The last steps, for the user to judge: the calls and what came back. */
+  steps?: Array<{ calls: string[]; results: string[]; reasoning: string }>
+  /** `question`: what the model asked (ask_user) and the choices it offered. */
+  question?: string
+  options?: string[]
+}
+
+/** One item of the model's checklist for a turn (utils/plan). */
+export interface AgentPlanItem {
+  id: string
+  title: string
+  status: 'pending' | 'in_progress' | 'done' | 'dropped'
+}
+
+/** The server-side run behind a bubble, while it is queued, running or paused. */
+export interface AgentRunLink {
+  id: string
+  status: 'queued' | 'running' | 'paused' | 'done' | 'stopped' | 'error'
+  /** Queued: requests ahead of this one. */
+  position?: number
+  pause?: AgentRunPause
+}
+
 export interface AgentTurnRecord {
-  status: 'running' | 'done' | 'stopped' | 'step_limit'
+  status: 'running' | 'done' | 'stopped' | 'step_limit' | 'queued' | 'paused'
   steps: number
   /** One line per executed tool call, in order. */
   trace: string[]
@@ -45,6 +75,12 @@ export interface AgentTurnRecord {
    * restoreSeen). Dropped when the turn ends.
    */
   seen?: Array<{ id: string; hash: string }>
+  /** The server-side run this turn is (serverRuns on), with its queue or pause state. */
+  run?: AgentRunLink
+  /** The model's checklist for the turn (the `plan` tool), shown under the bubble. */
+  plan?: AgentPlanItem[]
+  /** A tab-run ended asking the user this (`ask_user`); the next message answers it. */
+  question?: { question: string; options: string[] }
 }
 
 export interface ChatMessage {

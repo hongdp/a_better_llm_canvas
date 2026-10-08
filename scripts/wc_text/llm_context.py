@@ -16,12 +16,7 @@ def html_to_plain_text(html: str) -> str:
     return _js_trim(out)
 
 
-_JS_WS = "\t\n\v\f\r                  　﻿"
-
-
-def _js_trim(s: str) -> str:
-    """String.prototype.trim: JavaScript's whitespace set, which has U+FEFF and Python's does not."""
-    return s.strip(_JS_WS)
+from .jsstr import js_trim as _js_trim  # noqa: E402 — the ports import the trim from here
 
 
 def strip_chat_display_artifacts(content: str) -> str:

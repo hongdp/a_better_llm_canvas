@@ -9,6 +9,8 @@ import { AgentRun, type RunSummary, type StepOutput } from '../run'
 import { ToolRegistry, defineTool, type RegisteredTool } from '../registry'
 import { deleteChapterTool } from '../tools/bookReads'
 import { DOCUMENT_WRITE_TOOLS } from '../tools/documentWrites'
+import { planTool } from '../tools/plan'
+import { askUserTool } from '../tools/askUser'
 import { DEFAULT_BUDGETS, DEFAULT_POLICY, type RunBudgets, type StepPolicy } from '../policy'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../../hooks/chat/streamHandlers'
 import { stripDiffMarkup } from '../../utils/diff'
@@ -38,6 +40,7 @@ function harness(opts: {
   policy?: Partial<StepPolicy>
   canContinue?: boolean
   original?: string
+  longReasoningTokens?: number
   read?: ReturnType<typeof readTool>
   /** More tools for the registry. */
   extra?: RegisteredTool[]
@@ -70,7 +73,8 @@ function harness(opts: {
     budgets: { ...DEFAULT_BUDGETS, ...opts.budgets },
     policy: { ...DEFAULT_POLICY, ...opts.policy },
     canContinue: opts.canContinue ?? true,
-    initialMessages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'request' }]
+    initialMessages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'request' }],
+    longReasoningTokens: opts.longReasoningTokens
   })
   return { run, fake, requests, corrective, summary: () => summary as RunSummary | null }
 }
@@ -370,5 +374,52 @@ describe('a step\'s output items (grok reasoning) go back with it', () => {
     await h.run.start()
     expect(h.corrective).toHaveLength(1)
     expect(h.requests[1].find(m => m.role === 'assistant')?.responseItems).toEqual(ITEMS)
+  })
+})
+
+describe('reminders between steps (agent/reminders)', () => {
+  const read = (chapter: string) => calls('r', ['c', 'read_chapter', `{"chapter":"${chapter}"}`])
+  const done = text('done\n<doc_status>unchanged</doc_status>')
+
+  it('nudges once, in the results of the third identical step', async () => {
+    const h = harness({ replies: [read('2'), read('2'), read('2'), read('2'), done], budgets: { maxSteps: 0 } })
+    await h.run.start()
+    expect(h.summary()?.steps).toBe(5)
+    expect(h.requests[2].at(-1)?.content).not.toContain('<system-reminder>')
+    expect(h.requests[3].at(-1)?.content).toContain('the same call (read_chapter)')
+    expect(h.requests[4].at(-1)?.content).not.toContain('<system-reminder>')
+  })
+
+  it('tells a step that reasoned at length and wrote nothing to act, one step later', async () => {
+    const long = { ...read('2'), usage: { promptTokens: 1, completionTokens: 1, reasoningTokens: 5000 } }
+    const h = harness({ replies: [long, read('3'), done], budgets: { maxSteps: 0 }, longReasoningTokens: 1000 })
+    await h.run.start()
+    expect(h.requests[1].at(-1)?.content).not.toContain('reasoning trace')
+    expect(h.requests[2].at(-1)?.content).toContain('reasoning trace (about 5,000 tokens)')
+  })
+
+  it('reminds the model of its plan and nudges a reply that ends with items left', async () => {
+    const h = harness({
+      replies: [
+        calls('Planning.', ['p', 'plan', '{"items":[{"id":"a","title":"写第一章","status":"in_progress"},{"id":"b","title":"写第二章"}]}']),
+        text('写完了。\n<doc_status>unchanged</doc_status>'),
+        calls('', ['p2', 'plan', '{"items":[{"id":"a","status":"done"},{"id":"b","status":"dropped"}]}']),
+        done
+      ],
+      budgets: { maxSteps: 0 }, extra: [planTool]
+    })
+    await h.run.start()
+    expect(h.requests[1].at(-1)?.content).toContain('PLAN (0/2 done)')
+    expect(h.requests[2].at(-1)?.content).toContain('Your plan still has 2 unfinished items')
+    expect(h.summary()?.endReason).toBe('answered')
+    expect(h.summary()?.plan.map(i => i.status)).toEqual(['done', 'dropped'])
+  })
+
+  it('ends a turn that asks the user, with the question on the summary', async () => {
+    const h = harness({ replies: [calls('', ['q', 'ask_user', '{"question":"Which?","options":["A (Recommended)","B"]}']), done], extra: [askUserTool] })
+    await h.run.start()
+    expect(h.summary()?.endReason).toBe('asked')
+    expect(h.summary()?.question).toEqual({ question: 'Which?', options: ['A (Recommended)', 'B'] })
+    expect(h.requests).toHaveLength(1)
   })
 })

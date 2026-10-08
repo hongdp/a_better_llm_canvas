@@ -52,7 +52,8 @@ src/
     syncRuntime.ts        # Module-level isInitialized/saveTimeout (single owner)
     persistence.ts        # localStorage / IndexedDB wrappers + documents envelope
     documentSync.ts       # Chapter revisions: unsynced flag, server copies, 409 conflicts
-    bookEvents.ts         # SSE subscription: other tabs'/devices' writes, live
+    bookEvents.ts         # SSE subscription: other tabs'/devices' writes, live; run.* → runEvents
+    runEvents.ts          # Emitter the chat hook subscribes to for a server run's events
     __tests__/            # persistence + storage API tests
   components/             # React UI components
     Editor.tsx            # TipTap editor host (fragile editor↔store sync — see SKILL.md)
@@ -64,18 +65,23 @@ src/
     ImageGenerationModal.tsx  imageGen/   # Image-gen modal + step components
     RoleplaySetupModal.tsx  RoleplayBanner.tsx
   hooks/
-    useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core)
+    useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core);
+                          #   with serverRuns on, posts the turn and renders run.* events
     chat/                 # Extracted chat-flow modules: streamHandlers,
-                          #   dynamicContext, types
+                          #   dynamicContext, serverRunEvents (pure reducers), types
     useRoleplayLLM.ts     # Roleplay game-master mode streaming
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
   agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
-                          #   step policy, invocation collection, freshness (D8),
+                          #   step policy, invocation collection, freshness (D8), reminders
+                          #   (what the loop tells the model between steps: repeat nudge,
+                          #   long-reasoning reminder, the plan, what moved under the run),
                           #   tools/documentWrites (3 writes), tools/bookReads (read/search/
                           #   list/open/delete chapters; a write creates a new chapter; rename_chapter in
-                          #   documentWrites), tools/polishChapter
+                          #   documentWrites), tools/polishChapter, tools/plan (checklist),
+                          #   tools/askUser (a question the turn waits on)
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
+    serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
     providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored
                           #   by scripts/server_generation.py — change both together
     chapterSummaries.ts   # Background chapter summarizer (lazy queue)
@@ -93,7 +99,12 @@ scripts/
   server_config.py  server_db.py  server_content.py   # Backend helper modules
   server_auth.py  server_scrape.py  server_migration.py
   server_events.py      # Per-book event hub behind /api/books/{id}/events (SSE)
+  server_runs.py        # Server-side agent runs: engine, ports, /api/books/{id}/runs* (phase 3)
+  server_context.py     # Request assembly for a run; ledger + seen record per book (run_context)
+  server_documents.py   # Revision-checked write / create / delete / snapshot + their events
+  wc_agent/             # Python port of src/agent: async run loop, registry, every tool
   test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
+  test_agent.py  test_runs.py   # pytest — the tools/loop on a fake book; the engine on a scripted provider
   wc_text/                # Python port of the pure text logic (backend_authority.md §4.2):
                           #   one module per src/utils file, dom.py for browser-style HTML
   test_parity.py          # pytest — every scripts/parity/fixtures/*.json case, byte-exact
@@ -261,6 +272,31 @@ another chapter's text into the open editor (`previewRewrite`). Per-provider
 settings: `agentTools`, `agentMaxSteps` (0 = unlimited), `continueAfterWrites`
 (default on: a write's result goes back to the model like any tool result,
 and only a reply with no action ends the turn).
+
+**A turn can run on the server** (`ProviderConfig.serverRuns`, off by
+default; `docs/features/backend_authority.md` §4.3). Then `useChatLLM` posts
+the request to `POST /api/books/{id}/runs` and the loop — `scripts/wc_agent/`,
+the port of `src/agent` — runs in the API process against the document store,
+with each step a generation job. The tab renders the run's `run.*` events from
+the book stream (`hooks/chat/serverRunEvents.ts` for the bubble, the local
+run's editor ports for previews and locks); a reload or another device lists
+the book's runs and rejoins. The run's state is persisted after every step and
+a restart resumes it; one run per book, later requests queue; Stop holds the
+queue; a run that repeats itself, runs unattended or passes its token budget is
+**paused, never killed**, and `/resume` continues it. Editing the loop means
+editing both `src/agent` and `wc_agent` until phase 4 retires the client loop.
+
+**Between steps the loop talks back** (agentic_chat_loop.md §0.8, after
+Grok Build's harness): `<system-reminder>` blocks appended to a step's last
+result message — never a message of their own. A failed SEARCH quotes the
+nearest paragraph (`utils/editHints`); three identical steps without a write
+get one nudge (server runs pause at six); a step that reasoned past
+`longReasoningReminderTokens` without writing makes the step after next
+say "act, don't think" (one step late on purpose, measured on grok-4.7);
+the `plan` tool's checklist comes back after each step and an early
+no-action reply is nudged twice; `ask_user` ends a tab-run with choices and
+pauses a server run until `/answer`. Both loops (`src/agent`, `wc_agent`)
+carry every one of these.
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

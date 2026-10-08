@@ -10,6 +10,7 @@ plain sibling imports work — the pytest flow does the same via sys.path.append
 - server_auth      — sessions, CSRF middleware, /api/auth/* endpoints
 - server_scrape    — URL/HTML scraping pipeline, /api/import-url, /api/import-file
 - server_generation — resumable LLM generation jobs, /api/generate/*
+- server_runs       — server-side agent runs, /api/books/{id}/runs*
 - server_migration — one-time legacy state_*.json migration
 
 Note for tests: patch state on the module that OWNS it (server_db.DB_PATH,
@@ -22,6 +23,7 @@ import sys
 import json
 import logging
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -33,6 +35,7 @@ import server_db
 import server_scrape
 import server_generation
 import server_events
+import server_runs
 from server_config import sanitize_id
 from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID, record_last_active_book, clear_last_active_book
 from server_auth import get_authenticated_username
@@ -85,7 +88,14 @@ def _reasoning_items_field(row):
     return {"reasoningItems": items} if isinstance(items, list) and items else {}
 
 
-app = FastAPI(title="Web Canvas Backend API", version="2.0.0")
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    """Runs that were running or queued when the process died continue."""
+    await server_runs.engine.recover()
+    yield
+
+
+app = FastAPI(title="Web Canvas Backend API", version="2.0.0", lifespan=_lifespan)
 
 # CORS middleware configuration
 app.add_middleware(
@@ -106,6 +116,9 @@ app.include_router(server_auth.router)
 app.include_router(server_scrape.router)
 # Resumable server-side generation jobs (/api/generate/*)
 app.include_router(server_generation.router)
+# Server-side agent runs (/api/books/{id}/runs*, backend_authority.md §4.3)
+server_runs.ensure_tables()
+app.include_router(server_runs.router)
 
 
 # ============================================================

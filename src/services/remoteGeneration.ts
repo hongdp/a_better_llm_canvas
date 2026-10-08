@@ -208,7 +208,7 @@ async function attachToJob(
         item?: unknown
         offset?: number
         message?: string
-        usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number }
+        usage?: { promptTokens: number; completionTokens: number; cachedPromptTokens?: number; reasoningTokens?: number }
       }
       try {
         event = JSON.parse(dataString)

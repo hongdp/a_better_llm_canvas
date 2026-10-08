@@ -9,7 +9,7 @@ import re
 from typing import Callable, Dict, List, Optional, Tuple
 
 from .diff import diff_html
-from .llm_context import _JS_WS, _js_trim
+from .jsstr import JS_WS as _JS_WS, js_trim as _js_trim
 
 _W = "A-Za-z0-9_"  # JavaScript \w
 

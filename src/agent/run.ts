@@ -12,14 +12,17 @@
  * to the list the previous step sent, so every follow-up step is a pure
  * prefix-cache hit on grok.
  */
-import type { LLMMessage, ThinkingBlock } from '../types/llm'
-import type { FinishedToolCall } from '../utils/toolCallStream'
+import type { LLMMessage, StreamUsage, ThinkingBlock } from '../types/llm'
+import { callSignature, type FinishedToolCall } from '../utils/toolCallStream'
+import type { PlanItem } from '../utils/plan'
+import { unfinishedPlanItems } from '../utils/plan'
+import { appendReminders, longReasoningReminder, planReminder, planUnfinishedNudge, repeatNudge, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
 import { isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
 import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepDecision, type StepPolicy } from './policy'
 import type { RegisteredTool, ToolRegistry } from './registry'
-import { seenChapters, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
+import { seenChapters, type AskedQuestion, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
 import type { AgentTimelineItem, AgentTouchedChapter } from '../types/chat'
 
 /** What one streamed model call produced. */
@@ -38,6 +41,8 @@ export interface StepOutput {
    * plan (LLMMessage.responseItems).
    */
   responseItems?: unknown[]
+  /** What the step cost, when the transport reported it. */
+  usage?: StreamUsage
 }
 
 /**
@@ -62,7 +67,9 @@ export interface RunSummary {
   exhaustedCorrective: boolean
   /** …because there was no request to retry (a rejoined stream). */
   unretriableFailedUpdate: boolean
-  endReason: Extract<StepDecision, { action: 'end' }>['reason'] | 'protocol_failure' | 'cancelled'
+  endReason: Extract<StepDecision, { action: 'end' }>['reason'] | 'protocol_failure' | 'cancelled' | 'asked'
+  /** The run ended with a question for the user (`ask_user`); the next message answers it. */
+  question: AskedQuestion | null
   /** One line per executed call, in order. */
   trace: string[]
   /** Each step's text, then the calls it made, in order. */
@@ -72,6 +79,8 @@ export interface RunSummary {
   touched: AgentTouchedChapter[]
   /** Chapters this run read — the next turn's continuity signal. */
   readIds: string[]
+  /** The model's checklist for the turn, as it ended. */
+  plan: PlanItem[]
 }
 
 /** What the bubble shows while a run is still going. */
@@ -85,6 +94,8 @@ export interface RunProgress {
   touched: AgentTouchedChapter[]
   /** What the model has seen so far (a reload restores it). */
   seen: SeenChapter[]
+  /** The model's checklist for the turn, as it stands. */
+  plan: PlanItem[]
 }
 
 export interface RunObserver {
@@ -110,6 +121,14 @@ export interface AgentRunOptions {
   /** Offer the read/navigate tools (`ProviderConfig.agentTools`). Default on. */
   agentTools?: boolean
   initialMessages: LLMMessage[]
+  /**
+   * Hidden reasoning tokens in one step that wrote nothing, past which the
+   * step after next is told to act instead of think (agent/reminders).
+   * 0 or absent = off.
+   */
+  longReasoningTokens?: number
+  /** Extra reminders the host has for the model, collected after each step's calls ran. */
+  reminders?: () => string[]
 }
 
 const UNKNOWN_TOOL_KIND: ToolKind = 'read'
@@ -148,6 +167,11 @@ export class AgentRun {
   private readonly effects: RunSummary['effects'] = {
     canvasIssue: null, failedEdits: 0, reinsertedImages: 0, selectionGone: false, producedNothing: false
   }
+  /** Each step's calls (as one sorted signature) and whether it wrote, for the repeat nudge. */
+  private readonly stepLog: Array<{ signature: string; names: string[]; wrote: boolean }> = []
+  /** A step past the reasoning threshold: the reminder is due when this step count is reached (one step later). */
+  private longReasoningDue: { atStep: number; tokens: number } | null = null
+  private planNudges = 0
 
   private readonly o: AgentRunOptions
 
@@ -296,7 +320,16 @@ export class AgentRun {
   private afterExecute(out: StepOutput, ran: ToolInvocation[], results: ToolResult[]): void {
     if (this.finished) return
     const executed: ExecutedCall[] = ran.map((inv, i) => ({ kind: this.kindOf(inv), result: results[i] }))
-    if (executed.some(e => e.kind === 'write' && e.result.ok)) this.wrote = true
+    const wroteNow = executed.some(e => e.kind === 'write' && e.result.ok)
+    if (wroteNow) this.wrote = true
+    this.stepLog.push({
+      signature: ran.map(inv => callSignature(inv.name, inv.args, inv.argumentsText)).sort().join('\n'),
+      names: [...new Set(ran.map(inv => inv.name))],
+      wrote: wroteNow
+    })
+    const reasoning = out.usage?.reasoningTokens ?? 0
+    const threshold = this.o.longReasoningTokens ?? 0
+    if (threshold > 0 && !wroteNow && reasoning > threshold) this.longReasoningDue = { atStep: this.stepsTaken + 1, tokens: reasoning }
     for (const { result } of executed) {
       this.trace.push(result.trace)
       this.timeline.push({ type: 'tool', line: result.trace, ok: result.ok })
@@ -327,9 +360,33 @@ export class AgentRun {
       this.effects.producedNothing ||= !!e.producedNothing
     }
 
+    // The model asked the user something: its results are appended so the
+    // call is answered, then the turn ends and the next message answers it.
+    if (this.o.ctx.run.question && !this.cancelled) {
+      this.messages = [...this.messages, ...this.resultMessages(out, ran, results)]
+      this.finish({ failedUpdate: null, exhaustedCorrective: false, unretriableFailedUpdate: false, endReason: 'asked' })
+      return
+    }
+
+    // A reply with no action while the plan has work left: the model is
+    // reminded of its own plan and continues (a bounded number of times).
+    const unfinished = unfinishedPlanItems(this.o.ctx.run.plan)
+    if (decision.action === 'end' && decision.reason === 'answered' && unfinished.length > 0 &&
+        this.planNudges < PLAN_NUDGE_BUDGET && this.o.canContinue && !this.cancelled && stepsLeft(this.o.budgets, this.stepsTaken) > 0) {
+      this.planNudges++
+      this.messages = [
+        ...this.messages,
+        { role: 'assistant', content: out.text, ...(out.responseItems?.length ? { responseItems: out.responseItems } : {}) },
+        { role: 'user', content: wrapReminder(planUnfinishedNudge(this.o.ctx.run.plan)) }
+      ]
+      this.o.observer.onStepExecuted?.(this.progress())
+      void this.o.driver(this.messages, this.stepsTaken, { final: stepsLeft(this.o.budgets, this.stepsTaken) === 1 })
+      return
+    }
+
     if (continuing && decision.action === 'continue') {
       if (decision.corrective) this.correctiveUsed++
-      this.messages = [...this.messages, ...this.resultMessages(out, ran, results)]
+      this.messages = [...this.messages, ...appendReminders(this.resultMessages(out, ran, results), this.collectReminders())]
       if (decision.final) this.messages = [...this.messages, { role: 'user', content: STEP_LIMIT_NOTE }]
       this.o.observer.onStepExecuted?.(this.progress())
       void this.o.driver(this.messages, this.stepsTaken, { final: decision.final })
@@ -344,6 +401,37 @@ export class AgentRun {
         ? 'cancelled'
         : decision.action === 'end' ? decision.reason : 'step_limit'
     })
+  }
+
+  /**
+   * The automated context the next step carries beside its results: the
+   * repeat nudge, the long-reasoning reminder, the plan, and whatever the
+   * host noticed (the user edited a chapter, a request is waiting).
+   */
+  private collectReminders(): string[] {
+    const out: string[] = []
+    const runLen = this.identicalRunLength()
+    if (runLen === REPEAT_NUDGE_STEPS) out.push(repeatNudge(this.stepLog[this.stepLog.length - 1].names, runLen))
+    if (this.longReasoningDue && this.longReasoningDue.atStep === this.stepsTaken) {
+      out.push(longReasoningReminder(this.longReasoningDue.tokens))
+      this.longReasoningDue = null
+    }
+    if (unfinishedPlanItems(this.o.ctx.run.plan).length > 0) out.push(planReminder(this.o.ctx.run.plan))
+    out.push(...(this.o.reminders?.() ?? []))
+    return out
+  }
+
+  /** How many steps in a row, ending with the last, made the same calls and wrote nothing. */
+  identicalRunLength(): number {
+    const last = this.stepLog[this.stepLog.length - 1]
+    if (!last || !last.signature || last.wrote) return 0
+    let n = 0
+    for (let i = this.stepLog.length - 1; i >= 0; i--) {
+      const step = this.stepLog[i]
+      if (step.signature !== last.signature || step.wrote) break
+      n++
+    }
+    return n
   }
 
   /**
@@ -401,7 +489,8 @@ export class AgentRun {
       steps: this.stepsTaken,
       trace: [...this.trace],
       touched: [...this.o.ctx.run.touched.values()],
-      seen: seenChapters(this.o.ctx.run)
+      seen: seenChapters(this.o.ctx.run),
+      plan: [...this.o.ctx.run.plan]
     }
   }
 
@@ -417,6 +506,7 @@ export class AgentRun {
       effects: this.effects,
       ...this.progress(),
       readIds: [...this.o.ctx.run.readIds],
+      question: end.endReason === 'asked' ? this.o.ctx.run.question : null,
       ...end
     })
   }

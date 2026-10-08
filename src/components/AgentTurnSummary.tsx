@@ -63,9 +63,20 @@ export function AgentTurnSummary({ record }: { record: AgentTurnRecord }) {
       : row.kind === 'renamed' ? t.agent.kindRenamed
       : t.agent.kindEdits(row.changes)
 
-  if (record.touched.length === 0 && (record.timeline || record.trace.length === 0)) return null
+  const plan = record.plan ?? []
+  if (record.touched.length === 0 && plan.length === 0 && (record.timeline || record.trace.length === 0)) return null
   return (
     <div className="agent-turn">
+      {plan.length > 0 && (
+        <ul className="agent-plan">
+          {plan.map(item => (
+            <li key={item.id} className={`agent-plan-item ${item.status}`}>
+              <span className="agent-plan-mark">{item.status === 'done' ? '☑' : item.status === 'in_progress' ? '▶' : item.status === 'dropped' ? '✕' : '☐'}</span>
+              <span className="agent-plan-title">{item.title}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {record.touched.length > 0 && (
         <div className="agent-touched">
           <div className="agent-touched-title">{t.agent.changedThisTurn}</div>

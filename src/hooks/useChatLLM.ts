@@ -32,11 +32,19 @@ import { DOCUMENT_WRITE_TOOLS, previewRewrite } from '../agent/tools/documentWri
 import { BOOK_TOOLS } from '../agent/tools/bookReads'
 import { polishChapterTool } from '../agent/tools/polishChapter'
 import { analyzeBookTool } from '../agent/tools/analyzeBook'
+import { planTool } from '../agent/tools/plan'
+import { askUserTool } from '../agent/tools/askUser'
 import { analyzeInBatches } from '../agent/analyzeBook'
 import { WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
 import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
 import { resolveRunSettings } from '../agent/policy'
 import { chapterOutline, createRunState, restoreSeen, type ToolContext } from '../agent/types'
+import { startServerRun, listServerRuns, serverRunAction, answerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
+import { onRunEvent } from '../store/runEvents'
+import { resyncBook } from '../store/bookEvents'
+import { CLIENT_ID } from '../store/documentSync'
+import { mergeVersions } from '../store/versionMerge'
+import { applyRunEvent, ensureRunMessages, bubbleStillWaiting, type RunLive } from './chat/serverRunEvents'
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
 import type { AgentTurnRecord } from '../types/chat'
 import type { ThinkingBlock } from '../types/llm'
@@ -89,7 +97,7 @@ interface StreamRenderContext extends RunInfo {
 /** Assistant turns whose grok reasoning items go back in the next request (the most recent ones). */
 export const REASONING_HISTORY_TURNS = 8
 
-const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool])
+const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool, planTool, askUserTool])
 
 /** The chat text of a record's finished steps, joined as the bubble shows it. */
 const recordText = (record: AgentTurnRecord | undefined) =>
@@ -160,6 +168,16 @@ function waitForStore(predicate: (state: AppState) => boolean, timeoutMs = 15_00
 const waitForMessage = (messageId: string, timeoutMs = 15_000) =>
   waitForStore(state => state.messages.some(m => m.id === messageId), timeoutMs)
 
+/** The stored text of the chapter on screen. */
+const storedOpen = (): string => {
+  const st = useAppStore.getState()
+  return st.documents.find(d => d.id === st.activeDocumentId)?.content ?? ''
+}
+
+/** A bubble whose turn runs on the server: the run list settles it, not the job list. */
+const isServerRunBubble = (m: { agent?: { run?: { status: string } } }) =>
+  !!m.agent?.run && (m.agent.run.status === 'queued' || m.agent.run.status === 'running' || m.agent.run.status === 'paused')
+
 /**
  * Settle every bubble that never received its reply — by asking the server,
  * which is the only party that knows whether a job can still fill it.
@@ -180,7 +198,7 @@ async function reconcileUnfinishedBubbles(): Promise<PersistedGenerationJob | nu
   // The history arrives with the server sync, typically after this runs.
   await waitForStore(state => state.messages.length > 0, 15_000)
   const s = useAppStore.getState()
-  const unfinished = s.messages.filter(m => m.role === 'assistant' && isUnfinishedBubble(m.content))
+  const unfinished = s.messages.filter(m => m.role === 'assistant' && isUnfinishedBubble(m.content) && !isServerRunBubble(m))
   if (unfinished.length === 0) return null
 
   const lookup = await findJobsForBubbles(unfinished.map(m => m.id), s.activeBookId)
@@ -346,6 +364,21 @@ export function useChatLLM({
   // and turn). Same scope as the ledger: a different book or model starts over.
   const seenRef = useRef<SeenRecord>(new Map())
   const turnCounterRef = useRef(0)
+  // A server-side run this tab renders (ProviderConfig.serverRuns,
+  // backend_authority.md §4.3): the ports for the editor side of its events,
+  // and whether this tab sent it — only the sending tab follows the run's
+  // `open` events and reports its own view; other tabs just watch.
+  const serverRunRef = useRef<{ id: string; toolCtx: ToolContext; startId: string; sendingTab: boolean } | null>(null)
+  // The step in flight of each server run this tab watches (chat/serverRunEvents).
+  const serverLiveRef = useRef(new Map<string, RunLive>())
+  // Chapters the server run locks (its `lock` events), merged into the edit lock.
+  const serverLockRef = useRef<string[]>([])
+  // The run's `step` means its writes are in the store; the editor converges
+  // once the document event's refetch has landed, so the settle is deferred.
+  const serverSettleTimerRef = useRef<number | null>(null)
+  const activeBookId = useAppStore(state => state.activeBookId)
+  const user = useAppStore(state => state.user)
+  const activeDocumentId = useAppStore(state => state.activeDocumentId)
 
   /** Force the editor back to `html` after a live preview, without polluting undo. */
   /**
@@ -373,7 +406,7 @@ export function useChatLLM({
     if (!s.isStreaming) return
     const { start, writing } = editLockRef.current
     const preview = canvasPreviewActiveRef.current ? previewDocIdRef.current : null
-    s.setEditLockedIds([...new Set([start, preview, writing].filter((id): id is string => !!id))])
+    s.setEditLockedIds([...new Set([start, preview, writing, ...serverLockRef.current].filter((id): id is string => !!id))])
   }, [])
 
   const settleCanvasPreview = useCallback((html: string) => {
@@ -862,7 +895,8 @@ export function useChatLLM({
           text: fullText,
           nativeCalls: finishToolCalls(toolCallsRef.current),
           thinking: thinkingRef.current.length > 0 ? [...thinkingRef.current] : undefined,
-          responseItems: responseItemsRef.current.length > 0 ? [...responseItemsRef.current] : undefined
+          responseItems: responseItemsRef.current.length > 0 ? [...responseItemsRef.current] : undefined,
+          usage
         })
       },
       onError: (err: Error) => {
@@ -961,6 +995,7 @@ export function useChatLLM({
         touched: progress.touched,
         timeline: progress.timeline,
         seen: progress.seen,
+        plan: progress.plan.length > 0 ? progress.plan : undefined,
         prefix: info.attachmentsText || undefined
       }))
     },
@@ -1054,6 +1089,10 @@ export function useChatLLM({
         trace: summary.trace,
         touched: summary.touched,
         timeline: summary.timeline,
+        plan: summary.plan.length > 0 ? summary.plan : undefined,
+        // A turn that ended asking: the question shows as choices under the
+        // bubble (RunControls); the user's pick is the next message.
+        question: summary.question ?? undefined,
         prefix: info.attachmentsText || undefined,
         suffix: (warningNote + limitNote).trim() || undefined
       }))
@@ -1069,6 +1108,289 @@ export function useChatLLM({
       forceSave()
     }
   }), [settleCanvasPreview, forceSave, setAgentRecord])
+
+  // ── Server-side runs (backend_authority.md §4.3) ─────────────────────
+  // With `serverRuns` on, the turn is posted to the API process, which runs
+  // the loop and writes the book; this tab renders the run's events: the
+  // bubble through chat/serverRunEvents, the editor through the same ports a
+  // local run uses (previews, locks, opening chapters).
+
+  /** On for this provider, and there is a server to run turns. */
+  const serverRunsEnabled = useCallback(() => {
+    const s = useAppStore.getState()
+    return !!s.user && !!s.activeBookId && s.providerConfigs[s.activeProvider]?.serverRuns === true
+  }, [])
+
+  /** This tab renders `run` from now on: ports for its previews, the streaming flag, the lock. */
+  const attachServerRun = useCallback((run: ServerRunSummary) => {
+    const s = useAppStore.getState()
+    const startId = run.activeDocumentId || s.activeDocumentId
+    const original = s.documents.find(d => d.id === startId)?.content ?? ''
+    // A selection rewrite previews by relocating the selected TEXT, as a
+    // rejoined turn does: the range never leaves the tab that made it.
+    originalSelectedTextRef.current = run.selectedText ?? ''
+    pendingSelectionTextRef.current = run.selectedText || null
+    selectionRangeRef.current = null
+    selectionEndRef.current = null
+    lastSelectionPreviewRef.current = 0
+    const toolCtx = buildToolContext({
+      assistantMsgId: run.assistantMessageId ?? '', startId, originalDocContent: original,
+      attachmentsText: run.record?.prefix ?? '', estimatedInputTokens: 0, inContextIds: []
+    })
+    serverRunRef.current = { id: run.id, toolCtx, startId, sendingTab: run.clientId === CLIENT_ID }
+    if (run.status === 'running') {
+      s.setStreaming(true)
+      editLockRef.current = { start: run.selectedText ? startId : null, writing: null }
+      publishEditLock()
+    }
+  }, [buildToolContext, publishEditLock])
+
+  /** Post the turn to the server. The bubble then follows the run's events. */
+  const startServerTurn = useCallback(async (opts: {
+    promptText: string
+    images?: string[]
+    historySource: HistorySourceMessage[]
+    userMsgId: string
+    assistantMsgId: string
+  }) => {
+    const s = useAppStore.getState()
+    const cfg = s.providerConfigs[s.activeProvider]
+    const preset = s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)
+    try {
+      const { run, position } = await startServerRun(s.activeBookId as string, {
+        prompt: opts.promptText,
+        images: opts.images,
+        provider: s.activeProvider,
+        config: {
+          apiKey: cfg.apiKey, model: cfg.model, baseUrl: cfg.baseUrl, maxOutputTokens: cfg.maxOutputTokens,
+          geminiSafetySettings: cfg.geminiSafetySettings, reasoningEffort: cfg.reasoningEffort, documentProtocol: cfg.documentProtocol,
+          agentTools: cfg.agentTools, agentMaxSteps: cfg.agentMaxSteps, continueAfterWrites: cfg.continueAfterWrites,
+          polishModel: cfg.polishModel, runTokenBudget: cfg.runTokenBudget, longReasoningReminderTokens: cfg.longReasoningReminderTokens
+        },
+        activeDocumentId: s.activeDocumentId,
+        selectedText: selectedText || undefined,
+        history: opts.historySource.filter(m => m.id !== 'welcome').map(m => ({
+          id: m.id, role: m.role, content: m.content, images: m.images, agent: m.agent, reasoningItems: m.reasoningItems
+        })),
+        userMessageId: opts.userMsgId,
+        assistantMessageId: opts.assistantMsgId,
+        customInstructions: preset?.content,
+        polishPrompt: s.polishPrompt,
+        contextWindowTokens: s.discoveredContextWindows[cfg.model],
+        clientId: CLIENT_ID
+      })
+      const latest = useAppStore.getState()
+      latest.setMessages(applyRunEvent(latest.messages, { type: 'run', kind: run.status === 'queued' ? 'queued' : 'started', runId: run.id, run, position }, serverLiveRef.current))
+      // The run's first events may have arrived before this response.
+      if (run.status === 'running' && serverRunRef.current?.id !== run.id) attachServerRun(run)
+      forceSave()
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e)
+      setErrorMsg(message)
+      const latest = useAppStore.getState()
+      latest.setStreaming(false)
+      latest.setMessages(latest.messages.map(m => m.id === opts.assistantMsgId ? { ...m, content: `⚠️ ${message}` } : m))
+    }
+  }, [selectedText, attachServerRun, forceSave])
+
+  /** Settle the preview once the run's write has reached the store (the document event's refetch). */
+  const settleServerPreviewSoon = useCallback(() => {
+    if (serverSettleTimerRef.current !== null) window.clearTimeout(serverSettleTimerRef.current)
+    serverSettleTimerRef.current = window.setTimeout(() => {
+      serverSettleTimerRef.current = null
+      settleCanvasPreview(storedOpen())
+    }, 400)
+  }, [settleCanvasPreview])
+
+  /** One `run.*` event, rendered: the bubble through the reducer, the editor through the ports. */
+  const handleRunEvent = useCallback(async (event: ServerRunEvent) => {
+    const s = useAppStore.getState()
+    const current = serverRunRef.current
+    const mine = current?.id === event.runId
+    switch (event.kind) {
+      case 'queued':
+      case 'started': {
+        if (!event.run) return
+        s.setMessages(applyRunEvent(s.messages, event, serverLiveRef.current))
+        if (event.kind === 'started') {
+          if (event.run.status === 'running' && !mine) attachServerRun(event.run)
+          reasoningTailRef.current = ''
+          s.setStreamingReasoning('')
+          turnStartedAtRef.current = Date.now()
+          firstTokenAtRef.current = 0
+        }
+        return
+      }
+      case 'step_started': {
+        s.setMessages(applyRunEvent(s.messages, event, serverLiveRef.current))
+        turnStartedAtRef.current = Date.now()
+        firstTokenAtRef.current = 0
+        reasoningTailRef.current = ''
+        s.setStreamingReasoning('')
+        return
+      }
+      case 'reasoning': {
+        if (!mine) return
+        if (firstTokenAtRef.current === 0) firstTokenAtRef.current = Date.now()
+        reasoningTailRef.current = (reasoningTailRef.current + (event.text ?? '')).slice(-REASONING_TAIL_CHARS)
+        const now = Date.now()
+        if (now - lastReasoningPaintRef.current < REASONING_PAINT_MS) return
+        lastReasoningPaintRef.current = now
+        s.setStreamingReasoning(reasoningTailRef.current)
+        return
+      }
+      case 'delta':
+      case 'progress':
+      case 'corrective': {
+        if (event.kind === 'delta') {
+          if (firstTokenAtRef.current === 0) firstTokenAtRef.current = Date.now()
+          if (reasoningTailRef.current) {
+            reasoningTailRef.current = ''
+            s.setStreamingReasoning('')
+          }
+        }
+        if (event.kind === 'corrective' && mine) settleCanvasPreview(storedOpen())
+        s.setMessages(applyRunEvent(s.messages, event, serverLiveRef.current))
+        return
+      }
+      case 'preview': {
+        if (!mine || !current) return
+        if (event.html === null || event.html === undefined) {
+          if (event.settled) settleServerPreviewSoon()
+          else settleCanvasPreview(storedOpen())
+          return
+        }
+        if (event.documentId !== s.activeDocumentId) return
+        // The user typed here meanwhile: never paint over their text.
+        if (s.documents.find(d => d.id === event.documentId)?.unsynced) return
+        setSaveStatus('unsaved')
+        current.toolCtx.editor.previewDocument(event.html)
+        return
+      }
+      case 'preview_selection': {
+        if (!mine || !current || !event.html) return
+        current.toolCtx.selection.relocate()
+        current.toolCtx.editor.previewSelection(event.html)
+        return
+      }
+      case 'lock': {
+        if (!mine) return
+        serverLockRef.current = event.documentIds ?? []
+        publishEditLock()
+        return
+      }
+      case 'open': {
+        if (!mine || !current?.sendingTab || !event.documentId) return
+        if (!s.documents.some(d => d.id === event.documentId) && s.activeBookId) await resyncBook({ bookId: s.activeBookId })
+        const latest = useAppStore.getState()
+        if (latest.documents.some(d => d.id === event.documentId)) latest.setActiveDocumentId(event.documentId)
+        return
+      }
+      case 'step': {
+        if (mine) settleServerPreviewSoon()
+        s.setMessages(applyRunEvent(s.messages, event, serverLiveRef.current))
+        forceSave()
+        return
+      }
+      case 'paused':
+      case 'finished': {
+        if (mine) {
+          settleCanvasPreview(storedOpen())
+          serverLockRef.current = []
+          serverRunRef.current = null
+          reasoningTailRef.current = ''
+          s.setStreamingReasoning('')
+        }
+        s.setStreaming(false)
+        const latest = useAppStore.getState()
+        latest.setMessages(applyRunEvent(latest.messages, event, serverLiveRef.current))
+        // Versions the run took before changing a chapter (metadata; the text loads on demand).
+        const snapshots = event.result?.snapshots
+        if (event.kind === 'finished' && snapshots?.length && latest.activeBookId) {
+          useAppStore.setState({ versions: mergeVersions(useAppStore.getState().versions, snapshots, latest.activeBookId) })
+        }
+        forceSave()
+        return
+      }
+      default:
+        return
+    }
+  }, [attachServerRun, settleCanvasPreview, settleServerPreviewSoon, publishEditLock, forceSave, setSaveStatus])
+
+  useEffect(() => onRunEvent(event => { void handleRunEvent(event) }), [handleRunEvent])
+
+  /**
+   * The book's runs, on load and on every book switch: a queued, running or
+   * paused run gets its bubble (created when another device sent it) and its
+   * state; a run that finished while this tab was away settles its bubble.
+   */
+  const reconcileServerRuns = useCallback(async () => {
+    const s0 = useAppStore.getState()
+    if (!s0.user || !s0.activeBookId) return
+    const bookId = s0.activeBookId
+    let listed: Awaited<ReturnType<typeof listServerRuns>>
+    try {
+      listed = await listServerRuns(bookId)
+    } catch {
+      return
+    }
+    if (listed.runs.length === 0) return
+    await waitForStore(state => state.messages.length > 0, 15_000)
+    if (useAppStore.getState().activeBookId !== bookId) return
+    for (const run of listed.runs) {
+      const s = useAppStore.getState()
+      if (run.status === 'queued' || run.status === 'running' || run.status === 'paused') {
+        const kind = run.status === 'queued' ? 'queued' : run.status === 'paused' ? 'paused' : 'started'
+        let messages = applyRunEvent(ensureRunMessages(s.messages, run), { type: 'run', kind, runId: run.id, run, record: run.record, pause: run.pause ?? undefined }, serverLiveRef.current)
+        if (run.status === 'running' && run.liveText) {
+          serverLiveRef.current.set(run.id, { text: run.liveText, progress: null })
+          messages = applyRunEvent(messages, { type: 'run', kind: 'delta', runId: run.id, text: '' }, serverLiveRef.current)
+        }
+        s.setMessages(messages)
+        if (run.status === 'running' && serverRunRef.current?.id !== run.id) {
+          attachServerRun(run)
+          if (run.liveReasoning) s.setStreamingReasoning(run.liveReasoning.slice(-REASONING_TAIL_CHARS))
+        }
+      } else if (run.result && run.assistantMessageId) {
+        const bubble = s.messages.find(m => m.id === run.assistantMessageId)
+        if (bubble && bubbleStillWaiting(bubble)) {
+          s.setMessages(applyRunEvent(s.messages, { type: 'run', kind: 'finished', runId: run.id, run, status: run.status, result: run.result }, serverLiveRef.current))
+        }
+      }
+    }
+  }, [attachServerRun])
+  useEffect(() => { void reconcileServerRuns() }, [reconcileServerRuns, activeBookId, user])
+
+  // The sending tab tells the run where the user is (agentic_chat_loop.md
+  // §0.4: once they move, the run stops changing the view).
+  useEffect(() => {
+    const current = serverRunRef.current
+    const s = useAppStore.getState()
+    if (!current?.sendingTab || !s.activeBookId || !s.isStreaming) return
+    void reportRunView(s.activeBookId, current.id, activeDocumentId)
+  }, [activeDocumentId])
+
+  /** The user's answer to a server run paused on `ask_user` (components/RunControls). */
+  const handleRunAnswer = useCallback(async (runId: string, answer: string) => {
+    const s = useAppStore.getState()
+    if (!s.activeBookId) return
+    try {
+      await answerServerRun(s.activeBookId, runId, answer)
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
+
+  /** Queue and pause controls under a bubble (components/RunControls). */
+  const handleRunAction = useCallback(async (runId: string, action: ServerRunAction) => {
+    const s = useAppStore.getState()
+    if (!s.activeBookId) return
+    try {
+      await serverRunAction(s.activeBookId, runId, action)
+    } catch (e) {
+      setErrorMsg(e instanceof Error ? e.message : String(e))
+    }
+  }, [])
 
   // One model call of a run: per-step resets, the abort controller, the
   // selection capture, and the request with the tools this step offers.
@@ -1195,7 +1517,8 @@ export function useChatLLM({
       policy: settings.policy,
       agentTools: settings.agentTools,
       canContinue,
-      initialMessages
+      initialMessages,
+      longReasoningTokens: s.providerConfigs[s.activeProvider]?.longReasoningReminderTokens ?? 0
     })
     rcRef.current = { ...info, run, toolCtx }
     currentRunRef.current = run
@@ -1560,7 +1883,8 @@ export function useChatLLM({
 
     const s = useAppStore.getState()
     const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
-    if (!promptText || s.isStreaming) return
+    // A server run accepts a request mid-turn: it queues (§6.3).
+    if (!promptText || (s.isStreaming && !serverRunsEnabled())) return
 
     imagePlaceholdersRef.current = []
 
@@ -1604,6 +1928,10 @@ export function useChatLLM({
       provider: s.activeProvider,
       model: s.providerConfigs[s.activeProvider].model
     })
+    if (serverRunsEnabled()) {
+      await startServerTurn({ promptText, images, historySource: s.messages, userMsgId: userMsg.id, assistantMsgId })
+      return
+    }
     s.setStreaming(true)
 
     accumulatedTextRef.current = ''
@@ -1626,7 +1954,7 @@ export function useChatLLM({
       estimatedInputTokens: request.estimatedInputTokens,
       inContextIds: request.inContextIds
     })
-  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, assembleChatRequest, startTurn])
+  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, assembleChatRequest, startTurn, serverRunsEnabled, startServerTurn])
 
   // Edit and Resubmit message handler
   const handleResubmitMessage = useCallback(async (msgId: string, newContent: string) => {
@@ -1666,11 +1994,15 @@ export function useChatLLM({
       provider: s.activeProvider,
       model: s.providerConfigs[s.activeProvider].model
     }])
+    const editedMsg = truncatedMessages[truncatedMessages.length - 1]
+    if (serverRunsEnabled()) {
+      await startServerTurn({ promptText: trimmed, images: editedMsg?.images, historySource: truncatedMessages.slice(0, -1), userMsgId: editedMsg.id, assistantMsgId })
+      return
+    }
     s.setStreaming(true)
 
     accumulatedTextRef.current = ''
 
-    const editedMsg = truncatedMessages[truncatedMessages.length - 1]
     const request = await assembleChatRequest({
       promptText: trimmed,
       images: editedMsg?.images,
@@ -1689,7 +2021,7 @@ export function useChatLLM({
       estimatedInputTokens: request.estimatedInputTokens,
       inContextIds: request.inContextIds
     })
-  }, [layoutMode, setIsChatExpanded, assembleChatRequest, startTurn])
+  }, [layoutMode, setIsChatExpanded, assembleChatRequest, startTurn, serverRunsEnabled, startServerTurn])
 
   /**
    * The Polish button (D9): polish a chapter directly, without the chat model
@@ -1797,6 +2129,20 @@ export function useChatLLM({
 
   // Stop generation
   const handleStopGeneration = useCallback(() => {
+    const server = serverRunRef.current
+    if (server) {
+      // Stop on a server run: the draft on screen is kept as one undo step
+      // here (the server never saw it), and the server stops the step and
+      // holds the queue. The run's `finished` event settles the bubble.
+      const s = useAppStore.getState()
+      const draft = keepCanvasPreview(previewBaseRef.current ?? server.toolCtx.document.original)
+      if (draft !== null) s.updateActiveDocument({ content: draft })
+      const live = serverLiveRef.current.get(server.id)
+      if (live) live.keptDraft = draft !== null || lastSelectionPreviewRef.current > 0
+      if (s.activeBookId) void serverRunAction(s.activeBookId, server.id, 'stop').catch(e => setErrorMsg(e instanceof Error ? e.message : String(e)))
+      s.setStreaming(false)
+      return
+    }
     currentRunRef.current?.cancel()
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -1807,7 +2153,7 @@ export function useChatLLM({
     // too. No-op when nothing is running remotely.
     void abortRemoteGeneration()
     useAppStore.getState().setStreaming(false)
-  }, [])
+  }, [keepCanvasPreview])
 
   return {
     chatInput,
@@ -1822,6 +2168,8 @@ export function useChatLLM({
     setEditingMessageText,
     handleSendMessage,
     handleResubmitMessage,
-    handleStopGeneration
+    handleStopGeneration,
+    handleRunAction,
+    handleRunAnswer
   }
 }

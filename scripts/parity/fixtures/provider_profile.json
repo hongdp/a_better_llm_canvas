@@ -1,0 +1,349 @@
+{
+ "module": "provider_profile",
+ "cases": {
+  "get_cache_profile": [
+   {
+    "input": [
+     "grok"
+    ],
+    "output": {
+     "mode": "automatic",
+     "maxBreakpoints": 0,
+     "routing": {
+      "kind": "header",
+      "name": "x-grok-conv-id"
+     },
+     "longContextThreshold": 200000,
+     "cachedTokensPath": [
+      "prompt_tokens_details",
+      "cached_tokens"
+     ],
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
+   },
+   {
+    "input": [
+     "ollama"
+    ],
+    "output": {
+     "mode": "automatic",
+     "maxBreakpoints": 0,
+     "exclusiveCache": true,
+     "windowDiscovered": true
+    }
+   },
+   {
+    "input": [
+     "anthropic"
+    ],
+    "output": {
+     "mode": "explicit",
+     "maxBreakpoints": 4,
+     "cachedTokensPath": [
+      "cache_read_input_tokens"
+     ],
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
+   },
+   {
+    "input": [
+     "openai"
+    ],
+    "output": {
+     "mode": "automatic",
+     "maxBreakpoints": 0,
+     "routing": {
+      "kind": "header",
+      "name": "prompt-cache-key"
+     },
+     "cachedTokensPath": [
+      "prompt_tokens_details",
+      "cached_tokens"
+     ],
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
+   },
+   {
+    "input": [
+     "gemini"
+    ],
+    "output": {
+     "mode": "automatic",
+     "maxBreakpoints": 0,
+     "cachedTokensPath": [
+      "cachedContentTokenCount"
+     ],
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
+   },
+   {
+    "input": [
+     "runpod"
+    ],
+    "output": {
+     "mode": "none",
+     "maxBreakpoints": 0,
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
+   },
+   {
+    "input": [
+     "nope"
+    ],
+    "output": {
+     "mode": "none",
+     "maxBreakpoints": 0,
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
+   }
+  ],
+  "target_prompt_tokens": [
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "x-grok-conv-id"
+      },
+      "longContextThreshold": 200000,
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     256000
+    ],
+    "output": 200000
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "x-grok-conv-id"
+      },
+      "longContextThreshold": 200000,
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     131072
+    ],
+    "output": 131072
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "exclusiveCache": true,
+      "windowDiscovered": true
+     },
+     262144
+    ],
+    "output": 262144
+   }
+  ],
+  "check_threshold": [
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "x-grok-conv-id"
+      },
+      "longContextThreshold": 200000,
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     250000
+    ],
+    "output": {
+     "crossed": true,
+     "threshold": 200000,
+     "promptTokens": 250000,
+     "overBy": 50000
+    }
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "x-grok-conv-id"
+      },
+      "longContextThreshold": 200000,
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     1000
+    ],
+    "output": {
+     "crossed": false,
+     "threshold": 200000,
+     "promptTokens": 1000,
+     "overBy": 0
+    }
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "exclusiveCache": true,
+      "windowDiscovered": true
+     },
+     1000
+    ],
+    "output": null
+   }
+  ],
+  "read_cached_tokens": [
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "x-grok-conv-id"
+      },
+      "longContextThreshold": 200000,
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     {
+      "prompt_tokens_details": {
+       "cached_tokens": 12
+      }
+     }
+    ],
+    "output": 12
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "x-grok-conv-id"
+      },
+      "longContextThreshold": 200000,
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     {
+      "prompt_tokens_details": {}
+     }
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     {
+      "mode": "explicit",
+      "maxBreakpoints": 4,
+      "cachedTokensPath": [
+       "cache_read_input_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     {
+      "cache_read_input_tokens": 7
+     }
+    ],
+    "output": 7
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "exclusiveCache": true,
+      "windowDiscovered": true
+     },
+     {
+      "x": 1
+     }
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "cachedTokensPath": [
+       "cachedContentTokenCount"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     "junk"
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     {
+      "mode": "automatic",
+      "maxBreakpoints": 0,
+      "routing": {
+       "kind": "header",
+       "name": "prompt-cache-key"
+      },
+      "cachedTokensPath": [
+       "prompt_tokens_details",
+       "cached_tokens"
+      ],
+      "exclusiveCache": false,
+      "windowDiscovered": false
+     },
+     {
+      "prompt_tokens_details": {
+       "cached_tokens": "no"
+      }
+     }
+    ],
+    "output": null
+   }
+  ]
+ }
+}

@@ -34,6 +34,23 @@ import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStabili
 import { extractKeywords, selectReferenceChapters, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
 import { buildChatSystemPrompt, promptTexts } from '../../utils/systemPrompt'
 import { DOCUMENT_TOOLS, toOpenAITools, toAnthropicTools, toGeminiTools, fromOpenAITools, type ToolSpec } from '../../utils/documentTools'
+import { acceptedHash, freshnessMarkers, type SeenRecord, type MarkableDoc } from '../../agent/freshness'
+import { resolveContextWindowTokens, estimateTokens, tokensToChars, historyBudgetChars, cjkRatioOf } from '../../utils/contextWindow'
+import { getCacheProfile, targetPromptTokens, checkThreshold, readCachedTokens } from '../../utils/providerProfile'
+import { resolveDocumentProtocol, type DocumentProtocol } from '../../utils/protocolChoice'
+import { leadingH1Text, titleFollowingHeading, contentWithRenamedHeading } from '../../utils/titleSync'
+import { partialStringArgument, applyToolCallDelta, finishToolCalls, type ToolCallAccumulator, type FinishedToolCall } from '../../utils/toolCallStream'
+import { splitStreamingResponse, buildCompletionWarnings, NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE } from '../../hooks/chat/streamHandlers'
+import { STEP_LIMIT_NOTE } from '../../agent/run'
+import { resolveRunSettings, detectStepFailure, decideAfterStep, defaultMaxSteps, type ExecutedCall, type RunBudgets, type StepPolicy } from '../../agent/policy'
+import { citeChapter, resolveChapter } from '../../agent/chapters'
+import { collectStep, planWrites } from '../../agent/invocations'
+import { ToolRegistry, defineTool } from '../../agent/registry'
+import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
+import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type PlanItem } from '../../utils/plan'
+import { wrapReminder, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
+import { callSignature } from '../../utils/toolCallStream'
+import type { ToolInvocation, ToolKind } from '../../agent/types'
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/parity/fixtures')
 const PROMPT_TEXTS = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/wc_text/data/prompt_texts.json')
@@ -190,6 +207,48 @@ const HISTORY: LLMMessage[] = [
 const POLISH_PARA = (n: number, i = 0) => `<p>${`第${i}段，她说：“我们走吧。”他没有回头。`.repeat(Math.ceil(n / 20)).slice(0, n)}</p>`
 const POLISH_HTML = `<h2>第一章</h2>${POLISH_PARA(600, 1)}${POLISH_PARA(600, 2)}<p><img src="x.png"></p>${POLISH_PARA(100, 3)}<p>{{IMAGE_PLACEHOLDER_0}}</p><p>  </p>${POLISH_PARA(300, 4)}<p>她<strong>没有</strong>回头 &amp; 走了。</p>`
 const POLISH_SEGS: PolishSegment[] = splitForPolish(POLISH_HTML)
+
+const SEEN_DOCS: MarkableDoc[] = [
+  { id: 'a', content: '<p>alpha</p>' }, { id: 'b', content: '<p>beta <ins class="diff-addition" data-diff-id="x">new</ins></p>' },
+  { id: 'c', content: '', contentLoaded: false }, { id: 'd', content: '<p>delta</p>' }, { id: 'e', content: '<p>eps</p>' }
+]
+/** freshnessMarkers mutates the record: both sides return it with the markers. */
+const freshness = (docs: MarkableDoc[], active: string | null, inContext: string[], seen: Record<string, { hash: string; turn: number }>, turn: number) => {
+  const record: SeenRecord = new Map(Object.entries(seen))
+  const markers = freshnessMarkers(docs, active, inContext, record, turn)
+  return { markers, seen: Object.fromEntries(record) }
+}
+const applyDeltas = (deltas: Array<Parameters<typeof applyToolCallDelta>[1]>) => {
+  const acc = new Map<number, ToolCallAccumulator>()
+  for (const d of deltas) applyToolCallDelta(acc, d)
+  return { accumulators: Object.fromEntries(acc), finished: finishToolCalls(acc) }
+}
+const CALL = (name: string, args: Record<string, unknown> | null, id?: string) => ({ id, name, args, argumentsText: args ? JSON.stringify(args) : '{bad' })
+const RESULT = (ok: boolean, retryable?: boolean) => ({ ok, content: ok ? 'done' : 'failed', trace: 't', ...(retryable === undefined ? {} : { retryable }) })
+const EXEC = (kind: ToolKind, ok: boolean, retryable?: boolean): ExecutedCall => ({ kind, result: RESULT(ok, retryable) })
+const B = (maxSteps: number, maxCorrective = 3): RunBudgets => ({ maxSteps, maxCorrective })
+const P = (continueAfterWrites: boolean, feedBackFailedWrites: boolean): StepPolicy => ({ continueAfterWrites, feedBackFailedWrites })
+const DECIDE = (executed: ExecutedCall[], stepsTaken: number, correctiveUsed: number, budgets: RunBudgets, policy: StepPolicy) =>
+  decideAfterStep({ executed, stepsTaken, correctiveUsed, budgets, policy })
+const TOOL_DESCRIPTORS = [
+  { name: 'update_document', kind: 'write', markupForm: true }, { name: 'edit_document', kind: 'write', markupForm: true },
+  { name: 'replace_selection', kind: 'write', markupForm: true }, { name: 'polish_chapter', kind: 'write' },
+  { name: 'read_chapter', kind: 'read' }, { name: 'open_chapter', kind: 'navigate' }
+] as const
+/** collectStep over a registry built from plain descriptors, which the JSON can carry. */
+const collect = (text: string, nativeCalls: FinishedToolCall[], step: number, opts?: { markupProtocol?: boolean }) => {
+  const registry = new ToolRegistry(TOOL_DESCRIPTORS.map(d => defineTool<Record<string, unknown>>({
+    name: d.name, description: '', parameters: { type: 'object' }, kind: d.kind, markupForm: 'markupForm' in d ? d.markupForm : undefined,
+    isAvailable: () => true, parse: raw => raw ?? 'none', execute: () => RESULT(true)
+  })))
+  return collectStep(text, nativeCalls, registry, step, opts)
+}
+const INV = (name: string, args: Record<string, unknown> | null): ToolInvocation => ({ id: name, name, args, source: 'native' })
+const CHAPTERS = [{ id: 'c1', title: '第一章 启程' }, { id: 'c2', title: 'Chapter 2: The Road' }, { id: 'c3', title: '大纲' }, { id: 'c4', title: '第二章 进城' }, { id: 'c5', title: '第二章 入城' }]
+const MANY = Array.from({ length: 15 }, (_, i) => ({ id: `m${i}`, title: `Part ${i + 1}` }))
+
+const HINT_HTML = '<h1>第三章</h1><p class="x">她说：“我们走吧。”他没有回头，<em>风</em>从巷口灌进来&nbsp;——&nbsp;冷得很。</p><p>第二段很普通。</p><p><img src="a"></p>'
+const PLAN: PlanItem[] = [{ id: 'a', title: '第一章', status: 'done' }, { id: 'b', title: '第二章', status: 'in_progress' }, { id: 'c', title: '第三章', status: 'pending' }]
 
 const MODULES: Module[] = [
   {
@@ -379,6 +438,184 @@ const MODULES: Module[] = [
     }
   },
   {
+    module: 'freshness',
+    cases: {
+      accepted_hash: run(acceptedHash, [[SEEN_DOCS[1].content], [''], ['<p>x</p>']]),
+      freshness_markers: run(freshness, [
+        [SEEN_DOCS, 'a', ['b'], {}, 1],
+        [SEEN_DOCS, 'a', ['b', 'c'], { b: { hash: 'old', turn: 0 }, c: { hash: 'old', turn: 0 }, d: { hash: acceptedHash('<p>delta</p>'), turn: 0 }, e: { hash: 'old', turn: 0 } }, 2],
+        [SEEN_DOCS, null, [], { c: { hash: 'x', turn: 0 }, a: { hash: acceptedHash('<p>alpha</p>'), turn: 0 } }, 3],
+        [SEEN_DOCS, 'a', ['b'], { b: { hash: acceptedHash('<p>beta new</p>'), turn: 0 } }, 4]
+      ])
+    }
+  },
+  {
+    module: 'context_window',
+    cases: {
+      resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0]]),
+      estimate_tokens: run(estimateTokens, [[''], ['hello world'], ['你好世界'], ['mixed 中文 text'], ['a']]),
+      tokens_to_chars: run(tokensToChars, [[1000, 0], [1000, 1], [1000, 0.5], [1000, 2], [1000, -1], [7, 0.3]]),
+      history_budget_chars: run(historyBudgetChars, [[{ contextTokens: 131072, maxOutputTokens: 16384, fixedTokens: 30000, cjkRatio: 0.8 }], [{ contextTokens: 32768, maxOutputTokens: 16384, fixedTokens: 20000, cjkRatio: 0 }], [{ contextTokens: 200000, maxOutputTokens: 4096, fixedTokens: 0, cjkRatio: 0.123 }]]),
+      cjk_ratio_of: run(cjkRatioOf, [[''], ['abc'], ['你好'], ['你好ab'], ['㐀豈 x']])
+    }
+  },
+  {
+    module: 'provider_profile',
+    cases: {
+      get_cache_profile: run(getCacheProfile, [['grok'], ['ollama'], ['anthropic'], ['openai'], ['gemini'], ['runpod'], ['nope']]),
+      target_prompt_tokens: run(targetPromptTokens, [[getCacheProfile('grok'), 256000], [getCacheProfile('grok'), 131072], [getCacheProfile('ollama'), 262144]]),
+      check_threshold: run(checkThreshold, [[getCacheProfile('grok'), 250000], [getCacheProfile('grok'), 1000], [getCacheProfile('ollama'), 1000]]),
+      read_cached_tokens: run(readCachedTokens, [[getCacheProfile('grok'), { prompt_tokens_details: { cached_tokens: 12 } }], [getCacheProfile('grok'), { prompt_tokens_details: {} }], [getCacheProfile('anthropic'), { cache_read_input_tokens: 7 }], [getCacheProfile('ollama'), { x: 1 }], [getCacheProfile('gemini'), 'junk'], [getCacheProfile('openai'), { prompt_tokens_details: { cached_tokens: 'no' } }]])
+    }
+  },
+  {
+    module: 'protocol_choice',
+    cases: {
+      resolve_document_protocol: run(resolveDocumentProtocol, [['grok', undefined], ['grok', 'tools'], ['ollama', 'auto' as DocumentProtocol], ['runpod', 'markup'], ['openai', undefined], ['gemini', 'auto' as DocumentProtocol], ['weird', undefined]])
+    }
+  },
+  {
+    module: 'title_sync',
+    cases: {
+      leading_h1_text: run(leadingH1Text, [['<h1>第一章 启程</h1><p>x</p>'], ['  <h1 class="t">A &amp; <em>B</em><del>gone</del></h1>'], ['<p>no heading</p><h1>late</h1>'], ['<h1>   </h1>'], ['<h1>unclosed'], ['']]),
+      title_following_heading: run(titleFollowingHeading, [['<h1>Old</h1>', '<h1>New</h1>', 'Old'], ['<h1>Old</h1>', '<h1>Old</h1>', 'Renamed'], ['<p>x</p>', '<p>y</p>', 'T'], ['<h1>A</h1>', '<h1>A</h1>', 'A'], ['', '<h1>Fresh</h1>', undefined]]),
+      content_with_renamed_heading: run(contentWithRenamedHeading, [['<h1>Old</h1><p>x</p>', 'New & <Better>'], ['<h1>Same</h1>', 'Same'], ['<p>none</p>', 'T'], ['<h1>Old</h1>', '   '], ['<h1><ins class="diff-addition" data-diff-id="d">Old</ins></h1>', 'New'], ['<h1>Old $& $1</h1>', 'N$&'], ['\n  <h1 id="h">Old</h1><h1>Old</h1>', 'New']])
+    }
+  },
+  {
+    module: 'tool_call_stream',
+    cases: {
+      partial_string_argument: run(partialStringArgument, [['{"html": "<p>Hal', 'html'], ['{"html":"a\\"b\\n\\u00e9', 'html'], ['{"chapter": "3", "html": "<p>x</p>"}', 'html'], ['{"html": 5}', 'html'], ['{"other": "x"}', 'html'], ['{"html"', 'html'], ['{"html" :\n "tail\\', 'html'], ['', 'html']]),
+      apply_tool_call_delta: run(applyDeltas, [
+        [[{ index: 0, id: 'c1', function: { name: 'read_chapter', arguments: '{"cha' } }, { index: 0, function: { arguments: 'pter": "2"}' } }]],
+        [[{ index: 1, function: { name: 'x', arguments: 'junk' } }, { index: 0, id: 'a', function: { name: 'y' } }]],
+        [[{ index: 0, function: { name: 'x', arguments: '{"a":1}' } }, { index: 0, function: { arguments: '{"a":2}' }, replace: true }]],
+        [[{ function: { name: 'n', arguments: '{}' }, signature: 'sig' }, { index: 0, function: { arguments: '' } }]],
+        [[{ index: 0, function: { arguments: '{"no":"name"}' } }]],
+        [[]]
+      ])
+    }
+  },
+  {
+    module: 'stream_handlers',
+    cases: {
+      constants: run(() => ({ NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, STEP_LIMIT_NOTE }), [[]]),
+      split_streaming_response: run(splitStreamingResponse, [...RESPONSES, 'Hi <canv', 'Lead\n<canvas chapter="2">partial', '<selection_replace>half', 'a\n<edit>\n<<<<<<< SEARCH\nx'].map(r => [r] as [string])),
+      build_completion_warnings: run(buildCompletionWarnings, [
+        [{ canvasIssue: null, editFailedCount: 0, exhaustedNoActionRetries: false, reinsertedImages: 0 }],
+        [{ canvasIssue: 'truncated', editFailedCount: 1, exhaustedNoActionRetries: false, reinsertedImages: 1, strayMarkup: 1 }],
+        [{ canvasIssue: 'elided', editFailedCount: 2, exhaustedNoActionRetries: true, reinsertedImages: 2, strayMarkup: 2, selectionGone: true, unretriableFailedUpdate: true, toolCallProducedNothing: true }],
+        [{ canvasIssue: null, editFailedCount: 0, exhaustedNoActionRetries: false, reinsertedImages: 0, strayMarkup: 3, unretriableFailedUpdate: true }]
+      ])
+    }
+  },
+  {
+    module: 'policy',
+    cases: {
+      default_max_steps: run(defaultMaxSteps, [['grok'], ['ollama'], ['runpod'], ['openai']]),
+      resolve_run_settings: run(resolveRunSettings, [['grok', undefined], ['grok', { agentTools: false }], ['ollama', { agentMaxSteps: 0 }], ['grok', { agentMaxSteps: 2.7, continueAfterWrites: false }], ['grok', { agentMaxSteps: -1 }], ['grok', { agentMaxSteps: 4 }, false], ['openai', { agentTools: true, continueAfterWrites: true }]]),
+      detect_step_failure: run(detectStepFailure, [
+        [{ text: 'chat only', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat' }],
+        [{ text: 'chat only', writeProtocol: 'tools', hadNativeCalls: false, markupKind: 'chat' }],
+        [{ text: 'x', writeProtocol: 'markup', hadNativeCalls: true, markupKind: 'chat' }],
+        [{ text: 'x', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'canvas' }],
+        [{ text: 'Done.\n<doc_status>updated</doc_status>', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat' }],
+        [{ text: 'Done.\n<doc_status>updated</doc_status>', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat', wroteThisRun: true }],
+        [{ text: '<edit>broken', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat', wroteThisRun: true }],
+        [{ text: '我已经写好了。\n<doc_status>unchanged</doc_status>', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat' }]
+      ]),
+      decide_after_step: run(DECIDE, [
+        [[], 1, 0, B(6), P(true, true)],
+        [[EXEC('read', true)], 1, 0, B(6), P(true, true)],
+        [[EXEC('read', true)], 6, 0, B(6), P(true, true)],
+        [[EXEC('read', true)], 5, 0, B(6), P(true, true)],
+        [[EXEC('write', true)], 1, 0, B(6), P(true, true)],
+        [[EXEC('write', true)], 1, 0, B(6), P(false, true)],
+        [[EXEC('write', false)], 1, 0, B(6), P(true, true)],
+        [[EXEC('write', false)], 1, 3, B(6), P(true, true)],
+        [[EXEC('write', false, false)], 1, 0, B(6), P(true, true)],
+        [[EXEC('write', false)], 1, 0, B(6), P(true, false)],
+        [[EXEC('write', false)], 6, 0, B(6), P(true, true)],
+        [[EXEC('write', true)], 6, 0, B(6), P(true, true)],
+        [[EXEC('navigate', true), EXEC('write', false)], 2, 0, B(0), P(true, true)],
+        [[EXEC('read', true)], 99, 0, B(0), P(false, false)]
+      ])
+    }
+  },
+  {
+    module: 'chapters',
+    cases: {
+      cite_chapter: run(citeChapter, [[{ id: 'x', title: 'T "q"', number: 3 }]]),
+      resolve_chapter: run(resolveChapter, [[3, CHAPTERS], ['3', CHAPTERS], [' #2 ', CHAPTERS], [0, CHAPTERS], ['9', CHAPTERS], [2.5, CHAPTERS], ['大纲', CHAPTERS], ['  chapter 2: the road ', CHAPTERS], ['启程', CHAPTERS], ['第二章', CHAPTERS], ['nothing', CHAPTERS], ['', CHAPTERS], [null, CHAPTERS], [{ x: 1 }, CHAPTERS], ['   ', CHAPTERS], ['missing', MANY], ['Part', MANY], [true, CHAPTERS]])
+    }
+  },
+  {
+    module: 'invocations',
+    cases: {
+      collect_step: run(collect, [
+        ['Just chat', [], 0], [RESPONSES[1], [], 1], [RESPONSES[6], [], 2], [RESPONSES[8], [], 3], [RESPONSES[12], [], 4],
+        ['Reading.', [CALL('read_chapter', { chapters: ['2'] }, 'c1'), CALL('nope', null)], 5],
+        [`With tags beside a native write.\n<canvas><p>tag</p></canvas>`, [CALL('update_document', { html: '<p>native</p>' }, 'w1')], 6],
+        [`With tags beside a native write.\n<canvas><p>tag</p></canvas>`, [CALL('update_document', { html: '<p>native</p>' }, 'w1')], 7, { markupProtocol: true }],
+        [`Polish and tags.\n<canvas chapter="2"><p>tag</p></canvas>`, [CALL('polish_chapter', { chapter: '1' }, 'p1')], 8],
+        ['', [{ id: undefined, name: 'read_chapter', args: { chapters: ['1'] }, argumentsText: '{"chapters":["1"]}', signature: 'sig' }], 9]
+      ]),
+      plan_writes: run(planWrites, [
+        [[INV('update_document', { html: 'a' }), INV('edit_document', { edits: [] })]],
+        [[INV('update_document', { html: 'a' }), INV('replace_selection', { html: 's' }), INV('edit_document', { edits: [] }), INV('update_document', { html: 'b', chapter: '3' }), INV('update_document', { html: 'c', new_chapter: 'T' }), INV('polish_chapter', { chapter: '1' })]],
+        [[]]
+      ])
+    }
+  },
+  {
+    module: 'edit_hints',
+    cases: {
+      text_similarity: run(textSimilarity, [['abcd', 'abcd'], ['abcd', 'abce'], ['', 'x'], ['a', 'a'], ['你好世界', '你好中国'], ['abcdef', 'xyz']]),
+      describe_differences: run(describeDifferences, [
+        [HINT_HTML, '<p>她说："我们走吧。"他没有回头，风从巷口灌进来 -- 冷得很。</p>'],
+        ['<p>it&#39;s a &amp; b … done</p>', "<p>it's a & b ... done</p>"], ['<p>plain</p>', '<p>plain</p>'], ['<p>a\u00a0b</p>', '<p>a b</p>']
+      ]),
+      nearest_paragraph: run(nearestParagraph, [
+        [HINT_HTML, '<p>她说："我们走吧。"他没有回头，风从巷口灌进来 -- 冷得很。</p>'], [HINT_HTML, '<p>第二段很普通。</p><p>more</p>'],
+        [HINT_HTML, '<p>completely unrelated english text here</p>'], [HINT_HTML, ''], [HINT_HTML, '<p>第二段普通</p>']
+      ]),
+      nearest_hint: run(nearestHint, [[HINT_HTML, '<p>她说："我们走吧。"他没有回头，风从巷口灌进来 -- 冷得很。</p>'], [HINT_HTML, '<p>nothing like it at all</p>'], [`<p>${'长'.repeat(700)}</p>`, `<p>${'长'.repeat(690)}</p>`]])
+    }
+  },
+  {
+    module: 'plan',
+    cases: {
+      apply_plan_update: run(applyPlanUpdate, [
+        [[], [{ title: '第一章' }, { title: '第二章', status: 'in_progress' }], undefined],
+        [PLAN, [{ id: 'b', status: 'done' }, { id: 'c', status: 'in_progress' }], undefined],
+        [PLAN, [{ id: 'zz', status: 'done' }], true], [PLAN, [{ id: 'a', title: '第一章（改）', status: 'completed' }], true],
+        [PLAN, [{ title: 'x' }, { title: 'x' }], undefined], [PLAN, [{ id: 1, title: 'num', status: 'cancelled' }, { id: 1, title: 'dup' }], undefined],
+        [[], [], undefined], [[], [{ status: 'done' }], undefined], [PLAN, 'junk', undefined]
+      ]),
+      render_plan: run(renderPlan, [[PLAN], [[{ id: 'a', title: 'only', status: 'done' }]], [[]]]),
+      next_plan_item: run(nextPlanItem, [[PLAN], [[{ id: 'a', title: 'x', status: 'done' }]]]),
+      unfinished_plan_items: run(unfinishedPlanItems, [[PLAN]])
+    }
+  },
+  {
+    module: 'reminders',
+    cases: {
+      constants: run(() => ({ REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET }), [[]]),
+      wrap_reminder: run(wrapReminder, [['note'], ['two\nlines']]),
+      append_reminders: run(appendReminders, [
+        [[{ role: 'assistant', content: 'x' }, { role: 'tool', toolCallId: 'c', name: 'read_chapter', content: 'TEXT' }], ['r1', 'r2']],
+        [[{ role: 'user', content: '' }], ['r']], [[{ role: 'user', content: 'u' }], []], [[], ['r']]
+      ]),
+      repeat_nudge: run(repeatNudge, [[['list_chapters'], 3], [['read_chapter', 'grep'], 5], [['x'], 6]]),
+      long_reasoning_reminder: run(longReasoningReminder, [[12345], [900]]),
+      plan_unfinished_nudge: run(planUnfinishedNudge, [[PLAN], [[{ id: 'a', title: 'one', status: 'pending' }]]]),
+      user_edited_reminder: run(userEditedReminder, [[[{ number: 2, title: '第二章' }]], [[{ number: 1, title: 'A' }, { number: 3, title: 'C' }]]]),
+      structure_changed_reminder: run(structureChangedReminder, [['1. "A"\n2. "B"']]),
+      queued_request_reminder: run(queuedRequestReminder, [[1], [3]]),
+      call_signature: run(callSignature, [['read_chapter', { chapters: ['2'], format: 'html' }], ['read_chapter', { format: 'html', chapters: ['2'] }], ['x', { a: { z: 1, b: [3, { y: 2, x: 1 }] } }], ['x', null, '{broken'], ['x', null], ['grep', { pattern: '阿青|阿红', n: 1.5, ok: true }]])
+    }
+  },
+  {
     module: 'system_prompt',
     cases: {
       build_chat_system_prompt: run(buildChatSystemPrompt, PROMPT_OPTIONS)
@@ -420,7 +657,8 @@ describe('parity fixtures', () => {
         return
       }
       expect(existsSync(path), `${path} missing — run: npm run parity:fixtures`).toBe(true)
-      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(mod)
+      // Both sides through JSON: an `undefined` input is null in the file.
+      expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(JSON.parse(json))
     })
   }
 })

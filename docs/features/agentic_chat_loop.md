@@ -416,6 +416,57 @@ How the context behaves:
   rewrite is checked against measured bounds, and a chunk that fails keeps
   its draft.
 
+### 0.8 What the harness tells the model between steps (2026-10-08)
+
+Borrowed from Grok Build's harness (xai-org/grok-build, read on
+2026-10-08): tool results carry automated context in `<system-reminder>`
+blocks, the loop nudges a model that repeats itself before anything stops
+it, a model that reasoned at length is told to act, and work of several
+steps is tracked in a checklist the harness reads back. Built in both loops
+(`src/agent/reminders.ts`, `wc_text/reminders.py`; the reminders ride on the
+last message of a step's results, never a message of their own, so the
+cached prefix and role alternation stay intact):
+
+- **A failed SEARCH names the nearest paragraph** (`utils/editHints`): the
+  closest paragraph by character-bigram similarity, quoted as exact HTML to
+  copy, and — when the two agree once normalized — which spelling kept them
+  apart (curly quotes, `&nbsp;`, an em dash, an inline `<em>` the SEARCH
+  dropped). Saves the re-read step. The matcher itself already forgives
+  quotes and inline tags, so the hint fires on near misses.
+- **Repeating itself**: calls are compared by name plus arguments with keys
+  sorted at every level. Three steps in a row with the same calls and no
+  write get one nudge in their results (what it repeated, that the answer
+  will not change, to do something else or say what is missing). On a
+  server run, six such steps pause the run for the user (§4.3 of
+  backend_authority.md); a tab-run only nudges, per the no-hard-limits
+  decision. Grok Build nudges Read/Plan tools at 4 and stops at 8.
+- **Long reasoning** (`longReasoningReminderTokens`, per provider, off by
+  default): a step that reasoned past the threshold and wrote nothing makes
+  the step after next carry a reminder to read the result, decide one
+  action and act. One step later, not at once: Grok Build measured
+  immediate placement making grok-4.7 reason more, and a one-call delay
+  reasoning about a third less. Only steps without a write count: planning
+  a chapter before writing it is the point.
+- **A checklist** (`plan` tool, `utils/plan`): for 3+ steps the model keeps
+  items with a status; the bubble shows it live; after each step the
+  results carry the plan with what comes next; a reply with no action while
+  items remain gets a reminder and continues (twice at most), then the turn
+  ends with the items left. An item marked done that names an empty chapter
+  is called out in the tool result.
+- **A question** (`ask_user` tool): the choice the model recommends first,
+  the user may also type. A tab-run ends with the question as buttons under
+  the bubble, and the answer is the next message; a server run pauses with
+  the question and continues with the answer (`/answer`). `delete_chapter`
+  now points at it for a chapter with text.
+- **What moved while it worked** (server runs): the user's edit to a chapter
+  the model has seen, a change to the chapter list, and requests waiting in
+  the queue arrive as reminders in the next results, not only as a refused
+  write.
+- **The prompt says it**: a narrated action without its call did not
+  happen; "done" needs a result to show for it; a reply with no action waits
+  until no unblocked work remains; several look-ups may share a reply;
+  `<system-reminder>` blocks are the editor's, not the user's.
+
 ### 0.7 Settings and transports
 
 - **Per-provider settings:**
@@ -1557,11 +1608,12 @@ Each step is its own `/api/generate` job.
   one step, no corrective retry, no continuation after writes. The user
   sends "继续" (continue) to pick up.
 
-**Phase 3 (full resume).**
-- Add `GET /api/generate/{id}/request`, returning the job's request
-  messages.
-- The client appends the step's results and continues the loop.
-- A tool-call id ledger on the bubble makes execution idempotent.
+**Phase 3 (full resume) — built another way (2026-10-08).** With
+`ProviderConfig.serverRuns` on, the whole run lives on the server
+(backend_authority.md §4.3): its state is persisted after every step, a
+reload rejoins it from the run list, and an API restart resumes it from
+its last completed step. The client loop keeps the rejoin above for runs
+that still execute in the tab.
 
 **Stop.** `handleStopGeneration` aborts the step in flight, on the client
 and through `abortRemoteGeneration`, and ends the run. Earlier steps' writes
