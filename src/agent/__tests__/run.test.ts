@@ -403,7 +403,8 @@ describe('reminders between steps (agent/reminders)', () => {
       replies: [
         calls('Planning.', ['p', 'plan', '{"items":[{"id":"a","title":"写第一章","status":"in_progress"},{"id":"b","title":"写第二章"}]}']),
         text('写完了。\n<doc_status>unchanged</doc_status>'),
-        calls('', ['p2', 'plan', '{"items":[{"id":"a","status":"done"},{"id":"b","status":"dropped"}]}']),
+        // Nothing was written, so "done" would be refused: the items are dropped.
+        calls('', ['p2', 'plan', '{"items":[{"id":"a","status":"dropped"},{"id":"b","status":"dropped"}]}']),
         done
       ],
       budgets: { maxSteps: 0 }, extra: [planTool]
@@ -412,7 +413,7 @@ describe('reminders between steps (agent/reminders)', () => {
     expect(h.requests[1].at(-1)?.content).toContain('PLAN (0/2 done)')
     expect(h.requests[2].at(-1)?.content).toContain('Your plan still has 2 unfinished items')
     expect(h.summary()?.endReason).toBe('answered')
-    expect(h.summary()?.plan.map(i => i.status)).toEqual(['done', 'dropped'])
+    expect(h.summary()?.plan.map(i => i.status)).toEqual(['dropped', 'dropped'])
   })
 
   it('ends a turn that asks the user, with the question on the summary', async () => {
@@ -421,5 +422,42 @@ describe('reminders between steps (agent/reminders)', () => {
     expect(h.summary()?.endReason).toBe('asked')
     expect(h.summary()?.question).toEqual({ question: 'Which?', options: ['A (Recommended)', 'B'] })
     expect(h.requests).toHaveLength(1)
+  })
+})
+
+describe('what a plan may call done, and an HTML read that no edit followed', () => {
+  const done = text('done\n<doc_status>unchanged</doc_status>')
+
+  it('refuses "done" on a write item while nothing was written since it started', async () => {
+    const h = harness({
+      replies: [
+        calls('', ['p', 'plan', '{"items":[{"id":"w","title":"改写第十四章","status":"in_progress"},{"id":"r","title":"对大纲接缝"}]}']),
+        calls('', ['p2', 'plan', '{"items":[{"id":"w","status":"done"},{"id":"r","status":"done"}],"merge":true}']),
+        text('<canvas><p>written</p></canvas>'),
+        calls('', ['p3', 'plan', '{"items":[{"id":"w","status":"done"}],"merge":true}']),
+        done
+      ],
+      budgets: { maxSteps: 0 }, policy: { continueAfterWrites: true, feedBackFailedWrites: true }, extra: [planTool]
+    })
+    await h.run.start()
+    const refused = h.requests[2].find(m => m.role === 'tool' && m.toolCallId === 'p2')?.content ?? ''
+    expect(refused).toContain('"改写第十四章" was marked done, but nothing has been written')
+    expect(refused).toContain('▶ 改写第十四章')
+    expect(refused).toContain('☑ 对大纲接缝')
+    const accepted = h.requests[4].find(m => m.role === 'tool' && m.toolCallId === 'p3')?.content ?? ''
+    expect(accepted).toContain('☑ 改写第十四章')
+    expect(h.summary()?.plan.map(i => i.status)).toEqual(['done', 'done'])
+  })
+
+  it('nudges a no-action ending that follows an HTML read, once', async () => {
+    const htmlRead = readTool(args => ({ ok: true, content: '<p>¶88</p>', trace: `read #1 ¶88 (html, ${String(args.format)})` }))
+    const h = harness({
+      replies: [calls('', ['c', 'read_chapter', '{"chapter":"1","format":"html"}']), done, done],
+      budgets: { maxSteps: 0 }, read: htmlRead
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(3)
+    expect(h.requests[2].at(-1)?.content).toContain('Your last read of a chapter\'s HTML (read #1 ¶88 (html, html)) is the step before an edit')
+    expect(h.summary()?.endReason).toBe('answered')
   })
 })

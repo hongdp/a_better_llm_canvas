@@ -3,20 +3,43 @@ import re
 from typing import Any, Dict
 
 from wc_text.plan import apply_plan_update, render_plan
+from wc_text.reminders import plan_not_written_note
 from wc_text.text import is_blank_content
 
 from ..registry import Tool
-from ..types import ToolContext, result
+from ..types import ToolContext, result, writes_so_far
 
 
 def _title_key(title: str) -> str:
     return re.sub(r"\s+", "", title).lower()
 
 
+_WRITE_ITEM_RE = re.compile(r"写|改|补|删|增|润色|rewrite|write|edit|revise|insert|add|create|polish|delete|rename|expand|fix", re.I)
+
+
 async def _plan_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
-    updated = apply_plan_update(ctx.run.plan, args.get("items"), args.get("merge"))
-    if isinstance(updated, str):
-        return result(False, f"plan was not updated: {updated}", f"⚠️ plan: {updated}", retryable=True)
+    applied = apply_plan_update(ctx.run.plan, args.get("items"), args.get("merge"))
+    if isinstance(applied, str):
+        return result(False, f"plan was not updated: {applied}", f"⚠️ plan: {applied}", retryable=True)
+    # A write item is done only once something was written since it started
+    # (2026-10-08: "改写第十四章" was marked done in the reply meant to write
+    # it; the write came one step later).
+    written = writes_so_far(ctx.run)
+    before = {i["id"]: i for i in ctx.run.plan}
+    refused = []
+    updated = []
+    for item in applied:
+        prev = before.get(item["id"])
+        if prev is None or item["status"] == "in_progress":
+            keep = prev is not None and prev["status"] == "in_progress" and item["status"] == "in_progress"
+            ctx.run.plan_baseline[item["id"]] = ctx.run.plan_baseline.get(item["id"], written) if keep else written
+        if item["status"] == "done" and prev and prev["status"] != "done" and _WRITE_ITEM_RE.search(item["title"]) and written <= ctx.run.plan_baseline.get(item["id"], written):
+            refused.append(plan_not_written_note(item["title"]))
+            item = {**item, "status": "in_progress" if prev["status"] == "pending" else prev["status"]}
+        updated.append(item)
+    for item_id in list(ctx.run.plan_baseline):
+        if not any(i["id"] == item_id for i in updated):
+            del ctx.run.plan_baseline[item_id]
     ctx.run.plan = updated
     chapters = ctx.document.chapters()
     notes = []
@@ -27,7 +50,9 @@ async def _plan_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
         if named and named.get("loaded") is not False and is_blank_content(named["content"]):
             notes.append(f'"{item["title"]}" is marked done, but the chapter "{named["title"]}" is still empty.')
     done = sum(1 for i in updated if i["status"] in ("done", "dropped"))
-    return result(True, render_plan(updated) + ("\n" + "\n".join(notes) if notes else ""), f"📋 plan {done}/{len(updated)}")
+    extra = [*refused, *notes]
+    return result(True, render_plan(updated) + ("\n" + "\n".join(extra) if extra else ""),
+                  f"📋 plan {done}/{len(updated)}" + (' (a "done" refused: nothing written yet)' if refused else ""))
 
 
 plan_tool = Tool(

@@ -453,6 +453,19 @@ cached prefix and role alternation stay intact):
   items remain gets a reminder and continues (twice at most), then the turn
   ends with the items left. An item marked done that names an empty chapter
   is called out in the tool result.
+  - **"Done" needs a write** (2026-10-08, first live run): grok marked
+    "改写第十四章" and the outline item done in the reply that was meant to
+    write the chapter, and wrote it one step later — the tool had accepted
+    the status because chapter 14 was not empty. Now an item whose title
+    says it changes the book (写/改/rewrite/edit/…) may go to done only once
+    something was written since it started (`writesSoFar`: chapters touched
+    plus their changes); otherwise it stays in_progress and the result says
+    to do the write in this reply. Dropping an item needs no write.
+  - **An HTML read that no edit followed**: the same run read ¶88 of the
+    outline as HTML (the step before an edit), then ended with a reply that
+    changed nothing — its own reasoning noted the omission. A no-action
+    reply after an HTML read that no write followed is nudged once (make
+    the edit, or say why it is not needed) before the turn ends.
 - **A question** (`ask_user` tool): the choice the model recommends first,
   the user may also type. A tab-run ends with the question as buttons under
   the bubble, and the answer is the next message; a server run pauses with

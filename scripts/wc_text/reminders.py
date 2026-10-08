@@ -48,6 +48,15 @@ def plan_unfinished_nudge(plan: List[Dict[str, str]]) -> str:
             "Continue with the next one in your next reply. If an item no longer applies, mark it dropped with the plan tool and say why; a reply with no action ends the turn only once every item is done or dropped.")
 
 
+def plan_not_written_note(title: str) -> str:
+    return f'"{title}" was marked done, but nothing has been written to the book since it started. It stays in_progress: do the write in this reply, then mark it done.'
+
+
+def html_read_nudge(trace: str) -> str:
+    return (f"Your last read of a chapter's HTML ({trace}) is the step before an edit, and no change followed it. "
+            "Make the edit now, or say in your reply why it is not needed.")
+
+
 def user_edited_reminder(chapters: List[Dict[str, Any]]) -> str:
     names = ", ".join(f'#{c["number"]} "{c["title"]}"' for c in chapters)
     one = len(chapters) == 1

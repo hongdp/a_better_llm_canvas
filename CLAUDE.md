@@ -294,8 +294,10 @@ get one nudge (server runs pause at six); a step that reasoned past
 `longReasoningReminderTokens` without writing makes the step after next
 say "act, don't think" (one step late on purpose, measured on grok-4.7);
 the `plan` tool's checklist comes back after each step and an early
-no-action reply is nudged twice; `ask_user` ends a tab-run with choices and
-pauses a server run until `/answer`. Both loops (`src/agent`, `wc_agent`)
+no-action reply is nudged twice (a write item may be marked done only once
+something was written since it started); a no-action ending after an HTML
+read that no edit followed is nudged once; `ask_user` ends a tab-run with
+choices and pauses a server run until `/answer`. Both loops (`src/agent`, `wc_agent`)
 carry every one of these.
 
 **Two document protocols, one per model.** The markup above is one of them;

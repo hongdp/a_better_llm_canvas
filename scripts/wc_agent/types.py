@@ -48,8 +48,15 @@ class RunState:
     selection_applied: bool = False
     #: The model's checklist for this turn (the `plan` tool).
     plan: List[Dict[str, str]] = field(default_factory=list)
+    #: Writes landed (writes_so_far) when each plan item started: a "done" needs more since.
+    plan_baseline: Dict[str, int] = field(default_factory=dict)
     #: A question the model asked the user this step (`ask_user`): {question, options}.
     question: Optional[Dict[str, Any]] = None
+
+
+def writes_so_far(run: RunState) -> int:
+    """How much the run has written so far: chapters touched plus the changes in them."""
+    return sum(1 + t["changes"] for t in run.touched.values())
 
 
 def chapter_outline(chapters: List[Dict[str, Any]]) -> str:

@@ -252,6 +252,8 @@ export interface RunState {
   selectionApplied: boolean
   /** The model's checklist for this turn (the `plan` tool), shown under the bubble. */
   plan: PlanItem[]
+  /** Writes landed (writesSoFar) when each plan item started: a "done" needs more since. */
+  planBaseline: Map<string, number>
   /** A question the model asked the user this step (`ask_user`); the loop stops for the answer. */
   question: AskedQuestion | null
 }
@@ -284,8 +286,16 @@ export function createRunState(init: { startId: string; inContext?: Iterable<str
     selectionAttempted: false,
     selectionApplied: false,
     plan: [],
+    planBaseline: new Map(),
     question: null
   }
+}
+
+/** How much the run has written so far: chapters touched plus the changes in them. */
+export function writesSoFar(run: RunState): number {
+  let n = 0
+  for (const t of run.touched.values()) n += 1 + t.changes
+  return n
 }
 
 /** A chapter whose HTML the model has seen this run, by the stored content it saw. */

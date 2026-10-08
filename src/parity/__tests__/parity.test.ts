@@ -48,7 +48,7 @@ import { collectStep, planWrites } from '../../agent/invocations'
 import { ToolRegistry, defineTool } from '../../agent/registry'
 import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
 import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type PlanItem } from '../../utils/plan'
-import { wrapReminder, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
+import { wrapReminder, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
 
@@ -612,6 +612,8 @@ const MODULES: Module[] = [
       user_edited_reminder: run(userEditedReminder, [[[{ number: 2, title: '第二章' }]], [[{ number: 1, title: 'A' }, { number: 3, title: 'C' }]]]),
       structure_changed_reminder: run(structureChangedReminder, [['1. "A"\n2. "B"']]),
       queued_request_reminder: run(queuedRequestReminder, [[1], [3]]),
+      plan_not_written_note: run(planNotWrittenNote, [['改写第十四章']]),
+      html_read_nudge: run(htmlReadNudge, [['📖 read #1 "大纲" ¶88–88 (0.1k, html)']]),
       call_signature: run(callSignature, [['read_chapter', { chapters: ['2'], format: 'html' }], ['read_chapter', { format: 'html', chapters: ['2'] }], ['x', { a: { z: 1, b: [3, { y: 2, x: 1 }] } }], ['x', null, '{broken'], ['x', null], ['grep', { pattern: '阿青|阿红', n: 1.5, ok: true }]])
     }
   },
