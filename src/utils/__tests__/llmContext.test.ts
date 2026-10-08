@@ -280,3 +280,19 @@ describe('stripChatDisplayArtifacts — no-action retry artifacts', () => {
     expect(stripChatDisplayArtifacts(content)).toBe('接上第二章往下写了第三章。')
   })
 })
+
+describe('trimHistoryForContext keeps grok reasoning items', () => {
+  it('carries them on the message, and joins them when same-role turns merge', async () => {
+    const { trimHistoryForContext } = await import('../llmContext')
+    const R1 = { type: 'reasoning', id: 'rs_1', encrypted_content: 'A==' }
+    const R2 = { type: 'reasoning', id: 'rs_2', encrypted_content: 'B==' }
+    const out = trimHistoryForContext([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'first', responseItems: [R1] },
+      { role: 'assistant', content: 'second', responseItems: [R2] },
+      { role: 'user', content: 'q2' }
+    ], { maxChars: 10_000 })
+    expect(out).toHaveLength(3)
+    expect(out[1]).toMatchObject({ role: 'assistant', content: 'first\n\nsecond', responseItems: [R1, R2] })
+  })
+})

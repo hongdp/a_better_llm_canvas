@@ -243,7 +243,10 @@ arguments are replayed byte-for-byte (`argumentsText`). The same goes for
 Anthropic thinking blocks, Gemini thought signatures, and grok's output items:
 grok runs on the xAI **Responses API** (not Chat Completions), and each step's
 reasoning item, with its `encrypted_content`, goes back unchanged in the next
-step (`LLMMessage.responseItems`), so the model keeps its plan. The tools offered are
+step (`LLMMessage.responseItems`), so the model keeps its plan — and the final
+step's reasoning is kept on the chat message (`ChatMessage.reasoningItems`,
+`messages.reasoning_items`) and replayed for the last 8 turns, so it keeps what
+it worked out across turns too. The tools offered are
 fixed at a run's first step. Writes reach any chapter through `chapter` (a
 `chapter="…"` attribute on grok's markup). An edit on a chapter whose HTML the
 model has not seen this run is refused, and a live preview must never paint

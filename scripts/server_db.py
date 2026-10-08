@@ -163,6 +163,11 @@ def init_db():
         if "agent" not in message_columns:
             conn.execute("ALTER TABLE messages ADD COLUMN agent TEXT")
             print("[Init] Migrated messages table: added agent column.")
+        # grok's encrypted reasoning of a turn's final step, replayed by later
+        # turns (src/types/chat.ts ChatMessage.reasoningItems), as JSON.
+        if "reasoning_items" not in message_columns:
+            conn.execute("ALTER TABLE messages ADD COLUMN reasoning_items TEXT")
+            print("[Init] Migrated messages table: added reasoning_items column.")
 
         conn.commit()
     finally:

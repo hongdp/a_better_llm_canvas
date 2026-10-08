@@ -264,10 +264,20 @@ async function streamGrokResponses(
   if (config.debug) {
     console.log('[DEBUG] Outgoing xAI Responses Request:', maskRequestDetails(url, headers, body))
   }
-  const response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: config.signal })
+  let response = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body), signal: config.signal })
   if (!response.ok) {
     const errText = await response.text()
-    throw new Error(`xAI API error (${response.status}): ${errText || response.statusText}`)
+    // A reasoning item the service can no longer decrypt (a key rotation, a
+    // model change) is a 400 for the whole turn. Once, without the items —
+    // the conversation continues, only the carried reasoning is lost.
+    if (response.status === 400 && /encrypted_content/i.test(errText) && messages.some(m => m.responseItems?.length)) {
+      console.warn('[LLM] xAI rejected the replayed reasoning; retrying without it')
+      const stripped = messages.map(m => (m.responseItems ? { ...m, responseItems: undefined } : m))
+      response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...body, input: toGrokResponsesInput(stripped) }), signal: config.signal })
+      if (!response.ok) throw new Error(`xAI API error (${response.status}): ${(await response.text()) || response.statusText}`)
+    } else {
+      throw new Error(`xAI API error (${response.status}): ${errText || response.statusText}`)
+    }
   }
 
   let fullText = ''

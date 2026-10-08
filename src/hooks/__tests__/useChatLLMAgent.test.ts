@@ -655,6 +655,42 @@ describe('editing other chapters while the assistant writes (§0.4)', () => {
   })
 })
 
+describe('grok keeps its reasoning from turn to turn', () => {
+  const R = (n: number) => ({ type: 'reasoning', id: `rs_${n}`, summary: [], encrypted_content: `C${n}==` })
+
+  it('keeps the final step\'s reasoning items on the assistant message and sends them back in the next turn, ahead of its text', async () => {
+    responses.push({ text: '好的，记下了。\n<doc_status>unchanged</doc_status>', responseItems: [R(1), { type: 'message', id: 'msg_1' }] })
+    const h = renderChatHook()
+    await send(h, '记住一个秘密')
+    const stored = useAppStore.getState().messages.filter(m => m.role === 'assistant').at(-1)
+    // Only the reasoning: a message item would put raw markup into history.
+    expect(stored?.reasoningItems).toEqual([R(1)])
+
+    responses.push('是的。\n<doc_status>unchanged</doc_status>')
+    await send(h, '秘密是什么？')
+    // Not the ledger's "Understood…" prefix message: the previous turn's reply.
+    const previous = calls[1].find(m => m.role === 'assistant' && m.content.includes('好的，记下了。'))
+    expect(previous?.responseItems).toEqual([R(1)])
+    h.unmount()
+  })
+
+  it('sends only the most recent turns\' items', async () => {
+    const { REASONING_HISTORY_TURNS } = await import('../useChatLLM')
+    const old = Array.from({ length: REASONING_HISTORY_TURNS + 2 }, (_, i) => [
+      { id: `u${i}`, role: 'user' as const, content: `问题 ${i}`, timestamp: '2026-10-08T00:00:00.000Z' },
+      { id: `a${i}`, role: 'assistant' as const, content: `回答 ${i}`, timestamp: '2026-10-08T00:00:00.000Z', reasoningItems: [R(i)] }
+    ]).flat()
+    useAppStore.setState({ messages: [...useAppStore.getState().messages, ...old] })
+    responses.push('好。\n<doc_status>unchanged</doc_status>')
+    const h = renderChatHook()
+    await send(h, '再问一个')
+    const carried = calls[0].filter(m => m.role === 'assistant' && m.responseItems?.length)
+    expect(carried).toHaveLength(REASONING_HISTORY_TURNS)
+    expect(carried[0].content).toContain('回答 2')
+    h.unmount()
+  })
+})
+
 describe('grok keeps its reasoning from step to step (xAI Responses API)', () => {
   it('sends each step\'s output items back on its assistant message in the next request', async () => {
     const ITEMS = [

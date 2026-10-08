@@ -97,13 +97,15 @@ export function toGrokResponsesInput(messages: LLMMessage[]): unknown[] {
       continue
     }
     if (m.role === 'assistant') {
-      const replay = responseItemsOf(m)
-      if (replay.length > 0) {
-        items.push(...replay)
-        continue
-      }
-      const calls = m.toolCalls ?? []
-      if (m.content || calls.length === 0) items.push({ role: 'assistant', content: m.content })
+      // Items the reply kept go back verbatim; whatever they do not cover (a
+      // history message keeps only its reasoning) is rebuilt from the text
+      // and calls, after them — the order the model produced them in.
+      const replay = responseItemsOf(m) as Array<{ type: string; call_id?: string }>
+      items.push(...replay)
+      const hasMessage = replay.some(item => item.type === 'message')
+      const replayedCalls = new Set(replay.filter(item => item.type === 'function_call').map(item => item.call_id))
+      const calls = (m.toolCalls ?? []).filter(call => !replayedCalls.has(call.id))
+      if (!hasMessage && (m.content || (calls.length === 0 && replay.length === 0))) items.push({ role: 'assistant', content: m.content })
       for (const call of calls) {
         // Byte-for-byte as received: see LLMToolCall.argumentsText.
         items.push({ type: 'function_call', call_id: call.id, name: call.name, arguments: call.argumentsText })

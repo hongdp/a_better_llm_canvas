@@ -1188,12 +1188,15 @@ def build_grok_responses_request(
             items.append({"type": "function_call_output", "call_id": message.get("toolCallId") or "", "output": content})
             continue
         if role == "assistant":
+            # Items the reply kept go back verbatim; whatever they do not
+            # cover (a history message keeps only its reasoning) is rebuilt
+            # from the text and calls, after them.
             replay = _response_items(message)
-            if replay:
-                items.extend(replay)
-                continue
-            calls = _assistant_tool_calls(message)
-            if content or not calls:
+            items.extend(replay)
+            has_message = any(item.get("type") == "message" for item in replay)
+            replayed_calls = {item.get("call_id") for item in replay if item.get("type") == "function_call"}
+            calls = [c for c in _assistant_tool_calls(message) if c.get("id") not in replayed_calls]
+            if not has_message and (content or (not calls and not replay)):
                 items.append({"role": "assistant", "content": content})
             for call in calls:
                 items.append({
@@ -1631,6 +1634,17 @@ async def run_job(
         try:
             usage = await _dispatch_provider(job, provider, config, messages)
         except ProviderError as exc:
+            # A replayed reasoning item the service can no longer decrypt
+            # (key rotation, model change) is a 400 for the whole turn: once
+            # more without the items, so only the carried reasoning is lost.
+            if job.length == 0 and "encrypted_content" in str(exc) and any(
+                isinstance(m, dict) and m.get("responseItems") for m in messages
+            ):
+                logger.info("Job %s: provider rejected the replayed reasoning; retrying without it", job.job_id)
+                stripped = [{k: v for k, v in m.items() if k != "responseItems"} if isinstance(m, dict) else m for m in messages]
+                usage = await _dispatch_provider(job, provider, config, stripped)
+                job.finish("done", usage=usage)
+                return
             # Safe to retry only before any token was buffered — a parameter
             # rejection is a 400 at request time, so nothing has streamed.
             if not (

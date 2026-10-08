@@ -76,6 +76,8 @@ export function trimHistoryForContext(
       if (carried.images && carried.images.length > 0) {
         prev.images = [...(prev.images ?? []), ...carried.images]
       }
+      // grok reasoning items of merged assistant turns ride together, in order.
+      if (carried.responseItems?.length) prev.responseItems = [...(prev.responseItems ?? []), ...carried.responseItems]
       continue
     }
     normalized.push(carried)

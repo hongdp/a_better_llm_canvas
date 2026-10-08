@@ -112,7 +112,9 @@ export interface LLMMessage {
    * exactly as returned — reasoning (with its encrypted_content), message,
    * function_call — in order. The next step of the same turn sends them back
    * unchanged, so the model keeps its reasoning (providerMessages
-   * toGrokResponsesInput). Opaque: never inspect or rebuild them.
+   * toGrokResponsesInput). Opaque: never inspect or rebuild them. A history
+   * message carries only the reasoning items of its turn; the converter then
+   * adds the message's text after them.
    */
   responseItems?: unknown[]
   images?: string[] // base64 Data URLs

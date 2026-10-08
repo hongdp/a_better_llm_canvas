@@ -299,6 +299,15 @@ describe('toGrokResponsesInput (xAI Responses API)', () => {
     expect(toGrokResponsesInput([{ role: 'assistant', content: '好的。' }])).toEqual([{ role: 'assistant', content: '好的。' }])
   })
 
+  it('replays a history message\'s reasoning items, then its text — a hidden decision carries across turns (measured 2026-10-08)', () => {
+    const out = toGrokResponsesInput([
+      { role: 'user', content: 'pick a fruit' },
+      { role: 'assistant', content: 'Ready.', responseItems: [REASONING] },
+      { role: 'user', content: 'which?' }
+    ])
+    expect(out).toEqual([{ role: 'user', content: 'pick a fruit' }, REASONING, { role: 'assistant', content: 'Ready.' }, { role: 'user', content: 'which?' }])
+  })
+
   it('sends images as input_image parts', () => {
     expect(toGrokResponsesInput([{ role: 'user', content: '看', images: ['data:image/png;base64,AAA'] }])).toEqual([{
       role: 'user',
@@ -346,6 +355,28 @@ describe('streamLLM over the xAI Responses API (direct transport)', () => {
     expect(got.deltas[0]).toEqual({ index: 2, id: 'call-1', name: 'read_chapter', argumentsText: '' })
     expect(got.deltas.at(-1)).toMatchObject({ index: 2, argumentsText: '{"chapter":2}', replace: true })
     expect(got.done).toEqual({ text: '好的。', usage: { promptTokens: 100, completionTokens: 20, cachedPromptTokens: 90 } })
+  })
+
+  it('retries once without the replayed reasoning when xAI cannot decrypt it', async () => {
+    const bodies: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
+      bodies.push(JSON.parse(init.body))
+      if (bodies.length === 1) return new Response('{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content."}', { status: 400 })
+      return new Response(`data: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, delta: 'ok' })}\n\ndata: [DONE]\n\n`, { status: 200 })
+    }))
+    const { streamLLM } = await import('../llm')
+    let done = ''
+    await streamLLM([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: 'a', responseItems: [{ type: 'reasoning', id: 'rs', encrypted_content: 'stale' }] },
+      { role: 'user', content: 'q2' }
+    ], { provider: 'grok', apiKey: 'k', model: 'grok-4.7', baseUrl: 'https://api.x.ai/v1', forceDirect: true }, {
+      onChunk: () => {}, onDone: t => { done = t }, onError: e => { throw e }
+    })
+    expect(bodies).toHaveLength(2)
+    expect(JSON.stringify(bodies[0].input)).toContain('stale')
+    expect(JSON.stringify(bodies[1].input)).not.toContain('stale')
+    expect(done).toBe('ok')
   })
 
   it('reports a failed response as an error', async () => {
