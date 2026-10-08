@@ -488,7 +488,7 @@ function App() {
                 this column to its max-content width (the toolbar's ~740px
                 button row), dragging every descendant past a 450px viewport.
                 Only height/overflow are mode-dependent. */}
-            <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, ...shellBox }}>
+            <div className="canvas-column" style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, ...shellBox }}>
               <CanvasHeader
                 activeDoc={activeDoc}
                 layoutMode={layoutMode}
@@ -564,6 +564,7 @@ function App() {
                         justifyContent: 'center', 
                         alignItems: 'center',
                         height: '100%',
+                        flex: 1, /* fills the column in page-scroll mode, where 100% of auto is 0 */
                         gap: '1rem',
                         color: 'var(--text-muted)' 
                       }}>
