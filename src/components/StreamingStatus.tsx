@@ -46,8 +46,11 @@ export function StreamingStatus({ label, waitingLabel, waiting, reasoning }: Str
           <span style={{ opacity: 0.7, fontVariantNumeric: 'tabular-nums' }}>{elapsed}s</span>
         )}
       </div>
-      {waiting && reasoning && (
+      {reasoning && (
         // The model's own thinking, not its answer: dimmed, one line, tail-only.
+        // Shown whenever there is some: the hook clears it at each step's first
+        // visible token, so on a multi-step turn the later steps' thinking shows
+        // too (it used to show only before the turn's first token).
         <div style={{
           marginTop: '0.25rem',
           paddingLeft: '1.25rem',

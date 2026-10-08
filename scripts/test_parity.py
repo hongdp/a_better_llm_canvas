@@ -159,6 +159,8 @@ FUNCTIONS = {
     ("reminders", "user_edited_reminder"): reminders.user_edited_reminder,
     ("reminders", "structure_changed_reminder"): reminders.structure_changed_reminder,
     ("reminders", "queued_request_reminder"): reminders.queued_request_reminder,
+    ("reminders", "plan_not_written_note"): reminders.plan_not_written_note,
+    ("reminders", "html_read_nudge"): reminders.html_read_nudge,
     ("reminders", "call_signature"): tool_call_stream.call_signature,
     ("freshness", "accepted_hash"): freshness.accepted_hash,
     ("freshness", "freshness_markers"): _freshness,

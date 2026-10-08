@@ -8,11 +8,14 @@
  * list with statuses, a status-only call merging into the list.
  */
 import { defineTool } from '../registry'
-import type { ToolResult } from '../types'
+import { writesSoFar, type ToolResult } from '../types'
 import { applyPlanUpdate, renderPlan, type PlanItem } from '../../utils/plan'
 import { isBlankContent } from '../../utils/text'
+import { planNotWrittenNote } from '../reminders'
 
 const titleKey = (title: string) => title.replace(/\s+/g, '').toLowerCase()
+/** An item whose title says it changes the book, in either language. */
+const WRITE_ITEM_RE = /写|改|补|删|增|润色|rewrite|write|edit|revise|insert|add|create|polish|delete|rename|expand|fix/i
 
 export const planTool = defineTool<{ items: unknown; merge: boolean | undefined }>({
   name: 'plan',
@@ -43,8 +46,25 @@ export const planTool = defineTool<{ items: unknown; merge: boolean | undefined 
   isAvailable: () => true,
   parse: raw => (raw ? { items: raw.items, merge: typeof raw.merge === 'boolean' ? raw.merge : undefined } : 'its arguments could not be parsed'),
   execute: ({ items, merge }, ctx): ToolResult => {
-    const updated = applyPlanUpdate(ctx.run.plan, items, merge)
-    if (typeof updated === 'string') return { ok: false, retryable: true, content: `plan was not updated: ${updated}`, trace: `⚠️ plan: ${updated}` }
+    const applied = applyPlanUpdate(ctx.run.plan, items, merge)
+    if (typeof applied === 'string') return { ok: false, retryable: true, content: `plan was not updated: ${applied}`, trace: `⚠️ plan: ${applied}` }
+    // A write item is done only once something was written since it started
+    // (2026-10-08: "改写第十四章" was marked done in the reply meant to write
+    // it; the write came one step later). The item keeps its state and the
+    // result says why.
+    const written = writesSoFar(ctx.run)
+    const before = new Map(ctx.run.plan.map(i => [i.id, i]))
+    const refused: string[] = []
+    const updated = applied.map(item => {
+      const prev = before.get(item.id)
+      if (!prev || item.status === 'in_progress') ctx.run.planBaseline.set(item.id, prev?.status === 'in_progress' && item.status === 'in_progress' ? (ctx.run.planBaseline.get(item.id) ?? written) : written)
+      if (item.status === 'done' && prev && prev.status !== 'done' && WRITE_ITEM_RE.test(item.title) && written <= (ctx.run.planBaseline.get(item.id) ?? written)) {
+        refused.push(planNotWrittenNote(item.title))
+        return { ...item, status: prev.status === 'pending' ? 'in_progress' as const : prev.status }
+      }
+      return item
+    })
+    for (const id of [...ctx.run.planBaseline.keys()]) if (!updated.some(i => i.id === id)) ctx.run.planBaseline.delete(id)
     ctx.run.plan = updated
     // A step marked done that names a chapter which does not exist, or is
     // empty, was not done in the book — say so before the model builds on it.
@@ -59,8 +79,8 @@ export const planTool = defineTool<{ items: unknown; merge: boolean | undefined 
     const done = updated.filter((i: PlanItem) => i.status === 'done' || i.status === 'dropped').length
     return {
       ok: true,
-      content: renderPlan(updated) + (notes.length > 0 ? `\n${notes.join('\n')}` : ''),
-      trace: `📋 plan ${done}/${updated.length}`
+      content: renderPlan(updated) + ([...refused, ...notes].length > 0 ? `\n${[...refused, ...notes].join('\n')}` : ''),
+      trace: `📋 plan ${done}/${updated.length}${refused.length > 0 ? ' (a "done" refused: nothing written yet)' : ''}`
     }
   }
 })

@@ -142,9 +142,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
 
   // The model has produced nothing yet: the bubble still holds the placeholder.
   // Worth distinguishing — the first token can be tens of seconds away.
+  // A server run's bubble carries the attached-context label ahead of the
+  // placeholder (serverRunEvents.paint), so the placeholder is matched as a
+  // suffix as well.
   const lastMessage = messages[messages.length - 1]
   const waitingForFirstToken =
-    lastMessage?.role === 'assistant' && lastMessage.content === ASSISTANT_PLACEHOLDER
+    lastMessage?.role === 'assistant' &&
+    (lastMessage.content === ASSISTANT_PLACEHOLDER || lastMessage.content.endsWith(`\n\n${ASSISTANT_PLACEHOLDER}`))
 
   return (
     <>

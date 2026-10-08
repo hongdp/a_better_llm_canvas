@@ -13,8 +13,8 @@ from wc_text.invocations import arguments_text_of, collect_step, plan_writes
 from wc_text.jsstr import js_trim
 from wc_text.plan import unfinished_plan_items
 from wc_text.policy import decide_after_step, detect_step_failure, steps_left
-from wc_text.reminders import (PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, long_reasoning_reminder, plan_reminder,
-                               plan_unfinished_nudge, repeat_nudge, wrap_reminder)
+from wc_text.reminders import (PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge, long_reasoning_reminder,
+                               plan_reminder, plan_unfinished_nudge, repeat_nudge, wrap_reminder)
 from wc_text.stream_handlers import NO_ACTION_RETRY_INSTRUCTION, STEP_LIMIT_NOTE
 from wc_text.text import is_blank_content
 from wc_text.tool_call_stream import call_signature
@@ -61,6 +61,9 @@ class AgentRun:
         self.host_reminders = reminders
         self.long_reasoning_due: Optional[Dict[str, int]] = None
         self.plan_nudges = 0
+        #: The trace of the last HTML read that no write has followed yet (the step before an edit).
+        self.html_read_pending: Optional[str] = None
+        self.html_read_nudged = False
         self.messages: List[Dict[str, Any]] = list(initial_messages)
         self.steps_taken = 0
         self.corrective_used = 0
@@ -221,6 +224,11 @@ class AgentRun:
         reasoning = int((out.usage or {}).get("reasoningTokens") or 0)
         if self.long_reasoning_tokens > 0 and not wrote_now and reasoning > self.long_reasoning_tokens:
             self.long_reasoning_due = {"atStep": self.steps_taken + 1, "tokens": reasoning}
+        if wrote_now:
+            self.html_read_pending = None
+        for inv, r in zip(ran, results):
+            if inv["name"] == "read_chapter" and (inv.get("args") or {}).get("format") == "html" and r["ok"]:
+                self.html_read_pending = r["trace"]
 
         decision = decide_after_step({"executed": executed, "stepsTaken": self.steps_taken, "correctiveUsed": self.corrective_used,
                                       "budgets": self.budgets, "policy": self.policy})
@@ -248,16 +256,24 @@ class AgentRun:
             await _maybe_await(self.observer.on_asked(self.ctx.run.question, self.progress()))
             return
 
-        # A reply with no action while the plan has work left: the model is
-        # reminded of its own plan and continues (a bounded number of times).
+        # A reply with no action while the plan has work left, or right after
+        # an HTML read that no edit followed: the model is reminded and
+        # continues (a bounded number of times).
         unfinished = unfinished_plan_items(self.ctx.run.plan)
-        if (decision["action"] == "end" and decision["reason"] == "answered" and unfinished and self.plan_nudges < PLAN_NUDGE_BUDGET
-                and self.can_continue and not self.cancelled and steps_left(self.budgets, self.steps_taken) > 0):
+        may_nudge = (decision["action"] == "end" and decision["reason"] == "answered" and self.can_continue and not self.cancelled
+                     and steps_left(self.budgets, self.steps_taken) > 0)
+        nudge = None
+        if may_nudge and unfinished and self.plan_nudges < PLAN_NUDGE_BUDGET:
             self.plan_nudges += 1
+            nudge = plan_unfinished_nudge(self.ctx.run.plan)
+        elif may_nudge and self.html_read_pending and not self.html_read_nudged:
+            self.html_read_nudged = True
+            nudge = html_read_nudge(self.html_read_pending)
+        if nudge:
             reply: Dict[str, Any] = {"role": "assistant", "content": out.text}
             if out.response_items:
                 reply["responseItems"] = out.response_items
-            self.messages = [*self.messages, reply, {"role": "user", "content": wrap_reminder(plan_unfinished_nudge(self.ctx.run.plan))}]
+            self.messages = [*self.messages, reply, {"role": "user", "content": wrap_reminder(nudge)}]
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": steps_left(self.budgets, self.steps_taken) == 1}
             await _maybe_await(self.observer.on_step_executed(self.progress()))
             return
@@ -376,6 +392,7 @@ class AgentRun:
                 "plan": list(run.plan), "question": run.question,
             },
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
+            "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
         }
 
     def restore(self, snap: Dict[str, Any], stored: Callable[[str], Optional[str]]) -> None:
@@ -407,5 +424,8 @@ class AgentRun:
         run.question = snap["run"].get("question")
         self.plan_nudges = int(snap.get("planNudges") or 0)
         self.long_reasoning_due = snap.get("longReasoningDue")
+        self.html_read_pending = snap.get("htmlReadPending")
+        self.html_read_nudged = bool(snap.get("htmlReadNudged"))
+        run.plan_baseline = dict(snap.get("planBaseline") or {})
         if snap.get("next"):
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": snap.get("final", False)}

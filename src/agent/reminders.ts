@@ -64,6 +64,20 @@ export function planUnfinishedNudge(plan: PlanItem[]): string {
 
 export const PLAN_NUDGE_BUDGET = 2
 
+/**
+ * A plan item marked done while nothing was written since it started
+ * (2026-10-08: grok marked "改写第十四章" done in the reply that was meant
+ * to write it, and wrote it one step later).
+ */
+export function planNotWrittenNote(title: string): string {
+  return `"${title}" was marked done, but nothing has been written to the book since it started. It stays in_progress: do the write in this reply, then mark it done.`
+}
+
+/** The reply that ends a turn after an HTML read that no edit followed (the same run: ¶88 read, never edited). */
+export function htmlReadNudge(trace: string): string {
+  return `Your last read of a chapter's HTML (${trace}) is the step before an edit, and no change followed it. Make the edit now, or say in your reply why it is not needed.`
+}
+
 export function userEditedReminder(chapters: Array<{ number: number; title: string }>): string {
   const names = chapters.map(c => `#${c.number} "${c.title}"`).join(', ')
   return `The user changed ${names} while you were working. What you read of ${chapters.length === 1 ? 'it' : 'them'} is out of date: read ${chapters.length === 1 ? 'it' : 'them'} again before relying on ${chapters.length === 1 ? 'it' : 'them'} or writing to ${chapters.length === 1 ? 'it' : 'them'}, and keep the user's edits.`

@@ -16,7 +16,7 @@ import type { LLMMessage, StreamUsage, ThinkingBlock } from '../types/llm'
 import { callSignature, type FinishedToolCall } from '../utils/toolCallStream'
 import type { PlanItem } from '../utils/plan'
 import { unfinishedPlanItems } from '../utils/plan'
-import { appendReminders, longReasoningReminder, planReminder, planUnfinishedNudge, repeatNudge, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
+import { appendReminders, htmlReadNudge, longReasoningReminder, planReminder, planUnfinishedNudge, repeatNudge, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
 import { isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
@@ -172,6 +172,9 @@ export class AgentRun {
   /** A step past the reasoning threshold: the reminder is due when this step count is reached (one step later). */
   private longReasoningDue: { atStep: number; tokens: number } | null = null
   private planNudges = 0
+  /** The trace of the last HTML read that no write has followed yet (the step before an edit). */
+  private htmlReadPending: string | null = null
+  private htmlReadNudged = false
 
   private readonly o: AgentRunOptions
 
@@ -330,6 +333,10 @@ export class AgentRun {
     const reasoning = out.usage?.reasoningTokens ?? 0
     const threshold = this.o.longReasoningTokens ?? 0
     if (threshold > 0 && !wroteNow && reasoning > threshold) this.longReasoningDue = { atStep: this.stepsTaken + 1, tokens: reasoning }
+    if (wroteNow) this.htmlReadPending = null
+    ran.forEach((inv, i) => {
+      if (inv.name === 'read_chapter' && inv.args?.format === 'html' && results[i].ok) this.htmlReadPending = results[i].trace
+    })
     for (const { result } of executed) {
       this.trace.push(result.trace)
       this.timeline.push({ type: 'tool', line: result.trace, ok: result.ok })
@@ -368,16 +375,21 @@ export class AgentRun {
       return
     }
 
-    // A reply with no action while the plan has work left: the model is
-    // reminded of its own plan and continues (a bounded number of times).
+    // A reply with no action while the plan has work left, or right after an
+    // HTML read that no edit followed: the model is reminded and continues
+    // (a bounded number of times).
     const unfinished = unfinishedPlanItems(this.o.ctx.run.plan)
-    if (decision.action === 'end' && decision.reason === 'answered' && unfinished.length > 0 &&
-        this.planNudges < PLAN_NUDGE_BUDGET && this.o.canContinue && !this.cancelled && stepsLeft(this.o.budgets, this.stepsTaken) > 0) {
-      this.planNudges++
+    const mayNudge = decision.action === 'end' && decision.reason === 'answered' && this.o.canContinue && !this.cancelled && stepsLeft(this.o.budgets, this.stepsTaken) > 0
+    const nudge = mayNudge && unfinished.length > 0 && this.planNudges < PLAN_NUDGE_BUDGET
+      ? (this.planNudges++, planUnfinishedNudge(this.o.ctx.run.plan))
+      : mayNudge && this.htmlReadPending && !this.htmlReadNudged
+        ? (this.htmlReadNudged = true, htmlReadNudge(this.htmlReadPending))
+        : null
+    if (nudge) {
       this.messages = [
         ...this.messages,
         { role: 'assistant', content: out.text, ...(out.responseItems?.length ? { responseItems: out.responseItems } : {}) },
-        { role: 'user', content: wrapReminder(planUnfinishedNudge(this.o.ctx.run.plan)) }
+        { role: 'user', content: wrapReminder(nudge) }
       ]
       this.o.observer.onStepExecuted?.(this.progress())
       void this.o.driver(this.messages, this.stepsTaken, { final: stepsLeft(this.o.budgets, this.stepsTaken) === 1 })

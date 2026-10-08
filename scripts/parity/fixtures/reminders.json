@@ -235,6 +235,22 @@
     "output": "The user has sent 3 more requests that are waiting for this turn to finish. Finish the work of this turn; do not start anything beyond it."
    }
   ],
+  "plan_not_written_note": [
+   {
+    "input": [
+     "改写第十四章"
+    ],
+    "output": "\"改写第十四章\" was marked done, but nothing has been written to the book since it started. It stays in_progress: do the write in this reply, then mark it done."
+   }
+  ],
+  "html_read_nudge": [
+   {
+    "input": [
+     "📖 read #1 \"大纲\" ¶88–88 (0.1k, html)"
+    ],
+    "output": "Your last read of a chapter's HTML (📖 read #1 \"大纲\" ¶88–88 (0.1k, html)) is the step before an edit, and no change followed it. Make the edit now, or say in your reply why it is not needed."
+   }
+  ],
   "call_signature": [
    {
     "input": [

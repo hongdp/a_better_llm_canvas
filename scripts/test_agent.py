@@ -452,8 +452,8 @@ def test_identical_steps_get_one_nudge_in_their_results():
 
 
 def test_argument_order_does_not_make_calls_differ():
-    a = calls("r", ("c", "read_chapter", '{"chapter":"2","format":"html"}'))
-    b = calls("r", ("c", "read_chapter", '{"format":"html","chapter":"2"}'))
+    a = calls("r", ("c", "read_chapter", '{"chapter":"2","format":"text"}'))
+    b = calls("r", ("c", "read_chapter", '{"format":"text","chapter":"2"}'))
     h = Harness([a, b, a, DONE])
     asyncio.run(h.run.start())
     assert "the same call" in h.requests[3][-1]["content"]
@@ -473,14 +473,15 @@ def test_long_reasoning_reminder_lands_one_step_later():
 def test_plan_reminds_and_nudges_an_early_ending():
     from wc_agent.tools.plan import plan_tool
     plan_call = calls("Planning.", ("p", "plan", '{"items":[{"id":"a","title":"写第一章","status":"in_progress"},{"id":"b","title":"写第二章"}]}'))
-    h = Harness([plan_call, text("写完了。\n<doc_status>unchanged</doc_status>"), calls("", ("p2", "plan", '{"items":[{"id":"a","status":"done"},{"id":"b","status":"dropped"}]}')), DONE],
+    # Nothing was written, so "done" would be refused: the items are dropped.
+    h = Harness([plan_call, text("写完了。\n<doc_status>unchanged</doc_status>"), calls("", ("p2", "plan", '{"items":[{"id":"a","status":"dropped"},{"id":"b","status":"dropped"}]}')), DONE],
                 extra=[plan_tool])
     asyncio.run(h.run.start())
     assert "PLAN (0/2 done)" in h.requests[1][-1]["content"]
     nudge = h.requests[2][-1]["content"]
     assert "Your plan still has 2 unfinished items" in nudge and h.requests[2][-2]["content"] == "写完了。\n<doc_status>unchanged</doc_status>"
     assert h.summary["endReason"] == "answered" and h.summary["steps"] == 4
-    assert [i["status"] for i in h.summary["plan"]] == ["done", "dropped"]
+    assert [i["status"] for i in h.summary["plan"]] == ["dropped", "dropped"]
 
 
 def test_plan_says_when_a_done_chapter_is_still_empty():
@@ -508,3 +509,32 @@ def test_failed_search_names_the_nearest_paragraph():
     assert out["ok"] is False
     assert "Nearest: ¶1 — copy this HTML exactly: <p>她说：“我们走吧。”他没有回头。</p>" in out["content"]
     assert "curly quotes" in out["content"]
+
+
+def test_plan_refuses_done_on_a_write_item_with_nothing_written():
+    from wc_agent.tools.plan import plan_tool
+    h = Harness([
+        calls("", ("p", "plan", '{"items":[{"id":"w","title":"改写第十四章","status":"in_progress"},{"id":"r","title":"对大纲接缝"}]}')),
+        calls("", ("p2", "plan", '{"items":[{"id":"w","status":"done"},{"id":"r","status":"done"}],"merge":true}')),
+        text("<canvas><p>written</p></canvas>"),
+        calls("", ("p3", "plan", '{"items":[{"id":"w","status":"done"}],"merge":true}')),
+        DONE,
+    ], policy={"continueAfterWrites": True, "feedBackFailedWrites": True}, extra=[plan_tool])
+    asyncio.run(h.run.start())
+    refused = next(m["content"] for m in h.requests[2] if m.get("role") == "tool" and m.get("toolCallId") == "p2")
+    assert '"改写第十四章" was marked done, but nothing has been written' in refused and "▶ 改写第十四章" in refused and "☑ 对大纲接缝" in refused
+    accepted = next(m["content"] for m in h.requests[4] if m.get("role") == "tool" and m.get("toolCallId") == "p3")
+    assert "☑ 改写第十四章" in accepted
+    assert [i["status"] for i in h.summary["plan"]] == ["done", "done"]
+
+
+def test_html_read_without_an_edit_is_nudged_once_at_the_ending():
+    async def html_read(args, ctx, call):
+        return {"ok": True, "content": "<p>¶88</p>", "trace": f"read #1 ¶88 ({args.get('format')})"}
+    h = Harness([calls("", ("c", "read_chapter", '{"chapter":"1","format":"html"}')), DONE, DONE])
+    h.registry = ToolRegistry([*DOCUMENT_WRITE_TOOLS, read_tool(html_read)])
+    h.run.registry = h.registry
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 3
+    assert "Your last read of a chapter's HTML (read #1 ¶88 (html)) is the step before an edit" in h.requests[2][-1]["content"]
+    assert h.summary["endReason"] == "answered"
