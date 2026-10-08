@@ -12,6 +12,7 @@ import type { AgentTool, ToolContext, ToolInvocation, ToolKind, ToolResult, Tool
 export interface RegisteredTool extends ToolSpec {
   kind: ToolKind
   markupForm?: boolean
+  nativeOnMarkup?: boolean
   runLast?: boolean
   isAvailable(ctx: ToolContext): boolean
   preview?(partialArgumentsText: string, ctx: ToolContext): void
@@ -26,6 +27,7 @@ export function defineTool<A>(tool: AgentTool<A>): RegisteredTool {
     parameters: tool.parameters,
     kind: tool.kind,
     markupForm: tool.markupForm,
+    nativeOnMarkup: tool.nativeOnMarkup,
     runLast: tool.runLast,
     isAvailable: ctx => tool.isAvailable(ctx),
     preview: tool.preview ? (text, ctx) => tool.preview?.(text, ctx) : undefined,

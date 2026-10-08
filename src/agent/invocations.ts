@@ -81,7 +81,13 @@ export function collectStep(
   text: string,
   nativeCalls: FinishedToolCall[],
   registry: ToolRegistry,
-  step: number
+  step: number,
+  /**
+   * The model writes tags (the markup protocol). Its tags are then always
+   * applied, beside any native write it also made (update_document is
+   * offered to it natively as well — RegisteredTool.nativeOnMarkup).
+   */
+  opts: { markupProtocol?: boolean } = {}
 ): CollectedStep {
   // Every native call is kept, known or not: each id must be answered if the
   // run continues, and the run answers an unknown name with an error result.
@@ -101,7 +107,7 @@ export function collectStep(
   // writes that only exist as calls — polish_chapter, delete_chapter — the
   // hybrid case, where document text is tags by design) the markup is parsed
   // and applied.
-  if (native.some(inv => {
+  if (!opts.markupProtocol && native.some(inv => {
     const tool = registry.get(inv.name)
     return tool?.kind === 'write' && !!tool.markupForm
   })) {

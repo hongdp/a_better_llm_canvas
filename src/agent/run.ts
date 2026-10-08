@@ -182,7 +182,7 @@ export class AgentRun {
     // else is offered natively. With the agent tools off, only the tag-form
     // writes remain — the pre-loop turn.
     this.offered ??= this.o.registry.available(this.o.ctx, t =>
-      (this.o.writeProtocol === 'tools' || !t.markupForm) &&
+      (this.o.writeProtocol === 'tools' || !t.markupForm || (!!t.nativeOnMarkup && this.o.agentTools !== false)) &&
       (this.o.agentTools !== false || !!t.markupForm))
     return this.offered
   }
@@ -193,7 +193,9 @@ export class AgentRun {
   stepDone(out: StepOutput): void {
     if (this.finished) return
     this.stepsTaken++
-    const collected = collectStep(out.text, out.nativeCalls, this.o.registry, this.stepsTaken - 1)
+    const collected = collectStep(out.text, out.nativeCalls, this.o.registry, this.stepsTaken - 1, {
+      markupProtocol: this.o.writeProtocol === 'markup'
+    })
 
     const failure = detectStepFailure({
       text: out.text,

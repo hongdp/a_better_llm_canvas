@@ -301,9 +301,26 @@ describe('a multi-step turn', () => {
 })
 
 describe('what a step offers', () => {
-  it('offers only non-write tools natively on the markup protocol (the hybrid)', () => {
+  it('offers the reads natively on the markup protocol, and update_document beside its tag (2026-10-07)', () => {
     const h = harness({ replies: [] })
-    expect(h.run.offeredTools().map(t => t.name)).toEqual(['read_chapter'])
+    expect(h.run.offeredTools().map(t => t.name)).toEqual(['update_document', 'read_chapter'])
+  })
+
+  it('applies a markup model\'s tags beside its native write, instead of dropping them as stray', async () => {
+    const h = harness({
+      policy: { continueAfterWrites: true },
+      chapters: [{ id: 'doc-2', title: '人物卡', content: '' }],
+      replies: [
+        calls('<canvas><p>active rewritten</p></canvas>', ['w1', 'update_document', '{"new_chapter":"大纲","html":"<p>outline</p>"}']),
+        text('好了。')
+      ]
+    })
+    await h.run.start()
+    // The new chapter's write is async (another chapter): wait for the run.
+    await vi.waitFor(() => expect(h.summary()).not.toBeNull())
+    expect(stripDiffMarkup(h.fake.lastCommit())).toBe('<p>active rewritten</p>')
+    expect(h.fake.book().map(c => c.title)).toContain('大纲')
+    expect(h.summary()?.strayMarkup).toBe(0)
   })
 
   it('offers the writes natively on the tool protocol, the selection rewrite only with a selection', () => {

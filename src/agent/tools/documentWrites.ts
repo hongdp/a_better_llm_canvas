@@ -396,6 +396,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
   ...schemaOf('update_document'),
   kind: 'write',
   markupForm: true,
+  nativeOnMarkup: true,
   isAvailable: () => true,
   // Unparseable arguments mean the call was cut off mid-document. That is a
   // truncated rewrite, not an unusable request, and it is reported as one.

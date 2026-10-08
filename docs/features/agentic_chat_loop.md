@@ -66,7 +66,7 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
 
 | Tool | Kind | Markup models (grok) | Tool-protocol models (local) |
 |---|---|---|---|
-| `update_document` | write | `<canvas chapter="N">`, or `<canvas new_chapter="title">` to create one (live preview) | native (`chapter` or `new_chapter`) |
+| `update_document` | write | `<canvas chapter="N">`, or `<canvas new_chapter="title">` to create one (live preview) — AND offered natively beside the tag (`nativeOnMarkup`, 2026-10-07) | native (`chapter` or `new_chapter`) |
 | `edit_document` | write | `<edit chapter="N">` SEARCH/REPLACE | native |
 | `replace_selection` | write | `<selection_replace>` | native |
 | `polish_chapter`, `delete_chapter`, `rename_chapter` | write | native (no tag form) | native |
@@ -215,6 +215,45 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
     the book, and a chapter with text is the user's to delete.
   - Only a chapter the run created may take another's place. Its text is the
     model's own, so a rejected review loses nothing of the user's.
+- **A markup model gets `update_document` natively too** (2026-10-07,
+  `RegisteredTool.nativeOnMarkup`). grok-4.7 asked for an outline and
+  character cards announced the write and called a tool instead, run after
+  run — in live replays even a restored `create_chapter` tool only produced
+  create, create again, delete, create (0 of 3 wrote). It wants to deliver
+  such a document through a call. With the tool offered beside the tag it
+  wrote 5 of 5. The tag stays for prose, where the text previews live; a
+  tool write shows only when the call completes (grok sends the arguments
+  in one chunk). Tags beside a native write in the same reply are both
+  applied (`collectStep` `markupProtocol`), not dropped as stray.
+  - Offered as a free choice, both models took the tool for prose too
+    (6 of 6 story chapters), losing the live preview. The user chose a
+    prompt rule over a per-model switch (option 3, 2026-10-07): "PROSE IS
+    ALWAYS WRITTEN WITH TAGS … update_document ONLY for reference material".
+    Measured (10 runs, all wrote within 1–5 steps): grok-4.6 wrote all 3
+    story chapters by tag and both reference chapters by tool, as intended;
+    grok-4.7 wrote 1 of 3 story chapters by tag, 2 by tool. On 4.7 a story
+    chapter still means 11–17k reasoning tokens and minutes without
+    preview when it picks the tool.
+- **The agent markup prompt is one text, in reading order** (2026-10-07,
+  `agentMarkupPrompt`): what is being edited, what can be done (look /
+  write / housekeeping, with both write channels and their cost), how a
+  turn goes, the format, and examples that show a `chapter="3"` edit, a
+  `new_chapter` reference chapter and a two-step read→write turn. It
+  replaced the 2026-07 single-document rules plus fifteen incident bullets
+  and a "highest priority" reminder that still said "MUST be inside the
+  tags" and "<doc_status> on EVERY reply" — contradicting the tool write
+  and the "only on a reply that calls no tool" rule beneath it. The
+  agent-tools-off prompt is unchanged, byte for byte. Also removed: "in a
+  long turn, what you read many steps ago is easy to lose track of", which
+  on grok-4.7 — trained to verify its work — fed a 127-step fact-checking
+  run that never wrote.
+- **grok-4.7 vs grok-4.6, as measured here.** Every failure to write
+  (13× list_chapters; 127 steps of checks; 10 of 12 replays) was 4.7; every
+  success by tag (22 chapters, 6 chapters, the card at step 5) was 4.6.
+  xAI describes 4.7 as trained to "verify its own output more carefully"
+  on multi-hour agentic tasks in its own harness, where writing a file is a
+  tool call — the opposite of writing prose into the reply. 4.6 is the
+  default for prose until measured otherwise.
 - **Why a run loops, measured** (2026-10-06). grok announced
   "人物卡单独成章" and called `list_chapters` 13 times, getting the same list
   each time, until the user pressed Stop. The run was replayed against grok
