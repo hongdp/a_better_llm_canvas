@@ -1,7 +1,8 @@
 # Backend authority: server-side state and agent (Python)
 
-Status: **proposed** (2026-10-06). Nothing is implemented yet. Registered in
-the Decision Log of `docs/design.md`.
+Status: **phase 1 implemented** (2026-10-06): chapter revisions, conflict
+handling and book events, as built in §4.1. Phases 2–4 are proposed.
+Registered in the Decision Log of `docs/design.md`.
 
 The decisions already taken (user, 2026-10-06):
 
@@ -14,10 +15,10 @@ The decisions already taken (user, 2026-10-06):
 - **Offline: only a temporary cache.** Edits made while disconnected are
   held locally and submitted on reconnect against the revision they were
   based on. A conflict is shown, never silently merged.
-- **Paused until this lands:** creating a chapter the moment its call
-  arrives (live preview for a new chapter), keeping text written for a
-  chapter that does not exist yet, and queueing requests. They are
-  specified here (§6) and built server-side.
+- **Paused until this lands:** keeping text written for a chapter that
+  does not exist yet, and queueing requests. They are specified here (§6)
+  and built server-side. Creating a chapter the moment its write arrives
+  was paused too, and landed client-side on 2026-10-06 instead (§6.1).
 
 ## 1. Why
 
@@ -97,6 +98,27 @@ generalizes them to the book.
   - a selection rewrite is placed by text (`alignSelectionBlocks`, already
     built this way), from the request's captured selection text.
 
+#### Runaway runs (user decision, 2026-10-08)
+
+On the client, three things end a run that does no useful work: the user
+presses Stop, a reload or a closed tab kills it, and `agentMaxSteps`. On the
+server the first two are gone by design (a run outlives the tab), and the
+user has set the step limit to 0 for grok. A 127-step run that never wrote
+(2026-10-07) would burn tokens unattended. The server therefore **pauses,
+never kills**, consistent with "analyze the cause, do not forbid":
+
+- **Pause with a notice.** When the last N steps repeated the same calls
+  with the same results and wrote nothing, or when a run's accumulated
+  cost passes a budget, the run is suspended and a `run.paused` event names
+  why, with the last steps' reasoning summaries (the step journal). The
+  user resumes it, changes the instruction, or abandons it; the persisted
+  steps make a resume exact.
+- **Unattended runs are tighter.** While a tab is attached the user's
+  settings apply, 0 steps included. Once every tab has gone, a run that
+  passes the unattended step or cost ceiling pauses on its own.
+- **Budget in money.** Usage is already recorded per step; the run keeps
+  the running total and pauses at the configured amount.
+
 ### 2.4 Frontend
 
 - **`useChatLLM` shrinks to a renderer**: send a request, cancel it, and
@@ -148,6 +170,81 @@ Each phase ships on its own and leaves the app working.
 | 3. Server run engine | Run API and `run.*` events; tools against the document store; persisted steps and resume after restart; per-book queue; client loop kept behind a per-provider switch | A run survives a page reload and an API restart; a request sent mid-run queues |
 | 4. Retire the client loop | Remove `src/agent` from the bundle and shrink `useChatLLM` to the renderer; build the three paused features (§6) server-side | No agent code in the frontend; the paused features shipped |
 
+### 4.1 Phase 1 as built
+
+**Server** (`scripts/api_server.py`, `server_events.py`, `server_db.py`,
+`server_content.py`; tests in `test_document_authority.py`):
+
+- `documents.revision` (INTEGER, default 1; added to existing databases at
+  startup). Every read returns it; create returns `revision: 1`.
+- `PUT /api/books/{id}/documents/{doc}` takes an optional `baseRevision`.
+  A text or title change is applied with a conditional `UPDATE … WHERE
+  revision = ?`; a stale base gets **409** with the chapter as it is now
+  (`revision`, `title`, `content`). A write without a base still wins, so
+  an older client keeps working. A summary-only save neither bumps the
+  revision nor publishes an event: a background summary would otherwise
+  turn every open tab's next save into a conflict.
+- Content files are replaced atomically (temp file + `os.replace`).
+- **Events:** `GET /api/books/{id}/events` is a server-sent event stream
+  from an in-process hub (one uvicorn process, so a dict of asyncio queues
+  is the broker). Kinds: `document updated|deleted` and `documents
+  created|replaced|reordered`. Each carries the writer's `X-Client-Id`, so a
+  tab ignores its own echo. A 15s heartbeat comment keeps proxies from
+  closing an idle stream; a subscriber that stops reading (256 queued) is
+  dropped and reconnects. Measured through the Vite proxy: an event
+  arrives about 20 ms after the write's response.
+
+**Client** (`src/store/documentSync.ts`, `bookEvents.ts`; tests in
+`src/store/__tests__/documentSync.test.ts`, `initialBookChoice.test.ts`):
+
+- `CanvasDocument.revision` is the server revision the local text is based
+  on; `unsynced` marks a text or title change the server has not
+  confirmed. Both persist with the chapter in IndexedDB, so a reload cannot
+  drop an edit made inside the save debounce. Optional fields: an older
+  record reads as "synced, revision unknown", no migration needed.
+- `serverCopies` records each chapter as the server last confirmed it, on
+  **load as well as on save**. A save sends text only for a chapter that
+  differs from it or is unsynced, with `baseRevision`. Re-sending an
+  unchanged chapter after a reload would bump its revision and make
+  another tab's next save a conflict.
+- **A 409** keeps the local text as a version snapshot, adopts the server's
+  copy and shows a banner ("Open history"). Two identical copies are
+  adopted silently. The agent's writes take the same path: they mark the
+  chapter unsynced like typing does.
+- **Loading a book** (`initializeStoreFromServer`, `switchBook` on the same
+  book) keeps every unsynced local chapter, text and base revision,
+  instead of an empty stub (`mergeServerChapters`), and keeps an unsynced
+  chapter only this device holds. `switchBook` saves unsynced chapters
+  before it reloads.
+- **The cache belongs to one book.** Startup may open another book than
+  the cache holds (the account moved on, on another device). Then the
+  cache's unsynced chapters are saved to **their** book first
+  (`saveOtherBookEdits`; a 409 there becomes a version in that book) and
+  are not merged into the one that opens.
+- **Events** (`connectBookEvents`, wired in `App.tsx` per open book):
+  - a chapter with an unsynced edit is never overwritten (its save will
+    conflict instead);
+  - a newer revision of a loaded chapter is fetched and adopted (unless a
+    keystroke landed during the fetch);
+  - an unloaded chapter only moves its revision;
+  - structural events, and a reconnect after a drop, re-read the chapter
+    list (`resyncBook`).
+  
+  During an agent run, an event that changes a chapter the run has read
+  surfaces as a user edit, and the run refuses to write over it
+  (agentic_chat_loop.md, the `RunState.known` rule).
+
+**Not in phase 1**, by choice:
+
+- event resume by id: a reconnect re-reads the list instead;
+- patches: full chapter HTML per debounced save stays;
+- `lock` and `run.*` events (phase 3);
+- server-taken version snapshots;
+- shrinking IndexedDB to an offline queue (it remains the full cache);
+- the focus-time check still reloads the whole book through `switchBook`
+  when another device wrote. It also brings chat and settings, which have
+  no events yet.
+
 ## 5. Risks
 
 - **Size.** About 7,000 lines and their tests are rewritten. Mitigation:
@@ -167,12 +264,15 @@ Each phase ships on its own and leaves the app working.
 
 ### 6.1 Creating a chapter the moment its call arrives
 
-When a `create_chapter` call is complete in the stream, the server creates
-the chapter immediately. It does not wait for the reply to finish. Text
-already streamed for that chapter is emitted as one `preview`, and the
-rest follows live. If the call arrives after the text, the text lands when
-the reply ends, as today. A Stop after the early creation leaves an empty
-chapter, which `delete_chapter` or the user can remove.
+**Landed client-side, 2026-10-06** (agentic_chat_loop.md §0, "creating IS
+writing"): there is no `create_chapter` any more. A chapter is created by
+the write that fills it — `<canvas new_chapter="title">` creates it as soon
+as the opening tag has streamed, so the live preview runs in it; a
+`new_chapter` write through `update_document` creates it when the call
+completes. A chapter whose write never landed is removed at run end; on
+Stop it is kept with its draft. The server run engine (phase 3) ports this
+behaviour as is: the write's first bytes create the chapter and the
+`preview` events follow.
 
 ### 6.2 Keeping text written for a chapter that does not exist
 

@@ -52,7 +52,7 @@ describe('syncToServer keeps the newest stamp across the whole flow', () => {
       csrfToken: 'tok',
       lastSeenServerUpdatedAt: null,
       documents: [{
-        // Fresh id per run so the module-level lastPushedDocsById cache
+        // Fresh id per run so the module-level serverCopies record (documentSync)
         // never marks it unchanged.
         id: `doc-${Date.now()}`,
         title: 'Ch', content: '<p>x</p>', contentLoaded: true,

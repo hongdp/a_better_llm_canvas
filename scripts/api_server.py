@@ -24,6 +24,7 @@ import logging
 import sqlite3
 from datetime import datetime, timezone
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import server_config
@@ -31,6 +32,7 @@ import server_auth
 import server_db
 import server_scrape
 import server_generation
+import server_events
 from server_config import sanitize_id
 from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID, record_last_active_book, clear_last_active_book
 from server_auth import get_authenticated_username
@@ -231,7 +233,7 @@ async def get_book(request: Request, book_id: str):
         # IndexError for an unselected column, which 500s the whole endpoint
         # (this is how `summary`/`summary_content_hash` broke book switching).
         docs = conn.execute(
-            "SELECT id, title, sort_order, created_at, updated_at, summary, summary_content_hash "
+            "SELECT id, title, sort_order, created_at, updated_at, summary, summary_content_hash, revision "
             "FROM documents WHERE username = ? AND book_id = ? ORDER BY sort_order",
             (username, safe_book_id)
         ).fetchall()
@@ -267,6 +269,7 @@ async def get_book(request: Request, book_id: str):
                     "updatedAt": d["updated_at"],
                     "summary": d["summary"],
                     "summaryContentHash": d["summary_content_hash"],
+                    "revision": d["revision"],
                 }
                 for d in docs
             ],
@@ -494,6 +497,9 @@ async def reorder_documents(request: Request, book_id: str):
             (now, username, safe_book_id)
         )
         conn.commit()
+        server_events.hub.publish(username, safe_book_id, {
+            "type": "documents", "kind": "reordered", "clientId": server_events.client_id_of(request)
+        })
         return {"success": True, "updatedAt": now}
     finally:
         conn.close()
@@ -527,7 +533,20 @@ async def get_document(request: Request, book_id: str, doc_id: str):
         "updatedAt": doc["updated_at"],
         "summary": doc["summary"],
         "summaryContentHash": doc["summary_content_hash"],
+        "revision": doc["revision"],
     }
+
+
+# ── Book change events (backend_authority.md §2.2) ────────────────────────────
+@app.get("/api/books/{book_id}/events")
+async def book_events(request: Request, book_id: str):
+    username = get_authenticated_username(request)
+    safe_book_id = sanitize_id(book_id, "bookId")
+    return StreamingResponse(
+        server_events.event_stream(username, safe_book_id, request.is_disconnected),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # ── Save Document Content ─────────────────────────────────────────────────────
@@ -543,9 +562,16 @@ async def update_document(request: Request, book_id: str, doc_id: str):
         raise HTTPException(status_code=400, detail="Invalid JSON body.")
 
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    # Text and title are the chapter; a summary is metadata about it. Only a
+    # change to the chapter bumps its revision — a background summary save
+    # must not turn every open tab's next write into a conflict.
+    changes_chapter = "content" in body or "title" in body
+    base_revision = body.get("baseRevision")
+    if base_revision is not None and not isinstance(base_revision, int):
+        raise HTTPException(status_code=400, detail="baseRevision must be an integer.")
+
     conn = get_db()
     try:
-        # Ensure document exists
         doc = conn.execute(
             "SELECT id FROM documents WHERE username = ? AND book_id = ? AND id = ?",
             (username, safe_book_id, safe_doc_id)
@@ -553,7 +579,6 @@ async def update_document(request: Request, book_id: str, doc_id: str):
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found.")
 
-        # Update metadata fields
         updates = []
         params = []
         if "title" in body:
@@ -567,32 +592,61 @@ async def update_document(request: Request, book_id: str, doc_id: str):
             params.append(body["summaryContentHash"])
         updates.append("updated_at = ?")
         params.append(now)
-        params.extend([username, safe_book_id, safe_doc_id])
+        if changes_chapter:
+            updates.append("revision = revision + 1")
 
-        conn.execute(
-            f"UPDATE documents SET {', '.join(updates)} WHERE username = ? AND book_id = ? AND id = ?",
-            params
-        )
+        # The revision check and the write are one statement: no other
+        # writer can land between them (backend_authority.md §2.1). A write
+        # without a base revision (an older client) still wins, as before.
+        where = "username = ? AND book_id = ? AND id = ?"
+        where_params = [username, safe_book_id, safe_doc_id]
+        if changes_chapter and base_revision is not None:
+            where += " AND revision = ?"
+            where_params.append(base_revision)
+        cursor = conn.execute(f"UPDATE documents SET {', '.join(updates)} WHERE {where}", params + where_params)
 
-        # Also update book's updated_at
+        if cursor.rowcount == 0:
+            # Another write landed since the client's base: send it the
+            # chapter as it is now, so it can keep its own text aside and
+            # adopt this one instead of overwriting it.
+            current = conn.execute(
+                "SELECT title, revision, updated_at FROM documents WHERE username = ? AND book_id = ? AND id = ?",
+                (username, safe_book_id, safe_doc_id)
+            ).fetchone()
+            return JSONResponse(status_code=409, content={
+                "error": "conflict",
+                "revision": current["revision"],
+                "title": current["title"],
+                "content": load_document_content(username, safe_book_id, safe_doc_id),
+                "updatedAt": current["updated_at"],
+            })
+
         conn.execute(
             "UPDATE books SET updated_at = ? WHERE username = ? AND id = ?",
             (now, username, safe_book_id)
         )
-
+        revision = conn.execute(
+            "SELECT revision FROM documents WHERE username = ? AND book_id = ? AND id = ?",
+            (username, safe_book_id, safe_doc_id)
+        ).fetchone()["revision"]
+        # Written before the commit: a revision is never visible ahead of the
+        # text it stands for. (The file write is atomic; see server_content.)
+        if "content" in body:
+            save_document_content(username, safe_book_id, safe_doc_id, body["content"])
         conn.commit()
     finally:
         conn.close()
 
-    # Save content to file
-    if "content" in body:
-        save_document_content(username, safe_book_id, safe_doc_id, body["content"])
-
+    if changes_chapter:
+        server_events.hub.publish(username, safe_book_id, {
+            "type": "document", "kind": "updated", "documentId": safe_doc_id,
+            "revision": revision, "clientId": server_events.client_id_of(request)
+        })
     # The write bumped the book's updated_at; return the stamp so the client
     # can adopt it as "seen". Without this every focus-time check after a
     # document sync compared a stale baseline against our own write and
     # reloaded the whole book — resetting the reader to the top of the chapter.
-    return {"success": True, "updatedAt": now}
+    return {"success": True, "updatedAt": now, "revision": revision}
 
 
 # ── Batch Create/Replace Documents ─────────────────────────────────────────────
@@ -656,11 +710,16 @@ async def create_documents(request: Request, book_id: str):
             # replace_all wiped the table above, so the base is -1 either way.
             sort_order = idx if replace_all else max_order + 1 + idx
 
-            conn.execute(
-                "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, summary, summary_content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (doc_id, username, safe_book_id, doc_title, sort_order, doc_created, doc_updated,
-                 doc.get("summary"), doc.get("summaryContentHash"))
-            )
+            try:
+                conn.execute(
+                    "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, summary, summary_content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (doc_id, username, safe_book_id, doc_title, sort_order, doc_created, doc_updated,
+                     doc.get("summary"), doc.get("summaryContentHash"))
+                )
+            except sqlite3.IntegrityError:
+                # Used to surface as a 500. The id exists: it is a conflict,
+                # as it is when creating a book (create_book).
+                raise HTTPException(status_code=409, detail=f"Document {doc_id} already exists.")
             save_document_content(username, safe_book_id, doc_id, doc_content)
             created_ids.append(doc_id)
 
@@ -671,7 +730,11 @@ async def create_documents(request: Request, book_id: str):
         )
 
         conn.commit()
-        return {"success": True, "ids": created_ids, "updatedAt": now}
+        server_events.hub.publish(username, safe_book_id, {
+            "type": "documents", "kind": "replaced" if replace_all else "created",
+            "documentIds": created_ids, "clientId": server_events.client_id_of(request)
+        })
+        return {"success": True, "ids": created_ids, "updatedAt": now, "revision": 1}
     finally:
         conn.close()
 
@@ -699,6 +762,10 @@ async def delete_document_endpoint(request: Request, book_id: str, doc_id: str):
         conn.close()
 
     delete_document_content(username, safe_book_id, safe_doc_id)
+    server_events.hub.publish(username, safe_book_id, {
+        "type": "document", "kind": "deleted", "documentId": safe_doc_id,
+        "clientId": server_events.client_id_of(request)
+    })
     return {"success": True, "updatedAt": now}
 
 

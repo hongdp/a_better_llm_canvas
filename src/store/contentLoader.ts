@@ -32,8 +32,8 @@ const inFlight = new Map<string, Promise<void>>()
 export interface ContentLoaderDeps {
   /** Injectable for tests; defaults to the global fetch. */
   fetchFn?: typeof fetch
-  /** Apply one successfully loaded doc's content to the store. */
-  onLoaded: (id: string, content: string) => void
+  /** Apply one successfully loaded doc's content (and its server revision) to the store. */
+  onLoaded: (id: string, content: string, revision?: number) => void
 }
 
 /**
@@ -61,7 +61,7 @@ export async function loadDocumentContents(
           // as a <br> wall (older imports, other clients) heals itself the
           // first time it loads. normalizeBrParagraphs early-returns on
           // content without <br>, so the common path costs one regex test.
-          deps.onLoaded(id, normalizeBrParagraphs(data.content))
+          deps.onLoaded(id, normalizeBrParagraphs(data.content), typeof data.revision === 'number' ? data.revision : undefined)
         }
       } catch (e) {
         console.error('[ContentLoader] Failed to load document content', id, e)

@@ -13,6 +13,10 @@ export const en = {
       acceptAll: 'Accept All',
       rejectAll: 'Reject All',
     },
+    syncConflict: {
+      message: 'Another copy of "{title}" was saved first, so it is shown now. Your unsynced version is in version history.',
+      openHistory: 'Open history',
+    },
     errorTitle: 'Error',
     dismiss: 'Dismiss',
     systemPrompt: 'System Prompt:',

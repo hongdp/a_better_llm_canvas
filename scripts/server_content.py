@@ -26,12 +26,26 @@ def _get_content_dir(username: str, book_id: str) -> str:
     return resolved
 
 def save_document_content(username: str, book_id: str, doc_id: str, content: str):
-    """Save document content to a file."""
+    """Save document content to a file, atomically.
+
+    Problem: the file was rewritten in place (open "w" + dump), so a crash or
+    a full disk mid-write left a truncated chapter — and readers could catch
+    one half-written.
+    Fix: write a temporary file beside it and rename it over the old one;
+    os.replace is atomic on the same filesystem, so a reader sees the old
+    chapter or the new one, never a mix.
+    """
     content_dir = _get_content_dir(username, book_id)
     safe_doc_id = sanitize_id(doc_id, "docId")
     file_path = os.path.join(content_dir, f"doc-{safe_doc_id}.json")
-    with open(file_path, "w", encoding="utf-8") as f:
-        json.dump({"content": content}, f, ensure_ascii=False)
+    tmp_path = f"{file_path}.tmp-{os.getpid()}"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump({"content": content}, f, ensure_ascii=False)
+        os.replace(tmp_path, file_path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 def load_document_content(username: str, book_id: str, doc_id: str) -> str:
     """Load document content from file."""

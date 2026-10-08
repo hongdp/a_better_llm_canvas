@@ -24,6 +24,7 @@ import { useModelFetcher } from './hooks/useModelFetcher'
 import { useTranslation } from './i18n'
 import { htmlToPlainText } from './utils/convert'
 import { titleFollowingHeading } from './utils/titleSync'
+import { connectBookEvents } from './store/bookEvents'
 
 // Stable no-op callbacks for the app-level model fetch (the Settings modal
 // passes its own real error/loading setters). Must be module-scoped so their
@@ -47,7 +48,9 @@ function App() {
     user,
     activeBookId,
     switchBook,
-    lastSyncedAt
+    lastSyncedAt,
+    syncNotice,
+    setSyncNotice
   } = useAppStore()
 
   // Local UI state
@@ -243,6 +246,12 @@ function App() {
       document.removeEventListener('visibilitychange', handleFocusOrVisible)
     }
   }, [activeBookId, switchBook, lastSyncedAt])
+
+  // Live chapter changes from other tabs and devices (store/bookEvents).
+  useEffect(() => {
+    if (!user || !isStoreInitialized || !activeBookId) return
+    return connectBookEvents(activeBookId)
+  }, [user, isStoreInitialized, activeBookId])
 
   const isResizingRef = useRef(false)
 
@@ -495,6 +504,26 @@ function App() {
 
               {isOverviewOpen && (
                 <BookOverviewDrawer layoutMode={layoutMode} onClose={() => setIsOverviewOpen(false)} />
+              )}
+
+              {syncNotice && (
+                <div className="diff-review-banner sync-notice-banner" role="status">
+                  <span className="diff-banner-text">
+                    {t.app.syncConflict.message.replace('{title}', syncNotice.documentTitle)}
+                  </span>
+                  <div className="diff-banner-actions">
+                    <button
+                      onClick={() => { setIsHistoryOpen(true); setSyncNotice(null) }}
+                      className="diff-banner-btn neutral"
+                      type="button"
+                    >
+                      {t.app.syncConflict.openHistory}
+                    </button>
+                    <button onClick={() => setSyncNotice(null)} className="diff-banner-btn neutral" type="button">
+                      {t.app.dismiss}
+                    </button>
+                  </div>
+                </div>
               )}
 
               {hasPendingDiffs && (

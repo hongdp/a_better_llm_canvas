@@ -8,8 +8,9 @@ const docs: LoadableDoc[] = [
   { id: 'unloaded-b', contentLoaded: false }
 ]
 
+// The server's revision of the chapter rides along (documentSync).
 const okResponse = (content: string) =>
-  ({ ok: true, json: async () => ({ content }) }) as Response
+  ({ ok: true, json: async () => ({ content, revision: 4 }) }) as Response
 
 describe('idsNeedingContent', () => {
   it('keeps only docs explicitly marked contentLoaded: false', () => {
@@ -62,7 +63,7 @@ describe('loadDocumentContents', () => {
 
     expect(fetchFn).toHaveBeenCalledTimes(1)
     expect(onLoaded).toHaveBeenCalledTimes(1)
-    expect(onLoaded).toHaveBeenCalledWith('unloaded-a', '<p>once</p>')
+    expect(onLoaded).toHaveBeenCalledWith('unloaded-a', '<p>once</p>', 4)
   })
 
   it('does not dedupe across different books', async () => {
@@ -88,7 +89,7 @@ describe('loadDocumentContents', () => {
     })).resolves.toBeUndefined()
 
     expect(onLoaded).toHaveBeenCalledTimes(1)
-    expect(onLoaded).toHaveBeenCalledWith('unloaded-b', '<p>ok</p>')
+    expect(onLoaded).toHaveBeenCalledWith('unloaded-b', '<p>ok</p>', 4)
     consoleError.mockRestore()
   })
 
@@ -118,7 +119,7 @@ describe('loadDocumentContents', () => {
     await loadDocumentContents('book-1', ['unloaded-a'], { fetchFn: fetchFn as unknown as typeof fetch, onLoaded })
 
     expect(fetchFn).toHaveBeenCalledTimes(2)
-    expect(onLoaded).toHaveBeenCalledWith('unloaded-a', '<p>second try</p>')
+    expect(onLoaded).toHaveBeenCalledWith('unloaded-a', '<p>second try</p>', 4)
     consoleError.mockRestore()
   })
 })

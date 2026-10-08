@@ -94,3 +94,38 @@ describe('initial book choice', () => {
     expect(useAppStore.getState().activeBookId).toBe('default')
   })
 })
+
+// The local cache holds the book this device had open last. An edit in it
+// the server never got (the tab closed inside the save debounce) must reach
+// ITS book — kept when that book opens, saved back when another one does.
+describe('unsynced chapters in the local cache', () => {
+  const unsynced = (id: string) => ({
+    id, title: 'Typed offline', content: '<p>not on the server yet</p>', contentLoaded: true,
+    createdAt: '2026-09-01T00:00:00Z', updatedAt: '2026-09-01T00:00:00Z', revision: 1, unsynced: true
+  })
+
+  it('are kept when their own book opens', async () => {
+    ls.setItem('web_canvas_active_book_id', 'book-a')
+    useAppStore.setState({ activeBookId: 'book-a', documents: [unsynced('book-a-doc')] })
+    const requested = stubServer({ loggedIn: true, username: 'alice', csrfToken: 't', lastActiveBookId: 'book-a' })
+
+    await initializeStoreFromServer(true)
+
+    const doc = useAppStore.getState().documents.find(d => d.id === 'book-a-doc')
+    expect(doc).toMatchObject({ content: '<p>not on the server yet</p>', unsynced: true })
+    // The server's copy is not loaded over it.
+    expect(requested).not.toContain('GET /api/books/book-a/documents/book-a-doc')
+  })
+
+  it('are saved to their own book, and kept out of the one that opens', async () => {
+    ls.setItem('web_canvas_active_book_id', 'book-a')
+    useAppStore.setState({ activeBookId: 'book-a', documents: [unsynced('a-only')] })
+    const requested = stubServer({ loggedIn: true, username: 'alice', csrfToken: 't', lastActiveBookId: 'book-b' })
+
+    await initializeStoreFromServer(true)
+
+    expect(requested).toContain('PUT /api/books/book-a/documents/a-only')
+    expect(useAppStore.getState().activeBookId).toBe('book-b')
+    expect(useAppStore.getState().documents.map(d => d.id)).toEqual(['book-b-doc'])
+  })
+})
