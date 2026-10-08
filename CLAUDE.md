@@ -86,6 +86,7 @@ src/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
     llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
   i18n/                   # en.ts / zh.ts translation bundles + index.ts hook
+  parity/__tests__/       # TS↔Python parity cases; checks fixtures are current, or writes them
 scripts/
   start-server.js         # Orchestrator: spawns Python API + Vite (npm run dev)
   api_server.py           # FastAPI app entry: books/documents/versions routes
@@ -93,6 +94,10 @@ scripts/
   server_auth.py  server_scrape.py  server_migration.py
   server_events.py      # Per-book event hub behind /api/books/{id}/events (SSE)
   test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
+  wc_text/                # Python port of the pure text logic (backend_authority.md §4.2):
+                          #   one module per src/utils file, dom.py for browser-style HTML
+  test_parity.py          # pytest — every scripts/parity/fixtures/*.json case, byte-exact
+  parity/fixtures/        # Written from the TypeScript by src/parity (npm run parity:fixtures)
 docs/
   design.md               # Architecture + Decision Log (register new design docs here)
   features/               # Per-feature design specs
@@ -112,6 +117,8 @@ npm run lint                # eslint .
 npm test                    # vitest run (the pre-push gate)
 npm run test:watch          # vitest watch
 npm run test:coverage       # coverage over utils, services/import, store/persistence
+npm run parity:fixtures     # regenerate scripts/parity/fixtures from the TypeScript
+(cd scripts && python3 -m pytest -q)   # backend tests incl. the Python parity suite
 ./start.sh [--daemon|--stop|--status|--logs]  # convenience wrapper around npm run dev
 ```
 
@@ -346,6 +353,13 @@ localStorage pointer — a new device must land in the book last worked in.
   (inline arrows in effect deps re-run the effect every render, which is exactly
   how that wedge happens).
 - **New logic is not "done" until `npm test` passes and the logic is covered.**
+- **Ported text logic has two implementations.** The functions in
+  `scripts/wc_text/` mirror `src/utils/*` and must agree byte for byte.
+  Changing one of those TypeScript functions: port the change, run
+  `npm run parity:fixtures`, then `pytest scripts/test_parity.py`. The
+  vitest check fails on stale fixtures, so a one-sided change cannot pass
+  `npm test`. The prompt texts live in `scripts/wc_text/data/prompt_texts.json`
+  as data written from `systemPrompt.ts` — never edit that file by hand.
 
 ## Git Workflow
 

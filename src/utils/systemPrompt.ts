@@ -69,7 +69,7 @@ export interface ChatSystemPromptOptions {
 const REFERENCE_CHAPTERS = 'Reference material — an outline, character cards, notes — is a chapter too, added the same way.'
 const TWO_DOCUMENTS = 'Two documents (say an outline and character cards) are two chapters: write one now and the other in your next reply; never merge them to fit one reply.'
 
-function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
+export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
   const write = protocol === 'markup'
     ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the number from the CHAPTER INDEX.
 - Before an <edit> on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
@@ -141,7 +141,7 @@ ${recheck}`
  * place to state: which channel the user reads, and the two document
  * invariants that are easy to violate while filling in an `html` argument.
  */
-const TOOL_PROTOCOL_RULES = `You are connected to a document editor. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
+export const TOOL_PROTOCOL_RULES = `You are connected to a document editor. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
 
 HOW YOUR OUTPUT IS USED:
 1. Your message text is shown to the user as chat. It never reaches the document.
@@ -163,7 +163,7 @@ WRITING THE HTML ARGUMENTS:
  * content deltas, which is what makes the live preview possible on providers
  * that send tool arguments in one chunk.
  */
-const MARKUP_PROTOCOL_RULES = `You are connected to a document editor. This message defines ONLY how to exchange data with it — the output channels, the markup, and the status line. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
+export const MARKUP_PROTOCOL_RULES = `You are connected to a document editor. This message defines ONLY how to exchange data with it — the output channels, the markup, and the status line. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
 
 PROTOCOL RULES:
 1. Text outside the tags below is delivered to the user as a chat message. Talk to them there normally.
@@ -268,7 +268,7 @@ Every instruction above, including the user's custom writing instructions, gover
  *   agent-tools-off configuration (the parser's failure modes are phrased
  *   against it).
  */
-function agentMarkupPrompt(continueAfterWrites: boolean): string {
+export function agentMarkupPrompt(continueAfterWrites: boolean): string {
   const ending = continueAfterWrites
     ? `After a reply that writes or calls a tool, you receive the results and continue. A reply that does neither ends your turn: send it only when the work is done.`
     : `A reply that calls a tool is not your final reply: you receive the results and continue. A reply whose only actions are document changes ENDS your turn — if more work remains after a change, ask for what you need (e.g. read the next chapter) in that same reply.`
@@ -377,6 +377,29 @@ Every instruction above, including the user's custom writing instructions, gover
 - Never announce that you wrote or updated a chapter without emitting the tags or making the call in that same reply.
 - The tags and the tools are protocol, not prose: they are always allowed, whatever language the writing instructions require.
 - A reply that calls no tool ends with its <doc_status> line, and the line must agree with what the reply emitted.`
+
+/**
+ * The prompt's fixed texts, as data, for the Python port (backend_authority.md
+ * phase 2): src/parity writes them to scripts/wc_text/data/prompt_texts.json
+ * and scripts/wc_text/system_prompt.py assembles from that file with the same
+ * logic as buildChatSystemPrompt below. One source for the bytes — grok's
+ * cache is exact-prefix, so a one-character drift between the two sides would
+ * cost every cached prefix.
+ */
+export function promptTexts(): Record<string, unknown> {
+  return {
+    toolRules: TOOL_PROTOCOL_RULES,
+    markupRules: MARKUP_PROTOCOL_RULES,
+    formatReminderTools: FORMAT_PROTOCOL_REMINDER,
+    formatReminderMarkup: MARKUP_FORMAT_PROTOCOL_REMINDER,
+    agentMarkupFormatReminder: AGENT_MARKUP_FORMAT_REMINDER,
+    agentRules: {
+      tools: { continue: agentRules('tools', true), stop: agentRules('tools', false) },
+      markup: { continue: agentRules('markup', true), stop: agentRules('markup', false) }
+    },
+    agentMarkupPrompt: { continue: agentMarkupPrompt(true), stop: agentMarkupPrompt(false) }
+  }
+}
 
 /**
  * Assemble the chat system prompt. See the module comment for the layering
