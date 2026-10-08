@@ -86,6 +86,9 @@ interface StreamRenderContext extends RunInfo {
  * The chat's tools (docs/features/agentic_chat_loop.md). Module-level: the
  * registry is static, so it can never destabilise a callback's identity.
  */
+/** Assistant turns whose grok reasoning items go back in the next request (the most recent ones). */
+export const REASONING_HISTORY_TURNS = 8
+
 const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool])
 
 /** The chat text of a record's finished steps, joined as the bubble shows it. */
@@ -1034,8 +1037,16 @@ export function useChatLLM({
           ? `\n\nℹ️ This turn stopped at its step limit (${summary.steps} steps). Reply "continue" to let it go on, or raise the limit in Settings.`
           : ''
       const displayChatText = (info.attachmentsText ? `${info.attachmentsText}\n\n${chatText}` : chatText) + warningNote + limitNote
+      // The final step's reasoning items, kept with the message so later
+      // turns can send them back (ChatMessage.reasoningItems). Only the
+      // reasoning: a message item would put raw markup into history, and a
+      // function_call needs its output beside it.
+      const reasoningItems = responseItemsRef.current.filter(item =>
+        !!item && typeof item === 'object' && (item as { type?: unknown }).type === 'reasoning')
       s.setMessages(useAppStore.getState().messages.map(m =>
-        m.id === info.assistantMsgId ? { ...m, content: displayChatText } : m
+        m.id === info.assistantMsgId
+          ? { ...m, content: displayChatText, ...(reasoningItems.length > 0 ? { reasoningItems } : {}) }
+          : m
       ))
       setAgentRecord(info.assistantMsgId, continueRecord(prior, {
         status: info.rejoined && wouldContinue ? 'stopped' : status,
@@ -1429,12 +1440,18 @@ export function useChatLLM({
     // truncate — and truncation hits the FRONT of the prompt, which is exactly
     // the cached prefix. `estimateTokens` counts CJK at ~1 token/char: the
     // length/4 rule used elsewhere underestimates Chinese four-fold.
+    // grok keeps what it reasoned in earlier turns: the last few assistant
+    // messages carry their reasoning items (replayed ahead of their text).
+    // Few, because each is ciphertext the size of the reasoning it encodes.
+    const withReasoning = new Set(
+      historySource.filter(m => m.role === 'assistant' && m.reasoningItems?.length).slice(-REASONING_HISTORY_TURNS).map(m => m.id))
     const historyTexts = historySource
       .filter(m => m.id !== 'welcome')
       .map(m => ({
         role: m.role,
         content: stripChatDisplayArtifacts(m.content) + agentHistoryNote(m),
-        images: m.images
+        images: m.images,
+        ...(s.activeProvider === 'grok' && withReasoning.has(m.id) ? { responseItems: m.reasoningItems } : {})
       }))
     const activeDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content ?? ''
     // Budget against the provider's price cliff where it has one, not just its

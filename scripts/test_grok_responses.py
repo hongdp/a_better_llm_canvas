@@ -123,3 +123,81 @@ def test_a_reconnecting_reader_is_given_the_items_again():
     frames = asyncio.run(collect())
     events = [json.loads(line[6:]) for f in frames for line in f.splitlines() if line.startswith("data: ")]
     assert {"type": "response_item", "index": 0, "item": REASONING} in events
+
+
+def test_a_history_message_replays_its_reasoning_then_its_text():
+    _, _, body = gen.build_grok_responses_request(CONFIG, [
+        {"role": "user", "content": "pick a fruit"},
+        {"role": "assistant", "content": "Ready.", "responseItems": [REASONING]},
+        {"role": "user", "content": "which?"},
+    ])
+    assert body["input"] == [
+        {"role": "user", "content": "pick a fruit"},
+        REASONING,
+        {"role": "assistant", "content": "Ready."},
+        {"role": "user", "content": "which?"},
+    ]
+
+
+def test_a_rejected_ciphertext_is_retried_once_without_the_items():
+    import asyncio
+    from contextlib import asynccontextmanager
+    bodies = []
+
+    class _Response:
+        calls = 0
+
+        @property
+        def status_code(self):
+            return 400 if _Response.calls == 1 else 200
+
+        async def aiter_lines(self):
+            for line in _lines({"type": "response.output_text.delta", "output_index": 0, "delta": "ok"}):
+                yield line
+
+        async def aread(self):
+            return b'{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content."}'
+
+    @asynccontextmanager
+    async def fake_stream(url, headers, body):
+        _Response.calls += 1
+        bodies.append(body)
+        yield _Response()
+
+    job = _new_job()
+    from unittest.mock import patch
+    with patch.object(gen, "_http_stream", fake_stream):
+        asyncio.run(gen.run_job(job, "grok", CONFIG, [
+            {"role": "assistant", "content": "a", "responseItems": [{"type": "reasoning", "id": "rs", "encrypted_content": "stale"}]},
+            {"role": "user", "content": "q"},
+        ]))
+    assert job.status == "done" and job.buffer == "ok"
+    assert len(bodies) == 2
+    assert "stale" in json.dumps(bodies[0]) and "stale" not in json.dumps(bodies[1])
+
+
+def test_reasoning_items_round_trip_through_the_messages_columns():
+    import api_server
+    msg = {"reasoningItems": [REASONING]}
+    stored = api_server._reasoning_items_json(msg)
+    assert json.loads(stored) == [REASONING]
+
+    class _Row(dict):
+        def keys(self):
+            return super().keys()
+    assert api_server._reasoning_items_field(_Row(reasoning_items=stored)) == {"reasoningItems": [REASONING]}
+    assert api_server._reasoning_items_field(_Row(reasoning_items=None)) == {}
+    assert api_server._reasoning_items_field(_Row()) == {}
+    assert api_server._reasoning_items_json({}) is None
+
+
+def test_init_db_adds_the_reasoning_items_column(tmp_path, monkeypatch):
+    import sqlite3
+    import server_db
+    monkeypatch.setattr(server_db, "DB_PATH", str(tmp_path / "m.db"))
+    server_db.init_db()
+    conn = sqlite3.connect(server_db.DB_PATH)
+    try:
+        assert "reasoning_items" in {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+    finally:
+        conn.close()

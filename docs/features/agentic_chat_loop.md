@@ -364,10 +364,18 @@ How the context behaves:
     the top cause of prompt-cache misses.
   - Live check: a second step carrying the first's reasoning was accepted,
     with 92% of its prompt cached.
-  - Across turns nothing changes: history still carries each turn's text,
-    not its steps (D4). Keeping reasoning across turns is a separate
-    decision, pending measured sizes (one step's reasoning was 1–3k tokens in
-    the replays).
+  - **Across turns too** (user decision, 2026-10-08). The final step's
+    reasoning items are kept on the assistant `ChatMessage`
+    (`reasoningItems`, persisted in the `messages` table, cleared with the
+    chat) and the last `REASONING_HISTORY_TURNS` (8) assistant messages send
+    them back ahead of their text. Measured first: told to pick a fruit in
+    its head and say "Ready.", grok-4.6 and 4.7 named the fruit their
+    reasoning had chosen in the next turn with the items replayed (6/6) and
+    a different one without; the items ahead of a rebuilt plain text work as
+    well as the verbatim message item, so history keeps its chat text (no
+    raw markup, no function_call items). A ciphertext xAI can no longer
+    decrypt is a 400 for the turn; both transports retry once without the
+    items. History still carries no tool exchanges (D4).
 - **The model chooses what to read** from the index (D6); the user steers it
   in the conversation (D7). A chapter the model read is carried into the
   next turn's ledger (`modelReadIds`, score 60).

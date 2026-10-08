@@ -61,6 +61,14 @@ export interface ChatMessage {
   rpChoices?: string[]
   /** Assistant only: what an agentic turn read and changed. */
   agent?: AgentTurnRecord
+  /**
+   * Assistant only, grok: the reasoning items (encrypted) of the turn's final
+   * step, kept so later turns can send them back and the model keeps what it
+   * worked out — measured: a hidden choice made in turn 1 is recalled in
+   * turn 2 with these, and lost without (2026-10-08). Opaque; cleared with
+   * the chat. Only the most recent turns' items are sent (useChatLLM).
+   */
+  reasoningItems?: unknown[]
 }
 
 export interface RoleplayConfig {
