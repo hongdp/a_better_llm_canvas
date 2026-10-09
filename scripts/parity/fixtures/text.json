@@ -2841,6 +2841,44 @@
     "output": "undeclared"
    }
   ],
+  "claims_own_write": [
+   {
+    "input": [
+     "I have rewritten chapter 1."
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "我已经把第三章改好了"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "你已经把第二章改好了"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "Here is the updated text"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "Does this read well?"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     ""
+    ],
+    "output": false
+   }
+  ],
   "trim_incomplete_html_tail": [
    {
     "input": [

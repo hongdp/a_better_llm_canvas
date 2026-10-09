@@ -514,6 +514,16 @@ class RunEngine:
         if run.ports is not None:
             run.ports.view = document_id
 
+    def steer(self, run: Run, text: str) -> bool:
+        """A message sent while the run works goes to the run (agentic_chat_loop.md §0.8); only a running run takes it."""
+        if run.status != "running" or run.agent is None or run.stop_requested:
+            return False
+        run.agent.steer(text)
+        # In the snapshot, so a restart between steps keeps it.
+        run.snapshot = run.agent.snapshot()
+        run.persist()
+        return True
+
     # ── execution ─────────────────────────────────────────────────────────
     async def _execute(self, run: Run, resuming: bool = False) -> None:
         try:
@@ -559,12 +569,16 @@ class RunEngine:
         config = req.get("config") or {}
         scope = f"{provider}|{config.get('model') or ''}"
         state = server_context.load_state(run.username, run.book_id, scope)
-        assembled = server_context.assemble_request(
+        assembled = await server_context.assemble_request(
             provider=provider, config=config, prompt_text=req["prompt"], images=req.get("images"),
             history=self._history_for(run), documents=chapters, active_document_id=ports.start_id,
             selected_text=ports.selected_text, custom_instructions=req.get("customInstructions"),
-            context_window_tokens=req.get("contextWindowTokens"), state=state, image_registry=ports.image_registry)
+            context_window_tokens=req.get("contextWindowTokens"), state=state, image_registry=ports.image_registry,
+            stored_summary=server_context.load_chat_summary(run.username, run.book_id),
+            summarize=_ModelCall(self, run, None, "low", f"{run.book_id}:summary"))
         server_context.save_state(run.username, run.book_id, scope, state, _now_iso())
+        if assembled.get("chatSummary"):
+            server_context.save_chat_summary(run.username, run.book_id, assembled["chatSummary"], _now_iso())
         run.request["attachmentsText"] = assembled["attachmentsText"]
         run.record["prefix"] = assembled["attachmentsText"] or None
         settings = assembled["settings"]
@@ -1151,6 +1165,22 @@ async def answer_run(request: Request, book_id: str, run_id: str):
         raise HTTPException(status_code=400, detail="answer must be a non-empty string.")
     if not engine.answer(run, js_trim(answer)):
         raise HTTPException(status_code=409, detail="This run is not waiting for an answer, or another run is active.")
+    return {"success": True, "run": run.summary()}
+
+
+@router.post("/api/books/{book_id}/runs/{run_id}/steer")
+async def steer_run(request: Request, book_id: str, run_id: str):
+    username = get_authenticated_username(request)
+    run = _run_or_404(username, run_id)
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload.")
+    text = body.get("text") if isinstance(body, dict) else None
+    if not isinstance(text, str) or not js_trim(text):
+        raise HTTPException(status_code=400, detail="text must be a non-empty string.")
+    if not engine.steer(run, js_trim(text)):
+        raise HTTPException(status_code=409, detail="This run is not running; send the request as a new turn.")
     return {"success": True, "run": run.summary()}
 
 

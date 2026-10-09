@@ -60,6 +60,17 @@ def truncate_with_notice(text: str, max_chars: int) -> str:
 
 
 IMAGE_PLACEHOLDER_TEXT = "[image sent earlier in this conversation]"
+_STOPPED_RE = re.compile(r"⏹️ Stopped\b")
+
+
+def was_turn_interrupted(history: List[dict]) -> bool:
+    """wasTurnInterrupted: the last assistant message's record says stopped, or its text carries the Stop note."""
+    for m in reversed(history):
+        if m.get("role") != "assistant":
+            continue
+        agent = m.get("agent") or {}
+        return agent.get("status") == "stopped" or bool(_STOPPED_RE.search(m.get("content") or ""))
+    return False
 
 
 def trim_history_for_context(messages: List[dict], options: dict) -> List[dict]:

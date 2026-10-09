@@ -461,3 +461,72 @@ describe('what a plan may call done, and an HTML read that no edit followed', ()
     expect(h.summary()?.endReason).toBe('answered')
   })
 })
+
+describe('what the user says mid-turn, and what the reply claims (agentic_chat_loop.md §0.8, second pass)', () => {
+  const done = text('done\n<doc_status>unchanged</doc_status>')
+
+  it('a message sent during a step follows that step\'s results as a user message', async () => {
+    const h = harness({
+      replies: [
+        () => { h.run.steer('把第二段删掉'); return calls('', ['c', 'read_chapter', '{"chapter":"1"}']) },
+        done
+      ],
+      budgets: { maxSteps: 0 }
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(2)
+    const last = h.requests[1].at(-1)!
+    expect(last.role).toBe('user')
+    expect(last.content).toContain('The user sent this message while you were working')
+    expect(last.content).toMatch(/USER MESSAGE:\n把第二段删掉$/)
+    expect(h.requests[1].at(-2)?.role).toBe('tool')
+  })
+
+  it('a message sent during a reply that would have ended the turn keeps it going', async () => {
+    const h = harness({
+      replies: [
+        () => { h.run.steer('再写一段结尾'); return text('写好了。\n<doc_status>unchanged</doc_status>') },
+        text('<canvas><p>结尾</p></canvas>\n<doc_status>updated</doc_status>'),
+        done
+      ],
+      budgets: { maxSteps: 0 }, policy: { continueAfterWrites: true, feedBackFailedWrites: true }
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(3)
+    expect(h.requests[1].at(-2)?.content).toBe('写好了。\n<doc_status>unchanged</doc_status>')
+    expect(h.requests[1].at(-1)?.content).toMatch(/USER MESSAGE:\n再写一段结尾$/)
+    expect(stripDiffMarkup(h.fake.ctx.document.chapters()[0].content)).toBe('<p>结尾</p>')
+    expect(h.summary()?.endReason).toBe('answered')
+    expect(h.summary()?.steps).toBe(3)
+  })
+
+  it('a reply claiming a write the run never made gets the editor\'s facts, once', async () => {
+    const h = harness({
+      replies: [
+        calls('', ['c', 'read_chapter', '{"chapter":"1"}']),
+        text('I have rewritten chapter 1 as you asked.'),
+        text('I have rewritten it again.'),
+        text('Nothing was changed, sorry.')
+      ],
+      writeProtocol: 'tools', budgets: { maxSteps: 0 }
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(3)
+    const nudge = h.requests[2].at(-1)!.content
+    expect(nudge).toMatch(/Editor facts for this turn: 0 writes reached the book, \d+ chapters? read, 0 plan items left\./)
+    expect(nudge).toContain('Either make the write now')
+    // The second claim ends the turn: the facts are given once.
+    expect(h.summary()?.endReason).toBe('answered')
+    expect(h.summary()?.chatText).toContain('I have rewritten it again.')
+  })
+
+  it('a reply claiming a write after a step that did write is not nudged', async () => {
+    const h = harness({
+      replies: [text('<canvas><p>beta</p></canvas>'), text('I have rewritten chapter 1.')],
+      writeProtocol: 'tools', budgets: { maxSteps: 0 }, policy: { continueAfterWrites: true, feedBackFailedWrites: true }
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(2)
+    expect(h.summary()?.endReason).toBe('answered')
+  })
+})

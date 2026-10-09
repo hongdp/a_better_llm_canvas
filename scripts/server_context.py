@@ -4,19 +4,22 @@ context state — the append-only ledger and what the model has seen — kept
 per book on the server instead of in one browser tab.
 """
 import json
+import logging
 import math
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from server_db import get_db
 from wc_text.chapter_index import build_chapter_index  # noqa: F401 — re-exported for callers that need the index alone
 from wc_text.context_ledger import hash_content, ledger_chapter_ids, order_admissions_by_stability, plan_ledger_turn
 from wc_text.context_selection import select_reference_chapters
 from wc_text.context_window import cjk_ratio_of, estimate_tokens, history_budget_chars, resolve_context_window_tokens
+from wc_text.conversation_summary import build_summary_request, parse_summary_reply, plan_conversation_summary, summary_messages
 from wc_text.diff import strip_diff_markup
 from wc_text.dynamic_context import build_ledger_messages, build_volatile_tail, ledger_block
 from wc_text.freshness import freshness_markers
 from wc_text.image_preservation import replace_images_with_placeholders
-from wc_text.llm_context import build_attachments_label, strip_chat_display_artifacts, trim_history_for_context
+from wc_text.llm_context import build_attachments_label, strip_chat_display_artifacts, trim_history_for_context, was_turn_interrupted
+from wc_text.reminders import interrupted_turn_reminder, wrap_reminder
 from wc_text.policy import resolve_run_settings
 from wc_text.protocol_choice import resolve_document_protocol
 from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
@@ -24,6 +27,7 @@ from wc_text.system_prompt import build_chat_system_prompt
 
 MAX_LEDGER_DOC_CHARS = 20_000
 REASONING_HISTORY_TURNS = 8
+logger = logging.getLogger("web_canvas.context")
 
 
 def empty_state() -> Dict[str, Any]:
@@ -68,6 +72,32 @@ def save_state(username: str, book_id: str, scope: str, state: Dict[str, Any], n
         conn.close()
 
 
+CHAT_SUMMARY_SCOPE = "chat-summary"
+
+
+def load_chat_summary(username: str, book_id: str) -> Optional[Dict[str, str]]:
+    """The server's copy of the conversation summary for a book (agentic_chat_loop.md §0.9)."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT state FROM run_context WHERE username = ? AND book_id = ? AND scope = ?",
+                           (username, book_id, CHAT_SUMMARY_SCOPE)).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return None
+    try:
+        data = json.loads(row["state"])
+    except ValueError:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("upToId"), str) and isinstance(data.get("text"), str) and data["text"].strip():
+        return {"upToId": data["upToId"], "text": data["text"]}
+    return None
+
+
+def save_chat_summary(username: str, book_id: str, summary: Dict[str, str], now: str) -> None:
+    save_state(username, book_id, CHAT_SUMMARY_SCOPE, summary, now)
+
+
 def agent_history_note(message: Dict[str, Any]) -> str:
     trace = (message.get("agent") or {}).get("trace") if message.get("role") == "assistant" else None
     if not trace:
@@ -76,14 +106,18 @@ def agent_history_note(message: Dict[str, Any]) -> str:
     return f"\n\n[Tools used in this turn: {line[:400] + '…' if len(line) > 400 else line}]"
 
 
-def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str, images: Optional[List[str]], history: List[Dict[str, Any]],
-                     documents: List[Dict[str, Any]], active_document_id: str, selected_text: str, custom_instructions: Optional[str],
-                     context_window_tokens: Optional[int], state: Dict[str, Any], image_registry: List[Dict[str, str]]) -> Dict[str, Any]:
+async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str, images: Optional[List[str]], history: List[Dict[str, Any]],
+                           documents: List[Dict[str, Any]], active_document_id: str, selected_text: str, custom_instructions: Optional[str],
+                           context_window_tokens: Optional[int], state: Dict[str, Any], image_registry: List[Dict[str, str]],
+                           stored_summary: Optional[Dict[str, str]] = None,
+                           summarize: Optional[Callable[[str, str], Awaitable[str]]] = None) -> Dict[str, Any]:
     """The messages of a run's first step, and the context state after it.
 
     `documents` carry their content (the accepted reading is derived here).
     `state` is mutated: the ledger, the seen record and the continuity lists
-    advance as the client's refs did.
+    advance as the client's refs did. History past the budget is summarized
+    through `summarize(system, user)` (agentic_chat_loop.md §0.9); a new note
+    comes back as `chatSummary` for the caller to store.
     """
     settings = resolve_run_settings(provider, config)
     protocol = resolve_document_protocol(provider, config.get("documentProtocol"))
@@ -105,9 +139,11 @@ def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str,
 
     with_reasoning = {m["id"] for m in [m for m in history if m.get("role") == "assistant" and m.get("reasoningItems")][-REASONING_HISTORY_TURNS:]}
     history_texts = []
+    history_ids: List[str] = []
     for m in history:
         if m.get("id") == "welcome":
             continue
+        history_ids.append(str(m.get("id") or ""))
         entry: Dict[str, Any] = {"role": m["role"], "content": strip_chat_display_artifacts(m.get("content") or "") + agent_history_note(m)}
         if m.get("images"):
             entry["images"] = m["images"]
@@ -123,7 +159,27 @@ def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str,
         + sum(math.ceil(e["chars"] * 0.9) for e in state["ledger"]["entries"]),
         "cjkRatio": cjk_ratio_of("".join(m["content"] for m in history_texts) or active_content),
     })
-    history_messages = trim_history_for_context(history_texts, {"maxChars": budget})
+    summarizable = [{"id": history_ids[i], "role": m["role"], "content": m["content"], **({"images": m["images"]} if m.get("images") else {})}
+                    for i, m in enumerate(history_texts)]
+    plan = plan_conversation_summary(summarizable, budget, stored_summary)
+    chat_summary: Optional[Dict[str, str]] = None
+    if plan["needs"] and summarize is not None:
+        req = build_summary_request(plan["needs"]["previousSummary"], plan["needs"]["messages"])
+        try:
+            made = parse_summary_reply(await summarize(req["system"], req["user"]))
+        except Exception as exc:  # noqa: BLE001 — a failed summary falls back to the plain cut
+            logger.warning("Conversation summary failed; the oldest history is cut instead: %s", exc)
+            made = None
+        if made and plan["upToId"]:
+            chat_summary = {"upToId": plan["upToId"], "text": made}
+            plan = {**plan, "summary": made, "needs": None}
+        else:
+            plan = {"cutIndex": 0, "summary": None, "needs": None, "upToId": None}
+    elif plan["needs"]:
+        plan = {"cutIndex": 0, "summary": None, "needs": None, "upToId": None}
+    summary_prefix = summary_messages(plan["summary"]) if plan["summary"] else []
+    history_messages = trim_history_for_context(history_texts[plan["cutIndex"]:] if plan["summary"] else history_texts,
+                                                {"maxChars": 10 ** 15 if plan["summary"] else budget})
     if history_messages:
         history_messages[-1]["cacheHint"] = True
 
@@ -148,11 +204,14 @@ def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str,
                                lambda html: replace_images_with_placeholders(html, image_registry),
                                {"agentTools": True, "markers": markers} if settings["agentTools"] else {})
     attachments_text = build_attachments_label(attached_ids, documents, selection["autoIds"])
-    final_user: Dict[str, Any] = {"role": "user", "content": f"{tail}\n\nUSER REQUEST:\n{prompt_text}"}
+    # The turn after a Stop says so (agentic_chat_loop.md §0.8).
+    interrupted = f"\n\n{wrap_reminder(interrupted_turn_reminder())}" if was_turn_interrupted(history) else ""
+    final_user: Dict[str, Any] = {"role": "user", "content": f"{tail}\n\nUSER REQUEST:\n{prompt_text}{interrupted}"}
     if images:
         final_user["images"] = images
-    api_messages = [system_prompt, *prefix, *history_messages, final_user]
+    api_messages = [system_prompt, *prefix, *summary_prefix, *history_messages, final_user]
     return {
         "apiMessages": api_messages, "attachmentsText": attachments_text,
         "inContextIds": [*attached_ids, active_document_id], "protocol": protocol, "settings": settings,
+        "chatSummary": chat_summary,
     }

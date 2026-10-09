@@ -25,7 +25,7 @@ function renderChatHook(editor: unknown = null): Harness {
   const harness = { current: null as unknown as ReturnType<typeof useChatLLM> } as Harness
   const Probe = () => {
     harness.current = useChatLLM({
-      activeEditor: editor as never, selectedText: '', uploadedImages: [], setUploadedImages: vi.fn(),
+      activeEditor: editor as never, selectedText: '', uploadedImages: images, setUploadedImages: vi.fn(),
       layoutMode: 'landscape', setIsChatExpanded: vi.fn(), forceSave: vi.fn(), setSaveStatus: vi.fn()
     })
     return null
@@ -52,6 +52,9 @@ const summary = (over: Partial<ServerRunSummary> = {}): ServerRunSummary => ({
 })
 
 const posted: Array<{ url: string; body: unknown }> = []
+let steerRefused = false
+/** The images attached to the next send (the hook's uploadedImages prop). */
+const images: string[] = []
 /** Every request, in order: "<METHOD> <url>". */
 const calls: string[] = []
 let listed: { runs: unknown[]; queueHeld: boolean } = { runs: [], queueHeld: false }
@@ -62,6 +65,8 @@ let savedProvider: string
 beforeEach(() => {
   posted.length = 0
   calls.length = 0
+  steerRefused = false
+  images.length = 0
   serverCopies.clear()
   listed = { runs: [], queueHeld: false }
   vi.spyOn(console, 'error').mockImplementation(() => {})
@@ -77,7 +82,11 @@ beforeEach(() => {
       return json({ run, position: run.status === 'queued' ? 1 : 0, queueHeld: false })
     }
     if (url === '/api/books/book-1/runs') return json(listed)
-    if (url.startsWith('/api/books/book-1/runs/')) { posted.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null }); return json({ success: true }) }
+    if (url.startsWith('/api/books/book-1/runs/')) {
+      posted.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
+      if (url.endsWith('/steer') && steerRefused) return json({ detail: 'This run is not running; send the request as a new turn.' }, 409)
+      return json({ success: true })
+    }
     return json({})
   }))
   savedProvider = useAppStore.getState().activeProvider
@@ -137,12 +146,15 @@ describe('a turn with serverRuns on', () => {
     h.unmount()
   })
 
-  it('queues a request sent mid-turn instead of refusing it', async () => {
+  // A text message mid-turn steers the run (below); one with images has no
+  // steer path and queues as a turn of its own.
+  it('queues a request with images sent mid-turn instead of refusing it', async () => {
     const h = renderChatHook()
     await act(async () => { await h.current.handleSendMessage(undefined, '第一条') })
     await flush()
     expect(useAppStore.getState().isStreaming).toBe(true)
     nextRun = body => summary({ id: 'run-2', status: 'queued', assistantMessageId: body.assistantMessageId, userMessageId: body.userMessageId })
+    images.push('data:image/png;base64,AAAA')
     await act(async () => { await h.current.handleSendMessage(undefined, '第二条') })
     await flush()
     expect(posted.filter(p => p.url === '/api/books/book-1/runs')).toHaveLength(2)
@@ -224,6 +236,41 @@ describe('a turn with serverRuns on', () => {
     await flush()
     expect(calls.some(c => c.startsWith('PUT /api/books/'))).toBe(false)
     expect(calls).toContain('POST /api/books/book-1/runs')
+    h.unmount()
+  })
+
+  // A message typed while the run works steers it: the run takes it, the
+  // chat shows it, and no bubble waits on a turn of its own.
+  it('steers the running run with a message sent mid-turn', async () => {
+    const stub = stubEditor('<p>原文。</p>')
+    const h = renderChatHook(stub.editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId: 'run-1', run: summary({ assistantMessageId: bubble().id }) }) })
+    const before = useAppStore.getState().messages.length
+    await act(async () => { await h.current.handleSendMessage(undefined, '把第二段删掉') })
+    await flush()
+    expect(posted.at(-1)).toEqual({ url: '/api/books/book-1/runs/run-1/steer', body: { text: '把第二段删掉' } })
+    const messages = useAppStore.getState().messages
+    expect(messages).toHaveLength(before + 1)
+    expect(messages.at(-1)).toMatchObject({ role: 'user', content: '把第二段删掉' })
+    expect(posted.filter(p => p.url === '/api/books/book-1/runs')).toHaveLength(1)
+    h.unmount()
+  })
+
+  it('queues the message as a turn when the server refuses the steer', async () => {
+    const stub = stubEditor('<p>原文。</p>')
+    const h = renderChatHook(stub.editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId: 'run-1', run: summary({ assistantMessageId: bubble().id }) }) })
+    steerRefused = true
+    nextRun = body => summary({ id: 'run-2', status: 'queued', assistantMessageId: body.assistantMessageId, userMessageId: body.userMessageId })
+    await act(async () => { await h.current.handleSendMessage(undefined, '再来一章') })
+    await flush()
+    expect(posted.filter(p => p.url === '/api/books/book-1/runs')).toHaveLength(2)
+    expect(useAppStore.getState().messages.at(-1)?.role).toBe('assistant')
+    expect(useAppStore.getState().messages.at(-2)).toMatchObject({ role: 'user', content: '再来一章' })
     h.unmount()
   })
 

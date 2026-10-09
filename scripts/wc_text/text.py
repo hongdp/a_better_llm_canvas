@@ -642,6 +642,10 @@ _SELF_CLAIM_PATTERNS = [
 ]
 
 
+def claims_own_write(text: str) -> bool:
+    return any(p.search(text or "") for p in _SELF_CLAIM_PATTERNS)
+
+
 def detect_failed_document_update(full_text: str) -> Optional[str]:
     text = _js_trim(full_text or "")
     if not text:

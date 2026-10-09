@@ -14,13 +14,13 @@ from wc_text.jsstr import js_trim
 from wc_text.plan import unfinished_plan_items
 from wc_text.policy import decide_after_step, detect_step_failure, steps_left
 from wc_text.reminders import (PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge, long_reasoning_reminder,
-                               plan_reminder, plan_unfinished_nudge, repeat_nudge, wrap_reminder)
+                               plan_reminder, plan_unfinished_nudge, repeat_nudge, steer_message, unbacked_claim_nudge, wrap_reminder)
 from wc_text.stream_handlers import NO_ACTION_RETRY_INSTRUCTION, STEP_LIMIT_NOTE
-from wc_text.text import is_blank_content
+from wc_text.text import claims_own_write, is_blank_content
 from wc_text.tool_call_stream import call_signature
 
 from .registry import Tool, ToolRegistry
-from .types import ToolContext, seen_chapters
+from .types import ToolContext, seen_chapters, writes_so_far
 
 UNKNOWN_TOOL_KIND = "read"
 
@@ -64,6 +64,10 @@ class AgentRun:
         #: The trace of the last HTML read that no write has followed yet (the step before an edit).
         self.html_read_pending: Optional[str] = None
         self.html_read_nudged = False
+        #: A reply claimed a write the run never made: told once per run.
+        self.claim_nudged = False
+        #: Messages the user sent while the run was working; the next step carries them (steer).
+        self.pending_steers: List[str] = []
         self.messages: List[Dict[str, Any]] = list(initial_messages)
         self.steps_taken = 0
         self.corrective_used = 0
@@ -108,6 +112,18 @@ class AgentRun:
 
     def cancel(self) -> None:
         self.cancelled = True
+
+    def steer(self, text: str) -> None:
+        """A message the user sent mid-turn: appended as a user message once the step in flight has finished."""
+        if js_trim(text):
+            self.pending_steers.append(text)
+
+    def _take_steer(self) -> Optional[str]:
+        if not self.pending_steers:
+            return None
+        text = "\n\n".join(self.pending_steers)
+        self.pending_steers = []
+        return steer_message(text)
 
     async def _loop(self) -> None:
         while self._next is not None and not self.finished and not self.cancelled:
@@ -269,11 +285,20 @@ class AgentRun:
         elif may_nudge and self.html_read_pending and not self.html_read_nudged:
             self.html_read_nudged = True
             nudge = html_read_nudge(self.html_read_pending)
-        if nudge:
+        elif may_nudge and not self.wrote and not self.claim_nudged and claims_own_write(out.text):
+            # A claim of having written, with nothing written this run: the editor's facts, once.
+            self.claim_nudged = True
+            nudge = unbacked_claim_nudge({"writes": writes_so_far(self.ctx.run), "reads": len(self.ctx.run.read_ids), "planLeft": len(unfinished)})
+        # A message the user sent meanwhile rides with the nudge, or on its own
+        # keeps a turn going that would have ended with this reply.
+        steer = self._take_steer() if (self.can_continue and not self.cancelled and steps_left(self.budgets, self.steps_taken) > 0) else None
+        may_steer = bool(steer) and decision["action"] == "end" and decision["reason"] in ("answered", "writes_done")
+        if nudge or may_steer:
             reply: Dict[str, Any] = {"role": "assistant", "content": out.text}
             if out.response_items:
                 reply["responseItems"] = out.response_items
-            self.messages = [*self.messages, reply, {"role": "user", "content": wrap_reminder(nudge)}]
+            content = "\n\n".join(p for p in (wrap_reminder(nudge) if nudge else "", steer or "") if p)
+            self.messages = [*self.messages, reply, {"role": "user", "content": content}]
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": steps_left(self.budgets, self.steps_taken) == 1}
             await _maybe_await(self.observer.on_step_executed(self.progress()))
             return
@@ -282,6 +307,8 @@ class AgentRun:
             if decision.get("corrective"):
                 self.corrective_used += 1
             self.messages = [*self.messages, *append_reminders(self._result_messages(out, ran, results), self._collect_reminders())]
+            if steer:
+                self.messages = [*self.messages, {"role": "user", "content": steer}]
             if decision.get("final"):
                 self.messages = [*self.messages, {"role": "user", "content": STEP_LIMIT_NOTE}]
             # Before the observer: a snapshot taken there must know a step follows.
@@ -393,6 +420,7 @@ class AgentRun:
             },
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
             "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
+            "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers),
         }
 
     def restore(self, snap: Dict[str, Any], stored: Callable[[str], Optional[str]]) -> None:
@@ -427,5 +455,7 @@ class AgentRun:
         self.html_read_pending = snap.get("htmlReadPending")
         self.html_read_nudged = bool(snap.get("htmlReadNudged"))
         run.plan_baseline = dict(snap.get("planBaseline") or {})
+        self.claim_nudged = bool(snap.get("claimNudged"))
+        self.pending_steers = list(snap.get("pendingSteers") or [])
         if snap.get("next"):
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": snap.get("final", False)}

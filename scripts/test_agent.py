@@ -528,6 +528,62 @@ def test_plan_refuses_done_on_a_write_item_with_nothing_written():
     assert [i["status"] for i in h.summary["plan"]] == ["done", "done"]
 
 
+def test_a_message_sent_during_a_step_follows_its_results():
+    h = Harness([])
+    def first(messages):
+        h.run.steer("把第二段删掉")
+        return calls("", ("c", "read_chapter", '{"chapter":"1"}'))
+    h.replies = [first, DONE]
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 2
+    last = h.requests[1][-1]
+    assert last["role"] == "user" and "The user sent this message while you were working" in last["content"]
+    assert last["content"].endswith("USER MESSAGE:\n把第二段删掉")
+    assert h.requests[1][-2]["role"] == "tool"
+
+
+def test_a_message_sent_during_an_ending_reply_keeps_the_turn_going():
+    h = Harness([], policy={"continueAfterWrites": True, "feedBackFailedWrites": True})
+    def first(messages):
+        h.run.steer("再写一段结尾")
+        return text("写好了。\n<doc_status>unchanged</doc_status>")
+    h.replies = [first, text("<canvas><p>结尾</p></canvas>\n<doc_status>updated</doc_status>"), DONE]
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 3
+    assert h.requests[1][-2]["content"] == "写好了。\n<doc_status>unchanged</doc_status>"
+    assert h.requests[1][-1]["content"].endswith("USER MESSAGE:\n再写一段结尾")
+    assert strip_diff_markup(h.fake.last_write("doc-1")) == "<p>结尾</p>"
+    assert h.summary["endReason"] == "answered" and h.summary["steps"] == 3
+
+
+def test_a_pending_message_survives_a_snapshot():
+    h = Harness([DONE])
+    h.run.steer("x")
+    snap = h.run.snapshot()
+    assert snap["pendingSteers"] == ["x"]
+    other = Harness([DONE])
+    other.run.restore(snap, lambda doc_id: None)
+    assert other.run.pending_steers == ["x"]
+
+
+def test_a_claim_without_a_write_gets_the_editors_facts_once():
+    h = Harness([calls("", ("c", "read_chapter", '{"chapter":"1"}')), text("I have rewritten chapter 1 as you asked."),
+                 text("I have rewritten it again."), text("Nothing was changed, sorry.")], write_protocol="tools")
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 3
+    nudge = h.requests[2][-1]["content"]
+    assert "Editor facts for this turn: 0 writes reached the book," in nudge and "0 plan items left." in nudge
+    assert "Either make the write now" in nudge
+    assert h.summary["endReason"] == "answered" and "I have rewritten it again." in h.summary["chatText"]
+
+
+def test_a_claim_after_a_write_is_not_nudged():
+    h = Harness([text("<canvas><p>beta</p></canvas>"), text("I have rewritten chapter 1.")], write_protocol="tools",
+                policy={"continueAfterWrites": True, "feedBackFailedWrites": True})
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 2 and h.summary["endReason"] == "answered"
+
+
 def test_html_read_without_an_edit_is_nudged_once_at_the_ending():
     async def html_read(args, ctx, call):
         return {"ok": True, "content": "<p>¶88</p>", "trace": f"read #1 ¶88 ({args.get('format')})"}

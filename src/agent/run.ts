@@ -16,13 +16,13 @@ import type { LLMMessage, StreamUsage, ThinkingBlock } from '../types/llm'
 import { callSignature, type FinishedToolCall } from '../utils/toolCallStream'
 import type { PlanItem } from '../utils/plan'
 import { unfinishedPlanItems } from '../utils/plan'
-import { appendReminders, htmlReadNudge, longReasoningReminder, planReminder, planUnfinishedNudge, repeatNudge, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
-import { isBlankContent, type DocumentUpdateFailure } from '../utils/text'
+import { appendReminders, htmlReadNudge, longReasoningReminder, planReminder, planUnfinishedNudge, repeatNudge, steerMessage, unbackedClaimNudge, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
+import { claimsOwnWrite, isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
 import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepDecision, type StepPolicy } from './policy'
 import type { RegisteredTool, ToolRegistry } from './registry'
-import { seenChapters, type AskedQuestion, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
+import { seenChapters, writesSoFar, type AskedQuestion, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
 import type { AgentTimelineItem, AgentTouchedChapter } from '../types/chat'
 
 /** What one streamed model call produced. */
@@ -175,6 +175,10 @@ export class AgentRun {
   /** The trace of the last HTML read that no write has followed yet (the step before an edit). */
   private htmlReadPending: string | null = null
   private htmlReadNudged = false
+  /** A reply claimed a write the run never made: told once per run. */
+  private claimNudged = false
+  /** Messages the user sent while the run was working; the next step carries them (steer). */
+  private readonly pendingSteers: string[] = []
 
   private readonly o: AgentRunOptions
 
@@ -193,6 +197,23 @@ export class AgentRun {
   /** Stop starting steps (the user pressed Stop). The step in flight is the caller's to abort. */
   cancel(): void {
     this.cancelled = true
+  }
+
+  /**
+   * A message the user sent mid-turn (agentic_chat_loop.md §0.8). It is
+   * appended as a user message once the step in flight has finished — after
+   * its results, or after a reply that would otherwise have ended the turn.
+   */
+  steer(text: string): void {
+    if (text.trim()) this.pendingSteers.push(text)
+  }
+
+  /** The pending steers as one user message, cleared. */
+  private takeSteer(): string | null {
+    if (this.pendingSteers.length === 0) return null
+    const text = this.pendingSteers.join('\n\n')
+    this.pendingSteers.length = 0
+    return steerMessage(text)
   }
 
   /**
@@ -384,12 +405,21 @@ export class AgentRun {
       ? (this.planNudges++, planUnfinishedNudge(this.o.ctx.run.plan))
       : mayNudge && this.htmlReadPending && !this.htmlReadNudged
         ? (this.htmlReadNudged = true, htmlReadNudge(this.htmlReadPending))
-        : null
-    if (nudge) {
+        // A claim of having written, with nothing written this run: the
+        // editor's facts, once (the markup declaration check catches the
+        // same claim beside an `unchanged` declaration earlier, as a failure).
+        : mayNudge && !this.wrote && !this.claimNudged && claimsOwnWrite(out.text)
+          ? (this.claimNudged = true, unbackedClaimNudge({ writes: writesSoFar(this.o.ctx.run), reads: this.o.ctx.run.readIds.size, planLeft: unfinished.length }))
+          : null
+    // A message the user sent meanwhile rides with the nudge, or on its own
+    // keeps a turn going that would have ended with this reply.
+    const steer = this.o.canContinue && !this.cancelled && stepsLeft(this.o.budgets, this.stepsTaken) > 0 ? this.takeSteer() : null
+    const maySteer = !!steer && decision.action === 'end' && (decision.reason === 'answered' || decision.reason === 'writes_done')
+    if (nudge || maySteer) {
       this.messages = [
         ...this.messages,
         { role: 'assistant', content: out.text, ...(out.responseItems?.length ? { responseItems: out.responseItems } : {}) },
-        { role: 'user', content: wrapReminder(nudge) }
+        { role: 'user', content: [nudge ? wrapReminder(nudge) : '', steer ?? ''].filter(Boolean).join('\n\n') }
       ]
       this.o.observer.onStepExecuted?.(this.progress())
       void this.o.driver(this.messages, this.stepsTaken, { final: stepsLeft(this.o.budgets, this.stepsTaken) === 1 })
@@ -399,6 +429,7 @@ export class AgentRun {
     if (continuing && decision.action === 'continue') {
       if (decision.corrective) this.correctiveUsed++
       this.messages = [...this.messages, ...appendReminders(this.resultMessages(out, ran, results), this.collectReminders())]
+      if (steer) this.messages = [...this.messages, { role: 'user', content: steer }]
       if (decision.final) this.messages = [...this.messages, { role: 'user', content: STEP_LIMIT_NOTE }]
       this.o.observer.onStepExecuted?.(this.progress())
       void this.o.driver(this.messages, this.stepsTaken, { final: decision.final })

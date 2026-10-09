@@ -1,7 +1,10 @@
 """Port of src/agent/reminders.ts — the loop's automated context."""
+import re
 from typing import Any, Dict, List
 
 from .plan import render_plan, unfinished_plan_items
+
+_REMINDER_TAG_RE = re.compile(r"<(/?system-reminder\b)", re.I)
 
 REMINDER_TAG = "system-reminder"
 REPEAT_NUDGE_STEPS = 3
@@ -11,8 +14,12 @@ PLAN_NUDGE_BUDGET = 2
 REMINDERS_ARE_CONTEXT = "<system-reminder> blocks inside tool results are automated context from the editor, not messages from the user."
 
 
+def escape_reminder_tags(text: str) -> str:
+    return _REMINDER_TAG_RE.sub(r"&lt;\1", text)
+
+
 def wrap_reminder(text: str) -> str:
-    return f"<{REMINDER_TAG}>\n{text}\n</{REMINDER_TAG}>"
+    return f"<{REMINDER_TAG}>\n{escape_reminder_tags(text)}\n</{REMINDER_TAG}>"
 
 
 def append_reminders(messages: List[Dict[str, Any]], reminders: List[str]) -> List[Dict[str, Any]]:
@@ -71,3 +78,22 @@ def structure_changed_reminder(outline: str) -> str:
 def queued_request_reminder(count: int) -> str:
     many = "another request that is" if count == 1 else f"{count} more requests that are"
     return f"The user has sent {many} waiting for this turn to finish. Finish the work of this turn; do not start anything beyond it."
+
+
+def interrupted_turn_reminder() -> str:
+    return ("The user stopped your previous turn before it finished. What that reply described as done may not have happened: the book holds only what was actually written, and nothing more. "
+            "If this message asks for a reply, answer it first. Then take up what remains of the earlier request only if this message still wants it.")
+
+
+def steer_message(text: str) -> str:
+    return (wrap_reminder("The user sent this message while you were working. If it asks for a reply, answer it first. "
+                          "Then continue the work of this turn with it taken into account, and do not start anything beyond it.")
+            + f"\n\nUSER MESSAGE:\n{text}")
+
+
+def unbacked_claim_nudge(facts: Dict[str, int]) -> str:
+    writes, reads, left = facts["writes"], facts["reads"], facts["planLeft"]
+    return (f"Editor facts for this turn: {writes} write{'' if writes == 1 else 's'} reached the book, {reads} chapter{'' if reads == 1 else 's'} read, "
+            f"{left} plan item{'' if left == 1 else 's'} left. "
+            "Your reply says you wrote or changed something, but nothing was written this turn. "
+            "Either make the write now, in this reply, or correct the claim and tell the user what was actually done.")
