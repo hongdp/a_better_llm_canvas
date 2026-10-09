@@ -98,6 +98,17 @@
   font-size: inherit;
 }
 
+/* Images never outgrow the column. Every insertion path writes an inline
+   max-width, but content that has been round-tripped — pasted from a page, or
+   rewritten by the model — arrives carrying only the intrinsic width/height
+   attributes, and a 1600px photo then ran past the page on a phone. Enforced
+   here, where every path converges; `height: auto` keeps the aspect ratio
+   once the width is capped. */
+.ProseMirror img {
+  max-width: 100%;
+  height: auto;
+}
+
 /* TipTap Placeholder Extension Styling */
 .ProseMirror p.is-editor-empty:first-child::before {
   color: var(--text-muted);

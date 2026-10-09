@@ -393,13 +393,29 @@ html.root-scroll .app-main {
   flex-direction: column;
 }
 html.root-scroll .canvas-panel {
-  /* clearance so the last lines clear the fixed chat dock */
-  padding-bottom: 88px;
+  /* Exactly the fixed chat dock's height, no more. This padding sits BELOW
+     the column that ends with the sticky footer, so every extra pixel is
+     slack the footer un-sticks into at the end of the scroll — it drifted up
+     off the dock and left a gap there (user-reported). The last lines of text
+     clear the dock through .ProseMirror's own bottom padding, not this. */
+  padding-bottom: 72px;
   max-width: 100%;
+}
+/* The editor column must reach the bottom of the viewport even when the
+   chapter is empty, short, or still loading. The footer below is sticky to
+   the BOTTOM, and sticky never moves an element past its natural position:
+   with a column only as tall as its content, the footer's natural position
+   was right under the canvas header, and it sat there mid-screen until the
+   text grew (user-reported as the status bar "floating up at random").
+   100vh is the LARGE viewport on mobile: overshooting while the URL bar is
+   shown is harmless (sticky pins the footer in view), undershooting while it
+   is hidden would float the footer up again. */
+html.root-scroll .canvas-column {
+  min-height: calc(100vh - 56px - 72px); /* app header above, chat dock below */
 }
 /* Class-defined shell (chat.css): flex:1 + overflow:hidden. */
 html.root-scroll .canvas-editor-container {
-  flex: none;
+  flex: 1 0 auto; /* grows into the column's min-height; the footer stays last */
   overflow: visible;
   max-width: 100%;
 }
@@ -409,6 +425,20 @@ html.root-scroll .canvas-header {
   z-index: 15;
   background-color: var(--bg-secondary);
 }
+/* Diff review banner: accept/reject must stay reachable while reading the
+   diff. It used to sit OUTSIDE the scroll area (only the inner div scrolled),
+   so it never moved; under a page scroller it scrolls away like anything else
+   — the buttons vanished a screen into the review.
+   It pins directly under the two headers, and outranks the formatting toolbar
+   (z 14) so the toolbar tucks underneath rather than fighting for the same
+   slot: while a diff is pending, accept/reject is the job, not formatting. */
+html.root-scroll .diff-review-banner {
+  position: sticky;
+  top: 112px;
+  z-index: 16;
+  background-color: var(--bg-secondary);
+}
+
 html.root-scroll .editor-toolbar {
   /* Below both sticky headers (56 + 56); the inline style says top:0, which
      would park it behind them. */
@@ -420,6 +450,46 @@ html.root-scroll .editor-toolbar {
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
 }
+/* Selection toolbar: docked, not floating.
+   The OS draws its own copy/paste bar right at the selection, and a bubble
+   that also targets the selection lands on top of it (user-reported). Pinning
+   ours above the chat dock is the only placement the native bar never uses.
+   floating-ui positions the element with inline `position`/`transform`, so the
+   override has to neutralize both — this is one self-contained element, not a
+   per-property fight with a shell. */
+html.root-scroll .editor-bubble-menu {
+  position: fixed !important;
+  transform: none !important;
+  inset: auto 8px calc(72px + 8px) 8px !important; /* clear of the 72px dock */
+  width: auto !important;
+  max-width: none !important;
+  z-index: 46;                 /* over the chat dock (45) */
+  flex-wrap: nowrap;
+  overflow-x: auto;            /* more buttons than a phone is wide */
+  scrollbar-width: none;
+  /* Opaque: a blur pinned over the document repaints while scrolling. */
+  background-color: var(--bg-secondary);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html.root-scroll .editor-bubble-menu::-webkit-scrollbar {
+  display: none;
+}
+html.root-scroll .editor-bubble-menu > * {
+  flex-shrink: 0;
+}
+
+/* Word-count / status footer: same story as the toolbars — it used to sit
+   below the scroll area and therefore never moved; under a page scroller it
+   is simply the last element in the document, visible only at the very
+   bottom. Sticky to the BOTTOM instead, resting on the fixed chat dock. */
+html.root-scroll .canvas-footer {
+  position: sticky;
+  bottom: 72px;              /* the collapsed chat dock's height */
+  z-index: 44;               /* under the dock (45), over the text */
+  background-color: var(--bg-secondary);
+}
+
 html.root-scroll .chat-panel {
   position: fixed;
   left: 0;

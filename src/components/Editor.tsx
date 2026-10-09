@@ -580,7 +580,7 @@ export const Editor: React.FC<EditorProps> = ({
             const isInsideDiff = editor.isActive('diffAddition') || editor.isActive('diffDeletion')
             return !empty || isInsideDiff
           }}
-          className="glass-panel"
+          className="glass-panel editor-bubble-menu"
           style={{
             display: 'flex',
             gap: '4px',
