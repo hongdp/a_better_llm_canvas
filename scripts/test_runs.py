@@ -11,6 +11,7 @@ import pytest
 import api_server  # noqa: F401 — registers the router
 import server_auth
 import server_content
+import server_context
 import server_db
 import server_events
 import server_generation
@@ -179,6 +180,67 @@ def test_stop_aborts_the_step_and_holds_the_queue(book, monkeypatch):
     assert book.queue_is_held("alice", "book-1")
     assert "Stopped" in message_row("a-A")["content"]
     assert content_of("doc-1") == "<p>alpha</p>"
+
+
+def test_a_steer_reaches_the_running_run_and_is_refused_otherwise(book, monkeypatch):
+    provider = Scripted(["<canvas><p>beta</p></canvas>\n<doc_status>updated</doc_status>", "好的。\n<doc_status>unchanged</doc_status>"])
+    provider.gate = asyncio.Event()
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await asyncio.sleep(0.01)
+        taken = book.steer(run, "标题改成《初雪》")
+        snap_has_it = (run.snapshot or {}).get("pendingSteers")
+        provider.gate.set()
+        await settle(run)
+        refused = book.steer(run, "late")
+        return run, taken, snap_has_it, refused
+    run, taken, snap_has_it, refused = asyncio.run(main())
+    assert taken is True and snap_has_it == ["标题改成《初雪》"] and refused is False
+    assert run.status == "done"
+    second = provider.requests[1]["messages"]
+    assert second[-1]["role"] == "user" and second[-1]["content"].endswith("USER MESSAGE:\n标题改成《初雪》")
+    assert "The user sent this message while you were working" in second[-1]["content"]
+
+
+def test_history_past_the_window_is_summarized_and_the_note_stored(book, monkeypatch):
+    provider = Scripted(["<summary>\n1. Requests: everything so far.\n</summary>", "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+    history = [{"id": f"h{i}", "role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i} " + "word " * 1200} for i in range(16)]
+
+    async def main():
+        run = book.submit("alice", "book-1", request("继续", history=history, contextWindowTokens=8000))
+        await settle(run)
+        return run
+    run = asyncio.run(main())
+    assert run.status == "done"
+    assert "You summarize the earlier part of a conversation" in provider.requests[0]["messages"][0]["content"]
+    turn = provider.requests[1]["messages"]
+    note_at = next(i for i, m in enumerate(turn) if "<conversation_summary>\n1. Requests: everything so far.\n</conversation_summary>" in (m.get("content") or ""))
+    assert turn[note_at + 1]["content"] == "Understood. I will continue from this summary."
+    assert not any((m.get("content") or "").startswith("turn 0 ") for m in turn)
+    assert any((m.get("content") or "").startswith("turn 14 ") for m in turn)
+    stored = server_context.load_chat_summary("alice", "book-1")
+    assert stored["text"] == "1. Requests: everything so far."
+    # The note's key is the first message kept verbatim, right after the acknowledgement.
+    kept_first = turn[note_at + 2]
+    assert kept_first["role"] == "user" and kept_first["content"].startswith(f"turn {stored['upToId'][1:]} ")
+
+
+def test_the_turn_after_a_stop_carries_the_interrupt_reminder(book, monkeypatch):
+    provider = Scripted(["好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+    history = [{"id": "u0", "role": "user", "content": "写第一章"},
+               {"id": "a0", "role": "assistant", "content": "写到一半\n\n⏹️ Stopped.", "agent": {"status": "stopped", "steps": 1, "trace": [], "touched": [], "timeline": []}}]
+
+    async def main():
+        run = book.submit("alice", "book-1", request("继续", history=history))
+        await settle(run)
+        return run
+    asyncio.run(main())
+    last = provider.requests[0]["messages"][-1]["content"]
+    assert "USER REQUEST:\n继续" in last and "The user stopped your previous turn before it finished" in last
 
 
 def test_repeating_steps_are_nudged_then_paused_and_resume_continues(book, monkeypatch):

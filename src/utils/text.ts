@@ -1181,6 +1181,11 @@ const SELF_CLAIM_PATTERNS = [
  */
 export type DocumentUpdateFailure = 'malformed' | 'claimed' | 'undeclared'
 
+/** A first-person claim of having written or changed the book (the harness's claim audit, agentic_chat_loop.md §0.8). */
+export function claimsOwnWrite(text: string): boolean {
+  return SELF_CLAIM_PATTERNS.some(re => re.test(text || ''))
+}
+
 export function detectFailedDocumentUpdate(fullText: string): DocumentUpdateFailure | null {
   const text = (fullText || '').trim()
   if (!text) return null

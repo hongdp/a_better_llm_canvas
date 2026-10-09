@@ -394,6 +394,19 @@ summaries and imports are untouched.
   the step in flight is painted from the deltas with the same splitter as
   a local turn), the editor through the ports a local run uses (previews,
   the lock, opening a chapter).
+- **A message during a run steers it** (agentic_chat_loop.md §0.8):
+  `POST /api/books/{id}/runs/{run_id}/steer {text}` hands the text to the
+  running run (`AgentRun.steer`), which appends it as a user message after
+  the step in flight; 409 when the run is not running, and the client then
+  queues the request as before. The pending text is in the run's snapshot,
+  so a restart keeps it. The client sends it from `handleSendMessage` when a
+  run is attached and streaming; the user message goes into the chat with no
+  bubble of its own.
+- **The conversation summary** (agentic_chat_loop.md §0.9) lives per book in
+  `run_context` under scope `chat-summary` (`{upToId, text}`); the run's
+  request assembly plans the cut, calls the model through `_ModelCall`
+  (`<book>:summary`, low reasoning) only when the stored summary no longer
+  covers the dropped prefix, and stores the result.
 - **A server run's preview never reaches the store.** A document preview
   is written with `emitUpdate:false`; a selection preview writes real
   transactions, so a server run flags them (`SILENT_PREVIEW_META`,

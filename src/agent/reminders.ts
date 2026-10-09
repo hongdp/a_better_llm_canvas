@@ -16,8 +16,18 @@ import { renderPlan, unfinishedPlanItems } from '../utils/plan'
 
 export const REMINDER_TAG = 'system-reminder'
 
+/**
+ * What a reminder quotes is model- or user-authored (a chapter title, the
+ * outline, a plan item, a paragraph): a `</system-reminder>` inside it would
+ * end the block early and let the rest pose as the editor. Escaped, as Grok
+ * Build escapes rule files and plan items it inlines.
+ */
+export function escapeReminderTags(text: string): string {
+  return text.replace(/<(\/?system-reminder\b)/gi, '&lt;$1')
+}
+
 export function wrapReminder(text: string): string {
-  return `<${REMINDER_TAG}>\n${text}\n</${REMINDER_TAG}>`
+  return `<${REMINDER_TAG}>\n${escapeReminderTags(text)}\n</${REMINDER_TAG}>`
 }
 
 /** Reminders ride on the last message of a step's results. */
@@ -92,3 +102,35 @@ export function queuedRequestReminder(count: number): string {
 }
 
 export const REMINDERS_ARE_CONTEXT = '<system-reminder> blocks inside tool results are automated context from the editor, not messages from the user.'
+
+/**
+ * The turn after a Stop (Grok Build's interrupt envelope): the model is
+ * told, on the final user message, that the previous turn was cut short.
+ */
+export function interruptedTurnReminder(): string {
+  return 'The user stopped your previous turn before it finished. What that reply described as done may not have happened: the book holds only what was actually written, and nothing more. ' +
+    'If this message asks for a reply, answer it first. Then take up what remains of the earlier request only if this message still wants it.'
+}
+
+/** A message the user sent while the run was working, as the run's next user message. */
+export function steerMessage(text: string): string {
+  return wrapReminder('The user sent this message while you were working. If it asks for a reply, answer it first. ' +
+    'Then continue the work of this turn with it taken into account, and do not start anything beyond it.') +
+    `\n\nUSER MESSAGE:\n${text}`
+}
+
+/** What the editor knows about the turn, for a reply that claims a write the run never made. */
+export interface TurnFacts {
+  /** Writes that reached the book this run (writesSoFar). */
+  writes: number
+  /** Chapters read this run. */
+  reads: number
+  /** Plan items neither done nor dropped. */
+  planLeft: number
+}
+
+export function unbackedClaimNudge(facts: TurnFacts): string {
+  return `Editor facts for this turn: ${facts.writes} write${facts.writes === 1 ? '' : 's'} reached the book, ${facts.reads} chapter${facts.reads === 1 ? '' : 's'} read, ${facts.planLeft} plan item${facts.planLeft === 1 ? '' : 's'} left. ` +
+    'Your reply says you wrote or changed something, but nothing was written this turn. ' +
+    'Either make the write now, in this reply, or correct the claim and tell the user what was actually done.'
+}

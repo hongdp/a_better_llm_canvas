@@ -6,7 +6,10 @@ import { findResumableJob, findJobsForBubbles, resumeRemoteGeneration, abortRemo
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
 import { getTimestampId, stripIncompleteEndTag, trimIncompleteHtmlTail, isBlankContent } from '../utils/text'
-import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel } from '../utils/llmContext'
+import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, wasTurnInterrupted } from '../utils/llmContext'
+import { interruptedTurnReminder, wrapReminder } from '../agent/reminders'
+import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, type SummarizableMessage } from '../utils/conversationSummary'
+import { loadChatSummary, saveChatSummary } from '../store/chatSummaryStore'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
@@ -39,7 +42,7 @@ import { WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
 import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
 import { resolveRunSettings } from '../agent/policy'
 import { chapterOutline, createRunState, restoreSeen, type ToolContext } from '../agent/types'
-import { startServerRun, listServerRuns, serverRunAction, answerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
+import { startServerRun, listServerRuns, serverRunAction, answerServerRun, steerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
 import { onRunEvent } from '../store/runEvents'
 import { resyncBook } from '../store/bookEvents'
 import { CLIENT_ID, needsTextSync } from '../store/documentSync'
@@ -564,6 +567,41 @@ export function useChatLLM({
       }
     )
   }), [])
+
+  /**
+   * The conversation summarizer (utils/conversationSummary, agentic_chat_loop
+   * §0.9): the chat model, low reasoning, no tools, its own cache key. Null
+   * when the call fails — the turn then falls back to the plain cut.
+   */
+  const summarizeConversation = useCallback(async (needs: { previousSummary: string | null; messages: SummarizableMessage[] }): Promise<string | null> => {
+    const s = useAppStore.getState()
+    const cfg = s.providerConfigs[s.activeProvider]
+    const { system, user } = buildSummaryRequest(needs.previousSummary, needs.messages)
+    try {
+      const reply = await new Promise<string>((resolve, reject) => {
+        void streamLLM(
+          [{ role: 'system', content: system }, { role: 'user', content: user }],
+          {
+            ...cfg, provider: s.activeProvider, reasoningEffort: 'low', tools: undefined, debug: s.debugMode,
+            conversationId: `${s.activeBookId ?? 'book'}:summary`,
+            remoteMeta: { bookId: s.activeBookId ?? undefined, kind: 'batch' }
+          },
+          {
+            onChunk: () => {},
+            onDone: (text, usage) => {
+              if (usage) useAppStore.getState().addSessionTokens(usage.promptTokens, usage.completionTokens, usage.cachedPromptTokens || 0)
+              resolve(text)
+            },
+            onError: reject
+          }
+        )
+      })
+      return parseSummaryReply(reply)
+    } catch (e) {
+      console.warn('[chat] Conversation summary failed; the oldest history is cut instead', e)
+      return null
+    }
+  }, [])
 
   /** One analyze_book batch: the chat model, no tools, its own cache key. */
   const analyzeTransport = useCallback((system: string, user: string, signal?: AbortSignal) => new Promise<string>((resolve, reject) => {
@@ -1812,9 +1850,25 @@ export function useChatLLM({
         ledgerRef.current.entries.reduce((sum, e) => sum + Math.ceil(e.chars * 0.9), 0),
       cjkRatio: cjkRatioOf(historyTexts.map(m => m.content).join('') || activeDocContent)
     })
+    // History past the budget is summarized, not cut (agentic_chat_loop.md
+    // §0.9): the stored note serves while its cut still fits, a call refreshes
+    // it when it does not, and a failed call leaves the plain cut for this turn.
+    const historyIds = historySource.filter(m => m.id !== 'welcome').map(m => m.id)
+    const summarizable: SummarizableMessage[] = historyTexts.map((m, i) => ({ id: historyIds[i], role: m.role as 'user' | 'assistant', content: m.content, images: m.images }))
+    let summaryPlan = planConversationSummary(summarizable, historyBudget, s.activeBookId ? loadChatSummary(s.activeBookId) : null)
+    if (summaryPlan.needs) {
+      const made = await summarizeConversation(summaryPlan.needs)
+      if (made && summaryPlan.upToId && s.activeBookId) {
+        saveChatSummary(s.activeBookId, { upToId: summaryPlan.upToId, text: made })
+        summaryPlan = { ...summaryPlan, summary: made, needs: null }
+      } else {
+        summaryPlan = { cutIndex: 0, summary: null, needs: null, upToId: null }
+      }
+    }
+    const summaryPrefix = summaryPlan.summary ? summaryMessages(summaryPlan.summary) : []
     const historyMessages: LLMMessage[] = trimHistoryForContext(
-      historyTexts,
-      { maxChars: historyBudget }
+      summaryPlan.summary ? historyTexts.slice(summaryPlan.cutIndex) : historyTexts,
+      { maxChars: summaryPlan.summary ? Number.MAX_SAFE_INTEGER : historyBudget }
     )
     if (historyMessages.length > 0) {
       historyMessages[historyMessages.length - 1].cacheHint = true
@@ -1872,13 +1926,15 @@ export function useChatLLM({
     const dynamicContext = buildTail(agentTail(attachedIds))
     const attachmentsText = buildAttachmentsLabel(attachedIds, s.documents, autoIds)
 
+    // The turn after a Stop says so (agentic_chat_loop.md §0.8).
+    const interrupted = wasTurnInterrupted(historySource) ? `\n\n${wrapReminder(interruptedTurnReminder())}` : ''
     const finalUserMessage: LLMMessage = {
       role: 'user',
-      content: `${dynamicContext}\n\nUSER REQUEST:\n${promptText}`,
+      content: `${dynamicContext}\n\nUSER REQUEST:\n${promptText}${interrupted}`,
       images
     }
 
-    const apiMessages = [systemPrompt, ...bookPrefixMessages, ...historyMessages, finalUserMessage]
+    const apiMessages = [systemPrompt, ...bookPrefixMessages, ...summaryPrefix, ...historyMessages, finalUserMessage]
 
     return {
       apiMessages,
@@ -1886,7 +1942,40 @@ export function useChatLLM({
       estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4),
       inContextIds: [...attachedIds, s.activeDocumentId]
     }
-  }, [buildSystemPrompt, buildTail])
+  }, [buildSystemPrompt, buildTail, summarizeConversation])
+
+  /**
+   * Hand a message to the turn in flight. True when a run took it (the
+   * message is then in the chat as the user's); false when nothing is
+   * running here or the server refused (the caller queues it as a turn).
+   */
+  const steerRunningTurn = useCallback(async (promptText: string): Promise<boolean> => {
+    const s = useAppStore.getState()
+    const server = serverRunRef.current
+    const local = currentRunRef.current
+    if (!server && !local) return false
+    const userMsg = {
+      id: getTimestampId('user'), role: 'user' as const, content: promptText, timestamp: new Date().toISOString(),
+      provider: s.activeProvider, model: s.providerConfigs[s.activeProvider].model
+    }
+    if (server) {
+      if (!s.activeBookId) return false
+      try {
+        await steerServerRun(s.activeBookId, server.id, promptText)
+      } catch (e) {
+        // Not running any more (finished, paused, stopped): the caller sends it as a turn.
+        if (!(e instanceof Error && e.message.includes('(409)'))) setErrorMsg(e instanceof Error ? e.message : String(e))
+        return false
+      }
+      useAppStore.getState().addMessage(userMsg)
+      forceSave()
+      return true
+    }
+    local!.steer(promptText)
+    s.addMessage(userMsg)
+    forceSave()
+    return true
+  }, [forceSave])
 
   // Send message handler
   const handleSendMessage = useCallback(async (e?: React.FormEvent, customPrompt?: string) => {
@@ -1894,8 +1983,25 @@ export function useChatLLM({
 
     const s = useAppStore.getState()
     const promptText = customPrompt ? customPrompt.trim() : chatInput.trim()
-    // A server run accepts a request mid-turn: it queues (§6.3).
-    if (!promptText || (s.isStreaming && !serverRunsEnabled())) return
+    if (!promptText) return
+
+    // A message while a turn runs steers it (agentic_chat_loop.md §0.8): the
+    // run takes it as its next user message, and the chat shows it with no
+    // bubble of its own. Text only — a message with images goes the usual way
+    // (a server run queues it; a tab-run is busy).
+    if (s.isStreaming && uploadedImages.length === 0) {
+      const steered = await steerRunningTurn(promptText)
+      if (steered) {
+        if (!customPrompt) {
+          setChatInput('')
+          if (chatInputRef.current) chatInputRef.current.innerHTML = ''
+        }
+        return
+      }
+      if (!serverRunsEnabled()) return
+    } else if (s.isStreaming && !serverRunsEnabled()) {
+      return
+    }
 
     imagePlaceholdersRef.current = []
 
@@ -1965,7 +2071,7 @@ export function useChatLLM({
       estimatedInputTokens: request.estimatedInputTokens,
       inContextIds: request.inContextIds
     })
-  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, assembleChatRequest, startTurn, serverRunsEnabled, startServerTurn])
+  }, [chatInput, uploadedImages, layoutMode, setIsChatExpanded, setUploadedImages, assembleChatRequest, startTurn, serverRunsEnabled, startServerTurn, steerRunningTurn])
 
   // Edit and Resubmit message handler
   const handleResubmitMessage = useCallback(async (msgId: string, newContent: string) => {

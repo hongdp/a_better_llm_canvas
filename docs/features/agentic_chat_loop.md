@@ -480,6 +480,108 @@ cached prefix and role alternation stay intact):
   until no unblocked work remains; several look-ups may share a reply;
   `<system-reminder>` blocks are the editor's, not the user's.
 
+Second pass over Grok Build (2026-10-08, the session layer this time: its
+interjection and interrupt envelopes, its stall detector's harness facts,
+its reminder escaping):
+
+- **A stopped turn is said to the next one.** The next request after Stop
+  carries a reminder on its final user message: the previous turn was
+  stopped before it finished, what its reply described as done may not have
+  happened, the book holds only what was written; answer this message
+  first, then take up the earlier request only if this one still wants it.
+  Detected from the history alone (`wasTurnInterrupted`: the last assistant
+  bubble's record says `stopped`, or its text carries the Stop note), so a
+  reload or another device sees the same. Grok Build frames the turn with
+  "The user interrupted the previous turn:" and a trailer to finish earlier
+  work; the same two facts, as a reminder block.
+- **Reminders cannot be closed from inside.** Everything quoted into a
+  reminder — chapter titles, the outline, plan items, a failed SEARCH's
+  nearest paragraph — is model- or user-authored. `wrapReminder` escapes a
+  `<system-reminder>` or `</system-reminder>` inside its text (`&lt;`), so a
+  title cannot end the block early and pose as the editor. Grok Build
+  escapes the same way and zero-width-breaks the tag in verifier output.
+- **A message during a turn steers it** instead of queueing behind it.
+  While a run is going, the user's next message (text only) is handed to the
+  run (`AgentRun.steer`); it is appended as a user message after the step in
+  flight finishes — after that step's results and reminders, or, when the
+  step was a reply with no action that would have ended the turn, after that
+  reply, and the run continues instead of ending. The message says what it
+  is (a reminder: sent while you were working; answer it first if it asks
+  for a reply, then continue this turn's work with it in mind, start nothing
+  beyond it) and then `USER MESSAGE:` with the text verbatim. The chat shows
+  the message as the user's; the run's bubble keeps rendering the turn. A
+  server run takes it through `POST …/runs/{id}/steer` (only a running run;
+  a queued or paused one still queues, a run waiting on `ask_user` takes it
+  as the answer); a tab-run takes it in memory. The input stays open while a
+  chat turn streams (roleplay keeps the old gate). Images do not steer: a
+  message with images queues as before. Grok Build does the same with
+  "The user sent a message while you were working:" and drains the buffer
+  after every tool batch; it also converts a message that missed its turn
+  into a queued prompt — ours falls back to the queue when the steer is
+  refused (409).
+- **A claim with no write behind it is audited by the harness** (rules
+  only; Grok Build's model classifier was not adopted). A reply with no
+  action that claims in the first person to have written or changed
+  something (`claimsOwnWrite`, the same patterns the markup declaration
+  check uses) while nothing has been written this run gets a reminder once:
+  the editor's facts for the turn (writes that reached the book, chapters
+  read, plan items left) and the instruction to make the write now or
+  correct the claim. On the markup protocol a `unchanged` declaration next
+  to such a claim is already a protocol failure (`claimed`, retried); this
+  catches the tool protocol, where the declaration machinery is off, and a
+  declared-`updated` reply that sent nothing after an earlier step of the
+  run did write. Grok Build's detector reads the whole transcript with a
+  second model and a `[runtime_state]` line of facts the model cannot
+  fabricate; the facts line is the part worth keeping without the model.
+
+### 0.9 The conversation past the window (2026-10-08)
+
+A long book's chat outgrows the history budget (§0.5: the window is sized
+against the model's context and the provider's price cliff). Until now the
+oldest messages were simply cut from the front, and with them the decisions
+made in them — a character's name, the tense, the chapter plan. Grok Build
+compacts instead: at a usage threshold a model call summarizes the history
+into a fixed-section note, and the next turns run on the note plus the
+recent tail. Built here as a **summary of the dropped prefix**
+(`utils/conversationSummary`, `wc_text/conversation_summary`; the plan,
+the prompt and the parse are pure and parity-tested; the model call is the
+transport's):
+
+- **When.** Only when the history does not fit its budget. Then the cut is
+  placed so that the kept tail is a fraction of the budget
+  (`KEEP_FRACTION`), not the whole of it, so the summary covers a large
+  block and the next turns fit without another call. A stored summary whose
+  cut (`upToId`, the first message kept verbatim after it) still makes the
+  tail fit is reused unchanged — no call. One is refreshed when the tail
+  past it no longer fits: the refresh gets the stored summary plus the
+  messages from its cut to the new one, so nothing is summarized twice from
+  scratch; it is rebuilt from the start when its cut message no longer
+  exists (the chat was edited or cleared).
+- **What.** The summarizer gets the transcript as role-tagged data (each
+  message capped, the oldest dropped past an input cap with a note saying
+  how many) and writes a `<summary>` with fixed sections, each present even
+  if empty: the user's requests and intent; decisions about the book
+  (setting, characters, plot, chapter plan); voice and style agreed on; what
+  was done to which chapters and how they stand; problems and how they were
+  resolved; every user message in order, briefly; unfinished work and open
+  questions. A prior summary is carried forward as authoritative for the
+  early history. No tools, no analysis block, prose over verbatim dumps.
+- **Where it goes.** Right after the ledger block and before the kept
+  history, as a user/assistant pair like the ledger: `EARLIER IN THIS
+  CONVERSATION (summarized…)` with the note in `<conversation_summary>`
+  tags, then `Understood. I will continue from this summary.` It changes
+  only when the cut moves, and the cut moving already re-prefills the prefix
+  from there, so the summary costs the cache nothing extra. The budget keeps
+  a reserve for it (`SUMMARY_RESERVE_CHARS`).
+- **Each transport keeps its own.** A tab keeps the summary per book in
+  localStorage (a versioned envelope); the server keeps it per book in the
+  `run_context` table (scope `chat-summary`). They are caches of the same
+  thing and may each call the model once; sharing them was not worth an
+  endpoint. A failed summary call falls back to the plain cut for that turn.
+- **Not built**: Grok Build's two-pass pre-summarization in the background,
+  its memory flush before compaction, and a compact system prompt after it —
+  the system prompt here is the protocol and stays.
+
 ### 0.7 Settings and transports
 
 - **Per-provider settings:**

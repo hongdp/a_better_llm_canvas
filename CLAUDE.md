@@ -54,6 +54,7 @@ src/
     documentSync.ts       # Chapter revisions: unsynced flag, server copies, 409 conflicts
     bookEvents.ts         # SSE subscription: other tabs'/devices' writes, live; run.* → runEvents
     runEvents.ts          # Emitter the chat hook subscribes to for a server run's events
+    chatSummaryStore.ts   # The tab's copy of the conversation summary, per book (localStorage)
     __tests__/            # persistence + storage API tests
   components/             # React UI components
     Editor.tsx            # TipTap editor host (fragile editor↔store sync — see SKILL.md)
@@ -91,6 +92,7 @@ src/
   utils/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
     llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
+    conversationSummary.ts  # History past the window as a fixed-section note (§0.9)
   i18n/                   # en.ts / zh.ts translation bundles + index.ts hook
   parity/__tests__/       # TS↔Python parity cases; checks fixtures are current, or writes them
 scripts/
@@ -301,8 +303,17 @@ the `plan` tool's checklist comes back after each step and an early
 no-action reply is nudged twice (a write item may be marked done only once
 something was written since it started); a no-action ending after an HTML
 read that no edit followed is nudged once; `ask_user` ends a tab-run with
-choices and pauses a server run until `/answer`. Both loops (`src/agent`, `wc_agent`)
-carry every one of these.
+choices and pauses a server run until `/answer`; a message sent while a turn
+runs **steers** it (`AgentRun.steer`, `POST …/runs/{id}/steer`): it lands as
+a user message after the step in flight, and a reply that would have ended
+the turn continues instead; the turn after a Stop carries a reminder that the
+previous one was stopped; a no-action reply claiming a write that never
+happened gets the editor's facts once (`claimsOwnWrite`); `wrapReminder`
+escapes its own tag in quoted text. Both loops (`src/agent`, `wc_agent`)
+carry every one of these. History past the budget is **summarized**, not
+cut (`utils/conversationSummary`, agentic_chat_loop.md §0.9): the dropped
+prefix becomes a fixed-section note placed after the ledger, refreshed only
+when the cut moves past it; each transport keeps its own copy.
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

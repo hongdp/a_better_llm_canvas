@@ -207,6 +207,66 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+describe('useChatLLM — history past the window', () => {
+  it('summarizes the dropped prefix with one call and sends the note ahead of the kept tail', async () => {
+    const s = useAppStore.getState()
+    const model = s.providerConfigs[s.activeProvider].model
+    // A window small enough that eight turns of prose cannot fit.
+    useAppStore.setState({
+      discoveredContextWindows: { ...s.discoveredContextWindows, [model]: 8_000 },
+      messages: Array.from({ length: 16 }, (_, i) => ({
+        id: `h${i}`, role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+        content: `turn ${i} ` + 'word '.repeat(1_200), timestamp: 't'
+      }))
+    })
+    responses.push('<summary>\n1. Requests: the whole story so far.\n</summary>', CLOSE)
+    const harness = renderChatHook()
+    await send(harness, '继续')
+    expect(calls).toHaveLength(2)
+    expect(calls[0][0].content).toContain('You summarize the earlier part of a conversation')
+    expect(calls[0][1].content).toContain('TRANSCRIPT (')
+    const turn = calls[1]
+    const noteAt = turn.findIndex(m => m.content.includes('<conversation_summary>\n1. Requests: the whole story so far.\n</conversation_summary>'))
+    expect(noteAt).toBeGreaterThan(0)
+    expect(turn[noteAt + 1].content).toBe('Understood. I will continue from this summary.')
+    expect(turn.some(m => m.content.startsWith('turn 0 '))).toBe(false)
+    expect(turn.some(m => m.content.startsWith('turn 14 '))).toBe(true)
+    expect(finalUserContent(1)).toContain('USER REQUEST:\n继续')
+    harness.unmount()
+  })
+})
+
+describe('useChatLLM — the turn after a Stop', () => {
+  it('tells the model the previous turn was stopped, on the final user message', async () => {
+    useAppStore.setState({
+      messages: [
+        { id: 'u0', role: 'user', content: '写第一章', timestamp: 't' },
+        { id: 'a0', role: 'assistant', content: '写到一半\n\n⏹️ Stopped.', timestamp: 't', agent: { status: 'stopped', steps: 1, trace: [], touched: [], timeline: [] } }
+      ]
+    })
+    responses.push(CLOSE)
+    const harness = renderChatHook()
+    await send(harness, '继续')
+    expect(finalUserContent(0)).toContain('USER REQUEST:\n继续')
+    expect(finalUserContent(0)).toContain('The user stopped your previous turn before it finished')
+    harness.unmount()
+  })
+
+  it('says nothing when the previous turn finished', async () => {
+    useAppStore.setState({
+      messages: [
+        { id: 'u0', role: 'user', content: '写第一章', timestamp: 't' },
+        { id: 'a0', role: 'assistant', content: '写好了。', timestamp: 't' }
+      ]
+    })
+    responses.push(CLOSE)
+    const harness = renderChatHook()
+    await send(harness, '继续')
+    expect(finalUserContent(0)).not.toContain('stopped your previous turn')
+    harness.unmount()
+  })
+})
+
 describe('useChatLLM — normal completion', () => {
   it('applies a <canvas> rewrite to the active document and shows the chat text', async () => {
     responses.push('Done.\n<canvas><h1>New</h1><p>fresh text</p></canvas>')

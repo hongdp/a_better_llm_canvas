@@ -47,6 +47,22 @@ export interface TrimHistoryOptions {
 /** Stands in for an image that has already been sent, in history. */
 export const IMAGE_PLACEHOLDER_TEXT = '[image sent earlier in this conversation]'
 
+/**
+ * Was the last turn of this history stopped by the user before it finished?
+ * Read from the last assistant message: its agent record says `stopped`, or
+ * its text carries the Stop note. Used to frame the next request
+ * (agent/reminders interruptedTurnReminder); a reload or another device
+ * reaches the same answer from the same messages.
+ */
+export function wasTurnInterrupted(history: Array<{ role: string; content: string; agent?: { status?: string } | null }>): boolean {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const m = history[i]
+    if (m.role !== 'assistant') continue
+    return m.agent?.status === 'stopped' || /⏹️ Stopped\b/.test(m.content || '')
+  }
+  return false
+}
+
 export function trimHistoryForContext(
   messages: LLMMessage[],
   options: TrimHistoryOptions

@@ -639,6 +639,69 @@
     ],
     "output": ""
    }
+  ],
+  "was_turn_interrupted": [
+   {
+    "input": [
+     [
+      {
+       "role": "user",
+       "content": "a"
+      },
+      {
+       "role": "assistant",
+       "content": "b",
+       "agent": {
+        "status": "stopped"
+       }
+      }
+     ]
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "user",
+       "content": "a"
+      },
+      {
+       "role": "assistant",
+       "content": "x\n\n⏹️ Stopped."
+      },
+      {
+       "role": "user",
+       "content": "again"
+      }
+     ]
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "user",
+       "content": "a"
+      },
+      {
+       "role": "assistant",
+       "content": "done",
+       "agent": {
+        "status": "done"
+       }
+      }
+     ]
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     []
+    ],
+    "output": false
+   }
   ]
  }
 }

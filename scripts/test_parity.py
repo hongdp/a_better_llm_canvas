@@ -10,9 +10,9 @@ import re
 
 import pytest
 
-from wc_text import (chapter_index, chapters, context_ledger, context_selection, context_window, diff, diff_resolution, document_tools,
-                     dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes, plan, policy,
-                     polish, protocol_choice, provider_profile, reminders, stream_handlers, system_prompt, text, title_sync, tool_call_stream)
+from wc_text import (chapter_index, chapters, context_ledger, context_selection, context_window, conversation_summary, diff, diff_resolution,
+                     document_tools, dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes,
+                     plan, policy, polish, protocol_choice, provider_profile, reminders, stream_handlers, system_prompt, text, title_sync, tool_call_stream)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -98,6 +98,7 @@ FUNCTIONS = {
     ("text", "parse_doc_status"): text.parse_doc_status,
     ("text", "strip_doc_status"): text.strip_doc_status,
     ("text", "detect_failed_document_update"): text.detect_failed_document_update,
+    ("text", "claims_own_write"): text.claims_own_write,
     ("text", "trim_incomplete_html_tail"): text.trim_incomplete_html_tail,
     ("text", "is_blank_content"): text.is_blank_content,
     ("llm_context", "html_to_plain_text"): llm_context.html_to_plain_text,
@@ -106,6 +107,7 @@ FUNCTIONS = {
     ("llm_context", "detect_referenced_doc_ids"): llm_context.detect_referenced_doc_ids,
     ("llm_context", "build_attachments_label"): llm_context.build_attachments_label,
     ("llm_context", "trim_history_for_context"): llm_context.trim_history_for_context,
+    ("llm_context", "was_turn_interrupted"): llm_context.was_turn_interrupted,
     ("polish", "bare"): polish.bare,
     ("polish", "split_for_polish"): polish.split_for_polish,
     ("polish", "build_polish_prompt"): polish.build_polish_prompt,
@@ -151,7 +153,19 @@ FUNCTIONS = {
     ("plan", "unfinished_plan_items"): plan.unfinished_plan_items,
     ("reminders", "constants"): lambda: {"REMINDERS_ARE_CONTEXT": reminders.REMINDERS_ARE_CONTEXT, "REPEAT_NUDGE_STEPS": reminders.REPEAT_NUDGE_STEPS,
                                         "REPEAT_PAUSE_STEPS": reminders.REPEAT_PAUSE_STEPS, "PLAN_NUDGE_BUDGET": reminders.PLAN_NUDGE_BUDGET},
+    ("conversation_summary", "constants"): lambda: {
+        "SUMMARY_SYSTEM_PROMPT": conversation_summary.SUMMARY_SYSTEM_PROMPT, "KEEP_FRACTION": conversation_summary.KEEP_FRACTION,
+        "SUMMARY_RESERVE_CHARS": conversation_summary.SUMMARY_RESERVE_CHARS, "SUMMARY_INPUT_CHARS": conversation_summary.SUMMARY_INPUT_CHARS,
+        "SUMMARY_MESSAGE_CHARS": conversation_summary.SUMMARY_MESSAGE_CHARS, "SUMMARY_MIN_KEEP": conversation_summary.SUMMARY_MIN_KEEP},
+    ("conversation_summary", "plan_conversation_summary"): conversation_summary.plan_conversation_summary,
+    ("conversation_summary", "build_summary_request"): conversation_summary.build_summary_request,
+    ("conversation_summary", "parse_summary_reply"): conversation_summary.parse_summary_reply,
+    ("conversation_summary", "summary_messages"): conversation_summary.summary_messages,
     ("reminders", "wrap_reminder"): reminders.wrap_reminder,
+    ("reminders", "escape_reminder_tags"): reminders.escape_reminder_tags,
+    ("reminders", "interrupted_turn_reminder"): reminders.interrupted_turn_reminder,
+    ("reminders", "steer_message"): reminders.steer_message,
+    ("reminders", "unbacked_claim_nudge"): reminders.unbacked_claim_nudge,
     ("reminders", "append_reminders"): reminders.append_reminders,
     ("reminders", "repeat_nudge"): reminders.repeat_nudge,
     ("reminders", "long_reasoning_reminder"): reminders.long_reasoning_reminder,

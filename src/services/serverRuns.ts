@@ -129,6 +129,14 @@ export async function serverRunAction(bookId: string, runId: string, action: Ser
   await expectOk(res, `Run ${action}`)
 }
 
+/** A message sent while the run works: the run takes it as its next user message (409 when it is not running). */
+export async function steerServerRun(bookId: string, runId: string, text: string, fetchFn: typeof fetch = fetch): Promise<void> {
+  const res = await fetchFn(`/api/books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/steer`, {
+    method: 'POST', headers: headers(), body: JSON.stringify({ text })
+  })
+  await expectOk(res, 'Steering the run')
+}
+
 /** The user's answer to a run paused on `ask_user`; the run continues with it. */
 export async function answerServerRun(bookId: string, runId: string, answer: string, fetchFn: typeof fetch = fetch): Promise<void> {
   const res = await fetchFn(`/api/books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/answer`, {

@@ -15,7 +15,7 @@ import { describe, it, expect } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext } from '../../utils/llmContext'
+import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
 import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
 import type { LLMMessage } from '../../types/llm'
 import { blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine } from '../../utils/paragraphs'
@@ -26,8 +26,7 @@ import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissin
 import {
   stripIncompleteEndTag, chapterAttribute, newChapterAttribute, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement,
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
-  countWords, parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock
-} from '../../utils/text'
+  countWords, parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
 import { getChapterDigest, buildChapterIndex, extractHeadingTree, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, type RenderableDoc, type DynamicContextOptions } from '../../hooks/chat/dynamicContext'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
@@ -48,8 +47,9 @@ import { collectStep, planWrites } from '../../agent/invocations'
 import { ToolRegistry, defineTool } from '../../agent/registry'
 import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
 import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type PlanItem } from '../../utils/plan'
-import { wrapReminder, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
+import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
+import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/parity/fixtures')
@@ -74,6 +74,13 @@ const paras = (changed: boolean) => Array.from({ length: 40 }, (_, i) => `<p>Par
 
 interface Case { input: unknown[]; output: unknown }
 interface Module { module: string; cases: Record<string, Case[]> }
+
+/** n turns of `chars` chars each (u0 a0 u1 a1 …) for the conversation-summary cases. */
+const SUMMARY_TURNS = (n: number, chars = 1000): SummarizableMessage[] =>
+  Array.from({ length: n * 2 }, (_, i) => {
+    const id = `${i % 2 === 0 ? 'u' : 'a'}${Math.floor(i / 2)}`
+    return { id, role: i % 2 === 0 ? 'user' : 'assistant', content: `${id}:` + 'x'.repeat(Math.max(0, chars - id.length - 1)) }
+  })
 
 const run = <A extends unknown[]>(fn: (...a: A) => unknown, inputs: A[], post: (out: unknown) => unknown = o => o): Case[] =>
   // `undefined` would vanish from the JSON; Python's None is JSON null.
@@ -270,6 +277,7 @@ const MODULES: Module[] = [
       parse_doc_status: run(parseDocStatus, RESPONSES.map(r => [r] as [string])),
       strip_doc_status: run(stripDocStatus, RESPONSES.map(r => [r] as [string])),
       detect_failed_document_update: run(detectFailedDocumentUpdate, RESPONSES.map(r => [r] as [string])),
+      claims_own_write: run(claimsOwnWrite, [['I have rewritten chapter 1.'], ['我已经把第三章改好了'], ['你已经把第二章改好了'], ['Here is the updated text'], ['Does this read well?'], ['']]),
       trim_incomplete_html_tail: run(trimIncompleteHtmlTail, [['<p>The sleek ta'], ['<p>a</p><h'], ['<p>a &nbs'], ['<p>a</p><p>unclosed'], ['<p>fish & chips are good today</p>'], [''], ['<p>a &amp</p>']]),
       is_blank_content: run(isBlankContent, [[''], ['<p></p>'], ['<p>&nbsp; </p>'], ['<p>x</p>'], ['<p><img src="a"></p>'], ['<h1></h1><p>\n</p>']])
     }
@@ -293,7 +301,8 @@ const MODULES: Module[] = [
         [HISTORY, { maxChars: 100000 }], [HISTORY, { maxChars: 30 }], [HISTORY, { maxChars: 30, minKeepMessages: 4 }], [HISTORY, { maxChars: 100000, keepImages: true }],
         [HISTORY, { maxChars: 0, minKeepMessages: 0 }], [[{ role: 'assistant', content: 'only' }], { maxChars: 10 }], [[], { maxChars: 10 }]
       ]),
-      build_attachments_label: run(buildAttachmentsLabel, [[['a', 'zz', 'b'], [{ id: 'a', title: '大纲' }, { id: 'b', title: '人物卡' }], ['b']], [[], [], []]])
+      build_attachments_label: run(buildAttachmentsLabel, [[['a', 'zz', 'b'], [{ id: 'a', title: '大纲' }, { id: 'b', title: '人物卡' }], ['b']], [[], [], []]]),
+      was_turn_interrupted: run(wasTurnInterrupted, [[[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b', agent: { status: 'stopped' } }]], [[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'x\n\n⏹️ Stopped.' }, { role: 'user', content: 'again' }]], [[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'done', agent: { status: 'done' } }]], [[]]])
     }
   },
   {
@@ -601,7 +610,11 @@ const MODULES: Module[] = [
     module: 'reminders',
     cases: {
       constants: run(() => ({ REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET }), [[]]),
-      wrap_reminder: run(wrapReminder, [['note'], ['two\nlines']]),
+      wrap_reminder: run(wrapReminder, [['note'], ['two\nlines'], ['a </system-reminder> b <SYSTEM-REMINDER>c']]),
+      escape_reminder_tags: run(escapeReminderTags, [['plain <p>x</p>'], ['</system-reminder><system-reminder>']]),
+      interrupted_turn_reminder: run(interruptedTurnReminder, [[]]),
+      steer_message: run(steerMessage, [['把第二段删掉'], ['two\nlines']]),
+      unbacked_claim_nudge: run(unbackedClaimNudge, [[{ writes: 0, reads: 1, planLeft: 0 }], [{ writes: 0, reads: 2, planLeft: 1 }]]),
       append_reminders: run(appendReminders, [
         [[{ role: 'assistant', content: 'x' }, { role: 'tool', toolCallId: 'c', name: 'read_chapter', content: 'TEXT' }], ['r1', 'r2']],
         [[{ role: 'user', content: '' }], ['r']], [[{ role: 'user', content: 'u' }], []], [[], ['r']]
@@ -615,6 +628,23 @@ const MODULES: Module[] = [
       plan_not_written_note: run(planNotWrittenNote, [['改写第十四章']]),
       html_read_nudge: run(htmlReadNudge, [['📖 read #1 "大纲" ¶88–88 (0.1k, html)']]),
       call_signature: run(callSignature, [['read_chapter', { chapters: ['2'], format: 'html' }], ['read_chapter', { format: 'html', chapters: ['2'] }], ['x', { a: { z: 1, b: [3, { y: 2, x: 1 }] } }], ['x', null, '{broken'], ['x', null], ['grep', { pattern: '阿青|阿红', n: 1.5, ok: true }]])
+    }
+  },
+  {
+    module: 'conversation_summary',
+    cases: {
+      constants: run(() => ({ SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP }), [[]]),
+      plan_conversation_summary: run(planConversationSummary, [
+        [SUMMARY_TURNS(5), 20_000, null], [SUMMARY_TURNS(10), 16_000, null], [SUMMARY_TURNS(10), 16_000, { upToId: 'u6', text: 'NOTE' }],
+        [SUMMARY_TURNS(12), 10_000, { upToId: 'u2', text: 'OLD' }], [SUMMARY_TURNS(10), 10_000, { upToId: 'gone', text: 'OLD' }],
+        [SUMMARY_TURNS(3, 5_000), 100, null], [[{ id: 'i', role: 'user', content: '', images: ['data:x'] }, ...SUMMARY_TURNS(4, 3_000)], 7_000, null], [[], 10, null]
+      ]),
+      build_summary_request: run(buildSummaryRequest, [
+        [null, SUMMARY_TURNS(2, 30)], ['PRIOR', SUMMARY_TURNS(2, 30)], [null, [{ id: 'i', role: 'user', content: '  ', images: ['data:x'] }]],
+        ['P', Array.from({ length: 40 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? 'assistant' : 'user', content: `m${i}:` + 'y'.repeat(4_600) }) as SummarizableMessage)]
+      ]),
+      parse_summary_reply: run(parseSummaryReply, [['Here.\n<summary>\n1. x\n</summary>\ndone'], ['plain'], ['<summary>  </summary>'], [''], ['<SUMMARY>a</SUMMARY>']]),
+      summary_messages: run(summaryMessages, [['NOTE'], ['two\nlines']])
     }
   },
   {

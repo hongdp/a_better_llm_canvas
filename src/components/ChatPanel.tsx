@@ -50,11 +50,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   const [isChatExpanded, setIsChatExpanded] = useState(false)
   const [isRpSetupOpen, setIsRpSetupOpen] = useState(false)
   const activeConfig = providerConfigs[activeProvider]
-  const user = useAppStore(state => state.user)
-  // Turns run on the server (backend_authority.md §4.3): a request sent
-  // mid-turn queues, so the input stays open while a run streams.
-  const serverRunsOn = !roleplayMode && !!user && activeConfig.serverRuns === true
-  const inputBlocked = isStreaming && !serverRunsOn
+  // A message typed while a chat turn streams steers it (useChatLLM
+  // steerRunningTurn); roleplay keeps its turn-by-turn gate.
+  const inputBlocked = isStreaming && roleplayMode
 
   const {
     uploadedImages,
@@ -582,7 +580,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               <Square size={16} fill="#ef4444" />
             </button>
           )}
-          {(!isStreaming || serverRunsOn) && (
+          {(!isStreaming || !roleplayMode) && (
             <button 
               type="submit" 
               className="btn-icon" 
