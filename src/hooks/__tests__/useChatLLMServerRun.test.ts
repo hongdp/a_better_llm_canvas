@@ -10,9 +10,13 @@ import { createRoot, type Root } from 'react-dom/client'
 vi.mock('../../services/llm', () => ({ streamLLM: vi.fn() }))
 vi.mock('../../services/chapterSummaries', () => ({ enqueueStaleSummaryRefreshes: vi.fn() }))
 
+import { Editor } from '@tiptap/core'
+import StarterKit from '@tiptap/starter-kit'
 import { useChatLLM } from '../useChatLLM'
 import { useAppStore, isEditLocked } from '../../store/useAppStore'
 import { emitRunEvent } from '../../store/runEvents'
+import { recordServerCopy, serverCopies } from '../../store/documentSync'
+import { isSilentPreview } from '../chat/selectionReplace'
 import type { ServerRunSummary } from '../../services/serverRuns'
 
 interface Harness { current: ReturnType<typeof useChatLLM>; unmount: () => void }
@@ -48,6 +52,8 @@ const summary = (over: Partial<ServerRunSummary> = {}): ServerRunSummary => ({
 })
 
 const posted: Array<{ url: string; body: unknown }> = []
+/** Every request, in order: "<METHOD> <url>". */
+const calls: string[] = []
 let listed: { runs: unknown[]; queueHeld: boolean } = { runs: [], queueHeld: false }
 let nextRun: (body: { assistantMessageId: string; userMessageId: string }) => ServerRunSummary = body =>
   summary({ assistantMessageId: body.assistantMessageId, userMessageId: body.userMessageId })
@@ -55,11 +61,14 @@ let nextRun: (body: { assistantMessageId: string; userMessageId: string }) => Se
 let savedProvider: string
 beforeEach(() => {
   posted.length = 0
+  calls.length = 0
+  serverCopies.clear()
   listed = { runs: [], queueHeld: false }
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const json = (data: unknown, status = 200) => ({ ok: status < 300, status, statusText: 'OK', json: async () => data }) as Response
+    calls.push(`${init?.method ?? 'GET'} ${url}`)
     if (url === '/api/generate/active') return json([])
     if (url === '/api/books/book-1/runs' && init?.method === 'POST') {
       const body = JSON.parse(String(init.body))
@@ -162,6 +171,59 @@ describe('a turn with serverRuns on', () => {
         result: { content: '⏹️ Stopped.', record: { status: 'stopped', steps: 1, trace: [], touched: [], timeline: [] } } })
     })
     expect(bubble().content).toContain('partial draft was kept')
+    h.unmount()
+  })
+
+  // The server commits a selection rewrite itself. Its preview is painted
+  // through real transactions, which Editor.tsx publishes to the store —
+  // unless flagged: published, the chapter went unsynced, the server's
+  // document event was ignored, and the tab's next save hit a 409.
+  it('paints a selection preview with silent transactions, leaving the store alone', async () => {
+    const flags: boolean[] = []
+    const editor = new Editor({
+      element: document.createElement('div'), extensions: [StarterKit], content: '<p>原文。</p>',
+      onUpdate: ({ transaction }) => { flags.push(isSilentPreview(transaction)) }
+    })
+    nextRun = body => summary({ assistantMessageId: body.assistantMessageId, userMessageId: body.userMessageId, selectedText: '原文' })
+    const h = renderChatHook(editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '改写选中') })
+    await flush()
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId: 'run-1', run: summary({ assistantMessageId: bubble().id, selectedText: '原文' }) }) })
+    act(() => { emitRunEvent({ type: 'run', kind: 'preview_selection', runId: 'run-1', documentId: 'doc-1', html: '<p>新文</p>' }) })
+    expect(editor.getHTML()).toBe('<p>新文。</p>')
+    expect(flags).toEqual([true])
+    const stored = useAppStore.getState().documents.find(d => d.id === 'doc-1')!
+    expect(stored.content).toBe('<p>原文。</p>')
+    expect(stored.unsynced).toBeFalsy()
+    editor.destroy()
+    h.unmount()
+  })
+
+  // The run reads the stored book; an edit still inside the save debounce
+  // would be missing from it, and the run's write would race the save.
+  it('saves an unsynced chapter before posting the turn', async () => {
+    const s = useAppStore.getState()
+    for (const d of s.documents) recordServerCopy(d.id, d)
+    useAppStore.setState({ documents: s.documents.map(d => d.id === 'doc-1' ? { ...d, content: '<p>改过。</p>', unsynced: true } : d) })
+    const h = renderChatHook(stubEditor('<p>改过。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '继续') })
+    await flush()
+    const save = calls.indexOf('PUT /api/books/book-1/documents/doc-1')
+    const post = calls.indexOf('POST /api/books/book-1/runs')
+    expect(save).toBeGreaterThanOrEqual(0)
+    expect(post).toBeGreaterThan(save)
+    expect(calls.filter(c => c.startsWith('PUT /api/books/book-1/documents/'))).toEqual(['PUT /api/books/book-1/documents/doc-1'])
+    h.unmount()
+  })
+
+  it('posts straight away when every chapter is synced', async () => {
+    const s = useAppStore.getState()
+    for (const d of s.documents) recordServerCopy(d.id, d)
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '继续') })
+    await flush()
+    expect(calls.some(c => c.startsWith('PUT /api/books/'))).toBe(false)
+    expect(calls).toContain('POST /api/books/book-1/runs')
     h.unmount()
   })
 

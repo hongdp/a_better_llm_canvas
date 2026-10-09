@@ -394,6 +394,23 @@ summaries and imports are untouched.
   the step in flight is painted from the deltas with the same splitter as
   a local turn), the editor through the ports a local run uses (previews,
   the lock, opening a chapter).
+- **A server run's preview never reaches the store.** A document preview
+  is written with `emitUpdate:false`; a selection preview writes real
+  transactions, so a server run flags them (`SILENT_PREVIEW_META`,
+  `selectionReplace.ts`) and `Editor.tsx`'s `onUpdate` skips the store for
+  them. Published, the preview marked the chapter unsynced, the run's
+  document event was ignored (an unsynced chapter is never overwritten by
+  an event) and the tab's next save sent the preview with a stale base
+  revision: every selection rewrite ended in a conflict banner, with the
+  run's text in version history (2026-10-08). The store keeps the chapter
+  the server confirmed; the run's commit arrives through its document
+  event, and the content sync replaces the preview. A tab-local run keeps
+  publishing its selection preview: it commits what it previewed.
+- **The send flushes the save debounce.** The server builds the request
+  from the stored book, so an edit still inside the 3s debounce would be
+  missing from the prompt, and the run's write on that stale chapter
+  would race the tab's save for the revision. `startServerTurn` saves
+  every chapter that `needsTextSync` before posting.
 - On load and on every book switch the hook lists the book's runs: a
   queued, running or paused run gets its bubbles (created if another
   device sent it) and its live text; a run that finished while the tab was

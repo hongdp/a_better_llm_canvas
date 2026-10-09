@@ -223,7 +223,11 @@ A streamed selection rewrite touches the editor only through
 `replaceSelectionWithHtml` (`hooks/chat/selectionReplace.ts`). Never derive an
 inserted range's end from `slice.size`: ProseMirror wraps an open slice
 inserted at document level (Ctrl+A selects from position 0), so the real
-insert is longer — read the end from `tr.mapping.map(to, 1)`.
+insert is longer — read the end from `tr.mapping.map(to, 1)`. Its
+transactions reach the store through `onUpdate` on purpose (a tab-local run
+commits what it previewed); a **server** run's preview is flagged silent
+(`SILENT_PREVIEW_META`) and skipped there, or the chapter goes unsynced, the
+run's own write event is ignored and the tab's next save is a 409.
 
 ### LLM integration
 `services/llm.ts` exposes `streamLLM(messages, config, callbacks)`, dispatching

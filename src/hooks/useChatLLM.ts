@@ -42,7 +42,8 @@ import { chapterOutline, createRunState, restoreSeen, type ToolContext } from '.
 import { startServerRun, listServerRuns, serverRunAction, answerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
 import { onRunEvent } from '../store/runEvents'
 import { resyncBook } from '../store/bookEvents'
-import { CLIENT_ID } from '../store/documentSync'
+import { CLIENT_ID, needsTextSync } from '../store/documentSync'
+import { clearPendingSave } from '../store/syncRuntime'
 import { mergeVersions } from '../store/versionMerge'
 import { applyRunEvent, ensureRunMessages, bubbleStillWaiting, type RunLive } from './chat/serverRunEvents'
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
@@ -702,7 +703,9 @@ export function useChatLLM({
         const { from } = selectionRangeRef.current
         const currentEnd = selectionEndRef.current ?? selectionRangeRef.current.to
         // Null when the document has moved on since the selection was taken.
-        const end = replaceSelectionWithHtml(editor, from, currentEnd, restoreImagesFromPlaceholders(html))
+        // A server run commits the rewrite itself: its preview stays out of
+        // the store, or this tab's next save conflicts with that commit.
+        const end = replaceSelectionWithHtml(editor, from, currentEnd, restoreImagesFromPlaceholders(html), { silent: serverRunRef.current !== null })
         if (end === null) return
         selectionEndRef.current = end
         setSaveStatus('unsaved')
@@ -1157,6 +1160,14 @@ export function useChatLLM({
     const cfg = s.providerConfigs[s.activeProvider]
     const preset = s.customSystemPrompts.find(p => p.id === s.activeSystemPromptId)
     try {
+      // The server builds the request from the stored book, and the save
+      // behind an edit is debounced: an edit typed in the seconds before
+      // the send would be missing from the prompt, and the run's write on
+      // the stale chapter would then race this tab's save for the revision.
+      if (s.documents.some(d => d.contentLoaded !== false && needsTextSync(d))) {
+        clearPendingSave()
+        await s.syncToServer()
+      }
       const { run, position } = await startServerRun(s.activeBookId as string, {
         prompt: opts.promptText,
         images: opts.images,
