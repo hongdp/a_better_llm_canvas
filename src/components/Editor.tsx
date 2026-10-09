@@ -5,6 +5,7 @@ import { BubbleMenu } from '@tiptap/react/menus'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { normalizeBrParagraphs } from '../utils/convert'
+import { isSilentPreview } from '../hooks/chat/selectionReplace'
 import { saveScrollPosition, loadScrollPosition } from '../utils/scrollMemory'
 import { collectDiffRanges, type DiffAction } from '../utils/diffResolution'
 import { 
@@ -136,7 +137,10 @@ export const Editor: React.FC<EditorProps> = ({
       transformPastedHTML: (html) => normalizeBrParagraphs(html)
     },
     content,
-    onUpdate: ({ editor }) => {
+    onUpdate: ({ editor, transaction }) => {
+      // A server run's selection preview: on screen only, never the store
+      // (selectionReplace.ts explains the conflict it caused).
+      if (isSilentPreview(transaction)) return
       const html = editor.getHTML()
       // Mark this content as originating from the editor itself
       contentFromEditorRef.current = html

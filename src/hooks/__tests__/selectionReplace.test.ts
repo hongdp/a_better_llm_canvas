@@ -11,7 +11,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { CustomImage } from '../../components/editorExtensions'
-import { replaceSelectionWithHtml } from '../chat/selectionReplace'
+import { replaceSelectionWithHtml, isSilentPreview } from '../chat/selectionReplace'
 
 let editor: Editor | null = null
 const make = (content: string) => {
@@ -74,5 +74,21 @@ describe('replaceSelectionWithHtml', () => {
     const e = make('<p>AAA</p>')
     expect(replaceSelectionWithHtml(e, 50, 60, '<p>X</p>')).toBeNull()
     expect(e.getHTML()).toBe('<p>AAA</p>')
+  })
+
+  // A server run's preview must reach the screen but not the store: the
+  // flag rides on the transaction, where Editor.tsx's onUpdate reads it.
+  it('flags a silent preview on its transaction, and nothing else', () => {
+    const seen: boolean[] = []
+    editor = new Editor({
+      element: document.createElement('div'), extensions: [StarterKit, CustomImage], content: '<p>AAA</p>',
+      onUpdate: ({ transaction }) => { seen.push(isSilentPreview(transaction)) }
+    })
+    expect(replaceSelectionWithHtml(editor, 1, 4, '<p>X</p>', { silent: true })).toBe(2)
+    expect(editor.getHTML()).toBe('<p>X</p>')
+    replaceSelectionWithHtml(editor, 1, 2, '<p>Y</p>')
+    editor.commands.insertContentAt(2, 'Z')
+    expect(editor.getHTML()).toBe('<p>YZ</p>')
+    expect(seen).toEqual([true, false, false])
   })
 })
