@@ -986,6 +986,312 @@
      "updatedIds": [],
      "staleChars": 0
     }
+   },
+   {
+    "input": [
+     {
+      "entries": [
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100
+       },
+       {
+        "id": "d2",
+        "hash": "h2",
+        "chars": 2000
+       },
+       {
+        "id": "d3",
+        "hash": "h3",
+        "chars": 300
+       }
+      ]
+     },
+     [
+      "d1",
+      "d3"
+     ],
+     [
+      {
+       "id": "d1",
+       "chars": 100,
+       "hash": "h1"
+      },
+      {
+       "id": "d2",
+       "chars": 2000,
+       "hash": "h2"
+      },
+      {
+       "id": "d3",
+       "chars": 300,
+       "hash": "h3"
+      },
+      {
+       "id": "d4",
+       "chars": 400,
+       "hash": "h4"
+      }
+     ],
+     "d2",
+     {
+      "render": true,
+      "keepIds": [
+       "d2"
+      ]
+     }
+    ],
+    "output": {
+     "ledger": {
+      "entries": [
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100
+       },
+       {
+        "id": "d2",
+        "hash": "h2",
+        "chars": 2000
+       },
+       {
+        "id": "d3",
+        "hash": "h3",
+        "chars": 300
+       }
+      ]
+     },
+     "cachedPrefixCount": 3,
+     "cachedPrefixChars": 2400,
+     "resentIds": [],
+     "appendedIds": [],
+     "drops": [],
+     "resendChars": 0,
+     "updatedIds": [],
+     "staleChars": 0
+    }
+   },
+   {
+    "input": [
+     {
+      "entries": [
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100
+       },
+       {
+        "id": "d2",
+        "hash": "old",
+        "chars": 2000
+       },
+       {
+        "id": "d3",
+        "hash": "h3",
+        "chars": 300
+       }
+      ]
+     },
+     [
+      "d1",
+      "d3"
+     ],
+     [
+      {
+       "id": "d1",
+       "chars": 100,
+       "hash": "h1"
+      },
+      {
+       "id": "d2",
+       "chars": 2000,
+       "hash": "h2"
+      },
+      {
+       "id": "d3",
+       "chars": 300,
+       "hash": "h3"
+      },
+      {
+       "id": "d4",
+       "chars": 400,
+       "hash": "h4"
+      }
+     ],
+     "d2",
+     {
+      "render": true,
+      "keepIds": [
+       "d2"
+      ]
+     }
+    ],
+    "output": {
+     "ledger": {
+      "entries": [
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100
+       },
+       {
+        "id": "d2",
+        "hash": "old",
+        "chars": 2000
+       },
+       {
+        "id": "d3",
+        "hash": "h3",
+        "chars": 300
+       }
+      ]
+     },
+     "cachedPrefixCount": 3,
+     "cachedPrefixChars": 2400,
+     "resentIds": [],
+     "appendedIds": [],
+     "drops": [],
+     "resendChars": 0,
+     "updatedIds": [],
+     "staleChars": 0
+    }
+   },
+   {
+    "input": [
+     {
+      "entries": [
+       {
+        "id": "gone",
+        "hash": "g",
+        "chars": 10
+       },
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100
+       }
+      ]
+     },
+     [
+      "d1"
+     ],
+     [
+      {
+       "id": "d1",
+       "chars": 100,
+       "hash": "h1"
+      },
+      {
+       "id": "d2",
+       "chars": 2000,
+       "hash": "h2"
+      },
+      {
+       "id": "d3",
+       "chars": 300,
+       "hash": "h3"
+      },
+      {
+       "id": "d4",
+       "chars": 400,
+       "hash": "h4"
+      }
+     ],
+     "gone",
+     {
+      "keepIds": [
+       "gone"
+      ]
+     }
+    ],
+    "output": {
+     "ledger": {
+      "entries": [
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100
+       }
+      ]
+     },
+     "cachedPrefixCount": 0,
+     "cachedPrefixChars": 0,
+     "resentIds": [
+      "d1"
+     ],
+     "appendedIds": [],
+     "drops": [
+      {
+       "id": "gone",
+       "reason": "now-active"
+      }
+     ],
+     "resendChars": 100,
+     "updatedIds": [],
+     "staleChars": 0
+    }
+   },
+   {
+    "input": [
+     {
+      "entries": []
+     },
+     [
+      "d1"
+     ],
+     [
+      {
+       "id": "d1",
+       "chars": 100,
+       "hash": "h1"
+      },
+      {
+       "id": "d2",
+       "chars": 2000,
+       "hash": "h2"
+      },
+      {
+       "id": "d3",
+       "chars": 300,
+       "hash": "h3"
+      },
+      {
+       "id": "d4",
+       "chars": 400,
+       "hash": "h4"
+      }
+     ],
+     "d2",
+     {
+      "render": true,
+      "keepIds": [
+       "d2"
+      ]
+     }
+    ],
+    "output": {
+     "ledger": {
+      "entries": [
+       {
+        "id": "d1",
+        "hash": "h1",
+        "chars": 100,
+        "text": "[fresh:d1]"
+       }
+      ]
+     },
+     "cachedPrefixCount": 0,
+     "cachedPrefixChars": 0,
+     "resentIds": [],
+     "appendedIds": [
+      "d1"
+     ],
+     "drops": [],
+     "resendChars": 100,
+     "updatedIds": [],
+     "staleChars": 0
+    }
    }
   ],
   "ledger_chapter_ids": [

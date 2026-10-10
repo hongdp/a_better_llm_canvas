@@ -208,21 +208,32 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
     for d in documents:
         accepted = strip_diff_markup(d["content"])
         docs_for_plan.append({"id": d["id"], "chars": min(len(accepted), MAX_LEDGER_DOC_CHARS), "hash": hash_content(accepted)})
+    # Pins are budgeted on the text the ledger renders, not the HTML (pinned_context.md §2).
     wanted = selection["attachedIds"] if selection is not None else pinned_context_ids(
-        [{"id": d["id"], "pinned": bool(d.get("pinned")), "chars": docs_for_plan[i]["chars"]} for i, d in enumerate(documents)], active_document_id)
+        [{"id": d["id"], "pinned": bool(d.get("pinned")),
+          "chars": min(len(html_to_plain_text(strip_diff_markup(d["content"]))), MAX_LEDGER_DOC_CHARS) if d.get("pinned") else 0} for d in documents],
+        active_document_id)
+    # A pinned chapter the writer has open keeps its place in the ledger (§2.1).
+    active_doc = next((d for d in documents if d["id"] == active_document_id), None)
+    keep_ids = [active_doc["id"]] if selection is None and active_doc is not None and active_doc.get("pinned") else []
     desired = order_admissions_by_stability(wanted, [{"id": d["id"], "updatedAt": d.get("updatedAt")} for d in documents],
                                             book_order, active_document_id)
     by_id = {d["id"]: d for d in documents}
     plan = plan_ledger_turn(state["ledger"], desired, docs_for_plan, active_document_id,
-                            {"render": lambda doc_id, kind: ledger_block(by_id[doc_id], kind) if doc_id in by_id else ""})
+                            {"render": lambda doc_id, kind: ledger_block(by_id[doc_id], kind) if doc_id in by_id else "", "keepIds": keep_ids})
     attached_ids = ledger_chapter_ids(plan["ledger"])
     prefix = build_ledger_messages(documents, plan["ledger"]["entries"], None, {"agentTools": settings["agentTools"]})
     state["ledger"] = plan["ledger"]
     state["previousAttachedIds"] = attached_ids
     markers = freshness_markers(documents, active_document_id, attached_ids, seen, state["turn"]) if settings["agentTools"] else None
+    # The open pinned chapter's copy above may be older than its text now: say which is current.
+    active_copy = next((e for e in reversed(plan["ledger"]["entries"]) if keep_ids and e["id"] == keep_ids[0]), None)
+    active_copy_older = bool(active_copy and active_copy["hash"] != next((d["hash"] for d in docs_for_plan if d["id"] == keep_ids[0]), None))
+    tail_opts: Dict[str, Any] = {"agentTools": True, "markers": markers} if settings["agentTools"] else {}
+    if active_copy_older:
+        tail_opts["activeCopyOlder"] = True
     tail = build_volatile_tail(documents, active_document_id, selected_text,
-                               lambda html: replace_images_with_placeholders(html, image_registry),
-                               {"agentTools": True, "markers": markers} if settings["agentTools"] else {})
+                               lambda html: replace_images_with_placeholders(html, image_registry), tail_opts)
     # Agent turns carry no label: the pins in the sidebar are what rides along.
     attachments_text = "" if selection is None else build_attachments_label(attached_ids, documents, selection["autoIds"])
     # The turn after a Stop says so (agentic_chat_loop.md §0.8).

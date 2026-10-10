@@ -41,6 +41,11 @@ export interface DynamicContextOptions {
   agentTools?: boolean
   /** Freshness markers for the chapter index (agentic_chat_loop.md D8). */
   markers?: Record<string, string>
+  /**
+   * The active chapter is pinned and its copy in the ledger is older than its
+   * text now (pinned_context.md §2.1): say which one is current.
+   */
+  activeCopyOlder?: boolean
 }
 
 /** One chapter as it is rendered into the ledger block. */
@@ -169,7 +174,7 @@ ${cleanActiveContent}
   return `Here is the current state of my document.
 ${chapterIndexBlock}
 CURRENT ACTIVE DOCUMENT CONTENT (${opts?.agentTools
-    ? 'Your writes change this chapter unless you name another'
+    ? `Your writes change this chapter unless you name another${opts.activeCopyOlder ? '. Its copy under REFERENCED CHAPTERS is older: this is its current text' : ''}`
     : 'This is the ONLY document you can update'}):
 """
 ${cleanActiveContent}

@@ -432,21 +432,48 @@ describe('useChatLLM — cache-first prompt layout', () => {
     harness.unmount()
   })
 
-  it('drops the chapter the writer switches to, keeping the rest cached', async () => {
-    responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
+  // pinned_context.md §2.1: opening the outline to look at it used to drop
+  // it from the ledger, and closing it re-added it — two cache misses.
+  it('keeps a pinned chapter in place while the writer has it open, and says when its copy is older', async () => {
+    responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>', CLOSE, '<canvas><p>c</p></canvas>')
     pin('doc-2', 'doc-3')
     const harness = renderChatHook()
 
-    await send(harness, '对照 Chapter 2 和 Chapter 3')
-    // Now edit chapter 2 — it must leave the ledger rather than sit there as a
-    // stale duplicate of the document in the tail.
+    await send(harness, '第一轮')
     useAppStore.setState({ activeDocumentId: 'doc-2' })
     const second = calls.length
     await send(harness, '第二轮')
+    // Opened: the ledger is unchanged, so the whole prefix is still the first turn's.
+    const ledger1 = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    const ledger2 = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    expect(ledger2).toBe(ledger1)
+    expect(finalUserContent(second)).not.toContain('is older')
 
-    const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
-    expect(after).not.toContain('the betrayal')
-    expect(after).toContain('the return')
+    // Edited while open: the copy above stays, and the tail says which text is current.
+    useAppStore.getState().updateDocument('doc-2', { content: '<p>the betrayal, revised</p>' })
+    const third = calls.length
+    await send(harness, '第三轮')
+    expect(calls[third].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content).toBe(ledger1)
+    expect(finalUserContent(third)).toContain('Its copy under REFERENCED CHAPTERS is older: this is its current text')
+    harness.unmount()
+  })
+
+  it('budgets pins on their text, not their HTML', async () => {
+    responses.push('<canvas><p>a</p></canvas>')
+    // Each chapter is ~25k of HTML but ~3k of text: counted as HTML the third would not fit 60k.
+    const heavy = (word: string) => `<p>${`<span style="color: rgb(10, 20, 30); font-weight: bold">${word}</span>`.repeat(300)}</p>`
+    useAppStore.setState({
+      documents: [
+        doc('doc-1', 'Chapter 1', '<p>old text</p>'),
+        { ...doc('doc-2', 'Cards', heavy('甲甲甲甲甲')), pinned: true },
+        { ...doc('doc-3', 'Setting', heavy('乙乙乙乙乙')), pinned: true },
+        { ...doc('doc-4', 'Outline', heavy('丙丙丙丙丙')), pinned: true }
+      ]
+    })
+    const harness = renderChatHook()
+    await send(harness, '写')
+    const ledger = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    for (const word of ['甲甲甲', '乙乙乙', '丙丙丙']) expect(ledger).toContain(word)
     harness.unmount()
   })
 })

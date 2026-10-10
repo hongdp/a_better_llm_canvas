@@ -2002,7 +2002,17 @@ export function useChatLLM({
     })
     const wanted = selection
       ? selection.attachedIds
-      : pinnedContextIds(s.documents.map((d, i) => ({ id: d.id, pinned: d.pinned && d.contentLoaded !== false, chars: docsForPlan[i].chars })), s.activeDocumentId)
+      // Budgeted on the text the ledger renders, not the HTML: a formatted
+      // character card is twice its text in HTML, and counted as HTML four
+      // pins used 80% of the budget for 25k characters of text.
+      : pinnedContextIds(s.documents.map(d => {
+        const pinned = Boolean(d.pinned) && d.contentLoaded !== false
+        return { id: d.id, pinned, chars: pinned ? Math.min(htmlToPlainText(stripDiffMarkup(d.content)).length, MAX_LEDGER_DOC_CHARS) : 0 }
+      }), s.activeDocumentId)
+    // A pinned chapter the writer has open keeps its place in the ledger
+    // (pinned_context.md §2.1): opening and closing it used to cost two misses.
+    const activeDoc = s.documents.find(d => d.id === s.activeDocumentId)
+    const keepIds = !selection && activeDoc?.pinned ? [activeDoc.id] : []
     const desiredIds = orderAdmissionsByStability(
       wanted,
       s.documents.map(d => ({ id: d.id, updatedAt: d.updatedAt })),
@@ -2022,14 +2032,18 @@ export function useChatLLM({
       render: (id, kind) => {
         const doc = s.documents.find(d => d.id === id)
         return doc ? ledgerBlock(doc, kind) : ''
-      }
+      },
+      keepIds
     })
 
     const attachedIds = ledgerChapterIds(plan.ledger)
     const bookPrefixMessages = buildLedgerMessages(s.documents, plan.ledger.entries, undefined, { agentTools: runSettings.agentTools })
     ledgerRef.current = plan.ledger
     previousAttachedIdsRef.current = attachedIds
-    const dynamicContext = buildTail(agentTail(attachedIds))
+    // The open pinned chapter's copy above may be older than its text now: say which is current.
+    const activeCopy = keepIds.length > 0 ? [...plan.ledger.entries].reverse().find(e => e.id === keepIds[0]) : undefined
+    const activeCopyOlder = Boolean(activeCopy && activeCopy.hash !== docsForPlan.find(d => d.id === keepIds[0])?.hash)
+    const dynamicContext = buildTail({ ...agentTail(attachedIds), ...(activeCopyOlder ? { activeCopyOlder: true } : {}) })
     // Agent turns carry no label: the pins in the sidebar are what rides along.
     const attachmentsText = agentContext ? '' : buildAttachmentsLabel(attachedIds, s.documents, autoIds)
 

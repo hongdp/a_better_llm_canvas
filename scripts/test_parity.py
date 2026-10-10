@@ -41,6 +41,8 @@ def _plan_ledger(current, desired, docs, active, o=None):
         options["render"] = lambda doc_id, kind: f"[{kind}:{doc_id}]"
     if o.get("maxStaleChars") is not None:
         options["maxStaleChars"] = o["maxStaleChars"]
+    if o.get("keepIds"):
+        options["keepIds"] = o["keepIds"]
     return context_ledger.plan_ledger_turn(current, desired, docs, active, options)
 
 

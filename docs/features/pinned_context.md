@@ -48,8 +48,11 @@ chapters those are.
 - **What a turn carries (agent tools on).** The pinned chapters, in book
   order, the active chapter excluded (it is in the tail already), up to
   `PINNED_CONTEXT_CHARS` (60,000) of chapter text — each chapter counted as
-  the ledger counts it (accepted HTML, at most 20,000) — and the rest of the
-  pins skipped until some are unpinned. `pinnedContextIds` /
+  the text the ledger renders (the accepted reading as plain text, at most
+  20,000) — and the rest of the pins skipped until some are unpinned.
+  (Counted as HTML at first: four pinned reference chapters of 25k
+  characters of text used 48k of the budget, a formatted character card
+  being twice its text in HTML.) `pinnedContextIds` /
   `pinned_context_ids` (`utils/contextSelection`, parity-tested) decide it.
   That list is the ledger's `desiredIds`: an unpinned chapter leaves the
   ledger, a newly pinned one is appended, an edited one is appended as an
@@ -61,6 +64,16 @@ chapters those are.
   / `analyze_book`. A chapter read last turn is read again when needed: its
   tool result is not replayed across turns (D4), and grep and paragraph
   ranges keep that to one cheap step.
+- **An open pinned chapter keeps its place** (§2.1, added the same day).
+  Opening a pinned chapter used to drop it from the ledger (the tail holds
+  the open chapter) and closing it re-added it: two cache misses for a look
+  at the outline. Now `planLedgerTurn`'s `keepIds` keeps its entry — position
+  and bytes — while it is open, edited or not. When it was edited while
+  open, the tail's header says so: "Its copy under REFERENCED CHAPTERS is
+  older: this is its current text", so the model edits against the tail.
+  Once the writer leaves it, an edited chapter is updated in the ledger as
+  any edit is (one miss); an unedited one costs nothing. A chapter pinned
+  while open enters the ledger when it is left.
 - **No label.** The bubble no longer carries `[Attached Context: …]` lines
   on agent turns; the pins in the sidebar are what rides along. History
   stripping of the old labels stays, for old messages.
