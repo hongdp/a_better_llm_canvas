@@ -23,3 +23,29 @@ export function emitRunEvent(event: ServerRunEvent): void {
     }
   }
 }
+
+/**
+ * "Events may have been missed": the book's stream came back after a drop,
+ * or the page came back to the foreground (a phone suspends the stream in
+ * the background, often without an error). Whoever renders runs re-reads
+ * their state then — a run that finished meanwhile would otherwise keep its
+ * bubble "working" with the timer counting (seen 2026-10-10: finished at
+ * 05:03, still "thinking 735s" on the phone at 05:08).
+ */
+type CatchUpListener = () => void
+const catchUpListeners = new Set<CatchUpListener>()
+
+export function onRunCatchUp(listener: CatchUpListener): () => void {
+  catchUpListeners.add(listener)
+  return () => { catchUpListeners.delete(listener) }
+}
+
+export function emitRunCatchUp(): void {
+  for (const listener of [...catchUpListeners]) {
+    try {
+      listener()
+    } catch (e) {
+      console.error('[runEvents] catch-up listener failed', e)
+    }
+  }
+}

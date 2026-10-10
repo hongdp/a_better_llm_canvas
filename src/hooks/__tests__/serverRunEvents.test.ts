@@ -7,8 +7,8 @@ import { describe, it, expect, vi } from 'vitest'
 import type { ChatMessage } from '../../types/chat'
 import type { ServerRunSummary } from '../../services/serverRuns'
 import { applyRunEvent, ensureRunMessages, bubbleOf, bubbleStillWaiting, KEPT_DRAFT_NOTE, type RunLive } from '../chat/serverRunEvents'
-import { applyBookEvent } from '../../store/bookEvents'
-import { onRunEvent } from '../../store/runEvents'
+import { applyBookEvent, connectBookEvents } from '../../store/bookEvents'
+import { onRunCatchUp, onRunEvent } from '../../store/runEvents'
 import { ASSISTANT_PLACEHOLDER } from '../chat/streamHandlers'
 
 const run = (over: Partial<ServerRunSummary> = {}): ServerRunSummary => ({
@@ -95,5 +95,56 @@ describe('the book event stream', () => {
     off()
     expect(seen).toHaveLength(1)
     expect(fetchFn).not.toHaveBeenCalled()
+  })
+
+  // A phone suspends the stream in the background (2026-10-10): coming back
+  // must reopen a stream that gave up and let the runs catch up.
+  it('reopens a closed stream and asks the runs to catch up when the page comes back', async () => {
+    vi.useFakeTimers()
+    const sources: Array<{ url: string; readyState: number; close: () => void; onopen?: () => void; onerror?: () => void }> = []
+    class FakeEventSource {
+      static CLOSED = 2
+      readyState = 1
+      onopen?: () => void
+      onerror?: () => void
+      onmessage?: (m: unknown) => void
+      url: string
+      constructor(url: string) { this.url = url; sources.push(this) }
+      close() { this.readyState = 2 }
+    }
+    vi.stubGlobal('EventSource', FakeEventSource)
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, json: async () => ({}) })))
+    let catchUps = 0
+    const off = onRunCatchUp(() => { catchUps++ })
+    const disconnect = connectBookEvents('book-1')
+    expect(sources).toHaveLength(1)
+
+    // Back in the foreground with the stream still open: catch up only.
+    document.dispatchEvent(new Event('visibilitychange'))
+    window.dispatchEvent(new Event('focus'))
+    vi.advanceTimersByTime(400)
+    expect(catchUps).toBe(1)
+    expect(sources).toHaveLength(1)
+
+    // The stream gave up while hidden: reopened, and caught up.
+    sources[0].readyState = 2
+    document.dispatchEvent(new Event('visibilitychange'))
+    vi.advanceTimersByTime(400)
+    expect(sources).toHaveLength(2)
+    expect(catchUps).toBe(2)
+
+    // A reconnect after a drop catches up too.
+    sources[1].onerror?.()
+    sources[1].onopen?.()
+    expect(catchUps).toBe(3)
+
+    disconnect()
+    document.dispatchEvent(new Event('visibilitychange'))
+    vi.advanceTimersByTime(400)
+    expect(catchUps).toBe(3)
+    expect(sources[1].readyState).toBe(2)
+    off()
+    vi.unstubAllGlobals()
+    vi.useRealTimers()
   })
 })

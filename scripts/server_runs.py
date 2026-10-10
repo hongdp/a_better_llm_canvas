@@ -27,6 +27,7 @@ import server_context
 import server_documents
 import server_events
 import server_generation
+import server_secrets
 import server_web
 from server_auth import get_authenticated_username
 from server_config import sanitize_id
@@ -96,6 +97,61 @@ class RunFailed(Exception):
 
 # ── Persistence ──────────────────────────────────────────────────────────────
 
+#: Statuses a run can still continue from; any other is final.
+LIVE_STATUSES = ("queued", "running", "paused")
+
+
+def stored_request(request: Dict[str, Any], status: str) -> Dict[str, Any]:
+    """The request as it is written to disk: a live run's API key sealed, a finished run's dropped
+    (backend_authority.md §4.3, "API keys at rest")."""
+    config = dict(request.get("config") or {})
+    key = config.pop("apiKey", None)
+    sealed = config.pop("apiKeySealed", None)
+    if status in LIVE_STATUSES:
+        if key:
+            config["apiKeySealed"] = server_secrets.seal(key)
+        elif sealed:
+            config["apiKeySealed"] = sealed
+    return {**request, "config": config}
+
+
+def restored_request(stored: Dict[str, Any]) -> Dict[str, Any]:
+    """The request a run executes with: its sealed key opened. A key that cannot be opened stays
+    missing, and the run's next call fails and pauses it rather than running without one."""
+    config = dict(stored.get("config") or {})
+    sealed = config.pop("apiKeySealed", None)
+    if sealed and not config.get("apiKey"):
+        key = server_secrets.unseal(sealed)
+        if key:
+            config["apiKey"] = key
+    return {**stored, "config": config}
+
+
+def _scrub_stored_keys() -> None:
+    """Once, for rows written before keys were sealed: a finished run's key is dropped, a live
+    run's sealed. The file is then vacuumed, or the old text would stay in its free pages."""
+    conn = get_db()
+    changed = 0
+    try:
+        rows = conn.execute("""SELECT id, status, request FROM runs WHERE request LIKE '%"apiKey"%'""").fetchall()
+        for row in rows:
+            try:
+                request = json.loads(row["request"])
+            except (TypeError, ValueError):
+                continue
+            if "apiKey" not in (request.get("config") or {}):
+                continue
+            conn.execute("UPDATE runs SET request = ? WHERE id = ?",
+                         (json.dumps(stored_request(request, row["status"]), ensure_ascii=False), row["id"]))
+            changed += 1
+        conn.commit()
+        if changed:
+            conn.execute("VACUUM")
+            logger.info("Removed or sealed the API keys stored with %d earlier runs", changed)
+    finally:
+        conn.close()
+
+
 def ensure_tables() -> None:
     conn = get_db()
     try:
@@ -124,6 +180,7 @@ def ensure_tables() -> None:
         conn.commit()
     finally:
         conn.close()
+    _scrub_stored_keys()
     server_context.ensure_tables()
     server_attachments.ensure_tables()
 
@@ -182,9 +239,9 @@ class Run:
             conn.execute("""INSERT INTO runs (id, username, book_id, status, created_at, updated_at, finished_at, request, snapshot, record, result, pause, error)
                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                             ON CONFLICT(id) DO UPDATE SET status = excluded.status, updated_at = excluded.updated_at, finished_at = excluded.finished_at,
-                            snapshot = excluded.snapshot, record = excluded.record, result = excluded.result, pause = excluded.pause, error = excluded.error""",
+                            request = excluded.request, snapshot = excluded.snapshot, record = excluded.record, result = excluded.result, pause = excluded.pause, error = excluded.error""",
                          (self.id, self.username, self.book_id, self.status, self.created_at, self.updated_at, self.finished_at,
-                          json.dumps(self.request, ensure_ascii=False), json.dumps(self.snapshot, ensure_ascii=False) if self.snapshot else None,
+                          json.dumps(stored_request(self.request, self.status), ensure_ascii=False), json.dumps(self.snapshot, ensure_ascii=False) if self.snapshot else None,
                           json.dumps(self.record, ensure_ascii=False), json.dumps(self.result, ensure_ascii=False) if self.result else None,
                           json.dumps(self.pause, ensure_ascii=False) if self.pause else None, self.error))
             conn.commit()
@@ -193,7 +250,7 @@ class Run:
 
     @staticmethod
     def from_row(row) -> "Run":
-        run = Run(row["id"], row["username"], row["book_id"], json.loads(row["request"]), row["status"], row["created_at"])
+        run = Run(row["id"], row["username"], row["book_id"], restored_request(json.loads(row["request"])), row["status"], row["created_at"])
         run.updated_at = row["updated_at"]
         run.finished_at = row["finished_at"]
         run.snapshot = json.loads(row["snapshot"]) if row["snapshot"] else None

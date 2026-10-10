@@ -108,6 +108,7 @@ scripts/
   server_runs.py        # Server-side agent runs: engine, ports, /api/books/{id}/runs* (phase 3)
   server_context.py     # Request assembly for a run; ledger + seen record per book (run_context)
   server_documents.py   # Revision-checked write / create / delete / snapshot + their events
+  server_secrets.py     # Seals a live run's provider key at rest (run_secret.key beside the DB)
   server_attachments.py # A book's reference files: decode, store, /api/books/{id}/attachments*
   server_web.py         # Anonymous headless Chromium: /api/web/search, /api/web/read (no LAN)
   wc_agent/             # Python port of src/agent: async run loop, registry, every tool
@@ -292,8 +293,12 @@ the port of `src/agent` — runs in the API process against the document store,
 with each step a generation job. The tab renders the run's `run.*` events from
 the book stream (`hooks/chat/serverRunEvents.ts` for the bubble, the local
 run's editor ports for previews and locks); a reload or another device lists
-the book's runs and rejoins. The run's state is persisted after every step and
-a restart resumes it; one run per book, later requests queue; Stop holds the
+the book's runs and rejoins — and so does a tab whose stream reconnected or
+that came back to the foreground (`emitRunCatchUp`), or a run that finished
+while a phone slept keeps its bubble "working". The run's state is persisted
+after every step and a restart resumes it; its stored request holds the
+provider key only sealed and only while the run can continue
+(`server_secrets`); one run per book, later requests queue; Stop holds the
 queue; a run that repeats itself, runs unattended or passes its token budget is
 **paused, never killed**, and `/resume` continues it. Editing the loop means
 editing both `src/agent` and `wc_agent` until phase 4 retires the client loop.
