@@ -211,8 +211,8 @@ const LDOCS: LedgerDocLike[] = [{ id: 'd1', chars: 100, hash: 'h1' }, { id: 'd2'
 const L = (id: string, hash: string, chars: number, extra: Partial<LedgerEntry> = {}): LedgerEntry => ({ id, hash, chars, ...extra })
 const LEDGER_123: ContextLedger = { entries: [L('d1', 'h1', 100), L('d2', 'h2', 2000), L('d3', 'h3', 300)] }
 /** planLedgerTurn with a deterministic renderer in place of a function the JSON cannot carry. */
-const planLedger = (current: ContextLedger, desired: string[], docs: LedgerDocLike[], active: string | null, o?: { render?: boolean; maxStaleChars?: number }) =>
-  planLedgerTurn(current, desired, docs, active, { ...(o?.render ? { render: RENDER } : {}), ...(o?.maxStaleChars !== undefined ? { maxStaleChars: o.maxStaleChars } : {}) })
+const planLedger = (current: ContextLedger, desired: string[], docs: LedgerDocLike[], active: string | null, o?: { render?: boolean; maxStaleChars?: number; keepIds?: string[] }) =>
+  planLedgerTurn(current, desired, docs, active, { ...(o?.render ? { render: RENDER } : {}), ...(o?.maxStaleChars !== undefined ? { maxStaleChars: o.maxStaleChars } : {}), ...(o?.keepIds ? { keepIds: o.keepIds } : {}) })
 /** buildVolatileTail with one image registry per call, as a turn has. */
 const volatileTail = (docs: RenderableDoc[], active: string | null, selected: string, opts?: DynamicContextOptions) => {
   const registry: ImagePlaceholderEntry[] = []
@@ -446,7 +446,8 @@ const MODULES: Module[] = [
       build_ledger_messages: run(buildLedgerMessages, [[BOOK, ['d1', 'd3']], [BOOK, []], [BOOK, ['zz']], [BOOK, [{ id: 'd1', text: 'FROZEN\n' }, 'd3', { id: 'd4' }], 50, { agentTools: true }], [BOOK, ['d5'], 20]]),
       build_volatile_tail: run(volatileTail, [
         [BOOK, 'd2', ''], [BOOK, 'd2', '<p>选中 <img src="s"> 文本</p>', { agentTools: true, markers: { d1: 'in context' } }], [[BOOK[1]], 'd2', ''], [BOOK, 'zz', ''],
-        [[{ ...BOOK[1], content: DIFFED }, BOOK[0]], 'd2', '', { agentTools: true }], [BOOK, 'd3', 'sel only']
+        [[{ ...BOOK[1], content: DIFFED }, BOOK[0]], 'd2', '', { agentTools: true }], [BOOK, 'd3', 'sel only'],
+        [BOOK, 'd2', '', { agentTools: true, activeCopyOlder: true }], [BOOK, 'd2', '', { activeCopyOlder: true }]
       ])
     }
   },
@@ -465,7 +466,12 @@ const MODULES: Module[] = [
         [{ entries: [L('d1', 'old', 100, { stale: true }), L('d2', 'h2', 2000), L('d1', 'h1', 100, { text: '[update:d1]' }), L('d3', 'h3', 300)] }, ['d1', 'd2', 'd3', 'd4'], LDOCS, null, { render: true, maxStaleChars: 50 }],
         [{ entries: [L('d1', 'old', 100, { stale: true }), L('d2', 'h2', 2000), L('d1', 'h1', 100, { text: '[update:d1]' }), L('d3', 'h3', 300)] }, ['d1', 'd2', 'd3', 'd4'], LDOCS, null, { render: true }],
         [{ entries: [L('gone', 'g', 10), L('d2', 'h2', 2000)] }, ['d2', 'd2', 'd4', 'nope'], LDOCS, 'd4'],
-        [{ entries: [L('d2', 'old', 2000), L('d1', 'h1', 100)] }, ['d1', 'd2'], LDOCS, null, { render: true }]
+        [{ entries: [L('d2', 'old', 2000), L('d1', 'h1', 100)] }, ['d1', 'd2'], LDOCS, null, { render: true }],
+        // A pinned chapter the writer opened stays where it is, edited or not; one already gone is not kept.
+        [LEDGER_123, ['d1', 'd3'], LDOCS, 'd2', { render: true, keepIds: ['d2'] }],
+        [{ entries: [L('d1', 'h1', 100), L('d2', 'old', 2000), L('d3', 'h3', 300)] }, ['d1', 'd3'], LDOCS, 'd2', { render: true, keepIds: ['d2'] }],
+        [{ entries: [L('gone', 'g', 10), L('d1', 'h1', 100)] }, ['d1'], LDOCS, 'gone', { keepIds: ['gone'] }],
+        [{ entries: [] }, ['d1'], LDOCS, 'd2', { render: true, keepIds: ['d2'] }]
       ]),
       ledger_chapter_ids: run(ledgerChapterIds, [[{ entries: [L('a', '', 1), L('b', '', 1), L('a', '', 1)] }], [{ entries: [] }]]),
       order_admissions_by_stability: run(orderAdmissionsByStability, [

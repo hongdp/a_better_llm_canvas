@@ -72,3 +72,29 @@ def test_a_pin_is_metadata_and_tells_the_other_tabs(book):  # noqa: F811
     while not queue.empty():
         events.append(queue.get_nowait())
     assert any(e.get("type") == "document" and e.get("kind") == "pinned" and e.get("documentId") == "doc-2" for e in events)
+
+
+def test_an_open_pinned_chapter_keeps_its_place_and_an_edit_is_flagged(book, monkeypatch):  # noqa: F811
+    import server_content
+    pin("doc-2")
+
+    def run_with(prompt, active):
+        provider = Scripted(["好。\n<doc_status>unchanged</doc_status>"])
+        monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+        async def main():
+            run = book.submit("alice", "book-1", request(prompt, activeDocumentId=active))
+            await settle(run)
+            return run
+        run = asyncio.run(main())
+        assert run.status == "done", run.error
+        msgs = provider.requests[0]["messages"]
+        return next(m["content"] for m in msgs if "REFERENCED CHAPTERS" in (m.get("content") or "")), msgs[-1]["content"]
+
+    ledger1, _ = run_with("第一轮", "doc-1")
+    ledger2, tail2 = run_with("第二轮", "doc-2")  # opened: still in place, same bytes
+    assert ledger2 == ledger1 and "is older" not in tail2
+    server_content.save_document_content("alice", "book-1", "doc-2", "<p>two, revised</p>")
+    ledger3, tail3 = run_with("第三轮", "doc-2")
+    assert ledger3 == ledger1
+    assert "Its copy under REFERENCED CHAPTERS is older: this is its current text" in tail3

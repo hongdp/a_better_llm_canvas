@@ -63,5 +63,7 @@ def build_volatile_tail(documents: List[Dict], active_document_id: Optional[str]
                 f"CURRENT ACTIVE DOCUMENT CONTENT (For context):\n\"\"\"\n{clean_active}\n\"\"\"{pending_block}")
     label = ("Your writes change this chapter unless you name another" if opts.get("agentTools")
              else "This is the ONLY document you can update")
+    if opts.get("agentTools") and opts.get("activeCopyOlder"):
+        label += ". Its copy under REFERENCED CHAPTERS is older: this is its current text"
     return (f"Here is the current state of my document.\n{index_block}\n"
             f"CURRENT ACTIVE DOCUMENT CONTENT ({label}):\n\"\"\"\n{clean_active}\n\"\"\"{pending_block}")

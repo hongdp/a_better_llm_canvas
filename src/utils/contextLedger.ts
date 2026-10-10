@@ -103,6 +103,13 @@ export interface LedgerPlanOptions {
    * the larger of 20k chars and 30% of the ledger.
    */
   maxStaleChars?: number
+  /**
+   * Entries kept as they are — position and bytes — whatever else would drop
+   * them: a pinned chapter the writer has open (pinned_context.md §2.1).
+   * Opening one used to drop it from the ledger and closing it re-added it,
+   * two cache misses for a look at the outline. Never appended by this.
+   */
+  keepIds?: string[]
 }
 
 /** Minimal document shape the planner needs. */
@@ -157,11 +164,13 @@ export function planLedgerTurn(
 ): LedgerPlan {
   const byId = new Map(docs.map(d => [d.id, d]))
   const desired = new Set(desiredIds)
+  const keep = new Set(options.keepIds ?? [])
   const render = options.render
   const entries = current.entries
 
   // Why each existing entry would have to leave, if at all.
   const dropReason = (entry: LedgerEntry): DropReason | null => {
+    if (keep.has(entry.id) && byId.has(entry.id)) return null
     if (entry.id === activeDocumentId) return 'now-active'
     const doc = byId.get(entry.id)
     // A chapter that vanished from the book is treated as user-removed: the

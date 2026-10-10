@@ -30,10 +30,13 @@ def plan_ledger_turn(current: Dict, desired_ids: List[str], docs: List[Dict], ac
     options = options or {}
     by_id = {d["id"]: d for d in docs}
     desired = set(desired_ids)
+    keep = set(options.get("keepIds") or [])
     render: Optional[Callable[[str, str], str]] = options.get("render")
     entries: List[Dict] = current.get("entries", [])
 
     def drop_reason(entry: Dict) -> Optional[str]:
+        if entry["id"] in keep and entry["id"] in by_id:
+            return None
         if entry["id"] == active_document_id:
             return "now-active"
         doc = by_id.get(entry["id"])
