@@ -1,6 +1,38 @@
 {
  "module": "invocations",
  "cases": {
+  "plan_done_attributes": [
+   {
+    "input": [
+     "<canvas chapter=\"2\" plan_done=\"ch2, ch3\">x</canvas><edit plan_done='ch3，ch4'>"
+    ],
+    "output": [
+     "ch2",
+     "ch3",
+     "ch4"
+    ]
+   },
+   {
+    "input": [
+     "<canvas>no</canvas>"
+    ],
+    "output": []
+   },
+   {
+    "input": [
+     "<CANVAS PLAN_DONE=\"a\">"
+    ],
+    "output": [
+     "a"
+    ]
+   },
+   {
+    "input": [
+     "<p plan_done=\"x\">"
+    ],
+    "output": []
+   }
+  ],
   "collect_step": [
    {
     "input": [
@@ -359,6 +391,82 @@
      "strayMarkup": 0,
      "unknownCalls": 0,
      "markupKind": "chat"
+    }
+   },
+   {
+    "input": [
+     "Done one.\n<canvas chapter=\"2\" plan_done=\"ch2\">text</canvas>\n<doc_status>updated</doc_status>",
+     [],
+     10,
+     {
+      "markupProtocol": true
+     }
+    ],
+    "output": {
+     "invocations": [
+      {
+       "id": "markup_10_0",
+       "name": "update_document",
+       "args": {
+        "html": "text",
+        "chapter": "2",
+        "plan_done": [
+         "ch2"
+        ]
+       },
+       "source": "markup",
+       "unclosed": false
+      }
+     ],
+     "chatText": "Done one.",
+     "strayMarkup": 0,
+     "unknownCalls": 0,
+     "markupKind": "canvas"
+    }
+   },
+   {
+    "input": [
+     "Two.\n<edit plan_done=\"a\">\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>\n<canvas chapter=\"3\" plan_done=\"b,a\">t</canvas>",
+     [],
+     11,
+     {
+      "markupProtocol": true
+     }
+    ],
+    "output": {
+     "invocations": [
+      {
+       "id": "markup_11_0",
+       "name": "edit_document",
+       "args": {
+        "edits": [
+         {
+          "search": "<p>a</p>",
+          "replace": "<p>b</p>"
+         }
+        ]
+       },
+       "source": "markup"
+      },
+      {
+       "id": "markup_11_1",
+       "name": "update_document",
+       "args": {
+        "html": "t",
+        "chapter": "3",
+        "plan_done": [
+         "a",
+         "b"
+        ]
+       },
+       "source": "markup",
+       "unclosed": false
+      }
+     ],
+     "chatText": "Two.",
+     "strayMarkup": 0,
+     "unknownCalls": 0,
+     "markupKind": "edits"
     }
    }
   ],

@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
 import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
 import type { LLMMessage } from '../../types/llm'
-import { blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine } from '../../utils/paragraphs'
+import { blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
@@ -43,13 +43,15 @@ import { splitStreamingResponse, buildCompletionWarnings, NO_ACTION_RETRY_INSTRU
 import { STEP_LIMIT_NOTE } from '../../agent/run'
 import { resolveRunSettings, detectStepFailure, decideAfterStep, defaultMaxSteps, type ExecutedCall, type RunBudgets, type StepPolicy } from '../../agent/policy'
 import { citeChapter, resolveChapter } from '../../agent/chapters'
-import { collectStep, planWrites } from '../../agent/invocations'
+import { collectStep, planWrites, planDoneAttributes } from '../../agent/invocations'
 import { ToolRegistry, defineTool } from '../../agent/registry'
 import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
 import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type PlanItem } from '../../utils/plan'
-import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
+import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
+import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
+import { renderSearchResults, renderWebPage, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
 import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
 import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
@@ -76,6 +78,21 @@ const paras = (changed: boolean) => Array.from({ length: 40 }, (_, i) => `<p>Par
 
 interface Case { input: unknown[]; output: unknown }
 interface Module { module: string; cases: Record<string, Case[]> }
+
+/** A novel .txt the way Chinese ones come: one paragraph per line, full-width indents, chapter headings. */
+const NOVEL_TXT = '\uFEFF书名\r\n\r\n第一章 初见\r\n　　阿青推开门。\r\n　　屋里没有人。\r\n\r\n第二章 再见\r\n　　她回来了。\r\n番外\r\n　　后来。'
+/** A hard-wrapped English text: paragraphs are blank-line blocks. */
+const WRAPPED_TXT = 'CHAPTER I\n\nIt was a dark\nand stormy night.\n\nThe rain fell\nin torrents.\n\nExcept at\noccasional intervals.\n\nChapter II\n\nNext morning\ncame.'
+const SECTIONS = [
+  { title: '(opening)', from: 1, to: 2 }, { title: '第二章 起程', from: 3, to: 9 }, { title: '第30章 归来', from: 10, to: 20 }, { title: '番外 后来', from: 21, to: 25 }
+]
+const ATTACH_LIST = [
+  { id: 'x1', ref: 'A1', name: '原著.txt', chars: 120, paragraphs: 9, sections: [{ title: '(opening)', from: 1, to: 1 }, { title: '第一章 初见', from: 2, to: 4 }, { title: '第二章 再见', from: 5, to: 6 }] },
+  { id: 'x2', ref: 'A2', name: 'notes.md', chars: 30, paragraphs: 3, sections: [] }
+]
+
+/** A chapter with a heading, inline markup and an image, for the paragraph-span cases. */
+const SPANNED = '<h1>T</h1>\n<p>One a</p><p>Two <em>b</em></p> <p><img src="x.png"></p><p>Three</p>'
 
 /** A run's messages after three reads (sys, user, then assistant/tool pairs) for the run-compaction cases. */
 const RUN_MESSAGES: LLMMessage[] = [
@@ -326,7 +343,21 @@ const MODULES: Module[] = [
       top_level_blocks: run(topLevelBlocks, [[CHAPTER], [ENGLISH], [''], ['loose only'], ['<p>a</p> between <p>b</p>'], ['<p>un &amp; closed'], ['<img src="x"><p>after</p>'], ['<p><img src="y"/></p>text &amp; more']]),
       chapter_paragraphs: run(chapterParagraphs, [[CHAPTER], [ENGLISH], ['<p>{{IMAGE_PLACEHOLDER_3}}</p>'], ['<h1>标题</h1><p>一。</p><p></p><p><img src="x"></p><ul><li>a</li><li>b</li></ul>loose'], [DIFFED]]),
       chapter_chars: run(chapterChars, [[CHAPTER], [ENGLISH], ['']]),
-      numbered_line: run(numberedLine, chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>').map(p => [p] as [typeof p]))
+      numbered_line: run(numberedLine, chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>').map(p => [p] as [typeof p])),
+      paragraph_spans: run(paragraphSpans, [[CHAPTER], [ENGLISH], [''], [SPANNED], ['loose <p>a</p> tail'], ['<!-- c --><p>a</p></p><div><div>x</div></div><br/><p class="x>y">q</p>'], ['<p>never closed'], ['<p>a<p>b</p>']]),
+      numbered_paragraph_spans: run(numberedParagraphSpans, [[CHAPTER], [ENGLISH], [SPANNED], ['<p>a<p>b</p>'], ['<p>x &#8217; y</p>'], ['']]),
+      is_plain_chapter_html: run(isPlainChapterHtml, [[CHAPTER], [ENGLISH], [SPANNED], ['<h1>标题</h1><p>一。</p><p>二<br>三</p><p></p>'], ['<p class="a">x</p>'], ['<p>x</p><ul><li>a</li></ul>'], ['loose'], ['']]),
+      as_blocks: run(asBlocks, [['<p>x</p>'], ['  <h2>t</h2> '], ['one\n\ntwo\nlines'], ['plain'], ['  ']]),
+      apply_paragraph_edits: run(applyParagraphEdits, [
+        [SPANNED, [{ paragraph: 2, action: 'replace', html: '<p>Uno</p>', startsWith: 'One' }, { paragraph: 5, action: 'insert_after', html: 'Four\n\nFive', startsWith: '¶5 Three' }, { paragraph: 4, action: 'delete', startsWith: '[image]' }]],
+        [SPANNED, [{ paragraph: 1, action: 'insert_before', html: '<p>pre</p>', startsWith: '# T' }, { paragraph: 1, action: 'replace', html: '<h1>New</h1>', startsWith: 'T' }, { paragraph: 2, action: 'insert_before', html: '<p>mid</p>', startsWith: 'One' }]],
+        [SPANNED, [{ paragraph: 3, action: 'replace', html: 'x', startsWith: 'Nope' }, { paragraph: 9, action: 'delete', startsWith: 'x' }]],
+        [SPANNED, [{ paragraph: 4, action: 'replace', html: '<p>x</p>', startsWith: 'image' }]],
+        [SPANNED, [{ paragraph: 2, action: 'delete', startsWith: 'One' }, { paragraph: 2, action: 'replace', html: '<p>x</p>', startsWith: 'One' }]],
+        [SPANNED, [{ paragraph: 2, action: 'replace', startsWith: 'One' }, { paragraph: 3, action: 'move', startsWith: 'Two' }, { paragraph: 3, action: 'delete', startsWith: '  ' }]],
+        [SPANNED, []], ['<p>a<p>b</p>', [{ paragraph: 1, action: 'delete', startsWith: 'a' }]],
+        [CHAPTER, [{ paragraph: 2, action: 'insert_after', html: '<p>新段。</p>', startsWith: chapterParagraphs(CHAPTER)[1]?.text.slice(0, 4) ?? 'x' }]]
+      ] as Array<[string, ParagraphEdit[]]>)
     }
   },
   {
@@ -575,13 +606,16 @@ const MODULES: Module[] = [
   {
     module: 'invocations',
     cases: {
+      plan_done_attributes: run(planDoneAttributes, [['<canvas chapter="2" plan_done="ch2, ch3">x</canvas><edit plan_done=\'ch3，ch4\'>'], ['<canvas>no</canvas>'], ['<CANVAS PLAN_DONE="a">'], ['<p plan_done="x">']]),
       collect_step: run(collect, [
         ['Just chat', [], 0], [RESPONSES[1], [], 1], [RESPONSES[6], [], 2], [RESPONSES[8], [], 3], [RESPONSES[12], [], 4],
         ['Reading.', [CALL('read_chapter', { chapters: ['2'] }, 'c1'), CALL('nope', null)], 5],
         [`With tags beside a native write.\n<canvas><p>tag</p></canvas>`, [CALL('update_document', { html: '<p>native</p>' }, 'w1')], 6],
         [`With tags beside a native write.\n<canvas><p>tag</p></canvas>`, [CALL('update_document', { html: '<p>native</p>' }, 'w1')], 7, { markupProtocol: true }],
         [`Polish and tags.\n<canvas chapter="2"><p>tag</p></canvas>`, [CALL('polish_chapter', { chapter: '1' }, 'p1')], 8],
-        ['', [{ id: undefined, name: 'read_chapter', args: { chapters: ['1'] }, argumentsText: '{"chapters":["1"]}', signature: 'sig' }], 9]
+        ['', [{ id: undefined, name: 'read_chapter', args: { chapters: ['1'] }, argumentsText: '{"chapters":["1"]}', signature: 'sig' }], 9],
+        ['Done one.\n<canvas chapter="2" plan_done="ch2">text</canvas>\n<doc_status>updated</doc_status>', [], 10, { markupProtocol: true }],
+        ['Two.\n<edit plan_done="a">\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>\n<canvas chapter="3" plan_done="b,a">t</canvas>', [], 11, { markupProtocol: true }]
       ]),
       plan_writes: run(planWrites, [
         [[INV('update_document', { html: 'a' }), INV('edit_document', { edits: [] })]],
@@ -629,6 +663,8 @@ const MODULES: Module[] = [
       interrupted_turn_reminder: run(interruptedTurnReminder, [[]]),
       steer_message: run(steerMessage, [['把第二段删掉'], ['two\nlines']]),
       unbacked_claim_nudge: run(unbackedClaimNudge, [[{ writes: 0, reads: 1, planLeft: 0 }], [{ writes: 0, reads: 2, planLeft: 1 }]]),
+      lookup_streak_nudge: run(lookupStreakNudge, [[8, true], [11, false]]),
+      lookup_nudge_steps: run(() => LOOKUP_NUDGE_STEPS, [[]]),
       append_reminders: run(appendReminders, [
         [[{ role: 'assistant', content: 'x' }, { role: 'tool', toolCallId: 'c', name: 'read_chapter', content: 'TEXT' }], ['r1', 'r2']],
         [[{ role: 'user', content: '' }], ['r']], [[{ role: 'user', content: 'u' }], []], [[], ['r']]
@@ -677,6 +713,41 @@ const MODULES: Module[] = [
       calibrated_prompt_tokens: run(calibratedPromptTokens, [
         [RUN_MESSAGES, null], [RUN_MESSAGES, { tokens: 1_234, length: 4 }], [RUN_MESSAGES, { tokens: 0, length: 4 }], [RUN_MESSAGES, { tokens: 10, length: 99 }],
         [[{ role: 'user', content: '' }, { role: 'user', content: 'abc' }], { tokens: 7, length: 1 }]
+      ])
+    }
+  },
+  {
+    module: 'attachments',
+    cases: {
+      constants: run(() => ({ ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP }), [[]]),
+      attachment_budget_note: run(attachmentBudgetNote, [['A1', 100012]]),
+      parse_chapter_number: run(parseChapterNumber, [['三十五'], ['一百零二'], ['十'], ['十二'], ['两千零五'], ['一万二千三百'], ['３５'], ['42'], ['第三章'], [''], ['abc']]),
+      section_number_of: run(sectionNumberOf, [['第三十章 归来'], ['第30章'], ['第 12 回'], ['Chapter 7: x'], ['30'], ['番外'], ['第一百零二章']]),
+      find_attachment_section: run(findAttachmentSection, [
+        [SECTIONS, '第三十章'], [SECTIONS, '第30章'], [SECTIONS, '30'], [SECTIONS, '归来'], [SECTIONS, '番外'], [SECTIONS, '第99章'], [SECTIONS, ''], [SECTIONS, 'Chapter 2']
+      ]),
+      normalize_attachment_text: run(normalizeAttachmentText, [['\uFEFFa\r\nb\rc'], ['plain'], ['']]),
+      attachment_paragraphs: run(attachmentParagraphs, [[NOVEL_TXT], [WRAPPED_TXT], [''], ['\n\n  \n'], ['一\n\n二\n\n三'], ['a\nb\n\nc\nd\n\ne']]),
+      split_long_paragraph: run(splitLongParagraph, [['短段落'], ['甲'.repeat(2500) + '。' + '乙'.repeat(3000) + '！' + '丙'.repeat(3600)], ['x'.repeat(9001)], ['\u{20000}'.repeat(4500)], [' ' + 'y'.repeat(4000) + ' ']]),
+      attachment_paragraphs_long: run(attachmentParagraphs, [['第一章\n' + '字'.repeat(9000)]]),
+      attachment_sections: run(attachmentSections, [[attachmentParagraphs(NOVEL_TXT)], [['no', 'headings']], [['第一章 起', 'a', '第2章', 'b', 'c']], [[]], [['Chapter IV', 'x', 'chapter 5 the end', 'y', '第一章这一行太长了所以不算标题因为它超过了四十个字符的上限再多写一点再多写一点']]]),
+      resolve_attachment_ref: run(resolveAttachmentRef, [['A2', ATTACH_LIST], ['a1', ATTACH_LIST], ['附件2', ATTACH_LIST], ['原著.txt', ATTACH_LIST], ['原著', ATTACH_LIST], ['A9', ATTACH_LIST], ['', ATTACH_LIST], [null, ATTACH_LIST], ['3', ATTACH_LIST]]),
+      render_attachment_index: run(renderAttachmentIndex, [[ATTACH_LIST], [[]], [ATTACH_LIST, 3]]),
+      render_attachment_part: run(renderAttachmentPart, [[ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 1, null, 20000], [ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 2, 4, 20000], [ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 3, null, 12]]),
+      attachment_chunks: run(attachmentChunks, [[{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 12], [{ ref: 'A2', name: 'notes.md' }, ['one', 'two', 'three'], 1000], [{ ref: 'A2', name: 'x' }, [], 10]])
+    }
+  },
+  {
+    module: 'web_text',
+    cases: {
+      constants: run(() => ({ UNTRUSTED_WEB_NOTE, WEB_READ_CAP }), [[]]),
+      render_search_results: run(renderSearchResults, [['红楼梦', [{ title: '甄士隐 - 维基百科', url: 'https://zh.wikipedia.org/wiki/甄士隐', snippet: '谐音"真事隐"' }, { title: 'No snippet', url: 'https://x.org', snippet: '' }]], ['nothing', []]]),
+      render_web_page: run(renderWebPage, [
+        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['# Head', 'one', 'two', 'three'] }, 1, null, 20000],
+        [{ url: 'https://x.org/a', title: '', paragraphs: ['# Head', 'one', 'two', 'three'] }, 2, 3, 20000],
+        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['# Head', 'one', 'two', 'three'] }, 1, null, 12],
+        [{ url: 'https://x.org/a', title: 'A', paragraphs: [] }, 1, null, 100],
+        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['x'] }, 5, null, 100]
       ])
     }
   },

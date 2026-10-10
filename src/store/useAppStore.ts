@@ -32,6 +32,7 @@ import { createSettingsSlice } from './slices/settingsSlice'
 import { createUiSlice } from './slices/uiSlice'
 import { createBooksSlice } from './slices/booksSlice'
 import { createAuthSlice } from './slices/authSlice'
+import { createAttachmentsSlice } from './slices/attachmentsSlice'
 import { getIsInitialized, schedulePendingSave } from './syncRuntime'
 
 if (typeof window !== 'undefined') {
@@ -49,6 +50,7 @@ export const useAppStore = create<AppState>()((...a) => ({
   ...createUiSlice(...a),
   ...createBooksSlice(...a),
   ...createAuthSlice(...a),
+  ...createAttachmentsSlice(...a),
 }))
 
 interface SyncableState {

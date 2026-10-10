@@ -7,6 +7,7 @@ continue it between steps (backend_authority.md "Runaway runs"), and
 `snapshot()`/`restore()` carry it across an API restart.
 """
 import inspect
+import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from wc_text.invocations import arguments_text_of, collect_step, plan_writes
@@ -14,8 +15,9 @@ from wc_text.jsstr import js_trim
 from wc_text.plan import unfinished_plan_items
 from wc_text.policy import decide_after_step, detect_step_failure, steps_left
 from wc_text.run_compaction import elision_trace, plan_elisions
-from wc_text.reminders import (PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge, long_reasoning_reminder,
-                               plan_reminder, plan_unfinished_nudge, repeat_nudge, steer_message, unbacked_claim_nudge, wrap_reminder)
+from wc_text.reminders import (LOOKUP_NUDGE_STEPS, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge,
+                               long_reasoning_reminder, lookup_streak_nudge, plan_reminder, plan_unfinished_nudge, repeat_nudge,
+                               steer_message, unbacked_claim_nudge, wrap_reminder)
 from wc_text.stream_handlers import NO_ACTION_RETRY_INSTRUCTION, STEP_LIMIT_NOTE
 from wc_text.text import claims_own_write, is_blank_content
 from wc_text.tool_call_stream import call_signature
@@ -24,6 +26,7 @@ from .registry import Tool, ToolRegistry
 from .types import ToolContext, seen_chapters, writes_so_far
 
 UNKNOWN_TOOL_KIND = "read"
+logger = logging.getLogger("web_canvas.runs")
 
 
 class StepUnavailable(Exception):
@@ -88,6 +91,8 @@ class AgentRun:
         self.html_read_nudged = False
         #: A reply claimed a write the run never made: told once per run.
         self.claim_nudged = False
+        #: The look-up streak reminder was given (once per run).
+        self.lookup_nudged = False
         #: Messages the user sent while the run was working; the next step carries them (steer).
         self.pending_steers: List[str] = []
         self.messages: List[Dict[str, Any]] = list(initial_messages)
@@ -232,6 +237,8 @@ class AgentRun:
         try:
             return await tool.invoke(inv, self.ctx)
         except Exception as e:  # noqa: BLE001 — a tool failure is a result the model reads
+            # Logged with its traceback: "analyze_book failed" alone hid a bug for days.
+            logger.warning("Tool %s raised", inv["name"], exc_info=True)
             return {"ok": False, "content": f"{inv['name']} failed: {e}", "trace": f"⚠️ {inv['name']} failed"}
 
     async def _handle_protocol_failure(self, failure: str, out: StepOutput, collected: Dict[str, Any]) -> None:
@@ -385,9 +392,23 @@ class AgentRun:
             self.long_reasoning_due = None
         if unfinished_plan_items(self.ctx.run.plan):
             out.append(plan_reminder(self.ctx.run.plan))
+        lookups = self.lookup_streak()
+        if not self.lookup_nudged and lookups >= LOOKUP_NUDGE_STEPS:
+            self.lookup_nudged = True
+            out.append(lookup_streak_nudge(lookups, any(t.name == "analyze_book" for t in self.offered_tools())))
         if self.host_reminders is not None:
             out.extend(self.host_reminders(self))
         return out
+
+    def lookup_streak(self) -> int:
+        """Steps in a row, ending with the last, that only called look-up tools and wrote nothing."""
+        n = 0
+        for step in reversed(self.step_log):
+            names = step.get("names") or []
+            if step.get("wrote") or not names or any(self._kind_of({"name": name}) != "read" for name in names):
+                break
+            n += 1
+        return n
 
     def identical_run_length(self) -> int:
         """Steps in a row, ending with the last, that made the same calls and wrote nothing (since the last resume)."""
@@ -471,11 +492,11 @@ class AgentRun:
                 "readIds": list(run.read_ids), "reads": run.reads, "touched": list(run.touched.values()),
                 "startOutline": run.start_outline, "lastList": run.last_list,
                 "selectionAttempted": run.selection_attempted, "selectionApplied": run.selection_applied,
-                "plan": list(run.plan), "question": run.question,
+                "plan": list(run.plan), "question": run.question, "textSeen": dict(run.text_seen), "attachmentChars": run.attachment_chars,
             },
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
             "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
-            "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers),
+            "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers), "lookupNudged": self.lookup_nudged,
             "elidable": list(self.elidable), "lastResultsStart": self.last_results_start, "measured": self.measured,
         }
 
@@ -506,6 +527,8 @@ class AgentRun:
         run.selection_applied = snap["run"]["selectionApplied"]
         run.plan = list(snap["run"].get("plan") or [])
         run.question = snap["run"].get("question")
+        run.text_seen = dict(snap["run"].get("textSeen") or {})
+        run.attachment_chars = int(snap["run"].get("attachmentChars") or 0)
         self.plan_nudges = int(snap.get("planNudges") or 0)
         self.long_reasoning_due = snap.get("longReasoningDue")
         self.html_read_pending = snap.get("htmlReadPending")
@@ -513,6 +536,7 @@ class AgentRun:
         run.plan_baseline = dict(snap.get("planBaseline") or {})
         self.claim_nudged = bool(snap.get("claimNudged"))
         self.pending_steers = list(snap.get("pendingSteers") or [])
+        self.lookup_nudged = bool(snap.get("lookupNudged"))
         self.elidable = list(snap.get("elidable") or [])
         self.last_results_start = int(snap.get("lastResultsStart") or 0)
         self.measured = snap.get("measured")

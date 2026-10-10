@@ -72,13 +72,13 @@ const TWO_DOCUMENTS = 'Two documents (say an outline and character cards) are tw
 export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
   const write = protocol === 'markup'
     ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the number from the CHAPTER INDEX.
-- Before an <edit> on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- Before an <edit> on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result. ${NO_HTML_READ}
 - To add a chapter, write it: <canvas new_chapter="its title">…its full text…</canvas> creates it at the end of the book and fills it in one go. There is no separate step for creating a chapter.
 - You can also write a whole chapter with the update_document tool (\`new_chapter\` or \`chapter\`, and \`html\`): the same result, but the user sees the text only when the call is complete, while tags show it as you write.
 - ${REFERENCE_CHAPTERS} No other tool creates a chapter: open_chapter, rename_chapter and list_chapters only work with chapters that already exist.
 - The <doc_status> line is required only on a reply that calls no tool.`
     : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its number in the CHAPTER INDEX.
-- Before edit_document on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- Before edit_document on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result. ${NO_HTML_READ}
 - To add a chapter, call update_document with \`new_chapter\` set to its title: that creates it at the end of the book and fills it in one call. There is no separate step for creating a chapter.
 - ${REFERENCE_CHAPTERS} No other tool creates a chapter.`
   /*
@@ -127,6 +127,7 @@ export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: bo
 - ${PLAN_AND_ASK}
 - ${REMINDERS_NOTE}
 - Paragraphs are numbered like lines (¶12). grep reports the ¶ of each hit; to look closer, read only the paragraphs around it (read_chapter with paragraphs="40-60") rather than the whole chapter.
+- ${ATTACHMENTS_NOTE}
 - Index markers: [in context] — its full text is in this request; [in context — CHANGED since you last saw it…] — the text in this request is a newer version than the one your earlier replies were based on, so plan from it; [changed since you read it] — read it again before relying on it; [read earlier, not in context] — its text is no longer here.
 - The CURRENT ACTIVE DOCUMENT CONTENT is as of the start of this turn; tool results tell you what changed since.
 ${write}
@@ -143,7 +144,19 @@ ${recheck}`
  */
 const DISCIPLINE = 'If a reply ends with a sentence describing an action ("I will rewrite chapter 3 now") but makes no tool call and emits no tag, the action did not happen. Say a chapter is written or a change is made only when a tool result or your own tag in that reply shows it. Before a reply with no action, check whether work remains that nothing blocks; if so, do it instead of ending.'
 
-const PLAN_AND_ASK = 'For work of 3 or more steps (several chapters, a series of edits), keep a checklist with the plan tool: the user sees it live, you are reminded of it after each step, and a reply with no action ends the turn only once every item is done or dropped. When the answer changes what you would do — the request reads two ways, or the next step is hard to undo — ask with ask_user and wait; never ask for permission to do ordinary work.'
+const PLAN_AND_ASK = 'For work of 3 or more steps (several chapters, a series of edits), keep a checklist with the plan tool: the user sees it live, you are reminded of it after each step, and a reply with no action ends the turn only once every item is done or dropped. When a write finishes an item, name the item in that write\'s plan_done (an argument, or a plan_done="id" attribute on a tag) instead of a separate plan call. When the answer changes what you would do — the request reads two ways, or the next step is hard to undo — ask with ask_user and wait; never ask for permission to do ordinary work.'
+
+/**
+ * Where an HTML read is not needed (agentic_chat_loop.md §0.11): half of all
+ * edits and rewrites in three days of logs waited a step on one.
+ */
+/**
+ * Reference files (attachments_and_web.md §1). Without this the model
+ * treats "A1" as an unknown chapter, or asks the user to paste the novel.
+ */
+const ATTACHMENTS_NOTE = 'An ATTACHMENTS list in the user message names reference files the user attached (A1, A2…): look them up like chapters — a section by its heading, a paragraph range, or grep; analyze_book goes through a whole one. They cannot be written.'
+
+const NO_HTML_READ = 'No HTML read is needed to change a few paragraphs you found with grep or a text read (edit_paragraphs, by ¶ number), nor to rewrite a chapter of plain paragraphs whose whole text you have seen (in context, or read as text).'
 
 const REMINDERS_NOTE = '<system-reminder> blocks inside tool results are automated context from the editor (what changed while you worked, your plan, a note that you are repeating yourself), not messages from the user.'
 
@@ -300,7 +313,7 @@ export function agentMarkupPrompt(continueAfterWrites: boolean): string {
 
 2. WHAT YOU CAN DO
 Three kinds of actions. The tools are described in their own schemas; this is how they fit together.
-- LOOK: read_chapter (a chapter, or a paragraph range, as text or as HTML), grep (where a name, phrase or event appears), list_chapters (the index with sizes), analyze_book (notes over the whole book). Looking changes nothing. Do not guess at a chapter you have not read.
+- LOOK: read_chapter (a chapter, a paragraph range, or several parts at once, as text or as HTML), grep (where a name, phrase or event appears — several patterns at once), list_chapters (the index with sizes), analyze_book (notes over the whole book), and, when offered, web_search / web_read (the internet, for what the book and its attachments do not have). Looking changes nothing. ${ATTACHMENTS_NOTE} Do not guess at a chapter you have not read. Checking several places takes one call, not one step each.
 - WRITE: there are two ways to put text into the book, with the same result in the book but not on the user's screen.
   a) Tags in your message. The text shows to the user AS YOU WRITE IT. PROSE IS ALWAYS WRITTEN WITH TAGS — story chapters, scenes, continuations, rewrites. A chapter of prose sent through a tool leaves the user staring at an empty page for the whole time you write it.
      <canvas chapter="3">…</canvas> — the whole text of chapter 3 (the active chapter when no chapter is named).
@@ -308,12 +321,13 @@ Three kinds of actions. The tools are described in their own schemas; this is ho
      <edit chapter="3">…</edit> — targeted changes to parts of chapter 3 (format in section 4).
      <selection_replace>…</selection_replace> — only when the request has a CURRENT SELECTED TEXT section.
   b) The update_document tool, with new_chapter or chapter, and html: the user sees the text only when the call is complete. Use it ONLY for reference material — an outline, character cards, notes — never for prose.
+  c) The edit_paragraphs tool, for a small change to a few paragraphs: by their ¶ numbers, each anchored by its first words, with no HTML read.
   Whichever way, a chapter comes into existence BY BEING WRITTEN. ${REFERENCE_CHAPTERS}
 - HOUSEKEEPING: open_chapter (show a chapter to the user, when they ask), rename_chapter, delete_chapter. These work on chapters that already exist and never add one or put text into one.
 - PLAN AND ASK: ${PLAN_AND_ASK}
 
 3. HOW A TURN GOES
-- Decide from the index what you need, look it up, then write. Before an <edit> on a chapter other than the active one, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result.
+- Decide from the index what you need, look it up, then write. Before an <edit> on a chapter other than the active one, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result. ${NO_HTML_READ}
 - Do each piece of work in the reply that says you are doing it: "Now I'll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">. Announcing a write is not writing it.
 - ${DISCIPLINE}
 - Several look-ups in one reply are fine: their results come back together.

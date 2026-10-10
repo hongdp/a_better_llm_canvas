@@ -16,7 +16,7 @@ import type { LLMMessage, StreamUsage, ThinkingBlock } from '../types/llm'
 import { callSignature, type FinishedToolCall } from '../utils/toolCallStream'
 import type { PlanItem } from '../utils/plan'
 import { unfinishedPlanItems } from '../utils/plan'
-import { appendReminders, htmlReadNudge, longReasoningReminder, planReminder, planUnfinishedNudge, repeatNudge, steerMessage, unbackedClaimNudge, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
+import { appendReminders, htmlReadNudge, longReasoningReminder, lookupStreakNudge, planReminder, planUnfinishedNudge, repeatNudge, steerMessage, unbackedClaimNudge, LOOKUP_NUDGE_STEPS, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
 import { claimsOwnWrite, isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
@@ -184,6 +184,8 @@ export class AgentRun {
   private htmlReadNudged = false
   /** A reply claimed a write the run never made: told once per run. */
   private claimNudged = false
+  /** The look-up streak reminder was given (once per run). */
+  private lookupNudged = false
   /** Messages the user sent while the run was working; the next step carries them (steer). */
   private readonly pendingSteers: string[] = []
   /** Read results in the messages that may be elided when the prompt outgrows the window. */
@@ -309,11 +311,14 @@ export class AgentRun {
       // or the provider rejects the next request for the unanswered id.
       return { ok: false, content: `There is no tool named "${inv.name}".`, trace: `⚠️ unknown tool "${inv.name}"` }
     }
-    const fail = (e: unknown): ToolResult => ({
-      ok: false,
-      content: `${inv.name} failed: ${e instanceof Error ? e.message : String(e)}`,
-      trace: `⚠️ ${inv.name} failed`
-    })
+    const fail = (e: unknown): ToolResult => {
+      console.error(`[agent] tool ${inv.name} raised`, e)
+      return {
+        ok: false,
+        content: `${inv.name} failed: ${e instanceof Error ? e.message : String(e)}`,
+        trace: `⚠️ ${inv.name} failed`
+      }
+    }
     try {
       const r = tool.invoke(inv, this.o.ctx)
       return r instanceof Promise ? r.catch(fail) : r
@@ -495,8 +500,24 @@ export class AgentRun {
       this.longReasoningDue = null
     }
     if (unfinishedPlanItems(this.o.ctx.run.plan).length > 0) out.push(planReminder(this.o.ctx.run.plan))
+    const lookups = this.lookupStreak()
+    if (!this.lookupNudged && lookups >= LOOKUP_NUDGE_STEPS) {
+      this.lookupNudged = true
+      out.push(lookupStreakNudge(lookups, this.offeredTools().some(t => t.name === 'analyze_book')))
+    }
     out.push(...(this.o.reminders?.() ?? []))
     return out
+  }
+
+  /** Steps in a row, ending with the last, that only called look-up tools and wrote nothing. */
+  lookupStreak(): number {
+    let n = 0
+    for (let i = this.stepLog.length - 1; i >= 0; i--) {
+      const step = this.stepLog[i]
+      if (step.wrote || step.names.length === 0 || step.names.some(name => this.o.registry.get(name)?.kind !== 'read')) break
+      n++
+    }
+    return n
   }
 
   /** How many steps in a row, ending with the last, made the same calls and wrote nothing. */

@@ -22,10 +22,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
+import server_attachments
 import server_context
 import server_documents
 import server_events
 import server_generation
+import server_web
 from server_auth import get_authenticated_username
 from server_config import sanitize_id
 from server_content import load_document_content
@@ -36,9 +38,10 @@ from wc_agent.run import AgentRun, StepOutput, StepUnavailable
 from wc_agent.tools.analyze_book import analyze_book_tool
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
-from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, preview_rewrite
+from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite
 from wc_agent.tools.plan import plan_tool
 from wc_agent.tools.polish_chapter import polish_chapter_tool
+from wc_agent.tools.web import WEB_TOOLS
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
 from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder, wrap_reminder
 from wc_text.chapter_index import WHOLE_BOOK_CONTEXT_CHARS
@@ -54,7 +57,7 @@ from wc_text.tool_call_stream import finish_tool_calls
 logger = logging.getLogger("web_canvas.runs")
 router = APIRouter()
 
-CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, *BOOK_TOOLS, polish_chapter_tool, analyze_book_tool, plan_tool, ask_user_tool])
+CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, *BOOK_TOOLS, polish_chapter_tool, analyze_book_tool, *WEB_TOOLS, plan_tool, ask_user_tool])
 
 # ── Limits (the "Runaway runs" decision) ─────────────────────────────────────
 #: Steps that repeated the same calls and wrote nothing before the run is
@@ -122,6 +125,7 @@ def ensure_tables() -> None:
     finally:
         conn.close()
     server_context.ensure_tables()
+    server_attachments.ensure_tables()
 
 
 class Run:
@@ -591,6 +595,7 @@ class RunEngine:
             history=self._history_for(run), documents=chapters, active_document_id=ports.start_id,
             selected_text=ports.selected_text, custom_instructions=req.get("customInstructions"),
             context_window_tokens=req.get("contextWindowTokens"), state=state, image_registry=ports.image_registry,
+            attachments=server_attachments.list_attachments(run.username, run.book_id),
             stored_summary=server_context.load_chat_summary(run.username, run.book_id),
             summarize=_ModelCall(self, run, None, "low", f"{run.book_id}:summary"))
         server_context.save_state(run.username, run.book_id, scope, state, _now_iso())
@@ -600,8 +605,11 @@ class RunEngine:
         run.record["prefix"] = assembled["attachmentsText"] or None
         settings = assembled["settings"]
         ctx = ToolContext(ports, ports, ports, ports, _Ui(ports),
-                          create_run_state(ports.start_id, assembled["inContextIds"], ports.original, chapter_outline(chapters)),
-                          polish=_PolishPort(self, run), analyze=_AnalyzePort(self, run))
+                          create_run_state(ports.start_id, assembled["inContextIds"], ports.original, chapter_outline(chapters),
+                                           text_seen=server_context.text_seen_in_context(chapters, assembled["inContextIds"])),
+                          polish=_PolishPort(self, run), analyze=_AnalyzePort(self, run),
+                          attachments=_AttachmentsPort(run.username, run.book_id),
+                          web=_WebPort(run.username) if config.get("webAccess") is not False and server_web.available() else None)
         ports.last_outline = chapter_outline(chapters)
         for doc_id in ctx.run.known:
             ports.watched[doc_id] = next((c["revision"] for c in chapters if c["id"] == doc_id), 0)
@@ -1099,26 +1107,57 @@ class _ModelCall:
 
 
 class _PolishPort:
+    # Problem: the run was kept as `self.run`, which hid this class's own
+    #   `run()` method — every server-side polish_chapter raised "'Run' object
+    #   is not callable" (found in the logs, 2026-10-09).
+    # Fix: the run is `self.owner`; `run` is the port's method, as the tool calls it.
     def __init__(self, engine: RunEngine, run: Run) -> None:
-        self.engine, self.run = engine, run
+        self.engine, self.owner = engine, run
 
     async def run(self, html: str, on_progress):
-        req = self.run.request
+        req = self.owner.request
         cfg = req.get("config") or {}
         model = js_trim(cfg.get("polishModel") or "") or default_polish_model(req["provider"], cfg.get("model") or "")
-        transport = _ModelCall(self.engine, self.run, model, "default", f"{self.run.book_id}:polish")
+        transport = _ModelCall(self.engine, self.owner, model, "default", f"{self.owner.book_id}:polish")
         prompt = req.get("polishPrompt") or {"system": "", "template": "{part}"}
         return await polish_html(html, transport, prompt, req.get("customInstructions"), None, on_progress)
 
 
 class _AnalyzePort:
+    # The run is `self.owner` for the reason given on _PolishPort.
     def __init__(self, engine: RunEngine, run: Run) -> None:
-        self.engine, self.run = engine, run
+        self.engine, self.owner = engine, run
 
     async def run(self, task: str, chapters, on_progress):
-        req = self.run.request
-        transport = _ModelCall(self.engine, self.run, None, (req.get("config") or {}).get("reasoningEffort"), f"{self.run.book_id}:analyze")
+        req = self.owner.request
+        transport = _ModelCall(self.engine, self.owner, None, (req.get("config") or {}).get("reasoningEffort"), f"{self.owner.book_id}:analyze")
         return await analyze_in_batches(task, chapters, WHOLE_BOOK_CONTEXT_CHARS.get(req["provider"], 300_000), transport, None, on_progress)
+
+
+class _AttachmentsPort:
+    """The book's reference files (attachments_and_web.md §1)."""
+
+    def __init__(self, username: str, book_id: str) -> None:
+        self.username, self.book_id = username, book_id
+
+    def list(self):
+        return server_attachments.list_attachments(self.username, self.book_id)
+
+    async def paragraphs(self, attachment_id: str):
+        return await asyncio.to_thread(server_attachments.attachment_paragraphs, self.username, self.book_id, attachment_id)
+
+
+class _WebPort:
+    """The anonymous browser (attachments_and_web.md §2)."""
+
+    def __init__(self, username: str) -> None:
+        self.username = username
+
+    async def search(self, query: str, max_results: int):
+        return await server_web.web_search(self.username, query, max_results)
+
+    async def read(self, url: str):
+        return await server_web.web_read(self.username, url)
 
 
 engine = RunEngine()

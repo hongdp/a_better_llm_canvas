@@ -680,6 +680,71 @@ noticed after ten minutes.
   turn's truncated reasoning (the retry here starts the reply over), and
   retries in the tab's own stream after it opened.
 
+### 0.11 Tools that save steps (2026-10-09)
+
+Read from three days of work (2026-10-07…09: 339 steps, 46 turns, the step
+journal, the runs' traces and the API log). Every step re-sends the whole
+prompt, so a step is the unit of cost:
+
+| Finding | Number |
+|---|---|
+| Steps that only looked (no write) | 210 of 339, **66 % of all prompt tokens** (8.2 M of 12.4 M), ~39 k tokens each even for five paragraphs |
+| Calls per step | 270 calls in 231 tool steps: grok sends one call per reply although several are allowed |
+| Streaks of one-lookup steps | 15 streaks, 172 steps; the longest 126 steps, 127 jobs and 5.3 M prompt tokens in six minutes (an outline and character cards), ended with an empty reply |
+| An HTML read right before a write | 12 of 17 `<edit>` steps; 12 of 24 whole rewrites (3 more were refused "not read yet" first) |
+| A step only for `plan` | 19, nearly all "item done, next in progress" between two writes |
+| `analyze_book` on a server run | always failed (below) |
+
+What was built, in both loops:
+
+- **The server's analyze and polish ports were broken.** `_AnalyzePort` and
+  `_PolishPort` kept the run as `self.run`, which hid their own `run()`
+  method: every server-side `analyze_book` and `polish_chapter` raised
+  `'Run' object is not callable`, reported to the model as "analyze_book
+  failed" and logged nowhere. Renamed; a tool that raises is now logged with
+  its traceback.
+- **Several look-ups in one call.** `read_chapter` takes `parts` — a list of
+  `{chapter, paragraphs}` — besides `chapters` plus one range; `grep` takes
+  `patterns`, up to ten, each reported under its own heading with its own
+  result cap. The call budget (`READ_CALL_CAP`) is shared by the parts. The
+  descriptions say when to use them (checking several places, a fact sheet).
+- **A whole rewrite needs the text, not the HTML, of a plain chapter.** An
+  `update_document` (`<canvas chapter>`) on an existing chapter was refused
+  unless its HTML had been read this run. For a chapter whose blocks are all
+  bare `<p>`/`<h1>`–`<h6>` with only text and `<br>` inside — the text view
+  then IS the HTML — having seen its whole current text is enough: the
+  chapter in context at the start of the run (the active one, or a ledger
+  chapter not cut by the per-chapter cap), or a whole `read_chapter` in text
+  format. The run records the hash of the accepted reading it saw
+  (`RunState.textSeen`); a rewrite is allowed when the current accepted
+  reading has that hash. Chapters with images, inline formatting, lists or
+  attributes still need the HTML read.
+- **Edits by paragraph number** (`edit_paragraphs`). Changes paragraphs by
+  the ¶ numbers that grep and text reads print, with no HTML read and no
+  SEARCH to copy: `replace`, `insert_before`, `insert_after`, `delete`, each
+  with `html` (new blocks; bare text becomes a `<p>`). Every edit carries
+  `starts_with`, the first characters of the paragraph's text as the model
+  saw it: if any anchor no longer matches, nothing is applied and the result
+  quotes the current text of those paragraphs (Grok Build's hashline edits:
+  atomic, stale anchors answered with fresh ones). Numbers refer to the
+  chapter before the call; edits apply bottom-up. The paragraphs are cut from
+  the stored HTML by position (`paragraphSpans`), so untouched text keeps
+  its exact bytes; a chapter whose HTML the splitter and the numbering do not
+  agree on is refused with a pointer to edit_document. An image paragraph
+  can be deleted or inserted next to, not replaced. The result is a
+  reviewable diff like every write. A native tool on both protocols.
+- **A write marks plan items done.** `plan_done` (item ids) on
+  `update_document`, `edit_document` and `edit_paragraphs`, and a
+  `plan_done="id1,id2"` attribute on `<canvas>` and `<edit>` (all of a
+  reply's attributes go to its last write, so they are marked after every
+  write of the reply landed, and not at all if it failed). The items are set
+  done, the next pending item becomes in progress, and the write's result
+  shows the plan; the "done needs a write" rule holds by construction.
+- **Too many look-ups in a row are named.** Eight consecutive steps that
+  only looked get one reminder: check several places in one call (`parts`,
+  `patterns`), and for a question about many chapters let `analyze_book`
+  read them. Once per run.
+
 ### 0.7 Settings and transports
 
 - **Per-provider settings:**

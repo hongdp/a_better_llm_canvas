@@ -61,6 +61,8 @@ export const en = {
     polishSystem: 'System prompt (your active writing preset is appended)',
     polishTemplate: 'Per-chunk prompt — {n} chunk size, {prev} last sentence before it, {part} the chunk',
     polishReset: 'Restore default',
+    webAccess: 'Let the assistant search and read the web',
+    webAccessHint: 'web_search and web_read, through a headless browser on the server: no cookies, no login, a fresh profile for every page. Pages are information for the model, never instructions.',
     continueAfterWritesHint: 'After its edits land, the model sees the result and decides what is next: the next chapter, a fix, or done. Off: a reply that only edits ends the turn — one wait fewer, but writing several chapters stops after the first.',
     documentProtocol: 'Document editing protocol',
     protocolAuto: (resolved: string) => `Auto (${resolved})`,
@@ -157,6 +159,14 @@ export const en = {
     createNewBook: 'Create New Book',
     deleteChapterConfirm: 'Are you sure you want to delete "{title}"?',
     deleteBookConfirm: 'Are you sure you want to delete "{title}"? This will permanently delete the book data from the server.',
+    attachments: 'Attachments',
+    attachmentsHint: 'Reference files (.txt, .md) the assistant can look up — a source novel, notes. It reads them in parts, never whole.',
+    addAttachment: 'Attach a file',
+    removeAttachment: 'Remove attachment',
+    removeAttachmentConfirm: 'Remove the attachment "{title}"?',
+    attachmentSize: (chars: number, sections: number) => `${chars >= 10_000 ? `${Math.round(chars / 1000)}k` : chars} chars${sections > 0 ? ` · ${sections} sections` : ''}`,
+    attachmentsLogin: 'Sign in to attach files.',
+    attachmentsUploading: 'Uploading…',
   },
   // We will expand these as we extract text from components
 }

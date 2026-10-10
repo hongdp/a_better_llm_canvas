@@ -17,7 +17,8 @@ from wc_text.edit_hints import nearest_hint
 from wc_text.image_preservation import reinsert_missing_images
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
-from wc_text.paragraphs import chapter_chars
+from wc_text.context_ledger import hash_content
+from wc_text.paragraphs import apply_paragraph_edits, chapter_chars, is_plain_chapter_html
 from wc_text.text import (apply_edit_blocks, apply_edit_blocks_locally, is_blank_content, strip_blank_paragraphs,
                           strip_incomplete_end_tag, trim_incomplete_html_tail, validate_canvas_replacement)
 from wc_text.title_sync import content_with_renamed_heading, leading_h1_text
@@ -25,13 +26,16 @@ from wc_text.tool_call_stream import partial_string_argument
 
 from ..registry import Tool
 from ..types import DocState, ToolContext, result
+from .plan import PLAN_DONE_PARAMETER, plan_done_arg, with_plan_done
 
 Target = Dict[str, Any]  # {id, title, number, isStart}
 
 
 def _schema_of(name: str) -> Dict[str, Any]:
     tool = next(t for t in DOCUMENT_TOOLS if t["name"] == name)
-    return {"name": tool["name"], "description": tool["description"], "parameters": tool["parameters"]}
+    # Every write may finish plan items (agentic_chat_loop.md §0.11).
+    params = {**tool["parameters"], "properties": {**tool["parameters"]["properties"], "plan_done": PLAN_DONE_PARAMETER}}
+    return {"name": tool["name"], "description": tool["description"], "parameters": params}
 
 
 # ── Targets ──────────────────────────────────────────────────────────────────
@@ -225,6 +229,14 @@ async def with_loaded(ctx: ToolContext, target: Target, fn):
     return out
 
 
+def seen_enough_to_rewrite(ctx: ToolContext, doc_id: str, accepted_html: str) -> bool:
+    """Port of seenEnoughToRewrite: the HTML this run, or the whole current text of a plain chapter (§0.11)."""
+    if doc_id in ctx.run.html_shown:
+        return True
+    seen = ctx.run.text_seen.get(doc_id)
+    return seen is not None and seen == hash_content(accepted_html) and is_plain_chapter_html(accepted_html)
+
+
 def _unseen(target: Target) -> Dict[str, Any]:
     return result(False,
                   f"You have not seen the current HTML of {cite_chapter(target)} in this turn, so SEARCH text cannot be copied from it. "
@@ -300,6 +312,10 @@ def _update_preview(text: str, ctx: ToolContext) -> None:
 
 
 async def _update_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    return with_plan_done(ctx, await _update_write(args, ctx, call), args.get("planDone") or [])
+
+
+async def _update_write(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     html, chapter, arguments_lost = args["html"], args["chapter"], args["argumentsLost"]
     target = resolve_target(chapter, ctx)
     if isinstance(target, str):
@@ -318,13 +334,17 @@ async def _update_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str
             return result(False, f"{cite_chapter(target)} has a selection rewrite in this turn; a full rewrite would overwrite it.",
                           "⚠️ rewrite skipped: it would overwrite the selection rewrite", retryable=False)
         st = doc_state(ctx, target)
-        if target["id"] not in ctx.run.html_shown and not is_blank_content(st.html):
+        if not seen_enough_to_rewrite(ctx, target["id"], st.html) and not is_blank_content(st.html):
             if is_new_chapter_ref(chapter):
                 return result(False,
                               f'A chapter titled "{target["title"]}" already exists as #{target["number"]} and has text you have not read in this turn, so it was NOT overwritten and no chapter was added. '
                               f"To rewrite it, read it first (read_chapter with chapters=[{target['number']}]); to add a new chapter, give it a title no chapter has.",
                               f'⛔ new_chapter "{target["title"]}" is #{target["number"]}, not read — not overwritten', retryable=True)
-            return _unseen(target)
+            how = (f"Read it (read_chapter with chapters=[{target['number']}]; text format is enough for this chapter), then write it."
+                   if is_plain_chapter_html(st.html) else
+                   f'It has formatting or images a text read does not show: read its HTML (read_chapter with chapters=[{target["number"]}] and format="html"), then write it.')
+            return result(False, f"You have not seen the whole current text of {cite_chapter(target)} in this turn, so it was not rewritten. " + how,
+                          f"⛔ rewrite of {cite_chapter(target)} refused — not read yet", retryable=True)
         candidate = strip_blank_paragraphs(ctx.images.restore(html))
         issue = validate_canvas_replacement(candidate, closed)
         if issue:
@@ -363,7 +383,7 @@ async def _update_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str
 
 update_document_tool = Tool(
     **_schema_of("update_document"), kind="write", markup_form=True, native_on_markup=True,
-    parse=lambda raw: {"html": _html_arg(raw), "chapter": _rewrite_target(raw), "argumentsLost": raw is None},
+    parse=lambda raw: {"html": _html_arg(raw), "chapter": _rewrite_target(raw), "argumentsLost": raw is None, "planDone": plan_done_arg(raw)},
     preview=_update_preview, execute=_update_execute,
 )
 
@@ -376,10 +396,14 @@ def _edit_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
     items = raw.get("edits") if isinstance(raw.get("edits"), list) else []
     edits = [{"search": e["search"], "replace": e["replace"] if isinstance(e.get("replace"), str) else ""}
              for e in items if isinstance(e, dict) and isinstance(e.get("search"), str)]
-    return {"edits": edits, "chapter": _chapter_arg(raw)} if edits else 'it contained no usable edit (each needs a "search" string)'
+    return {"edits": edits, "chapter": _chapter_arg(raw), "planDone": plan_done_arg(raw)} if edits else 'it contained no usable edit (each needs a "search" string)'
 
 
 async def _edit_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    return with_plan_done(ctx, await _edit_write(args, ctx, call), args.get("planDone") or [])
+
+
+async def _edit_write(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     edits: List[Dict[str, str]] = args["edits"]
     target = resolve_target(args["chapter"], ctx)
     if isinstance(target, str):
@@ -495,6 +519,101 @@ replace_selection_tool = Tool(
 
 DOCUMENT_WRITE_TOOLS = [update_document_tool, edit_document_tool, replace_selection_tool]
 
+
+
+# ── edit_paragraphs ──────────────────────────────────────────────────────────
+# Port of editParagraphsTool (src/agent/tools/documentWrites.ts, §0.11).
+
+_PARAGRAPH_ACTIONS = ["replace", "insert_before", "insert_after", "delete"]
+
+
+def _paragraph_number(raw: Any) -> Optional[int]:
+    m = re.match(r"^\s*¶?\s*(\d+)\s*$", str(raw if raw is not None else ""))
+    return int(m.group(1)) if m else None
+
+
+def _paragraphs_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
+    if raw is None:
+        return "its arguments could not be parsed"
+    items = raw.get("edits") if isinstance(raw.get("edits"), list) else []
+    if not items:
+        return 'no edits were given (pass "edits": [{paragraph, action, html, starts_with}])'
+    edits: List[Dict[str, Any]] = []
+    for i, item in enumerate(items):
+        e = item if isinstance(item, dict) else {}
+        paragraph = _paragraph_number(e.get("paragraph"))
+        if paragraph is None:
+            return f"edit {i + 1} has no paragraph number"
+        action = js_trim(str(e.get("action") or "")).lower()
+        if action not in _PARAGRAPH_ACTIONS:
+            return f"edit {i + 1}: action must be one of {', '.join(_PARAGRAPH_ACTIONS)}"
+        starts = e.get("starts_with") if isinstance(e.get("starts_with"), str) else (e.get("startsWith") if isinstance(e.get("startsWith"), str) else "")
+        edit: Dict[str, Any] = {"paragraph": paragraph, "action": action, "startsWith": starts}
+        if isinstance(e.get("html"), str):
+            edit["html"] = e["html"]
+        edits.append(edit)
+    return {"chapter": _chapter_arg(raw), "edits": edits, "planDone": plan_done_arg(raw)}
+
+
+async def _paragraphs_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    return with_plan_done(ctx, await _paragraphs_write(args, ctx), args.get("planDone") or [])
+
+
+async def _paragraphs_write(args: Dict[str, Any], ctx: ToolContext) -> Dict[str, Any]:
+    chapter, edits = args["chapter"], args["edits"]
+    if is_new_chapter_ref(chapter):
+        return result(False, "edit_paragraphs changes an existing chapter; write a new one with update_document.", "⚠️ edit_paragraphs: not a new chapter", retryable=True)
+    target = resolve_target(chapter, ctx)
+    if isinstance(target, str):
+        return result(False, target, f"⚠️ edit_paragraphs: {target.splitlines()[0]}", retryable=True)
+    if target["isStart"] and ctx.run.selection_attempted:
+        return result(False, f"{cite_chapter(target)} has a selection rewrite in this turn; change other parts of it with edit_document.",
+                      "⚠️ edit_paragraphs: beside a selection rewrite", retryable=True)
+
+    async def write() -> Dict[str, Any]:
+        if user_edited(ctx, target["id"]):
+            return edited_meanwhile(ctx, target)
+        st = doc_state(ctx, target)
+        outcome = apply_paragraph_edits(st.html, [e if "html" not in e else {**e, "html": ctx.images.restore(e["html"])} for e in edits])
+        if not outcome["ok"]:
+            stale = len(outcome["stale"])
+            return result(False, f"edit_paragraphs on {cite_chapter(target)}: {outcome['error']}",
+                          f"⚠️ edit_paragraphs on {cite_chapter(target)}: nothing applied"
+                          + (f" ({stale} anchor{'' if stale == 1 else 's'} out of date)" if stale else ""), retryable=True)
+        st.html = strip_blank_paragraphs(outcome["html"])
+        st.dirty = True
+        commit_doc(ctx, target, st)
+        touch(ctx, target, "edits", len(edits), 0)
+        shift = outcome["paragraphsAfter"] - outcome["paragraphsBefore"]
+        moved = (f" Paragraphs after ¶{outcome['firstChanged']} moved by {'+' if shift > 0 else ''}{shift}: take their new numbers from grep or a read before editing them again."
+                 if shift else "")
+        n = len(edits)
+        return result(True, f"Applied {n} paragraph edit(s) to {cite_chapter(target)}. It now has {outcome['paragraphsAfter']} paragraphs and {chapter_chars(st.html)} characters." + moved,
+                      f"✏️ edited {cite_chapter(target)} by paragraph ({n} change{'' if n == 1 else 's'})")
+
+    return await with_loaded(ctx, target, write)
+
+
+edit_paragraphs_tool = Tool(
+    name="edit_paragraphs",
+    description=(
+        "Change paragraphs of a chapter by their ¶ numbers — the numbers grep and text reads show — with no HTML read and no SEARCH text. "
+        'Each edit: paragraph (its ¶ number), action ("replace", "insert_before", "insert_after" or "delete"), html (the new paragraph(s) for replace and inserts; plain text becomes <p> paragraphs, a blank line separating them), '
+        "and starts_with: the first words of that paragraph as you read it. Numbers refer to the chapter as it was before this call. "
+        "If any starts_with no longer matches (the chapter changed), nothing is applied and you get those paragraphs' current text. "
+        "For changes to most of a chapter, rewrite it instead."),
+    parameters={"type": "object", "properties": {
+        "chapter": {"type": "string", "description": "The chapter number from the CHAPTER INDEX (default: the active chapter)."},
+        "edits": {"type": "array", "description": "The changes, in any order.", "items": {"type": "object", "properties": {
+            "paragraph": {"type": "integer", "description": "The ¶ number, as grep or read_chapter showed it."},
+            "action": {"type": "string", "description": '"replace", "insert_before", "insert_after" or "delete".'},
+            "html": {"type": "string", "description": "The new paragraph(s): HTML blocks, or plain text. Not used by delete."},
+            "starts_with": {"type": "string", "description": "The first few words of that paragraph as you read it."},
+        }, "required": ["paragraph", "action", "starts_with"]}},
+        "plan_done": PLAN_DONE_PARAMETER,
+    }, "required": ["edits"]},
+    kind="write", parse=_paragraphs_parse, execute=_paragraphs_execute,
+)
 
 # ── rename_chapter ───────────────────────────────────────────────────────────
 

@@ -45,7 +45,7 @@ src/
     useAppStore.ts        # Slice assembly + auto-save subscription + public re-exports
     types.ts              # AppState = intersection of slice interfaces
     slices/               # documentsSlice, booksSlice, settingsSlice, authSlice,
-                          #   versionsSlice, chatSlice, uiSlice
+                          #   versionsSlice, chatSlice, uiSlice, attachmentsSlice
     defaults.ts           # Mock documents, default provider configs/prompts
     settingsPersistence.ts# Versioned cookie/localStorage settings + migrations
     serverSync.ts         # initializeStoreFromServer / performSync
@@ -65,6 +65,7 @@ src/
     import/               # Import modal step components
     ImageGenerationModal.tsx  imageGen/   # Image-gen modal + step components
     RoleplaySetupModal.tsx  RoleplayBanner.tsx
+    AttachmentsSection.tsx  # The book's reference files in the sidebar (A1, A2…; add / remove)
   hooks/
     useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core);
                           #   with serverRuns on, posts the turn and renders run.* events
@@ -79,10 +80,12 @@ src/
                           #   tools/documentWrites (3 writes), tools/bookReads (read/search/
                           #   list/open/delete chapters; a write creates a new chapter; rename_chapter in
                           #   documentWrites), tools/polishChapter, tools/plan (checklist),
-                          #   tools/askUser (a question the turn waits on)
+                          #   tools/askUser (a question the turn waits on), tools/web
+                          #   (web_search / web_read through the server's browser)
   services/
     llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
     serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
+    attachments.ts        # Attachment + web API client; an attachment's text fetched once per tab
     providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored
                           #   by scripts/server_generation.py — change both together
     chapterSummaries.ts   # Background chapter summarizer (lazy queue)
@@ -93,6 +96,7 @@ src/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
     llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
     conversationSummary.ts  # History past the window as a fixed-section note (§0.9)
+    attachments.ts  webText.ts  # Attachment paragraphs/sections/index/parts; web result text (parity)
   i18n/                   # en.ts / zh.ts translation bundles + index.ts hook
   parity/__tests__/       # TS↔Python parity cases; checks fixtures are current, or writes them
 scripts/
@@ -104,6 +108,8 @@ scripts/
   server_runs.py        # Server-side agent runs: engine, ports, /api/books/{id}/runs* (phase 3)
   server_context.py     # Request assembly for a run; ledger + seen record per book (run_context)
   server_documents.py   # Revision-checked write / create / delete / snapshot + their events
+  server_attachments.py # A book's reference files: decode, store, /api/books/{id}/attachments*
+  server_web.py         # Anonymous headless Chromium: /api/web/search, /api/web/read (no LAN)
   wc_agent/             # Python port of src/agent: async run loop, registry, every tool
   test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
   test_agent.py  test_runs.py   # pytest — the tools/loop on a fake book; the engine on a scripted provider
@@ -325,6 +331,13 @@ headers, which END the generation on a trigger) is redone once; when that
 is not enough the run **pauses** (`step_failed`, `repeating_output`) with
 its snapshot instead of ending. grok's stream read timeout is 180 s (idle),
 other providers 600 s.
+**Fewer steps** (agentic_chat_loop.md §0.11): `read_chapter` takes `parts`
+and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
+`<p>`/`<h*>`) needs its current text seen (`RunState.textSeen`), not its HTML;
+`edit_paragraphs` edits by ¶ number with a `starts_with` anchor
+(`utils/paragraphs` `paragraphSpans`/`applyParagraphEdits`); writes take
+`plan_done` (an attribute on tags); eight look-up-only steps in a row get one
+reminder.
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.
@@ -348,6 +361,16 @@ Both transports must apply it — `services/llm.ts` for the direct path and
 `scripts/server_generation.py` for the backend path — and the remote start
 payload must forward `reasoningEffort` (the payload copies config field by
 field; a field left out is silently ignored, as `conversationId` was).
+
+**Attachments and the web** (`docs/features/attachments_and_web.md`). A
+book's reference files (a source novel as `.txt`) live on the server, not in
+IndexedDB, and are addressed as `A1`, `A2`… by the read tools
+(`read_chapter` with `paragraphs` or `section`, `grep`, `analyze_book`). The
+request carries only their index; never let a code path put an attachment's
+text into the conversation whole — one read is capped at 20,000 characters
+and one turn at 100,000 (`ATTACHMENT_RUN_READ_CAP`). `web_search` /
+`web_read` run in a fresh, cookie-less headless Chromium on the API server
+that refuses private addresses; a bot check is reported, never bypassed.
 
 ### Backend API (`scripts/api_server.py`)
 FastAPI with cookie-based sessions (HttpOnly, SameSite=Lax) + CSRF

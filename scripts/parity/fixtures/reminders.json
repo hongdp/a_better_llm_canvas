@@ -88,6 +88,28 @@
     "output": "Editor facts for this turn: 0 writes reached the book, 2 chapters read, 1 plan item left. Your reply says you wrote or changed something, but nothing was written this turn. Either make the write now, in this reply, or correct the claim and tell the user what was actually done."
    }
   ],
+  "lookup_streak_nudge": [
+   {
+    "input": [
+     8,
+     true
+    ],
+    "output": "The last 8 steps only looked things up and wrote nothing, and every step sends the whole conversation again. Check several places in ONE call: read_chapter with parts, grep with patterns; for a question that spans many chapters, let analyze_book read them for you. Then write."
+   },
+   {
+    "input": [
+     11,
+     false
+    ],
+    "output": "The last 11 steps only looked things up and wrote nothing, and every step sends the whole conversation again. Check several places in ONE call: read_chapter with parts, grep with patterns. Then write."
+   }
+  ],
+  "lookup_nudge_steps": [
+   {
+    "input": [],
+    "output": 8
+   }
+  ],
   "append_reminders": [
    {
     "input": [

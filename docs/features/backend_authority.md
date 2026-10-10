@@ -402,6 +402,11 @@ summaries and imports are untouched.
   so a restart keeps it. The client sends it from `handleSendMessage` when a
   run is attached and streaming; the user message goes into the chat with no
   bubble of its own.
+- **The analyze and polish ports** (`_AnalyzePort`, `_PolishPort`) keep the
+  run as `self.owner`: as `self.run` it hid their `run()` method and every
+  server-side `analyze_book`/`polish_chapter` failed (fixed 2026-10-09,
+  agentic_chat_loop.md §0.11). A tool that raises is logged with its
+  traceback (`wc_agent.run`).
 - **Step failures** (agentic_chat_loop.md §0.10): a generation job retries
   a call that produced nothing yet (retryable statuses, connection errors;
   `Retry-After` honored) and records why it failed (`error_kind`:

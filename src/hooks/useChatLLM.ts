@@ -6,7 +6,7 @@ import { findResumableJob, findJobsForBubbles, resumeRemoteGeneration, abortRemo
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
 import { getTimestampId, stripIncompleteEndTag, trimIncompleteHtmlTail, isBlankContent } from '../utils/text'
-import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, wasTurnInterrupted } from '../utils/llmContext'
+import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, wasTurnInterrupted, htmlToPlainText } from '../utils/llmContext'
 import { interruptedTurnReminder, wrapReminder } from '../agent/reminders'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, type SummarizableMessage } from '../utils/conversationSummary'
 import { loadChatSummary, saveChatSummary } from '../store/chatSummaryStore'
@@ -31,7 +31,7 @@ import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
 import { AgentRun, type RunObserver } from '../agent/run'
 import { ToolRegistry, toToolSpecs } from '../agent/registry'
-import { DOCUMENT_WRITE_TOOLS, previewRewrite } from '../agent/tools/documentWrites'
+import { DOCUMENT_WRITE_TOOLS, previewRewrite, editParagraphsTool } from '../agent/tools/documentWrites'
 import { BOOK_TOOLS } from '../agent/tools/bookReads'
 import { polishChapterTool } from '../agent/tools/polishChapter'
 import { analyzeBookTool } from '../agent/tools/analyzeBook'
@@ -52,6 +52,9 @@ import { applyRunEvent, ensureRunMessages, bubbleStillWaiting, type RunLive } fr
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
 import type { AgentTurnRecord } from '../types/chat'
 import type { ThinkingBlock } from '../types/llm'
+import { WEB_TOOLS } from '../agent/tools/web'
+import { attachmentParagraphsOf, webAvailable, webRead, webSearch } from '../services/attachments'
+import { renderAttachmentIndex } from '../utils/attachments'
 import {
   EMPTY_LEDGER,
   hashContent,
@@ -101,7 +104,25 @@ interface StreamRenderContext extends RunInfo {
 /** Assistant turns whose grok reasoning items go back in the next request (the most recent ones). */
 export const REASONING_HISTORY_TURNS = 8
 
-const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool, planTool, askUserTool])
+const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, editParagraphsTool, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool, planTool, askUserTool, ...WEB_TOOLS])
+
+/**
+ * Whether the API server has a browser (attachments_and_web.md §2): asked
+ * once per page load. web_search / web_read are offered only when it does —
+ * a tool that can only fail would cost the model a step to learn that.
+ */
+let webStatus: Promise<boolean> | null = null
+let webReady = false
+function checkWebAccess(): void {
+  if (webStatus) return
+  webStatus = webAvailable().then(ok => { webReady = ok; return ok })
+}
+
+/** The active book's attachments, when the store holds that book's list. */
+function bookAttachments(bookId: string) {
+  const s = useAppStore.getState()
+  return s.attachmentsBookId === bookId ? s.attachments : []
+}
 
 /** The chat text of a record's finished steps, joined as the bubble shows it. */
 const recordText = (record: AgentTurnRecord | undefined) =>
@@ -235,6 +256,20 @@ interface UseChatLLMProps {
   setIsChatExpanded: (expanded: boolean) => void
   forceSave: () => void
   setSaveStatus: (status: 'saved' | 'unsaved') => void
+}
+
+/**
+ * The chapters whose whole current text this request carries — the ledger
+ * renders a chapter's plain text up to the per-chapter cap — by the hash of
+ * their accepted reading (RunState.textSeen, agentic_chat_loop.md §0.11).
+ */
+export function textSeenInContext(documents: Array<{ id: string; content: string }>, inContextIds: string[]): Array<[string, string]> {
+  return inContextIds.flatMap(id => {
+    const doc = documents.find(d => d.id === id)
+    if (!doc) return []
+    const accepted = stripDiffMarkup(doc.content)
+    return htmlToPlainText(accepted).length <= MAX_LEDGER_DOC_CHARS ? [[id, hashContent(accepted)] as [string, string]] : []
+  })
 }
 
 export function useChatLLM({
@@ -638,8 +673,28 @@ export function useChatLLM({
     // one it opened itself. Sticky — once the user has gone elsewhere the
     // view is theirs for the rest of the run.
     const view = { expected: info.startId, moved: false }
+    const start = useAppStore.getState()
+    const bookId = start.activeBookId
+    const loggedIn = Boolean(start.user)
+    if (loggedIn) checkWebAccess()
+    const webOn = loggedIn && webReady && start.providerConfigs[start.activeProvider]?.webAccess !== false
     return {
     getState: useAppStore.getState,
+    // The book's reference files (attachments_and_web.md §1): listed from the
+    // store, their text fetched once per tab and read in bounded parts.
+    ...(loggedIn ? {
+      attachments: {
+        list: () => bookAttachments(bookId),
+        paragraphs: (id: string) => attachmentParagraphsOf(bookId, id)
+      }
+    } : {}),
+    // The server's anonymous browser (§2); absent when off or unavailable.
+    ...(webOn ? {
+      web: {
+        search: (query: string, maxResults: number) => webSearch(query, maxResults),
+        read: (url: string) => webRead(url)
+      }
+    } : {}),
     // analyze_book (D7): the chat model, one call per batch, on a cache key
     // of its own — batches share no prefix with the conversation.
     analyze: {
@@ -817,7 +872,8 @@ export function useChatLLM({
         startId: info.startId,
         inContext: info.inContextIds,
         startContent: info.originalDocContent,
-        startOutline: chapterOutline(useAppStore.getState().documents)
+        startOutline: chapterOutline(useAppStore.getState().documents),
+        textSeen: textSeenInContext(useAppStore.getState().documents, info.inContextIds)
       }),
       info.rejoined?.prior?.seen,
       id => useAppStore.getState().documents.find(d => d.id === id && d.contentLoaded !== false)?.content
@@ -1214,7 +1270,8 @@ export function useChatLLM({
           apiKey: cfg.apiKey, model: cfg.model, baseUrl: cfg.baseUrl, maxOutputTokens: cfg.maxOutputTokens,
           geminiSafetySettings: cfg.geminiSafetySettings, reasoningEffort: cfg.reasoningEffort, documentProtocol: cfg.documentProtocol,
           agentTools: cfg.agentTools, agentMaxSteps: cfg.agentMaxSteps, continueAfterWrites: cfg.continueAfterWrites,
-          polishModel: cfg.polishModel, runTokenBudget: cfg.runTokenBudget, longReasoningReminderTokens: cfg.longReasoningReminderTokens
+          polishModel: cfg.polishModel, runTokenBudget: cfg.runTokenBudget, longReasoningReminderTokens: cfg.longReasoningReminderTokens,
+          webAccess: cfg.webAccess
         },
         activeDocumentId: s.activeDocumentId,
         selectedText: selectedText || undefined,
@@ -1409,6 +1466,8 @@ export function useChatLLM({
     }
   }, [attachServerRun])
   useEffect(() => { void reconcileServerRuns() }, [reconcileServerRuns, activeBookId, user])
+  // Ask once whether the server can browse, before the first turn's tools are fixed.
+  useEffect(() => { if (user) checkWebAccess() }, [user])
 
   // The sending tab tells the run where the user is (agentic_chat_loop.md
   // §0.4: once they move, the run stops changing the view).
@@ -1934,9 +1993,12 @@ export function useChatLLM({
 
     // The turn after a Stop says so (agentic_chat_loop.md §0.8).
     const interrupted = wasTurnInterrupted(historySource) ? `\n\n${wrapReminder(interruptedTurnReminder())}` : ''
+    // The book's reference files, by reference only (attachments_and_web.md §1).
+    const index = runSettings.agentTools && s.user ? renderAttachmentIndex(bookAttachments(s.activeBookId)) : ''
+    const files = index ? `\n\n${index}` : ''
     const finalUserMessage: LLMMessage = {
       role: 'user',
-      content: `${dynamicContext}\n\nUSER REQUEST:\n${promptText}${interrupted}`,
+      content: `${dynamicContext}${files}\n\nUSER REQUEST:\n${promptText}${interrupted}`,
       images
     }
 

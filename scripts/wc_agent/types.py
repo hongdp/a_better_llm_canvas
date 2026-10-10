@@ -52,6 +52,12 @@ class RunState:
     plan_baseline: Dict[str, int] = field(default_factory=dict)
     #: A question the model asked the user this step (`ask_user`): {question, options}.
     question: Optional[Dict[str, Any]] = None
+    #: Chapters whose whole current text the model has seen this run, by the hash of
+    #: the accepted reading (agentic_chat_loop.md §0.11): a plain one may be rewritten
+    #: without an HTML read.
+    text_seen: Dict[str, str] = field(default_factory=dict)
+    #: Characters of attachments read into the conversation this run (capped: ATTACHMENT_RUN_READ_CAP).
+    attachment_chars: int = 0
 
 
 def writes_so_far(run: RunState) -> int:
@@ -64,8 +70,8 @@ def chapter_outline(chapters: List[Dict[str, Any]]) -> str:
 
 
 def create_run_state(start_id: str, in_context: Optional[List[str]] = None, start_content: Optional[str] = None,
-                     start_outline: Optional[str] = None) -> RunState:
-    st = RunState(start_outline=start_outline)
+                     start_outline: Optional[str] = None, text_seen: Optional[Dict[str, str]] = None) -> RunState:
+    st = RunState(start_outline=start_outline, text_seen=dict(text_seen or {}))
     if start_content is not None:
         st.known[start_id] = start_content
     st.html_shown.add(start_id)
@@ -99,9 +105,11 @@ class ToolContext:
     ui:       progress(line|None), writing(id|None)
     polish:   optional, run(html, on_progress) -> outcome dict [async]
     analyze:  optional, run(task, chapters, on_progress) -> outcome dict [async]
+    attachments: optional, list() -> [meta with ref A1…], paragraphs(id) -> [str] [async]
+    web:      optional, search(query, max) -> [{title, url, snippet}] [async], read(url) -> {url, title, paragraphs} [async]
     """
 
-    def __init__(self, document, editor, selection, images, ui, run: RunState, polish=None, analyze=None) -> None:
+    def __init__(self, document, editor, selection, images, ui, run: RunState, polish=None, analyze=None, attachments=None, web=None) -> None:
         self.document = document
         self.editor = editor
         self.selection = selection
@@ -110,3 +118,5 @@ class ToolContext:
         self.run = run
         self.polish = polish
         self.analyze = analyze
+        self.attachments = attachments
+        self.web = web

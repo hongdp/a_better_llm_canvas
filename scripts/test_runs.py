@@ -186,6 +186,31 @@ def test_stop_aborts_the_step_and_holds_the_queue(book, monkeypatch):
     assert content_of("doc-1") == "<p>alpha</p>"
 
 
+# ── the server's analyze and polish ports (agentic_chat_loop.md §0.11) ──────
+
+def test_analyze_book_runs_on_a_server_run(book, monkeypatch):
+    """Regression: the port kept the run as `self.run`, hiding its run() method — every call failed."""
+    call = {"text": "", "calls": [("a1", "analyze_book", json.dumps({"task": "审阅", "chapters": ["1", "2"]}))]}
+    provider = Scripted([call, "NOTES: 两章都在。", "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run
+    run = asyncio.run(main())
+    assert run.status == "done"
+    assert any(line.startswith("📚 analyzed") and "(failed)" not in line for line in run.record["trace"]), run.record["trace"]
+    assert "NOTES: 两章都在。" in json.dumps(provider.requests[2]["messages"], ensure_ascii=False)
+
+
+def test_polish_chapter_port_is_callable():
+    port = server_runs._PolishPort(server_runs.RunEngine(), server_runs.Run("run-x", "alice", "book-1", {"provider": "grok"}))
+    assert callable(port.run) and port.owner.id == "run-x"
+    analyze = server_runs._AnalyzePort(server_runs.RunEngine(), server_runs.Run("run-y", "alice", "book-1", {"provider": "grok"}))
+    assert callable(analyze.run) and analyze.owner.id == "run-y"
+
+
 # ── a step that fails (agentic_chat_loop.md §0.10) ────────────────────────────
 
 def test_a_step_that_broke_mid_reply_is_written_again(book, monkeypatch):

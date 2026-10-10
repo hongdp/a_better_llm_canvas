@@ -17,6 +17,7 @@ import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
+import { ATTACHMENT_RUN_READ_CAP, attachmentBudgetNote, findAttachmentSection, renderAttachmentPart, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
 import { isBlankContent } from '../../utils/text'
 
 /** Per chapter per call — the ledger's per-chapter cap (MAX_LEDGER_DOC_CHARS). */
@@ -47,6 +48,28 @@ function acceptedHtml(ctx: ToolContext, id: string): string {
   return stripDiffMarkup(ctx.document.chapters().find(c => c.id === id)?.content ?? '')
 }
 
+const ATTACHMENT_REF_RE = /^\s*(?:A|附件)\s*\d+\s*$/i
+
+export type ResolvedRef = { chapter: ResolvedChapter } | { attachment: AttachmentMeta } | { error: string }
+
+/**
+ * A chapter or an attachment (docs/features/attachments_and_web.md §1): "A1"
+ * is an attachment; anything else a chapter first and an attachment's name
+ * second.
+ */
+export function resolveRef(ref: unknown, chapters: Array<{ id: string; title: string }>, attachments: AttachmentMeta[]): ResolvedRef {
+  if (attachments.length > 0 && ATTACHMENT_REF_RE.test(String(ref))) {
+    const att = resolveAttachmentRef(ref, attachments)
+    if (att) return { attachment: att }
+  }
+  const r = resolveChapter(ref, chapters)
+  if (typeof r !== 'string') return { chapter: r }
+  const att = attachments.length > 0 ? resolveAttachmentRef(ref, attachments) : null
+  return att ? { attachment: att } : { error: r }
+}
+
+export const attachmentList = (ctx: ToolContext): AttachmentMeta[] => ctx.attachments?.list() ?? []
+
 function chapterRefs(raw: Record<string, unknown>): unknown[] {
   if (Array.isArray(raw.chapters)) return raw.chapters
   if (raw.chapters !== undefined) return [raw.chapters]
@@ -63,7 +86,7 @@ function chapterRefs(raw: Record<string, unknown>): unknown[] {
 const RECENT_STEPS = 1
 
 /** Paragraphs to read: 1-based and inclusive; `to` null = to the end. */
-interface ParagraphRange {
+export interface ParagraphRange {
   from: number
   to: number | null
 }
@@ -73,7 +96,7 @@ interface ParagraphRange {
  * anything else, so the model learns the syntax instead of silently reading
  * the wrong part.
  */
-function parseRange(raw: unknown): ParagraphRange | null | string {
+export function parseRange(raw: unknown): ParagraphRange | null | string {
   if (raw === undefined || raw === null || raw === '') return null
   if (Array.isArray(raw) && raw.length >= 1 && raw.length <= 2 && raw.every(n => Number.isInteger(Number(n)))) {
     const [a, b] = raw.map(Number)
@@ -97,62 +120,145 @@ function parseRange(raw: unknown): ParagraphRange | null | string {
   return { from, to }
 }
 
-interface ReadArgs {
-  refs: unknown[]
-  format: 'text' | 'html'
+/** One thing to read: a chapter, and optionally a paragraph range of it. */
+interface ReadItem {
+  ref: unknown
   range: ParagraphRange | null
+  /** Attachments only: a section by its heading ("第三十章"). */
+  section?: string
 }
+
+interface ReadArgs {
+  items: ReadItem[]
+  format: 'text' | 'html'
+}
+
+/** Parts one read_chapter call may name (agentic_chat_loop.md §0.11). */
+export const MAX_READ_PARTS = 12
 
 export const readChapterTool = defineTool<ReadArgs>({
   name: 'read_chapter',
   description:
     'Read one or more chapters. Find them in the CHAPTER INDEX and pass their numbers. ' +
     'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency; ' +
-    '"html" returns the chapter\'s HTML without numbers, for editing — edits copy their SEARCH text from it. ' +
+    '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. ' +
     'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. ' +
+    `To look at several places at once, pass parts (up to ${MAX_READ_PARTS}), e.g. [{"chapter":"3","paragraphs":"10-16"},{"chapter":"8","paragraphs":"30-36"}]: one call, one step. ` +
     `A long chapter comes back in parts of at most ${READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. ` +
-    'If no title or summary tells you where something is, use grep.',
+    'If no title or summary tells you where something is, use grep. ' +
+    'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range, or with section (a heading such as "第三十章"; 第30章 is the same chapter). ' +
+    'A turn reads at most 100,000 characters of attachments: find passages with grep, or let analyze_book read a whole file.',
   parameters: {
     type: 'object',
     properties: {
       chapters: {
         type: 'array',
-        description: 'Chapter numbers from the CHAPTER INDEX (or exact titles).',
+        description: 'Chapter numbers from the CHAPTER INDEX (or exact titles), or attachment references (A1).',
         items: { type: 'string' }
       },
-      format: { type: 'string', description: '"text" (default, numbered paragraphs) or "html" (for editing).' },
-      paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.' }
-    },
-    required: ['chapters']
+      format: { type: 'string', description: '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).' },
+      paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.' },
+      section: { type: 'string', description: 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter).' },
+      parts: {
+        type: 'array',
+        description: 'Instead of chapters/paragraphs: several places to read in one call, each a chapter and an optional paragraph range.',
+        items: {
+          type: 'object',
+          properties: {
+            chapter: { type: 'string', description: 'A chapter number from the CHAPTER INDEX (or its exact title).' },
+            paragraphs: { type: 'string', description: 'Optional range, as in paragraphs above.' },
+            section: { type: 'string', description: 'Attachments only: a section by its heading.' }
+          },
+          required: ['chapter']
+        }
+      }
+    }
   },
   kind: 'read',
   isAvailable: () => true,
   parse: raw => {
     if (!raw) return 'its arguments could not be parsed'
+    const format = raw.format === 'html' ? 'html' : 'text'
+    if (Array.isArray(raw.parts) && raw.parts.length > 0) {
+      if (raw.parts.length > MAX_READ_PARTS) return `at most ${MAX_READ_PARTS} parts in one call (${raw.parts.length} were given)`
+      const items: ReadItem[] = []
+      for (const [i, part] of raw.parts.entries()) {
+        const p = part && typeof part === 'object' ? part as Record<string, unknown> : null
+        const ref = p ? (p.chapter ?? (Array.isArray(p.chapters) ? p.chapters[0] : p.chapters)) : part
+        if (ref === undefined || ref === null || ref === '') return `part ${i + 1} names no chapter`
+        const range = parseRange(p?.paragraphs)
+        if (typeof range === 'string') return `part ${i + 1}: ${range}`
+        const section = typeof p?.section === 'string' && p.section.trim() ? p.section : undefined
+        items.push({ ref, range, ...(section ? { section } : {}) })
+      }
+      return { items, format }
+    }
     const refs = chapterRefs(raw)
-    if (refs.length === 0) return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX])'
+    if (refs.length === 0) return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts")'
     const range = parseRange(raw.paragraphs)
     if (typeof range === 'string') return range
-    return { refs, format: raw.format === 'html' ? 'html' : 'text', range }
+    const section = typeof raw.section === 'string' && raw.section.trim() ? raw.section : undefined
+    return { items: refs.map(ref => ({ ref, range, ...(section ? { section } : {}) })), format }
   },
-  execute: async ({ refs, format, range }, ctx): Promise<ToolResult> => {
+  execute: async ({ items, format }, ctx): Promise<ToolResult> => {
     const chapters = ctx.document.chapters()
-    const resolved: ResolvedChapter[] = []
+    const attachments = attachmentList(ctx)
+    type Entry = ({ chapter: ResolvedChapter } | { attachment: AttachmentMeta }) & { key: string; range: ParagraphRange | null; section?: string }
+    const resolved: Entry[] = []
     const errors: string[] = []
-    for (const ref of refs) {
-      const r = resolveChapter(ref, chapters)
-      if (typeof r === 'string') errors.push(r)
-      else if (!resolved.some(c => c.id === r.id)) resolved.push(r)
+    for (const item of items) {
+      const r = resolveRef(item.ref, chapters, attachments)
+      if ('error' in r) { errors.push(r.error); continue }
+      if (item.section && !('attachment' in r)) { errors.push(`section="${item.section}" names a part of an attachment; for a chapter, pass paragraphs instead.`); continue }
+      const key = 'attachment' in r ? `a:${r.attachment.id}` : `c:${r.chapter.id}`
+      if (!resolved.some(x => x.key === key && JSON.stringify(x.range) === JSON.stringify(item.range) && x.section === item.section)) {
+        resolved.push({ ...r, key, range: item.range, ...(item.section ? { section: item.section } : {}) })
+      }
     }
     if (resolved.length === 0) return fail('read_chapter', errors.join('\n'))
 
-    await ctx.document.ensureLoaded(resolved.map(c => c.id))
+    await ctx.document.ensureLoaded([...new Set(resolved.flatMap(x => ('chapter' in x ? [x.chapter.id] : [])))])
 
     const parts: string[] = []
     const traces: string[] = []
     let budget = READ_CALL_CAP
-    const skipped: ResolvedChapter[] = []
-    for (const chapter of resolved) {
+    const skipped: string[] = []
+    for (const entry of resolved) {
+      let range = entry.range
+      if ('attachment' in entry) {
+        // A reference file: text only, never written (attachments_and_web.md §1).
+        const att = entry.attachment
+        const paras = await (ctx.attachments as NonNullable<ToolContext['attachments']>).paragraphs(att.id)
+        if (entry.section) {
+          // A section by its heading: "第三十章" and "第30章" are the same chapter.
+          const sec = findAttachmentSection(att.sections, entry.section)
+          if (!sec) {
+            const sample = att.sections.slice(0, 6).map(s => `"${s.title}"`).join(', ')
+            errors.push(`${att.ref} "${att.name}" has no section matching "${entry.section}".` +
+              (sample ? ` Its sections begin ${sample}…; grep chapters=["${att.ref}"] for a heading.` : ' It has no section headings; grep it instead.'))
+            continue
+          }
+          range = { from: sec.from, to: sec.to }
+        }
+        const start = range?.from ?? 1
+        if (start > paras.length) { errors.push(`${att.ref} "${att.name}" has ${paras.length} paragraphs; there is no ¶${start}.`); continue }
+        // Never the whole file: the turn's reads of attachments are capped (§1, user requirement).
+        const left = ATTACHMENT_RUN_READ_CAP - ctx.run.attachmentChars
+        if (left <= 0) { errors.push(attachmentBudgetNote(att.ref, ctx.run.attachmentChars)); continue }
+        if (budget <= 0) { skipped.push(`${att.ref}${range ? ` ¶${start}` : ''}`); continue }
+        const out = renderAttachmentPart(att, paras, start, range?.to ?? null, Math.min(READ_CHAPTER_CAP, budget, left))
+        if (out.last < start) {
+          // Not even its first paragraph fits in what the turn has left.
+          errors.push(attachmentBudgetNote(att.ref, ctx.run.attachmentChars))
+          continue
+        }
+        budget -= out.used
+        ctx.run.attachmentChars += out.used
+        parts.push(out.content)
+        traces.push(`${att.ref} "${att.name}" ¶${start}–${out.last} (${(out.used / 1000).toFixed(1)}k, attachment)`)
+        continue
+      }
+      const chapter = entry.chapter
       // The user changed it while the run worked: the run's copy is stale,
       // so read what is stored now.
       if (userEdited(ctx, chapter.id)) forgetChapter(ctx, chapter.id)
@@ -187,7 +293,7 @@ export const readChapterTool = defineTool<ReadArgs>({
         continue
       }
       if (budget <= 0) {
-        skipped.push(chapter)
+        skipped.push(`${citeChapter(chapter)}${range ? ` ¶${from}–${to}` : ''}`)
         continue
       }
 
@@ -222,13 +328,15 @@ export const readChapterTool = defineTool<ReadArgs>({
 
       ctx.run.reads.set(key, ctx.run.step)
       ctx.run.readIds.add(chapter.id)
+      // The whole current text, seen: enough to rewrite a plain chapter (§0.11).
+      if (whole) ctx.run.textSeen.set(chapter.id, hashContent(html))
       if (format === 'html') {
         ctx.run.htmlShown.add(chapter.id)
         if (!ctx.run.known.has(chapter.id)) ctx.run.known.set(chapter.id, stored)
       }
     }
     if (skipped.length > 0) {
-      parts.push(`[Not returned — this call reached its ${READ_CALL_CAP}-character limit: ${skipped.map(citeChapter).join(', ')}. Ask for them in another call.]`)
+      parts.push(`[Not returned — this call reached its ${READ_CALL_CAP}-character limit: ${skipped.join(', ')}. Ask for them in another call.]`)
     }
     if (errors.length > 0) parts.push(errors.join('\n'))
 
@@ -258,11 +366,85 @@ function compilePattern(pattern: string): { re: RegExp; literal: boolean } {
 }
 
 interface GrepArgs {
-  pattern: string
+  patterns: string[]
   refs: unknown[]
   output: 'snippets' | 'chapters'
   context: number
   maxResults: number
+}
+
+/** Patterns one grep call may search (agentic_chat_loop.md §0.11). */
+export const MAX_GREP_PATTERNS = 10
+
+type ScopedChapter = ReturnType<ToolContext['document']['chapters']>[number] & { number: number }
+
+/** One pattern over the chapters in scope: the head line, the snippet or per-chapter lines, and the totals. */
+function searchPattern(pattern: string, scope: ScopedChapter[], ctx: ToolContext, output: GrepArgs['output'], context: number, maxResults: number, scoped: boolean,
+  attached: Array<[AttachmentMeta, string[]]> = []) {
+  const { re, literal } = compilePattern(pattern)
+  const hits: string[] = []
+  const perChapter: string[] = []
+  let total = 0
+  for (const [att, paras] of attached) {
+    // A reference file named in `chapters` (attachments_and_web.md §1); never searched otherwise.
+    const label = `${att.ref} "${att.name}"`
+    let count = 0
+    paras.forEach((text, i) => {
+      re.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = re.exec(text)) !== null) {
+        if (m[0].length === 0) { re.lastIndex++; continue }
+        count++
+        if (output === 'snippets' && hits.length < maxResults) {
+          const from = Math.max(0, m.index - context)
+          const to = Math.min(text.length, m.index + m[0].length + context)
+          hits.push(`${label} ¶${i + 1}: ${from > 0 ? '…' : ''}${text.slice(from, to).replace(/\s+/g, ' ')}${to < text.length ? '…' : ''}`)
+        }
+      }
+    })
+    if (count > 0) {
+      perChapter.push(`${label} — ${count} match${count === 1 ? '' : 'es'}`)
+      total += count
+    }
+  }
+  for (const chapter of scope) {
+    let count = 0
+    // Paragraph by paragraph, so every hit carries the ¶ number that
+    // read_chapter takes as a range — grep, then read around the hit.
+    for (const para of chapterParagraphs(acceptedHtml(ctx, chapter.id))) {
+      const text = para.text
+      re.lastIndex = 0
+      let m: RegExpExecArray | null
+      while ((m = re.exec(text)) !== null) {
+        if (m[0].length === 0) { re.lastIndex++; continue }
+        count++
+        if (output === 'snippets' && hits.length < maxResults) {
+          const from = Math.max(0, m.index - context)
+          const to = Math.min(text.length, m.index + m[0].length + context)
+          const snippet = text.slice(from, to).replace(/\s+/g, ' ')
+          hits.push(`#${chapter.number} "${chapter.title}" ¶${para.number}: ${from > 0 ? '…' : ''}${snippet}${to < text.length ? '…' : ''}`)
+        }
+      }
+    }
+    // Only a non-empty match counts: `x*` matches everything at width zero.
+    const titleHit = [...chapter.title.matchAll(re)].some(t => t[0].length > 0)
+    re.lastIndex = 0
+    if (count === 0 && titleHit) {
+      if (output === 'snippets' && hits.length < maxResults) hits.push(`#${chapter.number} "${chapter.title}" (title matches)`)
+      perChapter.push(`#${chapter.number} "${chapter.title}" — title matches`)
+      total++
+    } else if (count > 0) {
+      perChapter.push(`#${chapter.number} "${chapter.title}" — ${count} match${count === 1 ? '' : 'es'}`)
+      total += count
+    }
+  }
+  const scopeNote = scoped ? ` in ${scope.length + attached.length} chapter(s)` : ''
+  const literalNote = literal ? ' (not a valid regular expression; searched as plain text)' : ''
+  const head = total === 0
+    ? `No matches for /${pattern}/${scopeNote}${literalNote}.`
+    : `${total} match(es) in ${perChapter.length} chapter(s)${scopeNote}${literalNote}` +
+      (output === 'snippets' && total > hits.length ? `; showing the first ${hits.length}` : '') + ':'
+  return { head, lines: output === 'chapters' ? perChapter : hits, total, chapterCount: perChapter.length }
 }
 
 /**
@@ -277,94 +459,64 @@ export const grepTool = defineTool<GrepArgs>({
   description:
     'Search the book like grep: a regular expression (case-insensitive) over every chapter\'s text, or only the chapters you name. ' +
     'Use it to locate where a name, phrase, object or event appears before reading — e.g. "阿青|阿红", "第[一二三]次", "outline". ' +
-    'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read_chapter paragraphs="…"; output "chapters" returns only the chapters that match, with counts. ' +
-    'Chapter titles are searched too.',
+    `To check several things at once, pass patterns (up to ${MAX_GREP_PATTERNS}): each is searched and reported on its own — one call, one step. ` +
+    'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read_chapter paragraphs="…", or change it with edit_paragraphs; output "chapters" returns only the chapters that match, with counts. ' +
+    'Chapter titles are searched too. An attachment (A1…) is searched only when named in chapters.',
   parameters: {
     type: 'object',
     properties: {
       pattern: { type: 'string', description: 'A JavaScript regular expression, matched case-insensitively. Plain words work as they are.' },
-      chapters: { type: 'array', description: 'Optional: limit the search to these chapters (numbers from the CHAPTER INDEX, or titles).', items: { type: 'string' } },
+      patterns: { type: 'array', description: `Instead of pattern: up to ${MAX_GREP_PATTERNS} expressions, each searched and reported separately.`, items: { type: 'string' } },
+      chapters: { type: 'array', description: 'Optional: limit the search to these chapters (numbers from the CHAPTER INDEX, or titles), or search attachments (A1).', items: { type: 'string' } },
       output: { type: 'string', description: '"snippets" (default) or "chapters".' },
       context: { type: 'integer', description: `Characters of text on each side of a match in snippets. Default ${DEFAULT_CONTEXT}, at most ${MAX_CONTEXT}.` },
-      max_results: { type: 'integer', description: `Snippets to return. Default ${DEFAULT_SEARCH_RESULTS}, at most ${MAX_SEARCH_RESULTS}.` }
-    },
-    required: ['pattern']
+      max_results: { type: 'integer', description: `Snippets to return per pattern. Default ${DEFAULT_SEARCH_RESULTS}, at most ${MAX_SEARCH_RESULTS}.` }
+    }
   },
   kind: 'read',
   isAvailable: () => true,
   parse: raw => {
-    const pattern = typeof raw?.pattern === 'string' ? raw.pattern : typeof raw?.query === 'string' ? raw.query : ''
-    if (!pattern.trim()) return 'the pattern was empty'
+    const listed = Array.isArray(raw?.patterns) ? raw.patterns.filter((p): p is string => typeof p === 'string' && p.trim() !== '') : []
+    const single = typeof raw?.pattern === 'string' ? raw.pattern : typeof raw?.query === 'string' ? raw.query : ''
+    const patterns = [...new Set(listed.length > 0 ? listed : single.trim() ? [single] : [])]
+    if (patterns.length === 0) return 'the pattern was empty'
+    if (patterns.length > MAX_GREP_PATTERNS) return `at most ${MAX_GREP_PATTERNS} patterns in one call (${patterns.length} were given)`
     const num = (v: unknown, fallback: number, max: number) =>
       typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(max, Math.floor(v))) : fallback
     return {
-      pattern,
+      patterns,
       refs: raw ? chapterRefs(raw) : [],
       output: raw?.output === 'chapters' ? 'chapters' : 'snippets',
       context: num(raw?.context, DEFAULT_CONTEXT, MAX_CONTEXT),
       maxResults: Math.max(1, num(raw?.max_results, DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS))
     }
   },
-  execute: async ({ pattern, refs, output, context, maxResults }, ctx): Promise<ToolResult> => {
+  execute: async ({ patterns, refs, output, context, maxResults }, ctx): Promise<ToolResult> => {
     const all = ctx.document.chapters()
-    let scope = all.map((c, i) => ({ ...c, number: i + 1 }))
+    let scope: ScopedChapter[] = all.map((c, i) => ({ ...c, number: i + 1 }))
+    const attachmentsScope: AttachmentMeta[] = []
     if (refs.length > 0) {
-      const picked: typeof scope = []
+      const picked: ScopedChapter[] = []
+      const known = attachmentList(ctx)
       for (const ref of refs) {
-        const r = resolveChapter(ref, all)
-        if (typeof r === 'string') return fail('grep', r)
-        if (!picked.some(c => c.id === r.id)) picked.push(scope[r.number - 1])
+        const r = resolveRef(ref, all, known)
+        if ('error' in r) return fail('grep', r.error)
+        if ('attachment' in r) {
+          if (!attachmentsScope.some(a => a.id === r.attachment.id)) attachmentsScope.push(r.attachment)
+        } else if (!picked.some(c => c.id === r.chapter.id)) picked.push(scope[r.chapter.number - 1])
       }
       scope = picked
     }
     await ctx.document.ensureLoaded(scope.map(c => c.id))
+    const attached: Array<[AttachmentMeta, string[]]> = []
+    for (const a of attachmentsScope) attached.push([a, await (ctx.attachments as NonNullable<ToolContext['attachments']>).paragraphs(a.id)])
     // A server chapter whose text failed to load reads as '': searching it
     // would report "no match" for text that is there. Say it was skipped.
     const loadedNow = ctx.document.chapters()
     const unloaded = scope.filter(c => loadedNow.find(n => n.id === c.id)?.loaded === false)
-    const { re, literal } = compilePattern(pattern)
+    const searchable = scope.filter(c => !unloaded.includes(c))
+    const results = patterns.map(p => ({ pattern: p, ...searchPattern(p, searchable, ctx, output, context, maxResults, refs.length > 0, attached) }))
 
-    const hits: string[] = []
-    const perChapter: string[] = []
-    let total = 0
-    for (const chapter of scope.filter(c => !unloaded.includes(c))) {
-      let count = 0
-      // Paragraph by paragraph, so every hit carries the ¶ number that
-      // read_chapter takes as a range — grep, then read around the hit.
-      for (const para of chapterParagraphs(acceptedHtml(ctx, chapter.id))) {
-        const text = para.text
-        re.lastIndex = 0
-        let m: RegExpExecArray | null
-        while ((m = re.exec(text)) !== null) {
-          if (m[0].length === 0) { re.lastIndex++; continue }
-          count++
-          if (output === 'snippets' && hits.length < maxResults) {
-            const from = Math.max(0, m.index - context)
-            const to = Math.min(text.length, m.index + m[0].length + context)
-            const snippet = text.slice(from, to).replace(/\s+/g, ' ')
-            hits.push(`#${chapter.number} "${chapter.title}" ¶${para.number}: ${from > 0 ? '…' : ''}${snippet}${to < text.length ? '…' : ''}`)
-          }
-        }
-      }
-      // Only a non-empty match counts: `x*` matches everything at width zero.
-      const titleHit = [...chapter.title.matchAll(re)].some(t => t[0].length > 0)
-      re.lastIndex = 0
-      if (count === 0 && titleHit) {
-        if (output === 'snippets' && hits.length < maxResults) hits.push(`#${chapter.number} "${chapter.title}" (title matches)`)
-        perChapter.push(`#${chapter.number} "${chapter.title}" — title matches`)
-        total++
-      } else if (count > 0) {
-        perChapter.push(`#${chapter.number} "${chapter.title}" — ${count} match${count === 1 ? '' : 'es'}`)
-        total += count
-      }
-    }
-
-    const scopeNote = refs.length > 0 ? ` in ${scope.length} chapter(s)` : ''
-    const literalNote = literal ? ' (not a valid regular expression; searched as plain text)' : ''
-    const head = total === 0
-      ? `No matches for /${pattern}/${scopeNote}${literalNote}.`
-      : `${total} match(es) in ${perChapter.length} chapter(s)${scopeNote}${literalNote}` +
-        (output === 'snippets' && total > hits.length ? `; showing the first ${hits.length}` : '') + ':'
     const skipped = unloaded.length > 0
       ? [`Not searched — their text could not be loaded: ${unloaded.map(c => `#${c.number} "${c.title}"`).join(', ')}.`]
       : []
@@ -374,14 +526,25 @@ export const grepTool = defineTool<GrepArgs>({
      * one chapter, which read as "grep only searches one chapter" (user
      * question, 2026-10-06 — the model had in fact limited it to #13).
      */
+    const labels = [...scope.map(c => `#${c.number}`), ...attached.map(([a]) => a.ref)]
     const where = refs.length === 0 ? 'in the whole book'
-      : scope.length <= 4 ? `in ${scope.map(c => `#${c.number}`).join(', ')}`
-      : `in ${scope.length} chapters`
-    const across = perChapter.length > 1 || (refs.length === 0 && perChapter.length > 0) ? ` in ${perChapter.length} chapter(s)` : ''
+      : labels.length <= 4 ? `in ${labels.join(', ')}`
+      : `in ${labels.length} chapters`
+    if (results.length === 1) {
+      const [r] = results
+      const across = r.chapterCount > 1 || (refs.length === 0 && r.chapterCount > 0) ? ` in ${r.chapterCount} chapter(s)` : ''
+      return {
+        ok: true,
+        content: [r.head, ...r.lines, ...skipped].join('\n'),
+        trace: `🔎 grep /${r.pattern}/ ${where} → ${r.total} match${r.total === 1 ? '' : 'es'}${across}` +
+          (unloaded.length > 0 ? ` · ${unloaded.length} not loaded` : '')
+      }
+    }
+    const total = results.reduce((sum, r) => sum + r.total, 0)
     return {
       ok: true,
-      content: [head, ...(output === 'chapters' ? perChapter : hits), ...skipped].join('\n'),
-      trace: `🔎 grep /${pattern}/ ${where} → ${total} match${total === 1 ? '' : 'es'}${across}` +
+      content: [...results.map(r => [`=== /${r.pattern}/ ===`, r.head, ...r.lines].join('\n')), ...skipped].join('\n\n'),
+      trace: `🔎 grep ${results.length} patterns ${where} → ${results.map(r => `/${r.pattern}/ ${r.total}`).join(', ')} (${total} in all)` +
         (unloaded.length > 0 ? ` · ${unloaded.length} not loaded` : '')
     }
   }

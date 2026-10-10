@@ -400,6 +400,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                       {t.settings.continueAfterWritesHint}
                     </p>
                   </div>
+                  <div className="form-group">
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={currentConfig.webAccess !== false}
+                        onChange={(e) => updateProviderConfig(activeTab, { webAccess: e.target.checked })}
+                      />
+                      {t.settings.webAccess}
+                    </label>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
+                      {t.settings.webAccessHint}
+                    </p>
+                  </div>
                 </>
               )}
 

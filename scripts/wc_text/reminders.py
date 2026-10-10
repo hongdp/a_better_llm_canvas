@@ -91,6 +91,16 @@ def steer_message(text: str) -> str:
             + f"\n\nUSER MESSAGE:\n{text}")
 
 
+LOOKUP_NUDGE_STEPS = 8
+
+
+def lookup_streak_nudge(steps: int, analyze_offered: bool) -> str:
+    return (f"The last {steps} steps only looked things up and wrote nothing, and every step sends the whole conversation again. "
+            "Check several places in ONE call: read_chapter with parts, grep with patterns"
+            + ("; for a question that spans many chapters, let analyze_book read them for you" if analyze_offered else "")
+            + ". Then write.")
+
+
 def unbacked_claim_nudge(facts: Dict[str, int]) -> str:
     writes, reads, left = facts["writes"], facts["reads"], facts["planLeft"]
     return (f"Editor facts for this turn: {writes} write{'' if writes == 1 else 's'} reached the book, {reads} chapter{'' if reads == 1 else 's'} read, "
