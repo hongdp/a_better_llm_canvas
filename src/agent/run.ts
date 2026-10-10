@@ -20,7 +20,7 @@ import { appendReminders, htmlReadNudge, longReasoningReminder, planReminder, pl
 import { claimsOwnWrite, isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
-import { elisionTrace, planElisions, type ElidableResult } from './runCompaction'
+import { elisionTrace, planElisions, type ElidableResult, type MeasuredPrompt } from './runCompaction'
 import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepDecision, type StepPolicy } from './policy'
 import type { RegisteredTool, ToolRegistry } from './registry'
 import { seenChapters, writesSoFar, type AskedQuestion, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
@@ -190,6 +190,8 @@ export class AgentRun {
   private elidable: ElidableResult[] = []
   /** Where the latest step's results start in the messages: never elided. */
   private lastResultsStart = 0
+  /** The last step's real prompt size and the messages it covered (calibrates the elision check). */
+  private measured: MeasuredPrompt | null = null
 
   private readonly o: AgentRunOptions
 
@@ -251,6 +253,8 @@ export class AgentRun {
   /** The transport finished a step. Synchronous whenever the step's tools are. */
   stepDone(out: StepOutput): void {
     if (this.finished) return
+    // What this step was sent is `this.messages`, untouched until its results are appended.
+    if (out.usage?.promptTokens) this.measured = { tokens: out.usage.promptTokens, length: this.messages.length }
     this.stepsTaken++
     const collected = collectStep(out.text, out.nativeCalls, this.o.registry, this.stepsTaken - 1, {
       markupProtocol: this.o.writeProtocol === 'markup'
@@ -468,7 +472,7 @@ export class AgentRun {
   private compactIfNeeded(): void {
     const limit = this.o.promptTokenLimit ?? 0
     if (!(limit > 0) || this.elidable.length === 0) return
-    const plan = planElisions(this.messages, this.elidable, limit, this.lastResultsStart)
+    const plan = planElisions(this.messages, this.elidable, limit, this.lastResultsStart, this.measured)
     this.elidable = plan.remaining
     if (plan.elided.length === 0) return
     this.messages = plan.messages

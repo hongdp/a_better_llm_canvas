@@ -12,8 +12,8 @@ import pytest
 
 from wc_text import (chapter_index, chapters, context_ledger, context_selection, context_window, conversation_summary, diff, diff_resolution,
                      document_tools, dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes,
-                     plan, policy, polish, protocol_choice, provider_profile, reminders, run_compaction, stream_handlers, system_prompt, text, title_sync,
-                     tool_call_stream)
+                     plan, policy, polish, protocol_choice, provider_profile, reminders, retry_policy, run_compaction, stream_handlers, system_prompt, text,
+                     title_sync, tool_call_stream)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -167,6 +167,14 @@ FUNCTIONS = {
     ("run_compaction", "elision_trace"): run_compaction.elision_trace,
     ("run_compaction", "prompt_tokens"): run_compaction.prompt_tokens,
     ("run_compaction", "plan_elisions"): run_compaction.plan_elisions,
+    ("run_compaction", "calibrated_prompt_tokens"): run_compaction.calibrated_prompt_tokens,
+    ("retry_policy", "constants"): lambda: {"MAX_TRANSPORT_RETRIES": retry_policy.MAX_TRANSPORT_RETRIES, "MAX_RETRY_DELAY_MS": retry_policy.MAX_RETRY_DELAY_MS,
+                                            "RETRYABLE_STATUSES": retry_policy.RETRYABLE_STATUSES},
+    ("retry_policy", "is_retryable_status"): retry_policy.is_retryable_status,
+    ("retry_policy", "is_context_length_error"): retry_policy.is_context_length_error,
+    ("retry_policy", "parse_retry_after"): retry_policy.parse_retry_after,
+    ("retry_policy", "retry_delay_ms"): retry_policy.retry_delay_ms,
+    ("retry_policy", "with_jitter"): retry_policy.with_jitter,
     ("reminders", "wrap_reminder"): reminders.wrap_reminder,
     ("reminders", "escape_reminder_tags"): reminders.escape_reminder_tags,
     ("reminders", "interrupted_turn_reminder"): reminders.interrupted_turn_reminder,

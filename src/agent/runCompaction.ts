@@ -49,15 +49,41 @@ export interface ElisionPlan {
   remaining: ElidableResult[]
 }
 
+/** What the last step was really sent: its prompt tokens as the provider counted them, and how many messages that covered. */
+export interface MeasuredPrompt {
+  tokens: number
+  length: number
+}
+
+/** How far the measured/estimated ratio may go: past it the measurement is more likely wrong than the estimate. */
+const RATIO_MIN = 0.25
+const RATIO_MAX = 4
+
+/**
+ * The prompt's size in tokens, and the factor that turns an estimate into
+ * the provider's count: the measured prefix at its real size, the rest and
+ * any change scaled by the prefix's measured/estimated ratio.
+ */
+export function calibratedPromptTokens(messages: LLMMessage[], measured: MeasuredPrompt | null): { tokens: number; ratio: number } {
+  if (!measured || !(measured.tokens > 0) || measured.length <= 0 || measured.length > messages.length) {
+    return { tokens: promptTokens(messages), ratio: 1 }
+  }
+  const estimated = promptTokens(messages.slice(0, measured.length))
+  const ratio = estimated > 0 ? Math.min(Math.max(measured.tokens / estimated, RATIO_MIN), RATIO_MAX) : 1
+  return { tokens: measured.tokens + promptTokens(messages.slice(measured.length)) * ratio, ratio }
+}
+
 /**
  * Replace the oldest elidable results until the prompt fits. Results at or
  * past `keepFrom` (the latest step's) are never touched: the model has not
- * acted on them yet.
+ * acted on them yet. `measured` calibrates the estimate (§0.9 "Measured").
  */
-export function planElisions(messages: LLMMessage[], elidable: ElidableResult[], limitTokens: number, keepFrom: number): ElisionPlan {
+export function planElisions(messages: LLMMessage[], elidable: ElidableResult[], limitTokens: number, keepFrom: number,
+  measured: MeasuredPrompt | null = null): ElisionPlan {
   const untouched: ElisionPlan = { messages, elided: [], remaining: elidable }
   if (!(limitTokens > 0) || elidable.length === 0) return untouched
-  let tokens = promptTokens(messages)
+  const calibrated = calibratedPromptTokens(messages, measured)
+  let tokens = calibrated.tokens
   if (tokens <= limitTokens * ELIDE_ABOVE) return untouched
   const out = [...messages]
   const elided: string[] = []
@@ -69,7 +95,7 @@ export function planElisions(messages: LLMMessage[], elidable: ElidableResult[],
       continue
     }
     const note = elidedResultNote(entry.trace)
-    tokens += estimateTokens(note) - estimateTokens(m.content)
+    tokens += (estimateTokens(note) - estimateTokens(m.content)) * calibrated.ratio
     out[entry.index] = { ...m, content: note }
     elided.push(entry.trace)
   }

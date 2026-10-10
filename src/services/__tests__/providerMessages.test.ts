@@ -230,7 +230,7 @@ describe('streamLLM request bodies', () => {
     let body: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
       body = JSON.parse(init.body)
-      return new Response('', { status: 500 })
+      return new Response('', { status: 400 })
     }))
     const { streamLLM } = await import('../llm')
     await streamLLM(toolHistory, {
@@ -398,7 +398,7 @@ describe('toolChoice "none" (the run\'s final step)', () => {
     let body: Record<string, unknown> | null = null
     vi.stubGlobal('fetch', vi.fn(async (_url: string, init: { body: string }) => {
       body = JSON.parse(init.body)
-      return new Response('', { status: 500 })
+      return new Response('', { status: 400 })
     }))
     const { streamLLM } = await import('../llm')
     await streamLLM([{ role: 'user', content: 'hi' }], {

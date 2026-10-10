@@ -32,7 +32,7 @@ from server_content import load_document_content
 from server_db import get_db
 from wc_agent.polish import analyze_in_batches, default_polish_model, polish_html
 from wc_agent.registry import ToolRegistry, to_tool_specs
-from wc_agent.run import AgentRun, StepOutput
+from wc_agent.run import AgentRun, StepOutput, StepUnavailable
 from wc_agent.tools.analyze_book import analyze_book_tool
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
@@ -40,7 +40,7 @@ from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, preview_rewrite
 from wc_agent.tools.plan import plan_tool
 from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
-from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder
+from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder, wrap_reminder
 from wc_text.chapter_index import WHOLE_BOOK_CONTEXT_CHARS
 from wc_text.context_window import resolve_context_window_tokens
 from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
@@ -62,6 +62,12 @@ CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, *BOOK_TOOLS, polish_chapter_to
 REPEAT_STEPS = REPEAT_PAUSE_STEPS
 #: Steps shown in a pause notice, for the user to judge.
 PAUSE_DETAIL_STEPS = 3
+# A step that broke after it started streaming, or looped, is redone this many
+# times before the run pauses (agentic_chat_loop.md §0.10).
+STEP_REDO_BUDGET = 1
+REPETITION_RETRY_NOTE = ("Your previous attempt at this reply was stopped because it began repeating the same text over and over. "
+                         "Write the reply again from the start without repeating yourself. If the user asked for something repetitive, "
+                         "write only as much of it as they asked for. If you cannot go on, say so and ask the user.")
 #: Steps a run may take with no tab attached to the book before it pauses on
 #: its own; the user's own limit applies while someone is watching.
 UNATTENDED_STEP_CEILING = 12
@@ -145,6 +151,8 @@ class Run:
         self.live_reasoning = ""
         self.reasoning_heads: List[str] = []
         self.unattended_steps = 0
+        #: The next step goes without xAI's repetition check (a resume after `repeating_output`).
+        self.skip_loop_check_once = False
         self.snapshots: List[Dict[str, Any]] = []
         self.last_response_items: List[Any] = []
         self.finished_monotonic: Optional[float] = None
@@ -494,6 +502,8 @@ class RunEngine:
         if self.running(run.username, run.book_id) is not None:
             return False
         run.status = "running"
+        # The user saw what it was repeating and chose to go on: that step goes without the check.
+        run.skip_loop_check_once = (run.pause or {}).get("reason") == "repeating_output"
         run.pause = None
         run.unattended_steps = 0
         run.persist()
@@ -539,9 +549,14 @@ class RunEngine:
                 run.record = {**run.record, "status": "running"}
                 self.publish(run, "started", {"run": run.summary(), "resumed": True})
                 await agent.resume()
-            elif resuming:
+            elif resuming and (agent.has_next or agent.steps_taken):
                 self.publish(run, "started", {"run": run.summary(), "resumed": True})
                 await agent.resume()
+            elif resuming:
+                # Paused before its first step got through, then the process
+                # restarted: the rebuilt run has that step still to send.
+                self.publish(run, "started", {"run": run.summary(), "resumed": True})
+                await agent.start()
             else:
                 self.publish(run, "started", {"run": run.summary()})
                 await agent.start()
@@ -649,9 +664,58 @@ class RunEngine:
         return merged
 
     async def _step(self, run: Run, messages: List[Dict[str, Any]], step: int, final: bool) -> StepOutput:
-        """One model call, as a generation job whose events are forwarded live."""
+        """One model call, as a generation job whose events are forwarded live.
+
+        A job that broke after it started streaming, or that xAI's repetition
+        detector stopped, is sent once more (the preview discarded, the tab
+        told the step starts over; a loop gets a reminder). When that is not
+        enough, or the stream went idle, the step is unavailable and the run
+        pauses (agentic_chat_loop.md §0.10). Other failures end the run.
+        """
         if run.stop_requested:
             raise RunStopped()
+        provider = run.request["provider"]
+        # A resume after `repeating_output` sends the step without the check: the user chose to go on.
+        loop_check = provider == "grok" and not run.skip_loop_check_once
+        run.skip_loop_check_once = False
+        request_messages = messages
+        notice: Optional[str] = None
+        redone = 0
+        while True:
+            job = await self._run_step_job(run, request_messages, step, final, loop_check, notice)
+            if job.status == "aborted":
+                raise RunStopped()
+            if job.status != "error":
+                break
+            kind = job.error_kind or "fatal"
+            redo = kind == "repetition" or (kind == "transient" and job.failed_after_output)
+            if redo and redone < STEP_REDO_BUDGET and not run.stop_requested:
+                redone += 1
+                if run.ports is not None:
+                    run.ports.discard_preview()
+                if kind == "repetition":
+                    request_messages = [*messages, {"role": "user", "content": wrap_reminder(REPETITION_RETRY_NOTE)}]
+                    notice = "🔁 The reply started repeating itself; writing it again."
+                else:
+                    notice = "🔁 The connection dropped mid-reply; writing it again."
+                logger.info("Run %s step %s: %s (%s); redoing it", run.id, step, kind, job.error)
+                continue
+            if kind == "repetition":
+                raise StepUnavailable({"reason": "repeating_output", "triggers": list(job.loop_triggers),
+                                       "message": f"The reply kept repeating itself ({', '.join(job.loop_triggers)})."})
+            if kind in ("transient", "idle"):
+                raise StepUnavailable({"reason": "step_failed", "message": job.error or "The model call failed."})
+            raise RunFailed(job.error or "Generation failed.")
+        calls = finish_tool_calls({i: {"id": c.get("id"), "name": c.get("name"), "argumentsText": c.get("arguments") or "",
+                                       **({"signature": c["signature"]} if c.get("signature") else {})}
+                                   for i, c in job.tool_calls.items()})
+        run.last_response_items = list(job.response_items)
+        return StepOutput(job.buffer, calls, thinking=list(job.thinking_blocks) or None,
+                          response_items=list(job.response_items) or None, usage=job.usage)
+
+    async def _run_step_job(self, run: Run, messages: List[Dict[str, Any]], step: int, final: bool, loop_check: bool,
+                            notice: Optional[str]) -> server_generation.GenerationJob:
+        """Stream one attempt of a step to a terminal job, forwarding its events."""
         agent, ports = run.agent, run.ports
         assert agent is not None and ports is not None
         req = run.request
@@ -659,7 +723,8 @@ class RunEngine:
         offered = agent.offered_tools()
         config = {**(req.get("config") or {}), "conversationId": run.book_id,
                   "tools": to_openai_tools(to_tool_specs(offered)) if offered else None,
-                  "toolChoice": "none" if final and offered else None}
+                  "toolChoice": "none" if final and offered else None,
+                  "loopCheck": True if loop_check else None}
         config = {k: v for k, v in config.items() if v is not None}
         job = server_generation.registry.create(run.username, {"kind": "run", "runId": run.id, "step": step, "bookId": run.book_id})
         job.input_chars = sum(len(str(m.get("content") or "")) for m in messages)
@@ -675,6 +740,8 @@ class RunEngine:
         tool_acc: Dict[int, Dict[str, Any]] = {}
         last_split = 0.0
         self.publish(run, "step_started", {"step": step, "final": final})
+        if notice:
+            ports.progress(notice)
         try:
             while True:
                 event = await queue.get()
@@ -689,6 +756,8 @@ class RunEngine:
                 elif kind == "reasoning":
                     run.live_reasoning = (run.live_reasoning + event["text"])[-2000:]
                     self.publish(run, "reasoning", {"step": step, "text": event["text"]})
+                elif kind == "retry":
+                    ports.progress(f"⏳ The model call failed ({event.get('reason') or 'error'}); retry {event.get('attempt')}/{event.get('max')}…")
                 elif kind == "tool_call":
                     index = event.get("index") or 0
                     acc = tool_acc.setdefault(index, {"argumentsText": ""})
@@ -711,16 +780,7 @@ class RunEngine:
             job.result_delivered = True
         run.reasoning_heads.append(job.reasoning_text[:400])
         run.reasoning_heads = run.reasoning_heads[-6:]
-        if job.status == "aborted":
-            raise RunStopped()
-        if job.status == "error":
-            raise RunFailed(job.error or "Generation failed.")
-        calls = finish_tool_calls({i: {"id": c.get("id"), "name": c.get("name"), "argumentsText": c.get("arguments") or "",
-                                       **({"signature": c["signature"]} if c.get("signature") else {})}
-                                   for i, c in job.tool_calls.items()})
-        run.last_response_items = list(job.response_items)
-        return StepOutput(job.buffer, calls, thinking=list(job.thinking_blocks) or None,
-                          response_items=list(job.response_items) or None, usage=job.usage)
+        return job
 
     def _preview_markup(self, run: Run, raw: str) -> None:
         agent = run.agent

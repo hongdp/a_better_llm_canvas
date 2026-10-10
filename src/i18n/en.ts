@@ -114,6 +114,8 @@ export const en = {
     pausedRepeating: 'the last steps repeated the same calls and wrote nothing.',
     pausedUnattended: 'nobody was watching this book for a while.',
     pausedBudget: 'it passed its token budget.',
+    pausedStepFailed: (error: string) => `a model call kept failing (${error}). Resume sends the same step again.`,
+    pausedRepeatingOutput: 'the reply kept repeating itself. Resume writes that step again without the repetition check.',
     pausedSteps: 'What the last steps did',
     resume: 'Resume',
     abandon: 'Stop',

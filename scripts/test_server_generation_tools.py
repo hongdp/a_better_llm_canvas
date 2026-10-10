@@ -417,7 +417,7 @@ def _run_job(provider, config, messages, response):
     captured = []
 
     @asynccontextmanager
-    async def fake_stream(url, headers, body):
+    async def fake_stream(url, headers, body, read_timeout=None):
         captured.append({"url": url, "headers": headers, "body": body})
         yield response
 
@@ -620,7 +620,7 @@ def _run_job_watching(provider, config, response):
     job.subscribers.add(live)
 
     @asynccontextmanager
-    async def fake_stream(url, headers, body):
+    async def fake_stream(url, headers, body, read_timeout=None):
         yield response
 
     with patch.object(server_generation, "_http_stream", fake_stream):

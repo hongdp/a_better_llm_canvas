@@ -26,7 +26,7 @@ export type AgentTimelineItem =
  * it repeated itself, nobody was watching, or it passed its token budget.
  */
 export interface AgentRunPause {
-  reason: 'repeating' | 'unattended' | 'token_budget' | 'question' | string
+  reason: 'repeating' | 'unattended' | 'token_budget' | 'question' | 'step_failed' | 'repeating_output' | string
   message: string
   /** The last steps, for the user to judge: the calls and what came back. */
   steps?: Array<{ calls: string[]; results: string[]; reasoning: string }>

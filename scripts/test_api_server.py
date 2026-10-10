@@ -240,7 +240,7 @@ class _FakeStreamResponse:
 
 def _stub_http_stream(captured, response):
     @asynccontextmanager
-    async def fake_stream(url, headers, body):
+    async def fake_stream(url, headers, body, read_timeout=None):
         captured.append({"url": url, "headers": headers, "body": body})
         yield response
     return fake_stream
@@ -979,7 +979,7 @@ def test_generation_retries_without_effort_when_the_provider_rejects_it():
     from contextlib import asynccontextmanager
 
     @asynccontextmanager
-    async def fake_stream(url, headers, body):
+    async def fake_stream(url, headers, body, read_timeout=None):
         response.calls += 1
         attempts.append(body)
         captured.append({"url": url, "headers": headers, "body": body})

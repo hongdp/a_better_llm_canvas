@@ -76,6 +76,10 @@ class Scripted:
         for piece in reply.get("chunks") or ([reply["text"]] if reply.get("text") else []):
             job.append(piece)
             await asyncio.sleep(0)
+        if reply.get("triggers"):
+            job.note_loop_triggers(reply["triggers"])
+        if reply.get("raise") is not None:
+            raise reply["raise"]
         return {"promptTokens": 100, "completionTokens": 10, "cachedPromptTokens": 50}
 
 
@@ -180,6 +184,105 @@ def test_stop_aborts_the_step_and_holds_the_queue(book, monkeypatch):
     assert book.queue_is_held("alice", "book-1")
     assert "Stopped" in message_row("a-A")["content"]
     assert content_of("doc-1") == "<p>alpha</p>"
+
+
+# ── a step that fails (agentic_chat_loop.md §0.10) ────────────────────────────
+
+def test_a_step_that_broke_mid_reply_is_written_again(book, monkeypatch):
+    import httpx
+    provider = Scripted([{"text": "<canvas><p>半", "raise": httpx.ReadError("connection reset")},
+                         "<canvas><p>beta</p></canvas>\n<doc_status>updated</doc_status>", "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        queue = server_events.hub.subscribe("alice", "book-1")
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run, events_of(queue)
+    run, events = asyncio.run(main())
+    assert run.status == "done"
+    assert strip_diff_markup(content_of("doc-1")) == "<p>beta</p>"
+    runs = [e for e in events if e.get("type") == "run"]
+    assert [e["step"] for e in runs if e["kind"] == "step_started"][:2] == [0, 0]
+    assert any(e["kind"] == "progress" and "connection dropped" in (e.get("line") or "") for e in runs)
+
+
+def test_a_looping_reply_is_retried_with_a_reminder_then_pauses_and_resume_goes_without_the_check(book, monkeypatch):
+    loop = {"text": "The lantern swung. " * 30, "triggers": ["tail_repetition:16@response"],
+            "raise": server_generation.ProviderError("xAI API error: Internal error during token generation", transient=True)}
+    provider = Scripted([loop, loop, "<canvas><p>gamma</p></canvas>\n<doc_status>updated</doc_status>", "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        paused = (run.status, dict(run.pause or {}), bool((run.snapshot or {}).get("next")))
+        assert book.resume(run)
+        await settle(run)
+        return run, paused
+    run, (status, pause, has_next) = asyncio.run(main())
+    assert status == "paused" and pause["reason"] == "repeating_output" and pause["triggers"] == ["tail_repetition:16@response"]
+    assert has_next
+    assert provider.requests[0]["config"].get("loopCheck") is True
+    assert "stopped because it began repeating" in provider.requests[1]["messages"][-1]["content"]
+    assert provider.requests[2]["config"].get("loopCheck") is None
+    assert provider.requests[3]["config"].get("loopCheck") is True
+    assert run.status == "done" and strip_diff_markup(content_of("doc-1")) == "<p>gamma</p>"
+
+
+def test_a_step_that_never_gets_through_pauses_the_run_and_resume_sends_it_again(book, monkeypatch):
+    busy = {"raise": server_generation.ProviderError("xAI API error (503): busy", status=503)}
+    provider = Scripted([busy] * 5 + ["<canvas><p>delta</p></canvas>\n<doc_status>updated</doc_status>", "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        paused = (run.status, dict(run.pause or {}))
+        book.resume(run)
+        await settle(run)
+        return run, paused
+    run, (status, pause) = asyncio.run(main())
+    assert status == "paused" and pause["reason"] == "step_failed" and "503" in pause["message"]
+    assert len(provider.requests) == 7
+    assert run.status == "done" and strip_diff_markup(content_of("doc-1")) == "<p>delta</p>"
+
+
+def test_a_step_paused_before_its_first_reply_resumes_after_a_restart(book, monkeypatch):
+    busy = {"raise": server_generation.ProviderError("xAI API error (503): busy", status=503)}
+    provider = Scripted([busy] * 5 + ["<canvas><p>epsilon</p></canvas>\n<doc_status>updated</doc_status>", "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def first():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run.id, run.status
+    run_id, status = asyncio.run(first())
+    assert status == "paused"
+    fresh = server_runs.RunEngine()
+    monkeypatch.setattr(server_runs, "engine", fresh)
+
+    async def second():
+        await fresh.recover()
+        run = fresh.get("alice", run_id)
+        assert run is not None and run.status == "paused"
+        assert fresh.resume(run)
+        await settle(run)
+        return run
+    run = asyncio.run(second())
+    assert run.status == "done" and strip_diff_markup(content_of("doc-1")) == "<p>epsilon</p>"
+
+
+def test_a_rejection_retrying_cannot_fix_still_ends_the_run(book, monkeypatch):
+    provider = Scripted([{"raise": server_generation.ProviderError("xAI API error (401): bad key", status=401)}])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run
+    run = asyncio.run(main())
+    assert run.status == "error" and "401" in (run.error or "") and len(provider.requests) == 1
 
 
 def test_a_steer_reaches_the_running_run_and_is_refused_otherwise(book, monkeypatch):

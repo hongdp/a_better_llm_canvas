@@ -1039,6 +1039,956 @@
       }
      ]
     }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     [
+      {
+       "index": 3,
+       "trace": "read 1"
+      },
+      {
+       "index": 5,
+       "trace": "read 2"
+      },
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ],
+     3000,
+     7,
+     {
+      "tokens": 3100,
+      "length": 6
+     }
+    ],
+    "output": {
+     "messages": [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "[This result was elided to keep the conversation within the model's context window: read 1. Read it again if you need its text.]"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "[This result was elided to keep the conversation within the model's context window: read 2. Read it again if you need its text.]"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     "elided": [
+      "read 1",
+      "read 2"
+     ],
+     "remaining": [
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ]
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     [
+      {
+       "index": 3,
+       "trace": "read 1"
+      },
+      {
+       "index": 5,
+       "trace": "read 2"
+      },
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ],
+     3000,
+     7,
+     {
+      "tokens": 100,
+      "length": 6
+     }
+    ],
+    "output": {
+     "messages": [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     "elided": [],
+     "remaining": [
+      {
+       "index": 3,
+       "trace": "read 1"
+      },
+      {
+       "index": 5,
+       "trace": "read 2"
+      },
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ]
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     [
+      {
+       "index": 3,
+       "trace": "read 1"
+      },
+      {
+       "index": 5,
+       "trace": "read 2"
+      },
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ],
+     3000,
+     7,
+     {
+      "tokens": 900000,
+      "length": 6
+     }
+    ],
+    "output": {
+     "messages": [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "[This result was elided to keep the conversation within the model's context window: read 1. Read it again if you need its text.]"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "[This result was elided to keep the conversation within the model's context window: read 2. Read it again if you need its text.]"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     "elided": [
+      "read 1",
+      "read 2"
+     ],
+     "remaining": [
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ]
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     [
+      {
+       "index": 3,
+       "trace": "read 1"
+      },
+      {
+       "index": 5,
+       "trace": "read 2"
+      },
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ],
+     1000,
+     7,
+     {
+      "tokens": 5,
+      "length": 40
+     }
+    ],
+    "output": {
+     "messages": [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "[This result was elided to keep the conversation within the model's context window: read 1. Read it again if you need its text.]"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "[This result was elided to keep the conversation within the model's context window: read 2. Read it again if you need its text.]"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     "elided": [
+      "read 1",
+      "read 2"
+     ],
+     "remaining": [
+      {
+       "index": 7,
+       "trace": "read 3"
+      }
+     ]
+    }
+   }
+  ],
+  "calibrated_prompt_tokens": [
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     null
+    ],
+    "output": {
+     "tokens": 1925,
+     "ratio": 1
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     {
+      "tokens": 1234,
+      "length": 4
+     }
+    ],
+    "output": {
+     "tokens": 4657.745098039215,
+     "ratio": 2.4196078431372547
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     {
+      "tokens": 0,
+      "length": 4
+     }
+    ],
+    "output": {
+     "tokens": 1925,
+     "ratio": 1
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "system",
+       "content": "sys"
+      },
+      {
+       "role": "user",
+       "content": "request"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c1",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"1\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c1",
+       "name": "read_chapter",
+       "content": "TEXT OF 1 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c2",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"2\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c2",
+       "name": "read_chapter",
+       "content": "第二章 字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字字"
+      },
+      {
+       "role": "assistant",
+       "content": "",
+       "toolCalls": [
+        {
+         "id": "c3",
+         "name": "read_chapter",
+         "argumentsText": "{\"chapter\":\"3\"}"
+        }
+       ]
+      },
+      {
+       "role": "tool",
+       "toolCallId": "c3",
+       "name": "read_chapter",
+       "content": "TEXT OF 3 word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+      }
+     ],
+     {
+      "tokens": 10,
+      "length": 99
+     }
+    ],
+    "output": {
+     "tokens": 1925,
+     "ratio": 1
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "role": "user",
+       "content": ""
+      },
+      {
+       "role": "user",
+       "content": "abc"
+      }
+     ],
+     {
+      "tokens": 7,
+      "length": 1
+     }
+    ],
+    "output": {
+     "tokens": 8,
+     "ratio": 1
+    }
    }
   ]
  }

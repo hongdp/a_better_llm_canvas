@@ -491,6 +491,30 @@ describe('a run that outgrows the window (agentic_chat_loop.md §0.9, within a r
     expect(fourth.find(m => m.role === 'tool' && m.toolCallId === 'c3')?.content).toContain('TEXT OF 3')
   })
 
+  it('elides on the measured prompt size when the estimate undercounts it', async () => {
+    // Each read is ~400 estimated tokens; the provider counts three times that.
+    // A limit of 2,500 is not reached by the estimate after two reads (~850),
+    // but is by the measurement (~2,500+).
+    const measured = (t: StepOutput, tokens: number): StepOutput => ({ ...t, usage: { promptTokens: tokens, completionTokens: 10 } })
+    const h = harness({
+      replies: [
+        measured(calls('', ['c1', 'read_chapter', '{"chapter":"1"}']), 30),
+        measured(calls('', ['c2', 'read_chapter', '{"chapter":"2"}']), 1_300),
+        measured(calls('', ['c3', 'read_chapter', '{"chapter":"3"}']), 2_600),
+        done
+      ],
+      budgets: { maxSteps: 0 }, read: bigRead, promptTokenLimit: 2_500
+    })
+    await h.run.start()
+    expect(h.requests[3].find(m => m.role === 'tool' && m.toolCallId === 'c1')?.content).toContain('elided')
+    const plain = harness({
+      replies: [calls('', ['c1', 'read_chapter', '{"chapter":"1"}']), calls('', ['c2', 'read_chapter', '{"chapter":"2"}']), calls('', ['c3', 'read_chapter', '{"chapter":"3"}']), done],
+      budgets: { maxSteps: 0 }, read: bigRead, promptTokenLimit: 2_500
+    })
+    await plain.run.start()
+    expect(plain.requests[3].find(m => m.role === 'tool' && m.toolCallId === 'c1')?.content).toContain('TEXT OF 1')
+  })
+
   it('leaves a run alone without a limit, or while it fits', async () => {
     const h = harness({
       replies: [calls('', ['c1', 'read_chapter', '{"chapter":"1"}']), calls('', ['c2', 'read_chapter', '{"chapter":"2"}']), done],

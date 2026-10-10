@@ -116,6 +116,8 @@ export const zh: TranslationDictionary = {
     pausedRepeating: '最近几步反复做同样的调用，什么也没写。',
     pausedUnattended: '这本书已经有一阵子没人查看了。',
     pausedBudget: '已超出 token 预算。',
+    pausedStepFailed: (error: string) => `模型调用一直失败（${error}）。继续会重新发送这一步。`,
+    pausedRepeatingOutput: '回复一直在重复同样的内容。继续会关闭重复检测，重新写这一步。',
     pausedSteps: '最近几步做了什么',
     resume: '继续',
     abandon: '停止',
