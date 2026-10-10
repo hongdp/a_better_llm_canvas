@@ -14,7 +14,8 @@ import server_runs
 import server_web
 from test_agent import FakeBook, run_tool
 from test_runs import Scripted, book, request, settle  # noqa: F401 — `book` is a fixture
-from wc_agent.tools.analyze_book import ATTACHMENT_CHUNK_CHARS, analyze_book_tool
+from wc_agent.tools.analyze_book import ATTACHMENT_CHUNK_CHARS
+from wc_agent.tools.book_reads import list_tool, read_tool as analyze_book_tool  # read with a task (read_and_list.md)
 from wc_agent.tools.book_reads import grep_tool, read_chapter_tool
 from wc_agent.tools.web import web_read_tool, web_search_tool
 from wc_text.attachments import ATTACHMENT_RUN_READ_CAP, attachment_paragraphs, attachment_sections
@@ -301,7 +302,7 @@ def test_a_server_run_lists_and_reads_an_attachment_but_never_sends_it_whole(boo
     whole = json.dumps(first["messages"], ensure_ascii=False)
     assert "〔30-1〕" not in whole and len(whole) < 60_000
     tools = [t.get("name") or t.get("function", {}).get("name") for t in (first["config"].get("tools") or [])]
-    assert "read_chapter" in tools and "web_search" not in tools
+    assert "read" in tools and "list" in tools and "read_chapter" not in tools and "web_search" not in tools
     second = json.dumps(provider.requests[1]["messages"], ensure_ascii=False)
     assert "〔30-1〕" in second and "〔31-1〕" not in second
 
@@ -327,16 +328,18 @@ def test_analyze_reads_only_the_sections_or_paragraphs_named():
     fake = book_with_novel()
     spy = _AnalyzeSpy()
     fake.ctx.analyze = spy
-    out = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "section": "第十–十二章"}, fake.ctx)
-    assert out["ok"] and "A1 第十–十二章" in out["trace"]
-    assert [c["title"].split(" — ")[1].split(" (")[0] for c in spy.seen] == ["第十章 第10回的故事", "第十一章 第11回的故事", "第十二章 第12回的故事"]
+    # Eleven sections (~55k characters): more than one read, so it is read for the task.
+    out = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "section": "第十–二十章"}, fake.ctx)
+    assert out["ok"] and "A1 第十–二十章" in out["trace"]
+    titles = [c["title"].split(" — ")[1].split(" (")[0] for c in spy.seen]
+    assert titles[0] == "第十章 第10回的故事" and titles[-1] == "第二十章 第20回的故事" and len(titles) == 11
     spy2 = _AnalyzeSpy()
     fake.ctx.analyze = spy2
-    out = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "paragraphs": "52-102"}, fake.ctx)
+    out = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "paragraphs": "52-500"}, fake.ctx)
     text = "\n".join(c["content"] for c in spy2.seen)
-    assert out["ok"] and "A1 ¶52–102" in out["trace"] and "〔2-1〕" in text and "〔1-50〕" not in text and "〔3-1〕" not in text
+    assert out["ok"] and "A1 ¶52–500" in out["trace"] and "〔2-1〕" in text and "〔1-50〕" not in text and "〔11-1〕" not in text
     assert "has no section matching" in run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "section": "第九十九章"}, fake.ctx)["content"]
-    assert "pick a part of an attachment" in run_tool(analyze_book_tool, {"task": "t", "chapters": ["2"], "section": "第一章"}, fake.ctx)["content"]
+    assert "names a part of an attachment" in run_tool(analyze_book_tool, {"task": "t", "chapters": ["2"], "section": "第一章"}, fake.ctx)["content"]
 
 
 def test_analyze_asks_first_past_the_token_line():
@@ -345,7 +348,7 @@ def test_analyze_asks_first_past_the_token_line():
     fake.ctx.analyze = spy
     first = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"]}, fake.ctx)
     assert not first["ok"] and "1500000 input tokens in 11 model calls" in first["content"] and "ask_user" in first["content"]
-    assert first["trace"] == "📚 analyze_book: A1 ≈ 1500k tokens in 11 calls — asks first" and spy.seen == []
+    assert first["trace"] == "📚 read for a task: A1 ≈ 1500k tokens in 11 calls — asks first" and spy.seen == []
     assert run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "confirmed": True}, fake.ctx)["ok"] and spy.seen
 
 
@@ -355,3 +358,61 @@ def test_batches_stay_under_groks_price_line_for_chinese_text():
     plan = plan_analysis("t", chapters, "grok")
     assert plan["batchChars"] == 140_000 and plan["calls"] == 20
     assert plan["inputTokens"] > ANALYZE_CONFIRM_TOKENS and plan["inputTokens"] / plan["calls"] < 200_000
+
+
+
+# ── list (read_and_list.md §3) ────────────────────────────────────────────────
+
+def test_list_shows_chapters_and_attachments_then_an_attachments_sections():
+    fake = book_with_novel()
+    out = run_tool(list_tool, {}, fake.ctx)
+    assert '2. "第二章"' in out["content"] and 'A1 "万倍返还.txt" — ' in out["content"] and "40 sections" in out["content"]
+    assert out["trace"] == "📚 list chapters and 1 attachment"
+    page = run_tool(list_tool, {"source": "A1", "from": 39}, fake.ctx)
+    assert "39. ¶1939–1989 第三十九章 第39回的故事" in page["content"] and page["trace"] == "📚 list A1 sections 39–40 of 40"
+    run = run_tool(list_tool, {"source": "A1", "section": "第十–十二章"}, fake.ctx)
+    assert "1. ¶460–510 第十章 第10回的故事" in run["content"] and "第十三章" not in run["content"]
+    assert run_tool(list_tool, {"source": "A1", "paragraphs": "1-60"}, fake.ctx)["trace"] == "📚 list A1 sections 1–2 of 2"
+
+
+def test_list_shows_a_chapters_headings_and_answers_to_list_chapters():
+    from wc_agent.registry import ToolRegistry
+    from wc_agent.tools.book_reads import read_tool
+    fake = FakeBook("<p>start</p>", chapters=[{"id": "doc-2", "title": "大纲", "content": "<h1>大纲</h1><p>a</p><h2>第一卷</h2><p>b</p>"}])
+    assert "¶1 # 大纲\n¶3 # 第一卷" in run_tool(list_tool, {"source": "2"}, fake.ctx)["content"]
+    registry = ToolRegistry([read_tool, list_tool])
+    assert registry.get("list_chapters") is list_tool and registry.get("read_chapter") is read_tool and registry.get("analyze_book") is read_tool
+
+
+# ── read with a task (read_and_list.md §2) ────────────────────────────────────
+
+def _book_with_long_chapter() -> FakeBook:
+    long = "".join(f"<p>{'长' * 1000}{i}</p>" for i in range(30))
+    return FakeBook("<p>序章。</p>", chapters=[{"id": "doc-2", "title": "第一章", "content": "<p>一</p>"}, {"id": "doc-3", "title": "第三章", "content": long}])
+
+
+def test_read_with_a_task_returns_text_when_it_fits_and_notes_when_it_does_not():
+    fake = _book_with_long_chapter()
+    spy = _AnalyzeSpy()
+    fake.ctx.analyze = spy
+    small = run_tool(analyze_book_tool, {"task": "t", "chapters": ["2"]}, fake.ctx)
+    assert spy.seen == [] and "¶1 一" in small["content"]
+    big = run_tool(analyze_book_tool, {"task": "t", "chapters": ["3"], "paragraphs": "1-25"}, fake.ctx)
+    assert [c["title"] for c in spy.seen] == ["第三章 (¶1–25)"] and big["trace"] == "📚 read #3 ¶1–25 for a task — 1 part, 1 model call"
+    whole = run_tool(analyze_book_tool, {"task": "t"}, fake.ctx)
+    assert whole["trace"].startswith("📚 read the book for a task — 3 parts")
+
+
+def test_a_cut_read_says_what_the_rest_would_cost():
+    fake = _book_with_long_chapter()
+    fake.ctx.analyze = _AnalyzeSpyWithPlan({"calls": 1, "inputTokens": 31_000, "batchChars": 140_000})
+    out = run_tool(analyze_book_tool, {"chapters": ["3"]}, fake.ctx)
+    assert out["ok"] and "Continue with chapters=[3]" in out["content"]
+    assert ('[Not all of it fit in one read. To have all of it read and get notes, call read again with the same arguments and task="what the notes are for": '
+            "1 batch outside the conversation, ≈31k input tokens.]") in out["content"]
+
+
+def test_a_task_read_without_a_model_says_to_read_in_parts():
+    fake = _book_with_long_chapter()
+    out = run_tool(analyze_book_tool, {"task": "t"}, fake.ctx)
+    assert not out["ok"] and "read it part by part" in out["content"]

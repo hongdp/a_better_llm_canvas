@@ -50,7 +50,7 @@ import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type Pl
 import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
-import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
+import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
 import { renderSearchResults, renderWebPage, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
 import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
 import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
@@ -743,6 +743,10 @@ const MODULES: Module[] = [
       attachment_budget_note: run(attachmentBudgetNote, [['A1', 100012]]),
       parse_chapter_number: run(parseChapterNumber, [['三十五'], ['一百零二'], ['十'], ['十二'], ['两千零五'], ['一万二千三百'], ['３５'], ['42'], ['第三章'], [''], ['abc']]),
       section_number_of: run(sectionNumberOf, [['第三十章 归来'], ['第30章'], ['第 12 回'], ['Chapter 7: x'], ['30'], ['番外'], ['第一百零二章']]),
+      render_section_list: run(renderSectionList, [
+        [ATTACH_LIST[0], ATTACH_LIST[0].sections], [ATTACH_LIST[1], []], [ATTACH_LIST[0], ATTACH_LIST[0].sections, 2, 1, ' section="第一–二章"'], [ATTACH_LIST[0], ATTACH_LIST[0].sections, 3, 5], [ATTACH_LIST[0], ATTACH_LIST[0].sections, 99, 2]
+      ]),
+      list_section_lines: run(() => LIST_SECTION_LINES, [[]]),
       find_attachment_range: run(findAttachmentRange, [
         [SECTIONS, '第1–2章'], [SECTIONS, '1-30'], [SECTIONS, '第三十至二章'], [SECTIONS, '第30章'], [SECTIONS, '番外'], [SECTIONS, '第99–100章'], [SECTIONS, ''], [SECTIONS, '2~2']
       ]),

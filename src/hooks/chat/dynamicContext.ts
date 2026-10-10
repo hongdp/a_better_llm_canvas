@@ -109,7 +109,7 @@ export function buildLedgerMessages(
   // With the agent tools the model may change any chapter (agentic loop D2);
   // telling it these are "never edit" would contradict its own tools.
   const header = opts.agentTools
-    ? 'REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read_chapter and name it in your write):'
+    ? 'REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read and name it in your write):'
     : 'REFERENCED CHAPTERS (read-only; use them for details and consistency, never edit them):'
   return [
     {

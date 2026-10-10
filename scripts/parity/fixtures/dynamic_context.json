@@ -243,7 +243,7 @@
     "output": [
      {
       "role": "user",
-      "content": "REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read_chapter and name it in your write):\n\nFROZEN\n\n--- DOCUMENT: Chapter 3: The Cat ---\nTitle\nThe cat sat on the mat.\nIt was warm, and <qu\n…[truncated: showing first 50 of 72 characters]\n\n--- DOCUMENT: 空章节 ---\n\n",
+      "content": "REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read and name it in your write):\n\nFROZEN\n\n--- DOCUMENT: Chapter 3: The Cat ---\nTitle\nThe cat sat on the mat.\nIt was warm, and <qu\n…[truncated: showing first 50 of 72 characters]\n\n--- DOCUMENT: 空章节 ---\n\n",
       "cacheHint": true
      },
      {

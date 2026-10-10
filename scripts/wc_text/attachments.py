@@ -16,7 +16,7 @@ ATTACHMENT_RUN_READ_CAP = 100_000
 
 def attachment_budget_note(ref: str, used: int) -> str:
     return (f"{ref} was not read: this turn has already read {used} characters of attachments, the most one turn may — a whole file is never read into the conversation. "
-            f'Find the passages you need with grep chapters=["{ref}"] and read only those paragraphs, or let analyze_book chapters=["{ref}"] section="第62–87章" read a range in batches and return notes.')
+            f'Find the passages you need with grep chapters=["{ref}"] and read only those paragraphs, or read a range with a task (chapters=["{ref}"] section="第62–87章" task="…") to get notes from batches outside the conversation.')
 
 
 def normalize_attachment_text(text: str) -> str:
@@ -112,8 +112,8 @@ def render_attachment_index(items: List[Dict[str, Any]], max_lines: int = ATTACH
                 hidden += 1
                 continue
             lines.append(f"  ¶{s['from']}–{s['to']} {s['title']}")
-    return ('ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=["A1"] section="第三十章" (or a paragraph range), '
-            'search with grep chapters=["A1"], or let analyze_book chapters=["A1"] section="第62–87章" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\n'
+    return ('ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read chapters=["A1"] section="第三十章" (or a paragraph range), '
+            'search with grep chapters=["A1"], or read a range with a task (chapters=["A1"] section="第62–87章" task="…") for notes; a turn reads at most 100,000 characters of them, and they cannot be written):\n'
             + "\n".join(lines) + (f"\n  … {hidden} more sections (grep for a heading to find one)" if hidden else ""))
 
 
@@ -225,3 +225,25 @@ def find_attachment_range(sections: List[Dict[str, Any]], query: str) -> Optiona
                 return {"title": hits[0]["title"] if len(hits) == 1 else f'{hits[0]["title"]} … {hits[-1]["title"]}',
                         "from": min(h["from"] for h in hits), "to": max(h["to"] for h in hits)}
     return find_attachment_section(sections, q)
+
+
+#: Sections one `list source="A1"` call shows (read_and_list.md §3).
+LIST_SECTION_LINES = 200
+
+
+def render_section_list(meta: Dict[str, Any], sections: List[Dict[str, Any]], start: int = 1, max_lines: int = LIST_SECTION_LINES,
+                        continue_args: str = "") -> str:
+    """Port of renderSectionList."""
+    head = f'=== {meta["ref"]} "{meta["name"]}" — {meta["paragraphs"]} paragraphs, {meta["chars"]} characters ==='
+    if not sections:
+        return (f'{head}\nNo section headings here. Find places with grep chapters=["{meta["ref"]}"] and read them by ¶ '
+                f'(read chapters=["{meta["ref"]}"] paragraphs="…").')
+    first = max(1, min(start, len(sections)))
+    shown = sections[first - 1:first - 1 + max_lines]
+    last = first - 1 + len(shown)
+    lines = [f"{first + i}. ¶{s['from']}–{s['to']} {s['title']}" for i, s in enumerate(shown)]
+    if last < len(sections):
+        more = f'\n[Sections {first}–{last} of {len(sections)}. Continue with list source="{meta["ref"]}"{continue_args} from={last + 1}.]'
+    else:
+        more = f"\n[Sections {first}–{last} of {len(sections)}.]" if first > 1 else ""
+    return f'{head}\n' + "\n".join(lines) + f'{more}\nRead one by its ¶ range: read chapters=["{meta["ref"]}"] paragraphs="a-b" (or section="…").'

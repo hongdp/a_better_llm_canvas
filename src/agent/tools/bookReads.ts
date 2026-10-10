@@ -17,8 +17,9 @@ import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
-import { ATTACHMENT_RUN_READ_CAP, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
+import { ATTACHMENT_RUN_READ_CAP, LIST_SECTION_LINES, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, renderSectionList, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
 import { isBlankContent } from '../../utils/text'
+import { readForTask, restOfReadNote } from './analyzeBook'
 
 /** Per chapter per call — the ledger's per-chapter cap (MAX_LEDGER_DOC_CHARS). */
 export const READ_CHAPTER_CAP = 20_000
@@ -42,7 +43,7 @@ const fail = (name: string, message: string): ToolResult => ({
  * run's own working copy wins: a chapter this run already changed is read
  * back as changed.
  */
-function acceptedHtml(ctx: ToolContext, id: string): string {
+export function acceptedHtml(ctx: ToolContext, id: string): string {
   const working = ctx.run.docs.get(id)
   if (working) return working.html
   return stripDiffMarkup(ctx.document.chapters().find(c => c.id === id)?.content ?? '')
@@ -131,15 +132,55 @@ interface ReadItem {
 interface ReadArgs {
   items: ReadItem[]
   format: 'text' | 'html'
+  /** What the notes are for, when what was asked for does not fit in one read (read_and_list.md §2). */
+  task?: string
+  /** The user agreed to a task-read past ANALYZE_CONFIRM_TOKENS. */
+  confirmed: boolean
 }
 
-/** Parts one read_chapter call may name (agentic_chat_loop.md §0.11). */
+/** Parts one read call may name (agentic_chat_loop.md §0.11). */
 export const MAX_READ_PARTS = 12
 
-export const readChapterTool = defineTool<ReadArgs>({
-  name: 'read_chapter',
+/**
+ * Whether reading `items` fits in one call — per part, per call, and the
+ * turn's attachment budget — measured without reading (no run state
+ * changes). A bad reference counts as fitting: the read path reports it.
+ */
+async function fitsInOneRead(items: ReadItem[], format: 'text' | 'html', ctx: ToolContext): Promise<boolean> {
+  const chapters = ctx.document.chapters()
+  const attachments = attachmentList(ctx)
+  let total = 0
+  let attachmentTotal = 0
+  const ids: string[] = []
+  const resolved = items.map(item => ({ item, r: resolveRef(item.ref, chapters, attachments) }))
+  for (const { r } of resolved) if ('chapter' in r) ids.push(r.chapter.id)
+  await ctx.document.ensureLoaded([...new Set(ids)])
+  for (const { item, r } of resolved) {
+    let size = 0
+    if ('chapter' in r) {
+      const paras = chapterParagraphs(acceptedHtml(ctx, r.chapter.id))
+      const from = item.range?.from ?? 1
+      const to = Math.min(item.range?.to ?? paras.length, paras.length)
+      for (const p of paras) if (p.number >= from && p.number <= to) size += (format === 'html' ? p.html.length : p.text.length + 6)
+    } else if ('attachment' in r) {
+      const paras = await (ctx.attachments as NonNullable<ToolContext['attachments']>).paragraphs(r.attachment.id)
+      const span = item.section ? findAttachmentRange(r.attachment.sections, item.section) : null
+      const from = span?.from ?? item.range?.from ?? 1
+      const to = Math.min(span?.to ?? item.range?.to ?? paras.length, paras.length)
+      for (let n = from; n <= to; n++) size += paras[n - 1].length + 6
+      attachmentTotal += size
+    }
+    if (size > READ_CHAPTER_CAP) return false
+    total += size
+  }
+  return total <= READ_CALL_CAP && attachmentTotal <= ATTACHMENT_RUN_READ_CAP - ctx.run.attachmentChars
+}
+
+export const readTool = defineTool<ReadArgs>({
+  name: 'read',
+  aliases: ['read_chapter', 'analyze_book'],
   description:
-    'Read one or more chapters. Find them in the CHAPTER INDEX and pass their numbers. ' +
+    'Read chapters of the book, or attachments. Find chapters in the CHAPTER INDEX and pass their numbers. ' +
     'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency; ' +
     '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. ' +
     'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. ' +
@@ -147,7 +188,10 @@ export const readChapterTool = defineTool<ReadArgs>({
     `A long chapter comes back in parts of at most ${READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. ` +
     'If no title or summary tells you where something is, use grep. ' +
     'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range (¶ numbers, which grep reports; in a novel .txt a ¶ is a line), or with section (a heading such as "第三十章" — 第30章 is the same chapter — or a run, "第62–87章"). ' +
-    'A turn reads at most 100,000 characters of attachments: find passages with grep and read those paragraphs, or let analyze_book read a part (section or paragraphs) and return notes.',
+    'A turn reads at most 100,000 characters of attachments. ' +
+    'More than fits in one read (a long part, or many chapters): you get the first part, where to continue, and what reading the rest would cost. Pass task="what you need from it" to have all of it read in batches outside the conversation and get notes back — with no chapters named, the whole book. ' +
+    'That costs a model call per batch; past 200,000 input tokens it is not started until you ask the user with ask_user and call again with confirmed: true. ' +
+    'To see what can be read and where, use list.',
   parameters: {
     type: 'object',
     properties: {
@@ -159,6 +203,8 @@ export const readChapterTool = defineTool<ReadArgs>({
       format: { type: 'string', description: '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).' },
       paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.' },
       section: { type: 'string', description: 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter), or a run, "第62–87章".' },
+      task: { type: 'string', description: 'Only when you need more than one read returns: what the notes are for, e.g. "list every promise 晓晓 makes and whether it is kept". When what you asked for fits, you get the text instead.' },
+      confirmed: { type: 'boolean', description: 'true only after the user agreed to a task-read past 200,000 input tokens.' },
       parts: {
         type: 'array',
         description: 'Instead of chapters/paragraphs: several places to read in one call, each a chapter and an optional paragraph range.',
@@ -179,6 +225,8 @@ export const readChapterTool = defineTool<ReadArgs>({
   parse: raw => {
     if (!raw) return 'its arguments could not be parsed'
     const format = raw.format === 'html' ? 'html' : 'text'
+    const task = typeof raw.task === 'string' && raw.task.trim() ? raw.task.trim() : undefined
+    const extra = { ...(task ? { task } : {}), confirmed: raw.confirmed === true }
     if (Array.isArray(raw.parts) && raw.parts.length > 0) {
       if (raw.parts.length > MAX_READ_PARTS) return `at most ${MAX_READ_PARTS} parts in one call (${raw.parts.length} were given)`
       const items: ReadItem[] = []
@@ -191,165 +239,184 @@ export const readChapterTool = defineTool<ReadArgs>({
         const section = typeof p?.section === 'string' && p.section.trim() ? p.section : undefined
         items.push({ ref, range, ...(section ? { section } : {}) })
       }
-      return { items, format }
+      return { items, format, ...extra }
     }
     const refs = chapterRefs(raw)
-    if (refs.length === 0) return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts")'
+    if (refs.length === 0 && !task) return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts"; or a task, to read the whole book for it)'
     const range = parseRange(raw.paragraphs)
     if (typeof range === 'string') return range
     const section = typeof raw.section === 'string' && raw.section.trim() ? raw.section : undefined
-    return { items: refs.map(ref => ({ ref, range, ...(section ? { section } : {}) })), format }
+    return { items: refs.map(ref => ({ ref, range, ...(section ? { section } : {}) })), format, ...extra }
   },
-  execute: async ({ items, format }, ctx): Promise<ToolResult> => {
-    const chapters = ctx.document.chapters()
-    const attachments = attachmentList(ctx)
-    type Entry = ({ chapter: ResolvedChapter } | { attachment: AttachmentMeta }) & { key: string; range: ParagraphRange | null; section?: string }
-    const resolved: Entry[] = []
-    const errors: string[] = []
-    for (const item of items) {
-      const r = resolveRef(item.ref, chapters, attachments)
-      if ('error' in r) { errors.push(r.error); continue }
-      if (item.section && !('attachment' in r)) { errors.push(`section="${item.section}" names a part of an attachment; for a chapter, pass paragraphs instead.`); continue }
-      const key = 'attachment' in r ? `a:${r.attachment.id}` : `c:${r.chapter.id}`
-      if (!resolved.some(x => x.key === key && JSON.stringify(x.range) === JSON.stringify(item.range) && x.section === item.section)) {
-        resolved.push({ ...r, key, range: item.range, ...(item.section ? { section: item.section } : {}) })
-      }
+  execute: async ({ items, format, task, confirmed }, ctx): Promise<ToolResult> => {
+    // More than one read returns, with a task: batches outside the conversation (read_and_list.md §2).
+    if (task && (items.length === 0 || !(await fitsInOneRead(items, format, ctx)))) return readForTask(task, items, confirmed, ctx)
+    const fits = task ? true : await fitsInOneRead(items, format, ctx)
+    const result = await readItems(items, format, ctx)
+    // Cut short with no task: say what reading all of it would cost, before anything is spent.
+    if (!fits) {
+      const note = await restOfReadNote(items, ctx)
+      if (note) return { ...result, content: `${result.content}
+
+${note}` }
     }
-    if (resolved.length === 0) return fail('read_chapter', errors.join('\n'))
-
-    await ctx.document.ensureLoaded([...new Set(resolved.flatMap(x => ('chapter' in x ? [x.chapter.id] : [])))])
-
-    const parts: string[] = []
-    const traces: string[] = []
-    let budget = READ_CALL_CAP
-    const skipped: string[] = []
-    for (const entry of resolved) {
-      let range = entry.range
-      if ('attachment' in entry) {
-        // A reference file: text only, never written (attachments_and_web.md §1).
-        const att = entry.attachment
-        const paras = await (ctx.attachments as NonNullable<ToolContext['attachments']>).paragraphs(att.id)
-        if (entry.section) {
-          // A section by its heading: "第三十章" and "第30章" are the same chapter.
-          const sec = findAttachmentRange(att.sections, entry.section)
-          if (!sec) {
-            const sample = att.sections.slice(0, 6).map(s => `"${s.title}"`).join(', ')
-            errors.push(`${att.ref} "${att.name}" has no section matching "${entry.section}".` +
-              (sample ? ` Its sections begin ${sample}…; grep chapters=["${att.ref}"] for a heading.` : ' It has no section headings; grep it instead.'))
-            continue
-          }
-          range = { from: sec.from, to: sec.to }
-        }
-        const start = range?.from ?? 1
-        if (start > paras.length) { errors.push(`${att.ref} "${att.name}" has ${paras.length} paragraphs; there is no ¶${start}.`); continue }
-        // Never the whole file: the turn's reads of attachments are capped (§1, user requirement).
-        const left = ATTACHMENT_RUN_READ_CAP - ctx.run.attachmentChars
-        if (left <= 0) { errors.push(attachmentBudgetNote(att.ref, ctx.run.attachmentChars)); continue }
-        if (budget <= 0) { skipped.push(`${att.ref}${range ? ` ¶${start}` : ''}`); continue }
-        const out = renderAttachmentPart(att, paras, start, range?.to ?? null, Math.min(READ_CHAPTER_CAP, budget, left))
-        if (out.last < start) {
-          // Not even its first paragraph fits in what the turn has left.
-          errors.push(attachmentBudgetNote(att.ref, ctx.run.attachmentChars))
-          continue
-        }
-        budget -= out.used
-        ctx.run.attachmentChars += out.used
-        parts.push(out.content)
-        traces.push(`${att.ref} "${att.name}" ¶${start}–${out.last} (${(out.used / 1000).toFixed(1)}k, attachment)`)
-        continue
-      }
-      const chapter = entry.chapter
-      // The user changed it while the run worked: the run's copy is stale,
-      // so read what is stored now.
-      if (userEdited(ctx, chapter.id)) forgetChapter(ctx, chapter.id)
-      const html = acceptedHtml(ctx, chapter.id)
-      const paras = chapterParagraphs(html)
-      const totalChars = paras.reduce((sum, p) => sum + p.text.length, 0)
-
-      // Already in this request in full: say so instead of sending it twice —
-      // in the first two steps, while that copy is still near. Later in a
-      // long turn the model may want it in view again before writing
-      // (user decision 2026-10-06: whether to re-read is the model's call).
-      if (format === 'text' && !range && ctx.run.inContext.has(chapter.id) && !ctx.run.docs.has(chapter.id) && ctx.run.step <= RECENT_STEPS) {
-        parts.push(`=== ${citeChapter(chapter)} is already in your context in full (it is the active chapter or in REFERENCED CHAPTERS). ===`)
-        traces.push(`${citeChapter(chapter)} (already in context)`)
-        continue
-      }
-      const from = range?.from ?? 1
-      const to = Math.min(range?.to ?? paras.length, paras.length)
-      if (from > paras.length) {
-        errors.push(`${citeChapter(chapter)} has ${paras.length} paragraphs; there is no ¶${from}.`)
-        continue
-      }
-      // The duplicate guard (D5): the same request for the same bytes, in this
-      // step or the one before — the copy is right there. An older one may
-      // be read again: in a long series it sits far behind the chapters
-      // written since, and refreshing it is the model's call.
-      const key = `${chapter.id}|${format}|${from}-${to}|${hashContent(html)}`
-      const earlier = ctx.run.reads.get(key)
-      if (earlier !== undefined && ctx.run.step - earlier <= RECENT_STEPS) {
-        parts.push(`=== ${citeChapter(chapter)} ¶${from}–¶${to} was already returned in step ${earlier + 1} of this turn and has not changed since. ===`)
-        traces.push(`${citeChapter(chapter)} (repeat)`)
-        continue
-      }
-      if (budget <= 0) {
-        skipped.push(`${citeChapter(chapter)}${range ? ` ¶${from}–${to}` : ''}`)
-        continue
-      }
-
-      // Whole paragraphs only, up to the caps: a part never ends mid-paragraph.
-      const cap = Math.min(READ_CHAPTER_CAP, budget)
-      const lines: string[] = []
-      let used = 0
-      let last = from - 1
-      for (const p of paras.slice(from - 1, to)) {
-        const line = format === 'html' ? ctx.images.preserve(p.html) : numberedLine(p)
-        if (lines.length > 0 && used + line.length > cap) break
-        lines.push(line)
-        used += line.length
-        last = p.number
-      }
-      budget -= used
-      const whole = from === 1 && last === paras.length
-      // The part's own size, counted the way the chapter total is: a model
-      // planning a rewrite "at least as long as the source" cannot count it
-      // itself, and an estimate is not worth writing into an outline.
-      const partChars = paras.slice(from - 1, last).reduce((sum, p) => sum + p.text.length, 0)
-      const span = whole ? '' : `, ¶${from}–¶${last} of ${paras.length} (${partChars} characters)`
-      const more = last < to
-        ? `\n[Stopped at ¶${last} to stay under ${cap} characters. Continue with chapters=[${chapter.number}], paragraphs="${last + 1}-${range?.to ?? ''}", format="${format}".]`
-        : ''
-      // What its unaccepted changes replaced, so "keep what it said before"
-      // can be done exactly (utils/pendingChanges).
-      const stored = ctx.document.chapters().find(c => c.id === chapter.id)?.content ?? ''
-      const pending = renderPendingChanges(pendingChanges(stored))
-      parts.push(`=== ${citeChapter(chapter)} — ${paras.length} paragraphs, ${totalChars} characters${span}, ${format} ===\n${lines.join('\n')}${more}${pending ? `\n\n${pending}` : ''}`)
-      traces.push(`${citeChapter(chapter)}${whole ? '' : ` ¶${from}–${last}`} (${(used / 1000).toFixed(1)}k, ${format})`)
-
-      ctx.run.reads.set(key, ctx.run.step)
-      ctx.run.readIds.add(chapter.id)
-      // The whole current text, seen: enough to rewrite a plain chapter (§0.11).
-      if (whole) ctx.run.textSeen.set(chapter.id, hashContent(html))
-      if (format === 'html') {
-        ctx.run.htmlShown.add(chapter.id)
-        if (!ctx.run.known.has(chapter.id)) ctx.run.known.set(chapter.id, stored)
-      }
-    }
-    if (skipped.length > 0) {
-      parts.push(`[Not returned — this call reached its ${READ_CALL_CAP}-character limit: ${skipped.join(', ')}. Ask for them in another call.]`)
-    }
-    if (errors.length > 0) parts.push(errors.join('\n'))
-
-    return {
-      ok: errors.length === 0,
-      // Some chapters were read; a bad reference beside them is worth a retry
-      // only if nothing else came back.
-      retryable: errors.length > 0 && traces.length === 0,
-      content: parts.join('\n\n'),
-      trace: `📖 read ${traces.join(', ')}`
-    }
+    return result
   }
 })
+
+/** Kept for callers and tests that know the old name. */
+export const readChapterTool = readTool
+
+/** The text of `items`, as one call returns it: numbered paragraphs (or HTML), capped, with where to continue. */
+async function readItems(items: ReadItem[], format: 'text' | 'html', ctx: ToolContext): Promise<ToolResult> {
+  const chapters = ctx.document.chapters()
+  const attachments = attachmentList(ctx)
+  type Entry = ({ chapter: ResolvedChapter } | { attachment: AttachmentMeta }) & { key: string; range: ParagraphRange | null; section?: string }
+  const resolved: Entry[] = []
+  const errors: string[] = []
+  for (const item of items) {
+    const r = resolveRef(item.ref, chapters, attachments)
+    if ('error' in r) { errors.push(r.error); continue }
+    if (item.section && !('attachment' in r)) { errors.push(`section="${item.section}" names a part of an attachment; for a chapter, pass paragraphs instead.`); continue }
+    const key = 'attachment' in r ? `a:${r.attachment.id}` : `c:${r.chapter.id}`
+    if (!resolved.some(x => x.key === key && JSON.stringify(x.range) === JSON.stringify(item.range) && x.section === item.section)) {
+      resolved.push({ ...r, key, range: item.range, ...(item.section ? { section: item.section } : {}) })
+    }
+  }
+  if (resolved.length === 0) return fail('read', errors.join('\n'))
+
+  await ctx.document.ensureLoaded([...new Set(resolved.flatMap(x => ('chapter' in x ? [x.chapter.id] : [])))])
+
+  const parts: string[] = []
+  const traces: string[] = []
+  let budget = READ_CALL_CAP
+  const skipped: string[] = []
+  for (const entry of resolved) {
+    let range = entry.range
+    if ('attachment' in entry) {
+      // A reference file: text only, never written (attachments_and_web.md §1).
+      const att = entry.attachment
+      const paras = await (ctx.attachments as NonNullable<ToolContext['attachments']>).paragraphs(att.id)
+      if (entry.section) {
+        // A section by its heading: "第三十章" and "第30章" are the same chapter.
+        const sec = findAttachmentRange(att.sections, entry.section)
+        if (!sec) {
+          const sample = att.sections.slice(0, 6).map(s => `"${s.title}"`).join(', ')
+          errors.push(`${att.ref} "${att.name}" has no section matching "${entry.section}".` +
+            (sample ? ` Its sections begin ${sample}…; grep chapters=["${att.ref}"] for a heading.` : ' It has no section headings; grep it instead.'))
+          continue
+        }
+        range = { from: sec.from, to: sec.to }
+      }
+      const start = range?.from ?? 1
+      if (start > paras.length) { errors.push(`${att.ref} "${att.name}" has ${paras.length} paragraphs; there is no ¶${start}.`); continue }
+      // Never the whole file: the turn's reads of attachments are capped (§1, user requirement).
+      const left = ATTACHMENT_RUN_READ_CAP - ctx.run.attachmentChars
+      if (left <= 0) { errors.push(attachmentBudgetNote(att.ref, ctx.run.attachmentChars)); continue }
+      if (budget <= 0) { skipped.push(`${att.ref}${range ? ` ¶${start}` : ''}`); continue }
+      const out = renderAttachmentPart(att, paras, start, range?.to ?? null, Math.min(READ_CHAPTER_CAP, budget, left))
+      if (out.last < start) {
+        // Not even its first paragraph fits in what the turn has left.
+        errors.push(attachmentBudgetNote(att.ref, ctx.run.attachmentChars))
+        continue
+      }
+      budget -= out.used
+      ctx.run.attachmentChars += out.used
+      parts.push(out.content)
+      traces.push(`${att.ref} "${att.name}" ¶${start}–${out.last} (${(out.used / 1000).toFixed(1)}k, attachment)`)
+      continue
+    }
+    const chapter = entry.chapter
+    // The user changed it while the run worked: the run's copy is stale,
+    // so read what is stored now.
+    if (userEdited(ctx, chapter.id)) forgetChapter(ctx, chapter.id)
+    const html = acceptedHtml(ctx, chapter.id)
+    const paras = chapterParagraphs(html)
+    const totalChars = paras.reduce((sum, p) => sum + p.text.length, 0)
+
+    // Already in this request in full: say so instead of sending it twice —
+    // in the first two steps, while that copy is still near. Later in a
+    // long turn the model may want it in view again before writing
+    // (user decision 2026-10-06: whether to re-read is the model's call).
+    if (format === 'text' && !range && ctx.run.inContext.has(chapter.id) && !ctx.run.docs.has(chapter.id) && ctx.run.step <= RECENT_STEPS) {
+      parts.push(`=== ${citeChapter(chapter)} is already in your context in full (it is the active chapter or in REFERENCED CHAPTERS). ===`)
+      traces.push(`${citeChapter(chapter)} (already in context)`)
+      continue
+    }
+    const from = range?.from ?? 1
+    const to = Math.min(range?.to ?? paras.length, paras.length)
+    if (from > paras.length) {
+      errors.push(`${citeChapter(chapter)} has ${paras.length} paragraphs; there is no ¶${from}.`)
+      continue
+    }
+    // The duplicate guard (D5): the same request for the same bytes, in this
+    // step or the one before — the copy is right there. An older one may
+    // be read again: in a long series it sits far behind the chapters
+    // written since, and refreshing it is the model's call.
+    const key = `${chapter.id}|${format}|${from}-${to}|${hashContent(html)}`
+    const earlier = ctx.run.reads.get(key)
+    if (earlier !== undefined && ctx.run.step - earlier <= RECENT_STEPS) {
+      parts.push(`=== ${citeChapter(chapter)} ¶${from}–¶${to} was already returned in step ${earlier + 1} of this turn and has not changed since. ===`)
+      traces.push(`${citeChapter(chapter)} (repeat)`)
+      continue
+    }
+    if (budget <= 0) {
+      skipped.push(`${citeChapter(chapter)}${range ? ` ¶${from}–${to}` : ''}`)
+      continue
+    }
+
+    // Whole paragraphs only, up to the caps: a part never ends mid-paragraph.
+    const cap = Math.min(READ_CHAPTER_CAP, budget)
+    const lines: string[] = []
+    let used = 0
+    let last = from - 1
+    for (const p of paras.slice(from - 1, to)) {
+      const line = format === 'html' ? ctx.images.preserve(p.html) : numberedLine(p)
+      if (lines.length > 0 && used + line.length > cap) break
+      lines.push(line)
+      used += line.length
+      last = p.number
+    }
+    budget -= used
+    const whole = from === 1 && last === paras.length
+    // The part's own size, counted the way the chapter total is: a model
+    // planning a rewrite "at least as long as the source" cannot count it
+    // itself, and an estimate is not worth writing into an outline.
+    const partChars = paras.slice(from - 1, last).reduce((sum, p) => sum + p.text.length, 0)
+    const span = whole ? '' : `, ¶${from}–¶${last} of ${paras.length} (${partChars} characters)`
+    const more = last < to
+      ? `\n[Stopped at ¶${last} to stay under ${cap} characters. Continue with chapters=[${chapter.number}], paragraphs="${last + 1}-${range?.to ?? ''}", format="${format}".]`
+      : ''
+    // What its unaccepted changes replaced, so "keep what it said before"
+    // can be done exactly (utils/pendingChanges).
+    const stored = ctx.document.chapters().find(c => c.id === chapter.id)?.content ?? ''
+    const pending = renderPendingChanges(pendingChanges(stored))
+    parts.push(`=== ${citeChapter(chapter)} — ${paras.length} paragraphs, ${totalChars} characters${span}, ${format} ===\n${lines.join('\n')}${more}${pending ? `\n\n${pending}` : ''}`)
+    traces.push(`${citeChapter(chapter)}${whole ? '' : ` ¶${from}–${last}`} (${(used / 1000).toFixed(1)}k, ${format})`)
+
+    ctx.run.reads.set(key, ctx.run.step)
+    ctx.run.readIds.add(chapter.id)
+    // The whole current text, seen: enough to rewrite a plain chapter (§0.11).
+    if (whole) ctx.run.textSeen.set(chapter.id, hashContent(html))
+    if (format === 'html') {
+      ctx.run.htmlShown.add(chapter.id)
+      if (!ctx.run.known.has(chapter.id)) ctx.run.known.set(chapter.id, stored)
+    }
+  }
+  if (skipped.length > 0) {
+    parts.push(`[Not returned — this call reached its ${READ_CALL_CAP}-character limit: ${skipped.join(', ')}. Ask for them in another call.]`)
+  }
+  if (errors.length > 0) parts.push(errors.join('\n'))
+
+  return {
+    ok: errors.length === 0,
+    // Some chapters were read; a bad reference beside them is worth a retry
+    // only if nothing else came back.
+    retryable: errors.length > 0 && traces.length === 0,
+    content: parts.join('\n\n'),
+    trace: `📖 read ${traces.join(', ')}`
+  }
+}
 
 // ── grep ────────────────────────────────────────────────────────────────────
 
@@ -460,7 +527,7 @@ export const grepTool = defineTool<GrepArgs>({
     'Search the book like grep: a regular expression (case-insensitive) over every chapter\'s text, or only the chapters you name. ' +
     'Use it to locate where a name, phrase, object or event appears before reading — e.g. "阿青|阿红", "第[一二三]次", "outline". ' +
     `To check several things at once, pass patterns (up to ${MAX_GREP_PATTERNS}): each is searched and reported on its own — one call, one step. ` +
-    'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read_chapter paragraphs="…", or change it with edit_paragraphs; output "chapters" returns only the chapters that match, with counts. ' +
+    'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read paragraphs="…", or change it with edit_paragraphs; output "chapters" returns only the chapters that match, with counts. ' +
     'Chapter titles are searched too. An attachment (A1…) is searched only when named in chapters.',
   parameters: {
     type: 'object',
@@ -552,19 +619,89 @@ export const grepTool = defineTool<GrepArgs>({
 
 // ── list_chapters ───────────────────────────────────────────────────────────
 
-export const listChaptersTool = defineTool<Record<string, never>>({
-  name: 'list_chapters',
+interface ListArgs {
+  source?: unknown
+  section?: string
+  range: ParagraphRange | null
+  from: number
+}
+
+/**
+ * What can be read, and where (read_and_list.md §3): every chapter and
+ * attachment; an attachment's sections with their ¶ spans; a chapter's
+ * headings. Replaces list_chapters, which listed chapters only — an
+ * 879-chapter attachment showed 80 headings in the request and the model
+ * grepped for the rest three steps in a row (run-737f3d809b45).
+ */
+export const listTool = defineTool<ListArgs>({
+  name: 'list',
+  aliases: ['list_chapters'],
   description:
     // Problem: "call this only after creating chapters" read, once creating
     //   became writing, as a step of creating one. grok announced a new
     //   chapter and called this 13 times instead of writing it (2026-10-06).
-    'The current list of chapters with their numbers, sizes and summaries. The CHAPTER INDEX in the request already has this as of the start of the turn; call this only when chapters were added, removed or renamed during the turn, or when you need their sizes. ' +
+    'What can be read, and where. With no arguments: every chapter with its number, size and summary, then each attachment (A1…) with its size and number of sections. ' +
+    'The CHAPTER INDEX and ATTACHMENTS in the request already have this as of the start of the turn; call it when chapters were added, removed or renamed during the turn, or when you need sizes. ' +
+    `source="A1": that attachment's sections, each with its ¶ span (${LIST_SECTION_LINES} per call, continue with from=), to read one by those numbers next; narrow it with section="第60–90章" or paragraphs. ` +
+    'source="3": a chapter\'s headings with their ¶ numbers. ' +
     'It changes nothing in the book: a new chapter is added by writing it (new_chapter).',
-  parameters: { type: 'object', properties: {} },
+  parameters: {
+    type: 'object',
+    properties: {
+      source: { type: 'string', description: 'Optional: an attachment (A1) or a chapter (its number) to list the parts of.' },
+      section: { type: 'string', description: 'With an attachment: only the sections in this run, e.g. "第60–90章".' },
+      paragraphs: { type: 'string', description: 'With an attachment: only the sections overlapping this ¶ range, e.g. "1200-3000".' },
+      from: { type: 'integer', description: 'With an attachment: the section number to start from (to continue a long list).' }
+    }
+  },
   kind: 'read',
   isAvailable: () => true,
-  parse: () => ({}),
-  execute: (_args, ctx): ToolResult => {
+  parse: raw => {
+    const range = parseRange(raw?.paragraphs)
+    if (typeof range === 'string') return range
+    const source = raw?.source ?? raw?.chapter
+    const section = typeof raw?.section === 'string' && raw.section.trim() ? raw.section.trim() : undefined
+    const from = typeof raw?.from === 'number' && Number.isFinite(raw.from) ? Math.max(1, Math.floor(raw.from)) : 1
+    return { ...(source !== undefined && source !== null && source !== '' ? { source } : {}), ...(section ? { section } : {}), range, from }
+  },
+  execute: async ({ source, section, range, from }, ctx): Promise<ToolResult> => {
+    if (source !== undefined) {
+      const r = resolveRef(source, ctx.document.chapters(), attachmentList(ctx))
+      if ('error' in r) return fail('list', r.error)
+      if ('attachment' in r) {
+        const att = r.attachment
+        let sections = att.sections
+        let args = ''
+        if (range) {
+          const to = range.to ?? att.paragraphs
+          sections = sections.filter(s => s.to >= range.from && s.from <= to)
+          args = ` paragraphs="${range.from}-${range.to ?? ''}"`
+        } else if (section) {
+          const span = findAttachmentRange(att.sections, section)
+          if (!span) return fail('list', `${att.ref} has no section matching "${section}".`)
+          sections = sections.filter(s => s.to >= span.from && s.from <= span.to)
+          args = ` section="${section}"`
+        }
+        const first = Math.min(from, Math.max(1, sections.length))
+        const last = Math.min(sections.length, first - 1 + LIST_SECTION_LINES)
+        return {
+          ok: true,
+          content: renderSectionList(att, sections, from, LIST_SECTION_LINES, args),
+          trace: sections.length > 0 ? `📚 list ${att.ref} sections ${first}–${last} of ${sections.length}` : `📚 list ${att.ref} (no sections)`
+        }
+      }
+      const chapter = r.chapter
+      await ctx.document.ensureLoaded([chapter.id])
+      const paras = chapterParagraphs(acceptedHtml(ctx, chapter.id))
+      const heads = paras.filter(p => p.kind === 'heading')
+      return {
+        ok: true,
+        content: heads.length > 0
+          ? `=== ${citeChapter(chapter)} — ${paras.length} paragraphs ===\n${heads.map(p => `¶${p.number} # ${p.text}`).join('\n')}`
+          : `${citeChapter(chapter)} has no headings: ${paras.length} paragraphs. Read a range by ¶, or grep it.`,
+        trace: `📚 list ${citeChapter(chapter)} headings`
+      }
+    }
     const lines = ctx.document.chapters().map((c, i) => {
       const html = acceptedHtml(ctx, c.id)
       const chars = htmlToPlainText(html).length
@@ -588,7 +725,7 @@ export const listChaptersTool = defineTool<Record<string, never>>({
      *   since it began, and since the last list.
      */
     const notes: string[] = []
-    if (ctx.run.lastList === list) notes.push('This is identical to your previous list_chapters result: nothing has changed since then.')
+    if (ctx.run.lastList === list) notes.push('This is identical to your previous list result: nothing has changed since then.')
     if (ctx.run.startOutline !== undefined && ctx.run.startOutline === chapterOutline(ctx.document.chapters())) {
       const write = ctx.run.writeProtocol === 'markup'
         ? '<canvas new_chapter="its title">…</canvas>'
@@ -597,9 +734,15 @@ export const listChaptersTool = defineTool<Record<string, never>>({
         `Listing changes nothing in the book. A new chapter appears here only after you write it, with ${write}.`)
     }
     ctx.run.lastList = list
-    return { ok: true, content: notes.length > 0 ? `${list}\n\n${notes.join('\n')}` : list, trace: '📚 list chapters' }
+    const atts = attachmentList(ctx)
+    const files = atts.length === 0 ? '' : '\n\nATTACHMENTS (read them like chapters; list source="A1" shows a file\'s sections):\n' +
+      atts.map(a => `${a.ref} "${a.name}" — ${a.chars} characters, ${a.paragraphs} paragraphs, ${a.sections.length} sections`).join('\n')
+    return { ok: true, content: (notes.length > 0 ? `${list}\n\n${notes.join('\n')}` : list) + files, trace: atts.length > 0 ? `📚 list chapters and ${atts.length} attachment${atts.length === 1 ? '' : 's'}` : '📚 list chapters' }
   }
 })
+
+/** Kept for callers and tests that know the old name. */
+export const listChaptersTool = listTool
 
 // ── open_chapter ────────────────────────────────────────────────────────────
 
@@ -650,7 +793,7 @@ export const openChapterTool = defineTool<{ chapter: unknown }>({
       ok: true,
       content: `${citeChapter(target)} is now open in the editor for the user to see. ` +
         `To rewrite it whole, write it now: ${fullWrite(ctx, target.number)}.` +
-        (ctx.run.htmlShown.has(target.id) ? '' : ' Only edits to parts of it need its HTML first (read_chapter, format "html").'),
+        (ctx.run.htmlShown.has(target.id) ? '' : ' Only edits to parts of it need its HTML first (read, format "html").'),
       trace: `📂 open ${citeChapter(target)}`
     }
   }
@@ -722,4 +865,4 @@ export const deleteChapterTool = defineTool<{ chapter: unknown }>({
   }
 })
 
-export const BOOK_TOOLS = [readChapterTool, grepTool, listChaptersTool, openChapterTool, deleteChapterTool, renameChapterTool]
+export const BOOK_TOOLS = [readTool, grepTool, listTool, openChapterTool, deleteChapterTool, renameChapterTool]

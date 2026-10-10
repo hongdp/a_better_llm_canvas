@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import { analyzeInBatches, type AnalyzeTransport } from '../analyzeBook'
-import { analyzeBookTool } from '../tools/analyzeBook'
+import { readTool, listTool } from '../tools/bookReads'
+import { ToolRegistry } from '../registry'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 
@@ -48,42 +49,71 @@ describe('analyzeInBatches', () => {
   })
 })
 
-describe('analyze_book', () => {
-  const call = (args: Record<string, unknown>): ToolInvocation => ({ id: 'a', name: 'analyze_book', args, source: 'native' })
+// read with a task (read_and_list.md §2): what analyze_book did, now only
+// when what was asked for does not fit in one read.
+describe('read with a task', () => {
+  const call = (args: Record<string, unknown>, name = 'read'): ToolInvocation => ({ id: 'a', name, args, source: 'native' })
   const book = () => fakeContext('<p>序章。</p>', {
     chapters: [
       { id: 'doc-2', title: '第一章', content: '<p>一</p>' },
-      { id: 'doc-3', title: '第二章', content: '' }
+      { id: 'doc-3', title: '第二章', content: '' },
+      { id: 'doc-4', title: '第三章', content: Array.from({ length: 30 }, (_, i) => `<p>${'长'.repeat(1000)}${i}</p>`).join('') }
     ],
     lazy: { 'doc-3': '<p>二</p>' }
   })
+  const notesPort = () => vi.fn(async (_task: string, chapters: { title: string }[]) => ({ notes: `read ${chapters.map(c => c.title).join('、')}`, batches: 2, total: 2, stopped: false }))
 
-  it('is offered only where a model is wired', () => {
+  it('is always offered; without a model, a task-read too long for one read says to read it in parts', async () => {
     const f = book()
-    expect(analyzeBookTool.isAvailable(f.ctx)).toBe(false)
-    f.ctx.analyze = { run: async () => ({ notes: '', batches: 0, total: 0, stopped: false }) }
-    expect(analyzeBookTool.isAvailable(f.ctx)).toBe(true)
+    expect(readTool.isAvailable(f.ctx)).toBe(true)
+    const r = await (readTool.invoke(call({ task: '人物关系' }), f.ctx) as Promise<ToolResult>)
+    expect(r.ok).toBe(false)
+    expect(r.content).toContain('read it part by part')
   })
 
-  it('analyzes the whole book (lazy chapters loaded) and returns the notes, with the call count in the trace', async () => {
+  it('reads the whole book for a task (lazy chapters loaded) and returns the notes, with the call count in the trace', async () => {
     const f = book()
-    const run = vi.fn(async (_task: string, chapters: { title: string }[]) => ({ notes: `read ${chapters.map(c => c.title).join('、')}`, batches: 2, total: 2, stopped: false }))
+    const run = notesPort()
     f.ctx.analyze = { run }
-    const r = await (analyzeBookTool.invoke(call({ task: '人物关系' }), f.ctx) as Promise<ToolResult>)
-
-    expect(run.mock.calls[0][1].map(c => c.title)).toEqual(['Chapter 1', '第一章', '第二章'])
+    const r = await (readTool.invoke(call({ task: '人物关系' }), f.ctx) as Promise<ToolResult>)
+    expect(run.mock.calls[0][1].map(c => c.title)).toEqual(['Chapter 1', '第一章', '第二章', '第三章'])
     expect(r.ok).toBe(true)
-    expect(r.content).toContain('read Chapter 1、第一章、第二章')
-    expect(r.trace).toBe('📚 analyzed the book — 3 chapters, 2 model calls')
+    expect(r.content).toContain('read Chapter 1、第一章、第二章、第三章')
+    expect(r.trace).toBe('📚 read the book for a task — 4 parts, 2 model calls')
   })
 
-  it('analyzes only the chapters named, and says which could not be loaded', async () => {
+  it('returns the text, not notes, when what was named fits in one read — no model call', async () => {
     const f = book()
-    f.ensureLoaded.mockImplementation(async () => {})
-    const run = vi.fn(async () => ({ notes: 'n', batches: 1, total: 1, stopped: false }))
+    const run = notesPort()
     f.ctx.analyze = { run }
-    const r = await (analyzeBookTool.invoke(call({ task: 't', chapters: ['2', '3'] }), f.ctx) as Promise<ToolResult>)
-    expect(r.trace).toBe('📚 analyzed #2, #3 — 1 chapter, 1 model call')
-    expect(r.content).toContain('Not read — their text could not be loaded: #3 "第二章"')
+    const r = await (readTool.invoke(call({ task: 't', chapters: ['2'] }), f.ctx) as Promise<ToolResult>)
+    expect(run).not.toHaveBeenCalled()
+    expect(r.content).toContain('¶1 一')
+  })
+
+  it('reads a chapter too long for one read in batches, honoring its range', async () => {
+    const f = book()
+    const run = notesPort()
+    f.ctx.analyze = { run }
+    const r = await (readTool.invoke(call({ task: 't', chapters: ['4'], paragraphs: '1-25' }), f.ctx) as Promise<ToolResult>)
+    expect(run.mock.calls[0][1].map(c => c.title)).toEqual(['第三章 (¶1–25)'])
+    expect(r.trace).toBe('📚 read #4 ¶1–25 for a task — 1 part, 2 model calls')
+  })
+
+  it('says what the rest would cost when a read without a task is cut short', async () => {
+    const f = book()
+    f.ctx.analyze = { run: notesPort(), plan: () => ({ calls: 1, inputTokens: 31_000, batchChars: 140_000 }) }
+    const r = await (readTool.invoke(call({ chapters: ['4'] }), f.ctx) as Promise<ToolResult>)
+    expect(r.ok).toBe(true)
+    expect(r.content).toContain('Continue with chapters=[4]')
+    expect(r.content).toContain('[Not all of it fit in one read. To have all of it read and get notes, call read again with the same arguments and task="what the notes are for": 1 batch outside the conversation, ≈31k input tokens.]')
+  })
+
+  it('answers to its old names, read_chapter and analyze_book, and list to list_chapters', () => {
+    const registry = new ToolRegistry([readTool, listTool])
+    expect(registry.get('read_chapter')).toBe(readTool)
+    expect(registry.get('analyze_book')).toBe(readTool)
+    expect(registry.get('list_chapters')).toBe(listTool)
+    expect(() => new ToolRegistry([readTool, { ...listTool, name: 'analyze_book', aliases: [] }])).toThrow('already registered')
   })
 })

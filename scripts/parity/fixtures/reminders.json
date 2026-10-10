@@ -94,14 +94,14 @@
      8,
      true
     ],
-    "output": "The last 8 steps only looked things up and wrote nothing, and every step sends the whole conversation again. Check several places in ONE call: read_chapter with parts, grep with patterns; for a question that spans many chapters, let analyze_book read them for you. Then write."
+    "output": "The last 8 steps only looked things up and wrote nothing, and every step sends the whole conversation again. Check several places in ONE call: read with parts, grep with patterns; for a question that spans many chapters, read them with a task and get notes back. Then write."
    },
    {
     "input": [
      11,
      false
     ],
-    "output": "The last 11 steps only looked things up and wrote nothing, and every step sends the whole conversation again. Check several places in ONE call: read_chapter with parts, grep with patterns. Then write."
+    "output": "The last 11 steps only looked things up and wrote nothing, and every step sends the whole conversation again. Check several places in ONE call: read with parts, grep with patterns. Then write."
    }
   ],
   "lookup_nudge_steps": [

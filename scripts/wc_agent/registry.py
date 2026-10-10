@@ -13,8 +13,11 @@ class Tool:
                  parse: Optional[Callable[[Optional[Dict[str, Any]]], ParseResult]] = None,
                  is_available: Optional[Callable[[ToolContext], bool]] = None,
                  preview: Optional[Callable[[str, ToolContext], None]] = None,
-                 markup_form: bool = False, native_on_markup: bool = False, run_last: bool = False) -> None:
+                 markup_form: bool = False, native_on_markup: bool = False, run_last: bool = False,
+                 aliases: Optional[List[str]] = None) -> None:
         self.name = name
+        #: Earlier names a call may still use (read_and_list.md §4); never offered.
+        self.aliases = list(aliases or [])
         self.description = description
         self.parameters = parameters
         self.kind = kind
@@ -50,12 +53,15 @@ class ToolRegistry:
             self.register(t)
 
     def register(self, tool: Tool) -> None:
-        if self.get(tool.name):
-            raise ValueError(f'Tool "{tool.name}" is already registered')
+        for name in [tool.name, *tool.aliases]:
+            if self.get(name):
+                raise ValueError(f'Tool "{name}" is already registered')
         self._tools.append(tool)
 
     def get(self, name: Optional[str]) -> Optional[Tool]:
-        return next((t for t in self._tools if t.name == name), None) if name else None
+        if not name:
+            return None
+        return next((t for t in self._tools if t.name == name), None) or next((t for t in self._tools if name in t.aliases), None)
 
     def descriptor(self, name: str) -> Optional[Dict[str, Any]]:
         """What invocations.collect_step asks about a tool."""

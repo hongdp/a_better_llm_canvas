@@ -164,7 +164,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_paragraphs', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'analyze_book', 'plan', 'ask_user'])
+    expect(offered(0)).toEqual(['update_document', 'edit_paragraphs', 'read', 'grep', 'list', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'plan', 'ask_user'])
     // …and the system prompt teaches the chapter attribute.
     expect(calls[0][0].content).toContain('<canvas chapter="3">')
     h.unmount()
@@ -176,7 +176,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_document', 'edit_paragraphs', 'read_chapter', 'grep', 'list_chapters', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'analyze_book', 'plan', 'ask_user'])
+    expect(offered(0)).toEqual(['update_document', 'edit_document', 'edit_paragraphs', 'read', 'grep', 'list', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'plan', 'ask_user'])
     h.unmount()
   })
 
@@ -386,7 +386,7 @@ describe('writing another chapter (D2)', () => {
     await send(h, '把大纲第一章改成离家')
 
     // Refused at step 1 — the model was told why.
-    expect(calls[1].at(-1)?.content).toContain('read_chapter')
+    expect(calls[1].at(-1)?.content).toContain('read with chapters=')
     expect(stripDiffMarkup(content('doc-2'))).toBe('<p>大纲：第一章，主角离家。</p>')
     expect(content('doc-2')).toContain('diff-addition')
     // The open chapter is untouched, and the other one was snapshotted first.

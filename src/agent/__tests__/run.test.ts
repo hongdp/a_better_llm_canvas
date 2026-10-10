@@ -472,7 +472,7 @@ describe('a streak of look-ups (agentic_chat_loop.md §0.11)', () => {
     const said = h.requests.map(r => r.some(m => m.content.includes('only looked things up')))
     expect(said.indexOf(true)).toBe(8)
     expect(h.requests[8].at(-1)?.content).toContain('The last 8 steps only looked things up and wrote nothing')
-    expect(h.requests[8].at(-1)?.content).toContain('read_chapter with parts, grep with patterns. Then write.')
+    expect(h.requests[8].at(-1)?.content).toContain('read with parts, grep with patterns. Then write.')
     // Once: the later requests carry the same message (it is history), no new one.
     expect(h.requests[10].filter(m => m.content.includes('only looked things up'))).toHaveLength(1)
   })

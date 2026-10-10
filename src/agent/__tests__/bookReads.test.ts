@@ -251,7 +251,7 @@ describe('list_chapters', () => {
     const f = book()
     await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
     const again = await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
-    expect(again.content).toContain('This is identical to your previous list_chapters result')
+    expect(again.content).toContain('This is identical to your previous list result')
   })
 
   it('makes no such claim once the book changed in the turn', async () => {

@@ -34,7 +34,6 @@ import { ToolRegistry, toToolSpecs } from '../agent/registry'
 import { DOCUMENT_WRITE_TOOLS, previewRewrite, editParagraphsTool } from '../agent/tools/documentWrites'
 import { BOOK_TOOLS } from '../agent/tools/bookReads'
 import { polishChapterTool } from '../agent/tools/polishChapter'
-import { analyzeBookTool } from '../agent/tools/analyzeBook'
 import { planTool } from '../agent/tools/plan'
 import { askUserTool } from '../agent/tools/askUser'
 import { analyzeInBatches, planAnalysis } from '../agent/analyzeBook'
@@ -103,7 +102,7 @@ interface StreamRenderContext extends RunInfo {
 /** Assistant turns whose grok reasoning items go back in the next request (the most recent ones). */
 export const REASONING_HISTORY_TURNS = 8
 
-const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, editParagraphsTool, ...BOOK_TOOLS, polishChapterTool, analyzeBookTool, planTool, askUserTool, ...WEB_TOOLS])
+const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, editParagraphsTool, ...BOOK_TOOLS, polishChapterTool, planTool, askUserTool, ...WEB_TOOLS])
 
 /**
  * Whether the API server has a browser (attachments_and_web.md §2): asked

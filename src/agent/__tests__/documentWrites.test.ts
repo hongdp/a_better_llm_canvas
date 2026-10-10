@@ -168,7 +168,7 @@ describe('writes to another chapter (D2)', () => {
     const f = twoChapters()
     const r = await editDocumentTool.invoke(call('edit_document', { chapter: '2', ...edit('<p>outline</p>', '<p>x</p>') }), f.ctx)
     expect(r).toMatchObject({ ok: false, retryable: true })
-    expect(r.content).toContain('read_chapter')
+    expect(r.content).toContain('Call read with chapters=')
     expect(f.writes).toEqual([])
   })
 
