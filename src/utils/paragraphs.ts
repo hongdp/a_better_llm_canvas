@@ -285,3 +285,40 @@ export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): Parag
     firstChanged: Math.min(...edits.map(e => e.paragraph))
   }
 }
+
+/**
+ * A whole rewrite keeps at least this share of a chapter's text unless the
+ * model insists (run-737f3d809b45: a timeline "brought up to chapter 87"
+ * came back 21% shorter, chapters 1–61 folded into one line). Measured over
+ * the 19 earlier whole rewrites in the archive: 17 kept 95% or more; the two
+ * below were a chapter split into several, which a second send still allows.
+ */
+export const REWRITE_KEEP_RATIO = 0.85
+
+export interface RewriteLoss { before: number; after: number; lostHeadings: number; lostItems: number }
+
+/** What a whole rewrite would drop, or null when it keeps the chapter's text and structure. */
+export function rewriteLoss(oldHtml: string, newHtml: string): RewriteLoss | null {
+  const before = chapterChars(oldHtml)
+  if (before < 200) return null
+  const after = chapterChars(newHtml)
+  const count = (html: string, re: RegExp) => (html.match(re) || []).length
+  const lostHeadings = Math.max(0, count(oldHtml, /<h[1-6][\s>]/gi) - count(newHtml, /<h[1-6][\s>]/gi))
+  const lostItems = Math.max(0, count(oldHtml, /<li[\s>]/gi) - count(newHtml, /<li[\s>]/gi))
+  if (after >= before * REWRITE_KEEP_RATIO && lostHeadings === 0 && lostItems < 2) return null
+  return { before, after, lostHeadings, lostItems }
+}
+
+/** What the model is told when a rewrite is held back for what it would drop. */
+export function rewriteLossNote(cite: string, loss: RewriteLoss): string {
+  const pct = Math.round((1 - loss.after / loss.before) * 100)
+  const dropped = [
+    loss.lostHeadings > 0 ? `${loss.lostHeadings} heading${loss.lostHeadings === 1 ? '' : 's'}` : '',
+    loss.lostItems > 0 ? `${loss.lostItems} list item${loss.lostItems === 1 ? '' : 's'}` : ''
+  ].filter(Boolean)
+  return `The rewrite of ${cite} was NOT applied: it would take the chapter from ${loss.before} to ${loss.after} characters` +
+    (pct > 0 ? ` (−${pct}%)` : '') + (dropped.length > 0 ? `, dropping ${dropped.join(' and ')}` : '') + '. ' +
+    'A whole rewrite replaces everything, so whatever it leaves out is deleted. ' +
+    'To add to the chapter or bring it up to date, keep its text and change only what changes: edit_paragraphs (by ¶ number) or edit_document / <edit> blocks. ' +
+    'If the user asked for it to be shorter, or its text moved to other chapters, send the same rewrite again and it will be applied.'
+}

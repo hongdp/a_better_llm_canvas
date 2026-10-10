@@ -16,7 +16,7 @@
      "A1",
      100012
     ],
-    "output": "A1 was not read: this turn has already read 100012 characters of attachments, the most one turn may — a whole file is never read into the conversation. Find the passages you need with grep chapters=[\"A1\"] and read only those paragraphs, or let analyze_book chapters=[\"A1\"] read the file in batches and return notes."
+    "output": "A1 was not read: this turn has already read 100012 characters of attachments, the most one turn may — a whole file is never read into the conversation. Find the passages you need with grep chapters=[\"A1\"] and read only those paragraphs, or let analyze_book chapters=[\"A1\"] section=\"第62–87章\" read a range in batches and return notes."
    }
   ],
   "parse_chapter_number": [
@@ -129,6 +129,256 @@
      "第一百零二章"
     ],
     "output": 102
+   }
+  ],
+  "find_attachment_range": [
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "第1–2章"
+    ],
+    "output": {
+     "title": "第二章 起程",
+     "from": 3,
+     "to": 9
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "1-30"
+    ],
+    "output": {
+     "title": "第二章 起程 … 第30章 归来",
+     "from": 3,
+     "to": 20
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "第三十至二章"
+    ],
+    "output": {
+     "title": "第二章 起程 … 第30章 归来",
+     "from": 3,
+     "to": 20
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "第30章"
+    ],
+    "output": {
+     "title": "第30章 归来",
+     "from": 10,
+     "to": 20
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "番外"
+    ],
+    "output": {
+     "title": "番外 后来",
+     "from": 21,
+     "to": 25
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "第99–100章"
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     ""
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 2
+      },
+      {
+       "title": "第二章 起程",
+       "from": 3,
+       "to": 9
+      },
+      {
+       "title": "第30章 归来",
+       "from": 10,
+       "to": 20
+      },
+      {
+       "title": "番外 后来",
+       "from": 21,
+       "to": 25
+      }
+     ],
+     "2~2"
+    ],
+    "output": {
+     "title": "第二章 起程",
+     "from": 3,
+     "to": 9
+    }
    }
   ],
   "find_attachment_section": [
@@ -1113,7 +1363,7 @@
       }
      ]
     ],
-    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or let analyze_book chapters=[\"A1\"] read a whole file; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\n  ¶5–6 第二章 再见\nA2 \"notes.md\" — 30 characters, 3 paragraphs"
+    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or let analyze_book chapters=[\"A1\"] section=\"第62–87章\" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\n  ¶5–6 第二章 再见\nA2 \"notes.md\" — 30 characters, 3 paragraphs"
    },
    {
     "input": [
@@ -1159,7 +1409,7 @@
      ],
      3
     ],
-    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or let analyze_book chapters=[\"A1\"] read a whole file; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\nA2 \"notes.md\" — 30 characters, 3 paragraphs\n  … 1 more sections (grep for a heading to find one)"
+    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or let analyze_book chapters=[\"A1\"] section=\"第62–87章\" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\nA2 \"notes.md\" — 30 characters, 3 paragraphs\n  … 1 more sections (grep for a heading to find one)"
    }
   ],
   "render_attachment_part": [
@@ -1349,6 +1599,87 @@
      {
       "title": "A1 \"原著.txt\" — 番外 (¶7–8)",
       "text": "番外\n后来。"
+     }
+    ]
+   },
+   {
+    "input": [
+     {
+      "ref": "A1",
+      "name": "原著.txt"
+     },
+     [
+      "书名",
+      "第一章 初见",
+      "阿青推开门。",
+      "屋里没有人。",
+      "第二章 再见",
+      "她回来了。",
+      "番外",
+      "后来。"
+     ],
+     1000,
+     {
+      "from": 3,
+      "to": 6
+     }
+    ],
+    "output": [
+     {
+      "title": "A1 \"原著.txt\" — 第一章 初见 (¶3–4)",
+      "text": "阿青推开门。\n屋里没有人。"
+     },
+     {
+      "title": "A1 \"原著.txt\" — 第二章 再见 (¶5–6)",
+      "text": "第二章 再见\n她回来了。"
+     }
+    ]
+   },
+   {
+    "input": [
+     {
+      "ref": "A1",
+      "name": "原著.txt"
+     },
+     [
+      "书名",
+      "第一章 初见",
+      "阿青推开门。",
+      "屋里没有人。",
+      "第二章 再见",
+      "她回来了。",
+      "番外",
+      "后来。"
+     ],
+     1000,
+     {
+      "from": 50,
+      "to": 60
+     }
+    ],
+    "output": []
+   },
+   {
+    "input": [
+     {
+      "ref": "A2",
+      "name": "x"
+     },
+     [
+      "a",
+      "b",
+      "c"
+     ],
+     1000,
+     {
+      "from": 2,
+      "to": 9
+     }
+    ],
+    "output": [
+     {
+      "title": "A2 \"x\" — x (¶2–3)",
+      "text": "b\nc"
      }
     ]
    },

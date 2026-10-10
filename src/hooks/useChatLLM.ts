@@ -37,8 +37,7 @@ import { polishChapterTool } from '../agent/tools/polishChapter'
 import { analyzeBookTool } from '../agent/tools/analyzeBook'
 import { planTool } from '../agent/tools/plan'
 import { askUserTool } from '../agent/tools/askUser'
-import { analyzeInBatches } from '../agent/analyzeBook'
-import { WHOLE_BOOK_CONTEXT_CHARS } from '../utils/chapterIndex'
+import { analyzeInBatches, planAnalysis } from '../agent/analyzeBook'
 import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/polish'
 import { resolveRunSettings } from '../agent/policy'
 import { chapterOutline, createRunState, restoreSeen, type ToolContext } from '../agent/types'
@@ -710,12 +709,14 @@ export function useChatLLM({
     // analyze_book (D7): the chat model, one call per batch, on a cache key
     // of its own — batches share no prefix with the conversation.
     analyze: {
+      plan: (task, chapters) => planAnalysis(task, chapters, useAppStore.getState().activeProvider),
       run: (task, chapters, onProgress) => {
         const s = useAppStore.getState()
         return analyzeInBatches({
           task,
           chapters,
-          budgetChars: WHOLE_BOOK_CONTEXT_CHARS[s.activeProvider] ?? 300_000,
+          // Batches sized under the provider's window and long-context price line (ANALYZE_BATCH_TOKENS).
+          budgetChars: planAnalysis(task, chapters, s.activeProvider).batchChars,
           transport: analyzeTransport,
           // The step's controller: Stop aborts the batch in flight.
           signal: abortControllerRef.current?.signal,

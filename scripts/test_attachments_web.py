@@ -304,3 +304,54 @@ def test_a_server_run_lists_and_reads_an_attachment_but_never_sends_it_whole(boo
     assert "read_chapter" in tools and "web_search" not in tools
     second = json.dumps(provider.requests[1]["messages"], ensure_ascii=False)
     assert "〔30-1〕" in second and "〔31-1〕" not in second
+
+
+# ── analyze_book on part of an attachment, and what it costs (run-737f3d809b45) ──
+
+class _AnalyzeSpy:
+    def __init__(self, plan=None):
+        self.seen = []
+        self._plan = plan
+
+    async def run(self, task, chapters, on_progress):
+        self.seen.extend(chapters)
+        return {"notes": "笔记。", "batches": 1, "total": 1, "stopped": False}
+
+
+class _AnalyzeSpyWithPlan(_AnalyzeSpy):
+    def plan(self, task, chapters):
+        return self._plan
+
+
+def test_analyze_reads_only_the_sections_or_paragraphs_named():
+    fake = book_with_novel()
+    spy = _AnalyzeSpy()
+    fake.ctx.analyze = spy
+    out = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "section": "第十–十二章"}, fake.ctx)
+    assert out["ok"] and "A1 第十–十二章" in out["trace"]
+    assert [c["title"].split(" — ")[1].split(" (")[0] for c in spy.seen] == ["第十章 第10回的故事", "第十一章 第11回的故事", "第十二章 第12回的故事"]
+    spy2 = _AnalyzeSpy()
+    fake.ctx.analyze = spy2
+    out = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "paragraphs": "52-102"}, fake.ctx)
+    text = "\n".join(c["content"] for c in spy2.seen)
+    assert out["ok"] and "A1 ¶52–102" in out["trace"] and "〔2-1〕" in text and "〔1-50〕" not in text and "〔3-1〕" not in text
+    assert "has no section matching" in run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "section": "第九十九章"}, fake.ctx)["content"]
+    assert "pick a part of an attachment" in run_tool(analyze_book_tool, {"task": "t", "chapters": ["2"], "section": "第一章"}, fake.ctx)["content"]
+
+
+def test_analyze_asks_first_past_the_token_line():
+    fake = book_with_novel()
+    spy = _AnalyzeSpyWithPlan({"calls": 11, "inputTokens": 1_500_000, "batchChars": 140_000})
+    fake.ctx.analyze = spy
+    first = run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"]}, fake.ctx)
+    assert not first["ok"] and "1500000 input tokens in 11 model calls" in first["content"] and "ask_user" in first["content"]
+    assert first["trace"] == "📚 analyze_book: A1 ≈ 1500k tokens in 11 calls — asks first" and spy.seen == []
+    assert run_tool(analyze_book_tool, {"task": "t", "chapters": ["A1"], "confirmed": True}, fake.ctx)["ok"] and spy.seen
+
+
+def test_batches_stay_under_groks_price_line_for_chinese_text():
+    from wc_agent.polish import ANALYZE_CONFIRM_TOKENS, plan_analysis
+    chapters = [{"id": f"c{i}", "title": f"第{i}章", "content": "字" * 100_000} for i in range(20)]
+    plan = plan_analysis("t", chapters, "grok")
+    assert plan["batchChars"] == 140_000 and plan["calls"] == 20
+    assert plan["inputTokens"] > ANALYZE_CONFIRM_TOKENS and plan["inputTokens"] / plan["calls"] < 200_000

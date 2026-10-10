@@ -16,7 +16,7 @@ ATTACHMENT_RUN_READ_CAP = 100_000
 
 def attachment_budget_note(ref: str, used: int) -> str:
     return (f"{ref} was not read: this turn has already read {used} characters of attachments, the most one turn may — a whole file is never read into the conversation. "
-            f'Find the passages you need with grep chapters=["{ref}"] and read only those paragraphs, or let analyze_book chapters=["{ref}"] read the file in batches and return notes.')
+            f'Find the passages you need with grep chapters=["{ref}"] and read only those paragraphs, or let analyze_book chapters=["{ref}"] section="第62–87章" read a range in batches and return notes.')
 
 
 def normalize_attachment_text(text: str) -> str:
@@ -113,13 +113,16 @@ def render_attachment_index(items: List[Dict[str, Any]], max_lines: int = ATTACH
                 continue
             lines.append(f"  ¶{s['from']}–{s['to']} {s['title']}")
     return ('ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=["A1"] section="第三十章" (or a paragraph range), '
-            'search with grep chapters=["A1"], or let analyze_book chapters=["A1"] read a whole file; a turn reads at most 100,000 characters of them, and they cannot be written):\n'
+            'search with grep chapters=["A1"], or let analyze_book chapters=["A1"] section="第62–87章" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\n'
             + "\n".join(lines) + (f"\n  … {hidden} more sections (grep for a heading to find one)" if hidden else ""))
 
 
-def attachment_chunks(meta: Dict[str, Any], paragraphs: List[str], budget_chars: int) -> List[Dict[str, str]]:
+def attachment_chunks(meta: Dict[str, Any], paragraphs: List[str], budget_chars: int, rng: Optional[Dict[str, int]] = None) -> List[Dict[str, str]]:
     sections = attachment_sections(paragraphs)
-    spans = sections if sections else [{"title": meta["name"], "from": 1, "to": len(paragraphs)}]
+    every = sections if sections else [{"title": meta["name"], "from": 1, "to": len(paragraphs)}]
+    spans = every if rng is None else [
+        {"title": s["title"], "from": max(s["from"], rng["from"]), "to": min(s["to"], rng["to"], len(paragraphs))}
+        for s in every if s["to"] >= rng["from"] and s["from"] <= rng["to"]]
     out: List[Dict[str, str]] = []
     for s in spans:
         start = s["from"]
@@ -203,3 +206,22 @@ def find_attachment_section(sections: List[Dict[str, Any]], query: str) -> Optio
             return hit
     key = re.sub(_WS + "+", "", q)
     return next((s for s in sections if key in re.sub(_WS + "+", "", s["title"])), None)
+
+
+_RANGE = re.compile(r"^第?" + _WS + r"*([零〇一二三四五六七八九十百千万两\d０-９]+)" + _WS + r"*[章节回卷部集篇话]?" + _WS + r"*[-–—~～至到]" + _WS
+                    + r"*第?" + _WS + r"*([零〇一二三四五六七八九十百千万两\d０-９]+)" + _WS + r"*[章节回卷部集篇话]?$")
+
+
+def find_attachment_range(sections: List[Dict[str, Any]], query: str) -> Optional[Dict[str, Any]]:
+    """Port of findAttachmentRange: a section, or a run of numbered sections ("第62–87章")."""
+    q = js_trim(query or "")
+    m = _RANGE.match(q)
+    if m:
+        a, b = parse_chapter_number(m.group(1)), parse_chapter_number(m.group(2))
+        if a is not None and b is not None:
+            lo, hi = min(a, b), max(a, b)
+            hits = [s for s in sections if (lambda n: n is not None and lo <= n <= hi)(section_number_of(s["title"]))]
+            if hits:
+                return {"title": hits[0]["title"] if len(hits) == 1 else f'{hits[0]["title"]} … {hits[-1]["title"]}',
+                        "from": min(h["from"] for h in hits), "to": max(h["to"] for h in hits)}
+    return find_attachment_section(sections, q)

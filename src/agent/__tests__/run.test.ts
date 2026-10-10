@@ -508,7 +508,8 @@ describe('a run that outgrows the window (agentic_chat_loop.md §0.9, within a r
     const third = h.requests[2]
     expect(third.find(m => m.role === 'tool' && m.toolCallId === 'c1')?.content).toBe('[This result was elided to keep the conversation within the model\'s context window: read 1. Read it again if you need its text.]')
     expect(third.find(m => m.role === 'tool' && m.toolCallId === 'c2')?.content).toContain('TEXT OF 2')
-    expect(h.summary()?.trace).toContain('🧹 elided 1 earlier result to stay within the context window')
+    // The trace says what the elision costs the next step (run-737f3d809b45).
+    expect(h.summary()?.trace.some(t => /^🧹 elided 1 earlier result to stay within the context window \(the next step re-reads ≈\S+ tokens uncached\)$/.test(t))).toBe(true)
     // Already-elided results are not counted again; the next check elides the second read.
     const fourth = h.requests[3]
     expect(fourth.find(m => m.role === 'tool' && m.toolCallId === 'c2')?.content).toContain('elided')

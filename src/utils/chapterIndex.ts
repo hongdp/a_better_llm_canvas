@@ -1,4 +1,5 @@
 import { htmlToPlainText } from './llmContext'
+import { tokensToChars } from './contextWindow'
 
 /**
  * Chapter index ("Layer 0") helpers: give the LLM whole-book awareness by
@@ -93,18 +94,27 @@ ${lines.join('\n')}`
 // ── analyze_book batch budgets ──────────────────────────────────────────────
 
 /**
- * Approximate context-window budgets per provider, in characters (~4 chars
- * per token): how much chapter text one analyze_book batch carries
- * (agent/analyzeBook). Conservative: roughly 60%
- * of the window is left for the book, the rest for history, the active
- * document, instructions, and output.
+ * Tokens of chapter text one analyze_book batch carries, per provider.
+ *
+ * Problem: the budget was characters at ~4 per token — 500,000 for grok. A
+ *   Chinese novel is about one token per character, so a batch was 350–420k
+ *   tokens: past grok's 200k long-context price line on every call
+ *   (run-737f3d809b45: 1.58M tokens for one analyze_book).
+ * Fix: budget in tokens, under each provider's window AND price line, with
+ *   room for the running notes, the task and the reply; converted to
+ *   characters by the text's own CJK share (tokensToChars).
  */
-export const WHOLE_BOOK_CONTEXT_CHARS: Record<string, number> = {
-  gemini: 2_400_000, // 1M-token window
-  anthropic: 480_000, // 200k-token window
-  openai: 300_000, // 128k-token window
-  grok: 500_000, // large window; covers all but the biggest books in one call
-  ollama: 80_000 // local models: assume small windows
+export const ANALYZE_BATCH_TOKENS: Record<string, number> = {
+  gemini: 140_000, // 1M window; long-context price above 200k
+  anthropic: 120_000, // 200k window
+  openai: 80_000, // 128k window
+  grok: 140_000, // long-context price above 200k
+  ollama: 20_000 // local models: assume small windows
+}
+
+/** Characters of chapter text per analyze_book batch, for text with this share of CJK. */
+export function analyzeBatchChars(provider: string, cjkRatio: number): number {
+  return tokensToChars(ANALYZE_BATCH_TOKENS[provider] ?? 80_000, cjkRatio)
 }
 
 /**

@@ -3,7 +3,10 @@ polish_chapter and analyze_book, over async transports."""
 import asyncio
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-from wc_text.chapter_index import pack_chapters_into_batches
+import re
+
+from wc_text.chapter_index import analyze_batch_chars, pack_chapters_into_batches
+from wc_text.context_window import cjk_ratio_of, estimate_tokens
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text, truncate_with_notice
 from wc_text.polish import assemble_polished, build_polish_prompt, parse_polished, split_for_polish, validate_polished
@@ -55,6 +58,27 @@ async def polish_html(html: str, transport: Transport, prompt: Dict[str, str], w
 ANALYZE_SYSTEM = ("You are analyzing a book chapter-by-chapter in batches to complete a task. Each round you receive your running notes and a new batch of chapters. "
                   "Update and extend the notes with everything from this batch that matters for the task (structure, plot, entities, facts, quotes). "
                   "Output ONLY the updated complete notes as plain text. Do NOT produce a final answer.")
+
+
+#: Above this many input tokens, analyze_book asks first (planAnalysis; run-737f3d809b45).
+ANALYZE_CONFIRM_TOKENS = 200_000
+_NOTES_ALLOWANCE_TOKENS = 4_000
+
+
+def _rough_text(html: str) -> str:
+    return re.sub(r"<[^>]*>", "", html)
+
+
+def plan_analysis(task: str, chapters: List[Dict[str, str]], provider: str) -> Dict[str, int]:
+    """Port of planAnalysis: calls, estimated input tokens and batch size, before any call."""
+    sample = "".join(_rough_text(c["content"])[:20_000] for c in chapters[:5])
+    batch_chars = analyze_batch_chars(provider, cjk_ratio_of(sample))
+    batches = pack_chapters_into_batches(chapters, batch_chars)
+    fixed = estimate_tokens(ANALYZE_SYSTEM) + estimate_tokens(task) + 60
+    tokens = 0
+    for i, batch in enumerate(batches):
+        tokens += fixed + (_NOTES_ALLOWANCE_TOKENS if i > 0 else 0) + sum(estimate_tokens(_rough_text(c["content"])) for c in batch)
+    return {"calls": len(batches), "inputTokens": tokens, "batchChars": batch_chars}
 
 
 async def analyze_in_batches(task: str, chapters: List[Dict[str, str]], budget_chars: int, transport: Transport,

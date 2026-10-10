@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
 import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
 import type { LLMMessage } from '../../types/llm'
-import { blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
+import { rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
@@ -27,7 +27,7 @@ import {
   stripIncompleteEndTag, chapterAttribute, newChapterAttribute, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement,
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
-import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS, type IndexableDoc } from '../../utils/chapterIndex'
+import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, type RenderableDoc, type DynamicContextOptions } from '../../hooks/chat/dynamicContext'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
 import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
@@ -50,7 +50,7 @@ import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type Pl
 import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
-import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
+import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
 import { renderSearchResults, renderWebPage, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
 import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
 import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
@@ -296,7 +296,8 @@ const MODULES: Module[] = [
       chapter_attribute: run(chapterAttribute, [['<canvas chapter="3">'], ["<edit chapter='第二章'>"], ['<canvas new_chapter="x">'], ['<canvas>'], ['<canvas chapter="  ">'], ['<canvas CHAPTER = "4" >']]),
       new_chapter_attribute: run(newChapterAttribute, [['<canvas new_chapter="第二章 进城">'], ["<canvas new_chapter=' 尾声 '>"], ['<canvas new_chapter="">'], ['<canvas chapter="3">']]),
       extract_tagged_block: run(extractTaggedBlock, [['no tags', 'canvas'], ['before <canvas><p>x</p></canvas> after', 'canvas'], ['<canvas><p>cut', 'canvas'], ['<Canvas foo="bar"><p>x</p></canvas >', 'canvas'], ['<canvas>\n```html\n<p>f</p>\n```\n</canvas>', 'canvas'], ['a <selection_replace>s</selection_replace> b', 'selection_replace'], [RESPONSES[2], 'canvas'], [RESPONSES[3], 'canvas']]),
-      has_elision_markers: run(hasElisionMarkers, [['<p>a</p><!-- rest unchanged --><p>z</p>'], ['<p>[content continues]</p>'], ['<p>(rest of the document remains the same)</p>'], ['<p>...</p>'], ['<p>She paused... and went on.</p>'], ['<p>The story continues in the next room.</p>'], ['<p>ordinary</p>'], ['<p>[TRUNCATED]</p>']]),
+      has_elision_markers: run(hasElisionMarkers, [['<p>第1–61章：见原条目。</p><p>第62章：新</p>'], ['<p>（略）</p>'], ['<p>略。</p>'], ['<li>第五章：同上</li>'], ['<p>此处省略三千字</p>'], ['<p>其余内容不变</p>'], ['<p>【下同】</p>'],
+        ['<p>他的脸色保持不变，略微一笑。</p><p>她说……</p>'], ['<p>他省略了寒暄：“同上次一样。”</p>'], ['<p>余同学走了过来。</p>'], ['<p>数值：不变量</p>'], ['<p>a</p><!-- rest unchanged --><p>z</p>'], ['<p>[content continues]</p>'], ['<p>(rest of the document remains the same)</p>'], ['<p>...</p>'], ['<p>She paused... and went on.</p>'], ['<p>The story continues in the next room.</p>'], ['<p>ordinary</p>'], ['<p>[TRUNCATED]</p>']]),
       validate_canvas_replacement: run(validateCanvasReplacement, [['<p>x</p>', false], ['<p>[unchanged]</p>', true], ['<p>x</p>', true], ['<p>[unchanged]</p>', false]]),
       parse_edit_blocks: run(parseEditBlocks, RESPONSES.map(r => [r] as [string])),
       strip_stray_document_markup: run(stripStrayDocumentMarkup, RESPONSES.map(r => [r] as [string])),
@@ -338,6 +339,15 @@ const MODULES: Module[] = [
   {
     module: 'paragraphs',
     cases: {
+      rewrite_loss: run(rewriteLoss, [
+        ['<p>' + '甲'.repeat(300) + '</p>', '<p>' + '甲'.repeat(250) + '</p>'],
+        ['<p>' + '甲'.repeat(300) + '</p>', '<p>' + '甲'.repeat(260) + '</p>'],
+        ['<h2>A</h2><ul><li>' + '一'.repeat(100) + '</li><li>' + '二'.repeat(100) + '</li><li>三</li></ul>', '<h2>A</h2><ul><li>' + '一'.repeat(250) + '</li></ul>'],
+        ['<h1>T</h1><h2>A</h2><p>' + 'x'.repeat(300) + '</p>', '<h1>T</h1><p>' + 'x'.repeat(320) + '</p>'],
+        ['<p>short</p>', ''],
+        ['<p>' + 'a'.repeat(400) + '</p>', '<p>' + 'a'.repeat(900) + '</p>']
+      ]),
+      rewrite_loss_note: run(rewriteLossNote, [['#3 "时间线"', { before: 4303, after: 3385, lostHeadings: 0, lostItems: 18 }], ['#1 "x"', { before: 300, after: 300, lostHeadings: 1, lostItems: 0 }], ['#2 "y"', { before: 1000, after: 995, lostHeadings: 2, lostItems: 3 }]]),
       block_text: run(blockText, [['<p>a&nbsp;b<br>c</p>'], ['<ul><li>x</li><li>y &amp; z</li></ul>'], ['<p>  tail \t\n</p>'], ['plain']]),
       top_level_blocks: run(topLevelBlocks, [[CHAPTER], [ENGLISH], [''], ['loose only'], ['<p>a</p> between <p>b</p>'], ['<p>un &amp; closed'], ['<img src="x"><p>after</p>'], ['<p><img src="y"/></p>text &amp; more']]),
       chapter_paragraphs: run(chapterParagraphs, [[CHAPTER], [ENGLISH], ['<p>{{IMAGE_PLACEHOLDER_3}}</p>'], ['<h1>标题</h1><p>一。</p><p></p><p><img src="x"></p><ul><li>a</li><li>b</li></ul>loose'], [DIFFED]]),
@@ -435,7 +445,8 @@ const MODULES: Module[] = [
       get_chapter_digest: run(getChapterDigest, [[BOOK[0]], [BOOK[1]], [BOOK[3]], [BOOK[4]], [BOOK[4], 150], [{ id: 'z', title: 'z', content: '<p>\n body \n</p>', summary: '   ' }]]),
       build_chapter_index: run(buildChapterIndex, [[BOOK, 'd2'], [BOOK, 'd2', { agentTools: true, markers: { d1: 'in context', d3: 'read this turn' } }], [BOOK, null], [[BOOK[0]], 'd1'], [BIG_BOOK, 'b0', { agentTools: true }], [BIG_BOOK, 'b40']]),
       pack_chapters_into_batches: run(packChaptersIntoBatches, [[BOOK, 100], [BOOK, 10], [[], 50], [BOOK, 100000]]),
-      whole_book_context_chars: run(() => WHOLE_BOOK_CONTEXT_CHARS, [[]])
+      analyze_batch_tokens: run(() => ANALYZE_BATCH_TOKENS, [[]]),
+      analyze_batch_chars: run(analyzeBatchChars, [['grok', 1], ['grok', 0], ['anthropic', 0.5], ['nope', 0.9], ['ollama', 1.5]])
     }
   },
   {
@@ -711,7 +722,7 @@ const MODULES: Module[] = [
     cases: {
       constants: run(() => ({ ELIDE_ABOVE, ELIDE_TO }), [[]]),
       elided_result_note: run(elidedResultNote, [['read #1 "A" ¶1–40 (12.3k, html)']]),
-      elision_trace: run(elisionTrace, [[['a']], [['a', 'b']]]),
+      elision_trace: run(elisionTrace, [[['a']], [['a', 'b']], [['a', 'b'], 61_400], [['a'], 499]]),
       prompt_tokens: run(promptTokens, [[RUN_MESSAGES], [[]], [[{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'read_chapter', argumentsText: '{"chapter":"1"}' }] }]]]),
       plan_elisions: run(planElisions, [
         [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 100_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 2],
@@ -732,6 +743,9 @@ const MODULES: Module[] = [
       attachment_budget_note: run(attachmentBudgetNote, [['A1', 100012]]),
       parse_chapter_number: run(parseChapterNumber, [['三十五'], ['一百零二'], ['十'], ['十二'], ['两千零五'], ['一万二千三百'], ['３５'], ['42'], ['第三章'], [''], ['abc']]),
       section_number_of: run(sectionNumberOf, [['第三十章 归来'], ['第30章'], ['第 12 回'], ['Chapter 7: x'], ['30'], ['番外'], ['第一百零二章']]),
+      find_attachment_range: run(findAttachmentRange, [
+        [SECTIONS, '第1–2章'], [SECTIONS, '1-30'], [SECTIONS, '第三十至二章'], [SECTIONS, '第30章'], [SECTIONS, '番外'], [SECTIONS, '第99–100章'], [SECTIONS, ''], [SECTIONS, '2~2']
+      ]),
       find_attachment_section: run(findAttachmentSection, [
         [SECTIONS, '第三十章'], [SECTIONS, '第30章'], [SECTIONS, '30'], [SECTIONS, '归来'], [SECTIONS, '番外'], [SECTIONS, '第99章'], [SECTIONS, ''], [SECTIONS, 'Chapter 2']
       ]),
@@ -743,7 +757,7 @@ const MODULES: Module[] = [
       resolve_attachment_ref: run(resolveAttachmentRef, [['A2', ATTACH_LIST], ['a1', ATTACH_LIST], ['附件2', ATTACH_LIST], ['原著.txt', ATTACH_LIST], ['原著', ATTACH_LIST], ['A9', ATTACH_LIST], ['', ATTACH_LIST], [null, ATTACH_LIST], ['3', ATTACH_LIST]]),
       render_attachment_index: run(renderAttachmentIndex, [[ATTACH_LIST], [[]], [ATTACH_LIST, 3]]),
       render_attachment_part: run(renderAttachmentPart, [[ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 1, null, 20000], [ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 2, 4, 20000], [ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 3, null, 12]]),
-      attachment_chunks: run(attachmentChunks, [[{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 12], [{ ref: 'A2', name: 'notes.md' }, ['one', 'two', 'three'], 1000], [{ ref: 'A2', name: 'x' }, [], 10]])
+      attachment_chunks: run(attachmentChunks, [[{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 12], [{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 1000, { from: 3, to: 6 }], [{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 1000, { from: 50, to: 60 }], [{ ref: 'A2', name: 'x' }, ['a', 'b', 'c'], 1000, { from: 2, to: 9 }], [{ ref: 'A2', name: 'notes.md' }, ['one', 'two', 'three'], 1000], [{ ref: 'A2', name: 'x' }, [], 10]])
     }
   },
   {

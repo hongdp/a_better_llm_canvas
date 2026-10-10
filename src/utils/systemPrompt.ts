@@ -67,6 +67,13 @@ export interface ChatSystemPromptOptions {
  *   other, that no tool creates one, and that two documents are two replies.
  */
 const REFERENCE_CHAPTERS = 'Reference material — an outline, character cards, notes — is a chapter too, added the same way.'
+/**
+ * Bringing a document up to date is not rewriting it (run-737f3d809b45,
+ * 2026-10-10): asked to carry the timeline, cards and synopsis to chapter
+ * 87, the model rewrote all four whole and lost entries from each.
+ */
+const EXTEND_BY_EDITS = (edit: string) => `To add to a chapter or bring it up to date — new entries, a timeline carried further, notes on the latest chapters — change only what changes (edit_paragraphs, or ${edit}) and keep the rest. A whole rewrite is for restructuring; one that would drop much of the text is held back.`
+
 const TWO_DOCUMENTS = 'Two documents (say an outline and character cards) are two chapters: write one now and the other in your next reply; never merge them to fit one reply.'
 
 export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
@@ -76,11 +83,13 @@ export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: bo
 - To add a chapter, write it: <canvas new_chapter="its title">…its full text…</canvas> creates it at the end of the book and fills it in one go. There is no separate step for creating a chapter.
 - You can also write a whole chapter with the update_document tool (\`new_chapter\` or \`chapter\`, and \`html\`): the same result, but the user sees the text only when the call is complete, while tags show it as you write.
 - ${REFERENCE_CHAPTERS} No other tool creates a chapter: open_chapter, rename_chapter and list_chapters only work with chapters that already exist.
+- ${EXTEND_BY_EDITS('<edit> blocks')}
 - The <doc_status> line is required only on a reply that calls no tool.`
     : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its number in the CHAPTER INDEX.
 - Before edit_document on another chapter, read its HTML with read_chapter (format "html") and copy the SEARCH text from that result. ${NO_HTML_READ}
 - To add a chapter, call update_document with \`new_chapter\` set to its title: that creates it at the end of the book and fills it in one call. There is no separate step for creating a chapter.
-- ${REFERENCE_CHAPTERS} No other tool creates a chapter.`
+- ${REFERENCE_CHAPTERS} No other tool creates a chapter.
+- ${EXTEND_BY_EDITS('edit_document')}`
   /*
    * Problem: the rules said "a reply that calls a tool is not your final
    *   reply" and "a reply with no action ends your turn". A model that wanted
@@ -322,6 +331,7 @@ Three kinds of actions. The tools are described in their own schemas; this is ho
      <selection_replace>…</selection_replace> — only when the request has a CURRENT SELECTED TEXT section.
   b) The update_document tool, with new_chapter or chapter, and html: the user sees the text only when the call is complete. Use it ONLY for reference material — an outline, character cards, notes — never for prose.
   c) The edit_paragraphs tool, for a small change to a few paragraphs: by their ¶ numbers, each anchored by its first words, with no HTML read.
+  ${EXTEND_BY_EDITS('<edit> blocks')}
   Whichever way, a chapter comes into existence BY BEING WRITTEN. ${REFERENCE_CHAPTERS}
 - HOUSEKEEPING: open_chapter (show a chapter to the user, when they ask), rename_chapter, delete_chapter. These work on chapters that already exist and never add one or put text into one.
 - PLAN AND ASK: ${PLAN_AND_ASK}

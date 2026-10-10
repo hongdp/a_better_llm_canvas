@@ -6,7 +6,7 @@
     "input": [],
     "output": {
      "ELIDE_ABOVE": 0.85,
-     "ELIDE_TO": 0.6
+     "ELIDE_TO": 0.45
     }
    }
   ],
@@ -35,6 +35,25 @@
      ]
     ],
     "output": "🧹 elided 2 earlier results to stay within the context window"
+   },
+   {
+    "input": [
+     [
+      "a",
+      "b"
+     ],
+     61400
+    ],
+    "output": "🧹 elided 2 earlier results to stay within the context window (the next step re-reads ≈61k tokens uncached)"
+   },
+   {
+    "input": [
+     [
+      "a"
+     ],
+     499
+    ],
+    "output": "🧹 elided 1 earlier result to stay within the context window (the next step re-reads ≈499 tokens uncached)"
    }
   ],
   "prompt_tokens": [
@@ -284,7 +303,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 1447
     }
    },
    {
@@ -443,7 +463,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 0
     }
    },
    {
@@ -602,7 +623,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 0
     }
    },
    {
@@ -735,7 +757,8 @@
       }
      ],
      "elided": [],
-     "remaining": []
+     "remaining": [],
+     "resentTokens": 0
     }
    },
    {
@@ -894,7 +917,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 0
     }
    },
    {
@@ -1037,7 +1061,8 @@
        "index": 40,
        "trace": "gone"
       }
-     ]
+     ],
+     "resentTokens": 0
     }
    },
    {
@@ -1195,7 +1220,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 1257
     }
    },
    {
@@ -1358,7 +1384,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 0
     }
    },
    {
@@ -1516,7 +1543,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 2300
     }
    },
    {
@@ -1674,7 +1702,8 @@
        "index": 7,
        "trace": "read 3"
       }
-     ]
+     ],
+     "resentTokens": 575
     }
    }
   ],

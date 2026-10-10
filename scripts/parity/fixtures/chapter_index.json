@@ -905,16 +905,53 @@
     ]
    }
   ],
-  "whole_book_context_chars": [
+  "analyze_batch_tokens": [
    {
     "input": [],
     "output": {
-     "gemini": 2400000,
-     "anthropic": 480000,
-     "openai": 300000,
-     "grok": 500000,
-     "ollama": 80000
+     "gemini": 140000,
+     "anthropic": 120000,
+     "openai": 80000,
+     "grok": 140000,
+     "ollama": 20000
     }
+   }
+  ],
+  "analyze_batch_chars": [
+   {
+    "input": [
+     "grok",
+     1
+    ],
+    "output": 140000
+   },
+   {
+    "input": [
+     "grok",
+     0
+    ],
+    "output": 560000
+   },
+   {
+    "input": [
+     "anthropic",
+     0.5
+    ],
+    "output": 300000
+   },
+   {
+    "input": [
+     "nope",
+     0.9
+    ],
+    "output": 103999
+   },
+   {
+    "input": [
+     "ollama",
+     1.5
+    ],
+    "output": 20000
    }
   ]
  }

@@ -481,7 +481,7 @@ export class AgentRun {
     this.elidable = plan.remaining
     if (plan.elided.length === 0) return
     this.messages = plan.messages
-    const line = elisionTrace(plan.elided)
+    const line = elisionTrace(plan.elided, plan.resentTokens)
     this.trace.push(line)
     this.timeline.push({ type: 'tool', line, ok: true })
   }

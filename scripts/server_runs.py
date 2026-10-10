@@ -33,7 +33,7 @@ from server_auth import get_authenticated_username
 from server_config import sanitize_id
 from server_content import load_document_content
 from server_db import get_db
-from wc_agent.polish import analyze_in_batches, default_polish_model, polish_html
+from wc_agent.polish import analyze_in_batches, default_polish_model, plan_analysis, polish_html
 from wc_agent.registry import ToolRegistry, to_tool_specs
 from wc_agent.run import AgentRun, StepOutput, StepUnavailable
 from wc_agent.tools.analyze_book import analyze_book_tool
@@ -45,7 +45,6 @@ from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.tools.web import WEB_TOOLS
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
 from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder, wrap_reminder
-from wc_text.chapter_index import WHOLE_BOOK_CONTEXT_CHARS
 from wc_text.context_window import resolve_context_window_tokens
 from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
 from wc_text.document_tools import to_openai_tools
@@ -1186,10 +1185,14 @@ class _AnalyzePort:
     def __init__(self, engine: RunEngine, run: Run) -> None:
         self.engine, self.owner = engine, run
 
+    def plan(self, task: str, chapters):
+        return plan_analysis(task, chapters, self.owner.request["provider"])
+
     async def run(self, task: str, chapters, on_progress):
         req = self.owner.request
         transport = _ModelCall(self.engine, self.owner, None, (req.get("config") or {}).get("reasoningEffort"), f"{self.owner.book_id}:analyze")
-        return await analyze_in_batches(task, chapters, WHOLE_BOOK_CONTEXT_CHARS.get(req["provider"], 300_000), transport, None, on_progress)
+        # Batches sized under the provider's window and long-context price line (ANALYZE_BATCH_TOKENS).
+        return await analyze_in_batches(task, chapters, self.plan(task, chapters)["batchChars"], transport, None, on_progress)
 
 
 class _AttachmentsPort:

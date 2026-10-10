@@ -46,9 +46,14 @@ for the editor and for the ledger.
   has that title): `read_chapter` with `chapters: ["A1"]` and `paragraphs`,
   or `section: "第三十章"` — a section by its heading, where `第30章`, `30` and
   `第三十章` name the same one — or `parts`; `grep` with `chapters: ["A1"]`;
-  `analyze_book` with `chapters: ["A1"]`, which reads a whole novel in
-  batches (40,000-character chunks, a section per pseudo-chapter) outside
-  the conversation and returns notes. An attachment is never searched unless
+  `analyze_book` with `chapters: ["A1"]`, which reads in batches
+  (40,000-character chunks, a section per pseudo-chapter) outside the
+  conversation and returns notes — limited to `section` (one heading, or a
+  run: "第62–87章", "62-87", "第六十二至八十七回") or `paragraphs` ("1203-2890";
+  grep reports ¶ numbers, and in a novel `.txt` a ¶ is a line). A whole
+  long file is estimated first and needs the user's yes past 200,000 input
+  tokens (agentic_chat_loop.md, the analyze_book row). `read_chapter`'s
+  `section` takes the same runs. An attachment is never searched unless
   named, and a write naming one is refused by the chapter resolver as before.
 - **Never the whole file in the conversation** (the user's requirement).
   Nothing of an attachment is in the request but its index. One read returns

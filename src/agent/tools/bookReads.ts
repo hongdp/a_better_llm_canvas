@@ -17,7 +17,7 @@ import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
-import { ATTACHMENT_RUN_READ_CAP, attachmentBudgetNote, findAttachmentSection, renderAttachmentPart, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
+import { ATTACHMENT_RUN_READ_CAP, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
 import { isBlankContent } from '../../utils/text'
 
 /** Per chapter per call — the ledger's per-chapter cap (MAX_LEDGER_DOC_CHARS). */
@@ -146,8 +146,8 @@ export const readChapterTool = defineTool<ReadArgs>({
     `To look at several places at once, pass parts (up to ${MAX_READ_PARTS}), e.g. [{"chapter":"3","paragraphs":"10-16"},{"chapter":"8","paragraphs":"30-36"}]: one call, one step. ` +
     `A long chapter comes back in parts of at most ${READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. ` +
     'If no title or summary tells you where something is, use grep. ' +
-    'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range, or with section (a heading such as "第三十章"; 第30章 is the same chapter). ' +
-    'A turn reads at most 100,000 characters of attachments: find passages with grep, or let analyze_book read a whole file.',
+    'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range (¶ numbers, which grep reports; in a novel .txt a ¶ is a line), or with section (a heading such as "第三十章" — 第30章 is the same chapter — or a run, "第62–87章"). ' +
+    'A turn reads at most 100,000 characters of attachments: find passages with grep and read those paragraphs, or let analyze_book read a part (section or paragraphs) and return notes.',
   parameters: {
     type: 'object',
     properties: {
@@ -158,7 +158,7 @@ export const readChapterTool = defineTool<ReadArgs>({
       },
       format: { type: 'string', description: '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).' },
       paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.' },
-      section: { type: 'string', description: 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter).' },
+      section: { type: 'string', description: 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter), or a run, "第62–87章".' },
       parts: {
         type: 'array',
         description: 'Instead of chapters/paragraphs: several places to read in one call, each a chapter and an optional paragraph range.',
@@ -231,7 +231,7 @@ export const readChapterTool = defineTool<ReadArgs>({
         const paras = await (ctx.attachments as NonNullable<ToolContext['attachments']>).paragraphs(att.id)
         if (entry.section) {
           // A section by its heading: "第三十章" and "第30章" are the same chapter.
-          const sec = findAttachmentSection(att.sections, entry.section)
+          const sec = findAttachmentRange(att.sections, entry.section)
           if (!sec) {
             const sample = att.sections.slice(0, 6).map(s => `"${s.title}"`).join(', ')
             errors.push(`${att.ref} "${att.name}" has no section matching "${entry.section}".` +
