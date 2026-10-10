@@ -1,10 +1,11 @@
 """Port of src/agent/runCompaction.ts — keeping a run's prompt inside the model's window."""
+import math
 from typing import Any, Dict, List, Optional
 
 from .context_window import estimate_tokens
 
 ELIDE_ABOVE = 0.85
-ELIDE_TO = 0.6
+ELIDE_TO = 0.45
 
 
 def elided_result_note(trace: str) -> str:
@@ -34,7 +35,7 @@ def calibrated_prompt_tokens(messages: List[Dict[str, Any]], measured: Optional[
 
 def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]], limit_tokens: int, keep_from: int,
                   measured: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
-    untouched = {"messages": messages, "elided": [], "remaining": elidable}
+    untouched = {"messages": messages, "elided": [], "remaining": elidable, "resentTokens": 0}
     if not (limit_tokens and limit_tokens > 0) or not elidable:
         return untouched
     calibrated = calibrated_prompt_tokens(messages, measured)
@@ -56,8 +57,12 @@ def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]]
         elided.append(entry["trace"])
     if not elided:
         return untouched
-    return {"messages": out, "elided": elided, "remaining": remaining}
+    first = min(e["index"] for e in elidable if 0 <= e["index"] < len(out) and out[e["index"]] is not messages[e["index"]])
+    resent = math.floor(prompt_tokens(out[first:]) * calibrated["ratio"] + 0.5)
+    return {"messages": out, "elided": elided, "remaining": remaining, "resentTokens": resent}
 
 
-def elision_trace(elided: List[str]) -> str:
-    return f"🧹 elided {len(elided)} earlier result{'' if len(elided) == 1 else 's'} to stay within the context window"
+def elision_trace(elided: List[str], resent_tokens: float = 0) -> str:
+    return (f"🧹 elided {len(elided)} earlier result{'' if len(elided) == 1 else 's'} to stay within the context window"
+            + (f" (the next step re-reads ≈{str(math.floor(resent_tokens / 1000 + 0.5)) + 'k' if resent_tokens >= 1000 else resent_tokens} tokens uncached)"
+               if resent_tokens > 0 else ""))

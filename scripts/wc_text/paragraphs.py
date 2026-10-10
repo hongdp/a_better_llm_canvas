@@ -1,6 +1,7 @@
 """Port of src/utils/paragraphs.ts — a chapter as numbered paragraphs."""
+import math
 import re
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from .dom import Element, parse_fragment, serialize
 from .llm_context import _js_trim
@@ -242,3 +243,34 @@ def apply_paragraph_edits(html: str, edits: List[Dict]) -> Dict:
         out = out[:s["at"]] + s["text"] + out[s["to"]:]
     return {"ok": True, "html": out, "paragraphsBefore": len(spans), "paragraphsAfter": len(chapter_paragraphs(out)),
             "firstChanged": min(e["paragraph"] for e in edits)}
+
+
+#: A whole rewrite keeps at least this share of a chapter's text unless the model insists (rewriteLoss).
+REWRITE_KEEP_RATIO = 0.85
+
+
+def rewrite_loss(old_html: str, new_html: str) -> Optional[Dict[str, int]]:
+    """Port of rewriteLoss: what a whole rewrite would drop, or None."""
+    before = chapter_chars(old_html)
+    if before < 200:
+        return None
+    after = chapter_chars(new_html)
+    lost_headings = max(0, len(re.findall(r"<h[1-6][\s>]", old_html, re.I)) - len(re.findall(r"<h[1-6][\s>]", new_html, re.I)))
+    lost_items = max(0, len(re.findall(r"<li[\s>]", old_html, re.I)) - len(re.findall(r"<li[\s>]", new_html, re.I)))
+    if after >= before * REWRITE_KEEP_RATIO and lost_headings == 0 and lost_items < 2:
+        return None
+    return {"before": before, "after": after, "lostHeadings": lost_headings, "lostItems": lost_items}
+
+
+def rewrite_loss_note(cite: str, loss: Dict[str, int]) -> str:
+    """Port of rewriteLossNote."""
+    pct = math.floor((1 - loss["after"] / loss["before"]) * 100 + 0.5)  # Math.round
+    dropped = [x for x in [
+        f"{loss['lostHeadings']} heading{'' if loss['lostHeadings'] == 1 else 's'}" if loss["lostHeadings"] > 0 else "",
+        f"{loss['lostItems']} list item{'' if loss['lostItems'] == 1 else 's'}" if loss["lostItems"] > 0 else "",
+    ] if x]
+    return (f"The rewrite of {cite} was NOT applied: it would take the chapter from {loss['before']} to {loss['after']} characters"
+            + (f" (−{pct}%)" if pct > 0 else "") + (f", dropping {' and '.join(dropped)}" if dropped else "") + ". "
+            "A whole rewrite replaces everything, so whatever it leaves out is deleted. "
+            "To add to the chapter or bring it up to date, keep its text and change only what changes: edit_paragraphs (by ¶ number) or edit_document / <edit> blocks. "
+            "If the user asked for it to be shorter, or its text moved to other chapters, send the same rewrite again and it will be applied.")

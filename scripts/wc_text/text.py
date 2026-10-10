@@ -74,7 +74,19 @@ def has_elision_markers(html: str) -> bool:
         return True
     if re.search(r"<p>\s*(?:\.\.\.|…)\s*</p>", html, re.I):
         return True
+    # 5–8: the same shortcuts in Chinese (hasElisionMarkers; run-737f3d809b45).
+    if _ZH_ELISION_REFERENCE.search(html):
+        return True
+    if re.search(r"[（(【\[]\s*(?:略|同上|不变|保持不变|未变|省略|下同|内容不变|此处略)[^）)】\]]{0,20}[）)】\]]", html):
+        return True
+    if re.search(r"<p[^>]*>\s*(?:略|同上|下略|从略|……略|…略)[。.]?\s*</p>", html):
+        return True
+    if re.search(r"[:：]\s*(?:同上|略|不变|保持不变|见上|未变)[。.；;]?\s*(?=<|$)", html):
+        return True
     return False
+
+
+_ZH_ELISION_REFERENCE = re.compile(r"见原(?:条目|文|稿|版|内容)|见上文|见前文|见上一版|此处省略|以下省略|其余省略|余下省略|中间省略|与(?:前文|原文|上文|原稿|之前)(?:相同|一致)|其余(?:内容)?不变|其余同上")
 
 
 def validate_canvas_replacement(new_html: str, closing_tag_found: bool) -> Optional[str]:

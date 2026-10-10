@@ -144,8 +144,23 @@ export function hasElisionMarkers(html: string): boolean {
   if (/<p>\s*(?:\.\.\.|…)\s*<\/p>/i.test(html)) {
     return true
   }
+  /*
+   * 5–8. The same shortcuts in Chinese. A rewrite of a timeline turned its
+   *   twenty entries for chapters 1–61 into "第1–61章：见原条目。" and the
+   *   check let it through (run-737f3d809b45, 2026-10-10). Fiction says
+   *   "保持不变" and "略微" too, so the short markers count only inside
+   *   brackets, after a colon, or as a whole paragraph; the reference
+   *   phrases ("见原条目", "此处省略") count anywhere.
+   */
+  if (ZH_ELISION_REFERENCE.test(html)) return true
+  if (/[（(【[]\s*(?:略|同上|不变|保持不变|未变|省略|下同|内容不变|此处略)[^）)】\]]{0,20}[）)】\]]/.test(html)) return true
+  if (/<p[^>]*>\s*(?:略|同上|下略|从略|……略|…略)[。.]?\s*<\/p>/.test(html)) return true
+  if (/[:：]\s*(?:同上|略|不变|保持不变|见上|未变)[。.；;]?\s*(?=<|$)/.test(html)) return true
   return false
 }
+
+/** Chinese phrases that point at text instead of writing it (hasElisionMarkers 5). */
+const ZH_ELISION_REFERENCE = /见原(?:条目|文|稿|版|内容)|见上文|见前文|见上一版|此处省略|以下省略|其余省略|余下省略|中间省略|与(?:前文|原文|上文|原稿|之前)(?:相同|一致)|其余(?:内容)?不变|其余同上/
 
 /**
  * Validate a full-document (`<canvas>`) replacement before applying it as a diff.

@@ -18,8 +18,14 @@ import { estimateTokens } from '../utils/contextWindow'
 
 /** Elide once the prompt passes this fraction of the limit… */
 export const ELIDE_ABOVE = 0.85
-/** …and stop once it is under this fraction (or nothing elidable is left). */
-export const ELIDE_TO = 0.6
+/**
+ * …and stop once it is under this fraction (or nothing elidable is left).
+ * Each elision ends the cached prefix at the first result it replaces, so the
+ * next step re-reads everything after it at full price: 0.6 left so little
+ * room that one run elided twice and paid that twice (run-737f3d809b45, five
+ * steps at 0–1% cache). 0.45 buys room for more steps per elision.
+ */
+export const ELIDE_TO = 0.45
 
 /** A tool result that may be elided: where it sits in the run's messages and what it was. */
 export interface ElidableResult {
@@ -47,6 +53,8 @@ export interface ElisionPlan {
   elided: string[]
   /** The candidates still intact, for the next check. */
   remaining: ElidableResult[]
+  /** Tokens from the first replaced result on: what the next step reads uncached. */
+  resentTokens: number
 }
 
 /** What the last step was really sent: its prompt tokens as the provider counted them, and how many messages that covered. */
@@ -80,7 +88,7 @@ export function calibratedPromptTokens(messages: LLMMessage[], measured: Measure
  */
 export function planElisions(messages: LLMMessage[], elidable: ElidableResult[], limitTokens: number, keepFrom: number,
   measured: MeasuredPrompt | null = null): ElisionPlan {
-  const untouched: ElisionPlan = { messages, elided: [], remaining: elidable }
+  const untouched: ElisionPlan = { messages, elided: [], remaining: elidable, resentTokens: 0 }
   if (!(limitTokens > 0) || elidable.length === 0) return untouched
   const calibrated = calibratedPromptTokens(messages, measured)
   let tokens = calibrated.tokens
@@ -99,10 +107,13 @@ export function planElisions(messages: LLMMessage[], elidable: ElidableResult[],
     out[entry.index] = { ...m, content: note }
     elided.push(entry.trace)
   }
-  return elided.length === 0 ? untouched : { messages: out, elided, remaining }
+  if (elided.length === 0) return untouched
+  const first = Math.min(...elidable.filter(e => out[e.index] !== messages[e.index]).map(e => e.index))
+  return { messages: out, elided, remaining, resentTokens: Math.round(promptTokens(out.slice(first)) * calibrated.ratio) }
 }
 
-/** The line the bubble shows for an elision. */
-export function elisionTrace(elided: string[]): string {
-  return `🧹 elided ${elided.length} earlier result${elided.length === 1 ? '' : 's'} to stay within the context window`
+/** The line the bubble shows for an elision, with what it costs the next step. */
+export function elisionTrace(elided: string[], resentTokens = 0): string {
+  return `🧹 elided ${elided.length} earlier result${elided.length === 1 ? '' : 's'} to stay within the context window` +
+    (resentTokens > 0 ? ` (the next step re-reads ≈${resentTokens >= 1000 ? `${Math.round(resentTokens / 1000)}k` : resentTokens} tokens uncached)` : '')
 }

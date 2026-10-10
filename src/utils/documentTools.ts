@@ -59,7 +59,7 @@ export const DOCUMENT_TOOLS: DocumentTool[] = [
   {
     name: 'update_document',
     description:
-      'Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.',
+      'Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.',
     parameters: {
       type: 'object',
       properties: {

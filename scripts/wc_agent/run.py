@@ -377,7 +377,7 @@ class AgentRun:
         if not plan["elided"]:
             return
         self.messages = plan["messages"]
-        line = elision_trace(plan["elided"])
+        line = elision_trace(plan["elided"], plan["resentTokens"])
         self.trace.append(line)
         self.timeline.append({"type": "tool", "line": line, "ok": True})
 
@@ -493,6 +493,7 @@ class AgentRun:
                 "startOutline": run.start_outline, "lastList": run.last_list,
                 "selectionAttempted": run.selection_attempted, "selectionApplied": run.selection_applied,
                 "plan": list(run.plan), "question": run.question, "textSeen": dict(run.text_seen), "attachmentChars": run.attachment_chars,
+                "rewriteLossWarned": sorted(run.rewrite_loss_warned),
             },
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
             "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
@@ -528,6 +529,7 @@ class AgentRun:
         run.plan = list(snap["run"].get("plan") or [])
         run.question = snap["run"].get("question")
         run.text_seen = dict(snap["run"].get("textSeen") or {})
+        run.rewrite_loss_warned = set(snap["run"].get("rewriteLossWarned") or [])
         run.attachment_chars = int(snap["run"].get("attachmentChars") or 0)
         self.plan_nudges = int(snap.get("planNudges") or 0)
         self.long_reasoning_due = snap.get("longReasoningDue")

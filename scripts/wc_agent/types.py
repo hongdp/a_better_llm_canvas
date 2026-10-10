@@ -58,6 +58,8 @@ class RunState:
     text_seen: Dict[str, str] = field(default_factory=dict)
     #: Characters of attachments read into the conversation this run (capped: ATTACHMENT_RUN_READ_CAP).
     attachment_chars: int = 0
+    #: Chapters whose shrinking rewrite was held back once (wc_text.paragraphs.rewrite_loss); a second send applies.
+    rewrite_loss_warned: Set[str] = field(default_factory=set)
 
 
 def writes_so_far(run: RunState) -> int:

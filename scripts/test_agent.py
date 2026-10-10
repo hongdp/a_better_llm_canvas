@@ -541,7 +541,9 @@ def test_old_read_results_are_elided_when_the_prompt_outgrows_the_window():
     third = {m.get("toolCallId"): m["content"] for m in h.requests[2] if m.get("role") == "tool"}
     assert third["c1"] == "[This result was elided to keep the conversation within the model's context window: read 1. Read it again if you need its text.]"
     assert "TEXT OF 2" in third["c2"]
-    assert "🧹 elided 1 earlier result to stay within the context window" in h.summary["trace"]
+    # The trace says what the elision costs the next step (run-737f3d809b45).
+    assert any(t.startswith("🧹 elided 1 earlier result to stay within the context window (the next step re-reads ≈") and t.endswith("tokens uncached)")
+               for t in h.summary["trace"])
     fourth = {m.get("toolCallId"): m["content"] for m in h.requests[3] if m.get("role") == "tool"}
     assert "elided" in fourth["c2"] and "TEXT OF 3" in fourth["c3"]
     snap = h.run.snapshot()
@@ -718,3 +720,35 @@ def test_eight_lookup_only_steps_get_one_reminder():
     assert said.index(True) == 8
     assert "The last 8 steps only looked things up and wrote nothing" in h.requests[8][-1]["content"]
     assert sum("only looked things up" in (m.get("content") or "") for m in h.requests[10]) == 1
+
+
+# ── whole rewrites that would lose text (run-737f3d809b45) ───────────────────
+
+from wc_agent.tools.document_writes import update_document_tool  # noqa: E402
+
+
+def _timeline_entry(n: int) -> str:
+    return f"<p>第{n}章：{'事件' * 20}，人物{n}登场。</p>"
+
+
+_TIMELINE = "<h1>时间线</h1>" + "".join(_timeline_entry(i + 1) for i in range(20))
+
+
+def test_a_shrinking_rewrite_is_held_back_once_then_applied():
+    fake = FakeBook("<p>start</p>", chapters=[{"id": "doc-2", "title": "时间线", "content": _TIMELINE}])
+    run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    shorter = "<h1>时间线</h1>" + "".join(_timeline_entry(i + 1) for i in range(14)) + "<p>第21章：新事件。</p>"
+    first = run_tool(update_document_tool, {"chapter": "2", "html": shorter}, fake.ctx)
+    assert not first["ok"] and "was NOT applied" in first["content"] and "edit_paragraphs" in first["content"]
+    assert "held back — would drop" in first["trace"]
+    assert strip_diff_markup(fake.last_write("doc-2") or _TIMELINE) == _TIMELINE
+    second = run_tool(update_document_tool, {"chapter": "2", "html": shorter}, fake.ctx)
+    assert second["ok"] and "第21章：新事件" in strip_diff_markup(fake.last_write("doc-2"))
+
+
+def test_a_folded_timeline_is_refused_as_elided():
+    fake = FakeBook("<p>start</p>", chapters=[{"id": "doc-2", "title": "时间线", "content": _TIMELINE}])
+    run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    folded = "<h1>时间线</h1><p>第1–19章：见原条目。</p>" + "".join(_timeline_entry(i + 20) for i in range(30))
+    out = run_tool(update_document_tool, {"chapter": "2", "html": folded}, fake.ctx)
+    assert not out["ok"] and "not applied (elided)" in out["trace"]

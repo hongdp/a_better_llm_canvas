@@ -41,7 +41,7 @@ import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { reinsertMissingImages } from '../../utils/imagePreservation'
 import { htmlToPlainText } from '../../utils/llmContext'
-import { chapterChars, isPlainChapterHtml } from '../../utils/paragraphs'
+import { chapterChars, isPlainChapterHtml, rewriteLoss, rewriteLossNote } from '../../utils/paragraphs'
 import { hashContent } from '../../utils/contextLedger'
 import { contentWithRenamedHeading, leadingH1Text } from '../../utils/titleSync'
 import { nearestHint } from '../../utils/editHints'
@@ -507,6 +507,22 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
             : 'The rewrite abbreviated unchanged parts of the document, so applying it would have deleted content. It was not applied.',
           trace: `⚠️ rewrite of ${citeChapter(target)} not applied (${issue})`,
           effects: { canvasIssue: issue }
+        }
+      }
+
+      // A rewrite that would drop a fifth of a chapter, or its headings or
+      // list items, is held back once (run-737f3d809b45: "bring the timeline
+      // up to chapter 87" folded chapters 1–61 into one line). The model
+      // decides: a second send applies it (a split, a requested cut).
+      const loss = ctx.run.created.has(target.id) || ctx.run.rewriteLossWarned.has(target.id) ? null : rewriteLoss(st.html, candidate)
+      if (loss) {
+        ctx.run.rewriteLossWarned.add(target.id)
+        commitDoc(ctx, target, st)
+        return {
+          ok: false,
+          retryable: true,
+          content: rewriteLossNote(citeChapter(target), loss),
+          trace: `⛔ rewrite of ${citeChapter(target)} held back — would drop ${Math.round((1 - loss.after / loss.before) * 100)}% (send again to apply)`
         }
       }
 

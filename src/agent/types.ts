@@ -14,7 +14,7 @@ import type { JsonSchema, ToolSpec } from '../utils/documentTools'
 import type { AppState } from '../store/types'
 import type { AgentTouchedChapter } from '../types/chat'
 import type { PolishOutcome } from './polish'
-import type { AnalyzeChapter, AnalyzeOutcome } from './analyzeBook'
+import type { AnalyzeChapter, AnalyzeOutcome, AnalyzePlan } from './analyzeBook'
 import { hashContent } from '../utils/contextLedger'
 import type { PlanItem } from '../utils/plan'
 
@@ -265,6 +265,8 @@ export interface RunState {
   textSeen: Map<string, string>
   /** Characters of attachments read into the conversation this run (capped: ATTACHMENT_RUN_READ_CAP). */
   attachmentChars: number
+  /** Chapters whose shrinking rewrite was held back once (utils/paragraphs rewriteLoss); a second send applies. */
+  rewriteLossWarned: Set<string>
   /** A question the model asked the user this step (`ask_user`); the loop stops for the answer. */
   question: AskedQuestion | null
 }
@@ -307,6 +309,7 @@ export function createRunState(init: {
     planBaseline: new Map(),
     textSeen: new Map(init.textSeen ?? []),
     attachmentChars: 0,
+    rewriteLossWarned: new Set(),
     question: null
   }
 }
@@ -362,6 +365,8 @@ export interface PolishPort {
 /** analyze_book's model calls (D7), batched by ../analyzeBook. Absent where no model is wired. */
 export interface AnalyzePort {
   run(task: string, chapters: AnalyzeChapter[], onProgress: (done: number, total: number) => void): Promise<AnalyzeOutcome>
+  /** What run() would cost, before running it (calls, input tokens); absent = never asks first. */
+  plan?(task: string, chapters: AnalyzeChapter[]): AnalyzePlan
 }
 
 /** The book's reference files (docs/features/attachments_and_web.md §1). */

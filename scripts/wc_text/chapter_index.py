@@ -44,7 +44,14 @@ def build_chapter_index(documents: List[Dict], active_document_id: Optional[str]
             + "\n".join(lines))
 
 
-WHOLE_BOOK_CONTEXT_CHARS = {"gemini": 2_400_000, "anthropic": 480_000, "openai": 300_000, "grok": 500_000, "ollama": 80_000}
+#: Tokens of chapter text per analyze_book batch, under each provider's window and price line (ANALYZE_BATCH_TOKENS).
+ANALYZE_BATCH_TOKENS = {"gemini": 140_000, "anthropic": 120_000, "openai": 80_000, "grok": 140_000, "ollama": 20_000}
+
+
+def analyze_batch_chars(provider: str, cjk_ratio: float) -> int:
+    """Port of analyzeBatchChars."""
+    from .context_window import tokens_to_chars
+    return tokens_to_chars(ANALYZE_BATCH_TOKENS.get(provider, 80_000), cjk_ratio)
 
 
 def pack_chapters_into_batches(docs: List[Dict], max_chars_per_batch: int) -> List[List[Dict]]:

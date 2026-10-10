@@ -7,6 +7,7 @@
 import { describe, it, expect } from 'vitest'
 import { readChapterTool, grepTool } from '../tools/bookReads'
 import { analyzeBookTool, ATTACHMENT_CHUNK_CHARS } from '../tools/analyzeBook'
+import { planAnalysis, ANALYZE_CONFIRM_TOKENS } from '../analyzeBook'
 import { webSearchTool, webReadTool } from '../tools/web'
 import { ATTACHMENT_RUN_READ_CAP, attachmentParagraphs, attachmentSections, type AttachmentMeta } from '../../utils/attachments'
 import { UNTRUSTED_WEB_NOTE, type WebPage, type WebSearchResult } from '../../utils/webText'
@@ -107,6 +108,76 @@ describe('reading an attachment', () => {
     expect(seen.every(c => c.content.length <= ATTACHMENT_CHUNK_CHARS)).toBe(true)
     expect(f.ctx.run.attachmentChars).toBe(0)
     expect(out.trace).toContain('A1')
+  })
+})
+
+// run-737f3d809b45: analyze_book read a 2M-character attachment whole (1.58M
+// tokens) for a task that needed chapters 62–87.
+describe('analyze_book on part of an attachment, and what it costs', () => {
+  const analyzeSpy = (plan?: (task: string, chapters: Array<{ content: string }>) => { calls: number; inputTokens: number; batchChars: number }) => {
+    const seen: Array<{ title: string; content: string }> = []
+    return {
+      seen,
+      port: {
+        run: async (_task: string, chapters: Array<{ id: string; title: string; content: string }>) => { seen.push(...chapters); return { notes: '笔记。', batches: 1, total: 1, stopped: false } },
+        ...(plan ? { plan } : {})
+      }
+    }
+  }
+
+  it('reads only the sections named, by heading or as a run', async () => {
+    const f = withNovel()
+    const spy = analyzeSpy()
+    f.ctx.analyze = spy.port
+    const out = await exec(analyzeBookTool, { task: '第十到十二章讲了什么', chapters: ['A1'], section: '第十–十二章' }, f.ctx)
+    expect(out.ok).toBe(true)
+    expect(spy.seen.map(c => c.title.split(' — ')[1].split(' (')[0])).toEqual(['第十章 第10回的故事', '第十一章 第11回的故事', '第十二章 第12回的故事'])
+    expect(out.trace).toContain('A1 第十–十二章')
+  })
+
+  it('reads a ¶ range, which grep reports', async () => {
+    const f = withNovel()
+    const spy = analyzeSpy()
+    f.ctx.analyze = spy.port
+    const out = await exec(analyzeBookTool, { task: 't', chapters: ['A1'], paragraphs: '52-102' }, f.ctx)
+    expect(out.ok).toBe(true)
+    const text = spy.seen.map(c => c.content).join('\n')
+    expect(text).toContain('〔2-1〕')
+    expect(text).not.toContain('〔1-50〕')
+    expect(text).not.toContain('〔3-1〕')
+    expect(out.trace).toContain('A1 ¶52–102')
+  })
+
+  it('refuses a section that is not there, and a range without an attachment', async () => {
+    const f = withNovel()
+    f.ctx.analyze = analyzeSpy().port
+    expect((await exec(analyzeBookTool, { task: 't', chapters: ['A1'], section: '第九十九章' }, f.ctx)).content).toContain('has no section matching')
+    expect((await exec(analyzeBookTool, { task: 't', chapters: ['2'], section: '第一章' }, f.ctx)).content).toContain('pick a part of an attachment')
+  })
+
+  it('asks first past 200,000 input tokens, and runs once the user agreed', async () => {
+    const f = withNovel()
+    const spy = analyzeSpy(() => ({ calls: 11, inputTokens: 1_500_000, batchChars: 140_000 }))
+    f.ctx.analyze = spy.port
+    const first = await exec(analyzeBookTool, { task: 't', chapters: ['A1'] }, f.ctx)
+    expect(first.ok).toBe(false)
+    expect(first.content).toContain('1500000 input tokens in 11 model calls')
+    expect(first.content).toContain('ask_user')
+    expect(first.trace).toBe('📚 analyze_book: A1 ≈ 1500k tokens in 11 calls — asks first')
+    expect(spy.seen).toHaveLength(0)
+    const second = await exec(analyzeBookTool, { task: 't', chapters: ['A1'], confirmed: true }, f.ctx)
+    expect(second.ok).toBe(true)
+    expect(spy.seen.length).toBeGreaterThan(0)
+  })
+
+  it('sizes batches under grok\'s 200k price line for Chinese text', () => {
+    const chapters = Array.from({ length: 20 }, (_, i) => ({ id: `c${i}`, title: `第${i}章`, content: '字'.repeat(100_000) }))
+    const plan = planAnalysis('t', chapters, 'grok')
+    expect(plan.batchChars).toBe(140_000)
+    expect(plan.calls).toBe(20)
+    expect(plan.inputTokens).toBeGreaterThan(ANALYZE_CONFIRM_TOKENS)
+    // One batch stays under the line even with the running notes.
+    expect(plan.inputTokens / plan.calls).toBeLessThan(200_000)
   })
 })
 

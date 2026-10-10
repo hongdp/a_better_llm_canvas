@@ -592,11 +592,12 @@ before each step, when the prompt (every message's text and tool-call
 arguments, `estimateTokens`) passes `ELIDE_ABOVE` (0.85) of the prompt
 limit, the oldest candidates are replaced in place by a one-line note naming
 what was read ("Read it again if you need its text") until the prompt is
-under `ELIDE_TO` (0.6) or nothing is left; the latest step's results are
+under `ELIDE_TO` (0.45; 0.6 until 2026-10-10, when one run elided twice and
+re-read ~100k uncached tokens each time) or nothing is left; the latest step's results are
 never touched, since the model has not acted on them. The prompt limit is
 the host's target for the window less the output tokens — the same numbers
 the history budget uses. The bubble's trace shows "🧹 elided N earlier
-results". Replacing a sent message ends the cached prefix there, so this
+results … (the next step re-reads ≈Nk tokens uncached)" — the price of it. Replacing a sent message ends the cached prefix there, so this
 runs only when the step would otherwise not fit. The run's `known` record
 is unchanged: an edit on a chapter whose text was elided is still allowed,
 and a SEARCH that no longer matches gets the nearest-paragraph hint, which
@@ -1816,7 +1817,7 @@ interface AgentTouchedChapter {
 | `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one; anything with text is refused ("ask the user"). Runs last in its reply; reports the renumbering (§0.4) |
 | `rename_chapter` | write | native (no tag form) | `{chapter, title, replace?}`. Renames an existing chapter (only what the user asked for, or one added this turn); a taken title is refused; a missing chapter is answered with how one is added. `replace=true` moves a chapter created this run into the one with that title (in place, reviewable) and removes it (§0). Runs last in its reply |
 | `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
-| `analyze_book` | read | native | D7. Notes from reading the whole book (or the chapters named) in batches, one model call per batch, for a task that needs all of it at once. Batches are packed by `WHOLE_BOOK_CONTEXT_CHARS` per provider. Stop ends it between batches, keeping the notes so far. Replaced the whole-book toggle and its consent card |
+| `analyze_book` | read | native | D7. Notes from reading the whole book (or the chapters named) in batches, one model call per batch, for a task that needs all of it at once. Batches are packed by `ANALYZE_BATCH_TOKENS` per provider (tokens, converted by the text's CJK share; under each window and long-context price line — 140k for grok, whose price doubles past 200k), and an attachment can be limited to `section` (one heading or a run, "第62–87章") or `paragraphs`. A run estimated past 200,000 input tokens (`planAnalysis`) is not started: the model gets the estimate, asks the user with ask_user, and calls again with `confirmed: true` (the consent the retired toggle had; run-737f3d809b45 read a 2M-character attachment whole, 1.58M tokens, for a task that needed chapters 62–87). Stop ends it between batches, keeping the notes so far. |
 
 Phase 3+: `analyze_book` (Rung 2 map-reduce, approval-gated, replaces the
 consent card for that rung), `update_chapter_summary`, `rename_chapter`,

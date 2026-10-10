@@ -106,14 +106,14 @@ export function resolveAttachmentRef<T extends { ref: string; name: string }>(re
  * The most attachment text one turn may read into the conversation, across
  * all reads (docs/features/attachments_and_web.md §1). A whole novel is never
  * loaded: past this, reads are refused and the model is pointed at grep and
- * at analyze_book, which reads a file in batches OUTSIDE the conversation and
- * brings back notes.
+ * at analyze_book, which reads a range of a file in batches OUTSIDE the
+ * conversation and brings back notes.
  */
 export const ATTACHMENT_RUN_READ_CAP = 100_000
 
 export function attachmentBudgetNote(ref: string, used: number): string {
   return `${ref} was not read: this turn has already read ${used} characters of attachments, the most one turn may — a whole file is never read into the conversation. ` +
-    `Find the passages you need with grep chapters=["${ref}"] and read only those paragraphs, or let analyze_book chapters=["${ref}"] read the file in batches and return notes.`
+    `Find the passages you need with grep chapters=["${ref}"] and read only those paragraphs, or let analyze_book chapters=["${ref}"] section="第62–87章" read a range in batches and return notes.`
 }
 
 /** Lines of the index before the rest is summarized. */
@@ -131,7 +131,7 @@ export function renderAttachmentIndex(list: AttachmentMeta[], maxLines: number =
       lines.push(`  ¶${s.from}–${s.to} ${s.title}`)
     }
   }
-  return 'ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=["A1"] section="第三十章" (or a paragraph range), search with grep chapters=["A1"], or let analyze_book chapters=["A1"] read a whole file; a turn reads at most 100,000 characters of them, and they cannot be written):\n' +
+  return 'ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=["A1"] section="第三十章" (or a paragraph range), search with grep chapters=["A1"], or let analyze_book chapters=["A1"] section="第62–87章" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\n' +
     lines.join('\n') + (hidden > 0 ? `\n  … ${hidden} more sections (grep for a heading to find one)` : '')
 }
 
@@ -140,9 +140,14 @@ export function renderAttachmentIndex(list: AttachmentMeta[], maxLines: number =
  * whole file when it has none), cut at paragraph boundaries into pieces of at
  * most `budgetChars`.
  */
-export function attachmentChunks(meta: Pick<AttachmentMeta, 'ref' | 'name'>, paragraphs: string[], budgetChars: number): Array<{ title: string; text: string }> {
+export function attachmentChunks(meta: Pick<AttachmentMeta, 'ref' | 'name'>, paragraphs: string[], budgetChars: number,
+  range: { from: number; to: number } | null = null): Array<{ title: string; text: string }> {
   const sections = attachmentSections(paragraphs)
-  const spans = sections.length > 0 ? sections : [{ title: meta.name, from: 1, to: paragraphs.length }]
+  const all = sections.length > 0 ? sections : [{ title: meta.name, from: 1, to: paragraphs.length }]
+  // Only a range of the file (analyze_book section="第62–87章"): the sections in it, clipped.
+  const spans = range === null ? all : all
+    .filter(s => s.to >= range.from && s.from <= range.to)
+    .map(s => ({ title: s.title, from: Math.max(s.from, range.from), to: Math.min(s.to, range.to, paragraphs.length) }))
   const out: Array<{ title: string; text: string }> = []
   for (const s of spans) {
     let start = s.from
@@ -239,4 +244,33 @@ export function findAttachmentSection(sections: AttachmentSection[], query: stri
   }
   const key = q.replace(/\s+/g, '')
   return sections.find(s => s.title.replace(/\s+/g, '').includes(key)) ?? null
+}
+
+const RANGE_RE = /^第?\s*([零〇一二三四五六七八九十百千万两\d０-９]+)\s*[章节回卷部集篇话]?\s*[-–—~～至到]\s*第?\s*([零〇一二三四五六七八九十百千万两\d０-９]+)\s*[章节回卷部集篇话]?$/
+
+/**
+ * A section, or a run of numbered sections ("第62–87章", "62-87", "第六十二至八十七回"):
+ * the ¶ span from the first to the last and a title naming both. Anything
+ * else is looked up as one section (findAttachmentSection). null when nothing matches.
+ */
+export function findAttachmentRange(sections: AttachmentSection[], query: string): AttachmentSection | null {
+  const q = query.trim()
+  const m = RANGE_RE.exec(q)
+  if (m) {
+    const a = parseChapterNumber(m[1])
+    const b = parseChapterNumber(m[2])
+    if (a !== null && b !== null) {
+      const lo = Math.min(a, b)
+      const hi = Math.max(a, b)
+      const hits = sections.filter(s => { const n = sectionNumberOf(s.title); return n !== null && n >= lo && n <= hi })
+      if (hits.length > 0) {
+        return {
+          title: hits.length === 1 ? hits[0].title : `${hits[0].title} … ${hits[hits.length - 1].title}`,
+          from: Math.min(...hits.map(h => h.from)),
+          to: Math.max(...hits.map(h => h.to))
+        }
+      }
+    }
+  }
+  return findAttachmentSection(sections, q)
 }

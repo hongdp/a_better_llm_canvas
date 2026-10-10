@@ -7,7 +7,7 @@
     "output": [
      {
       "name": "update_document",
-      "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+      "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
       "parameters": {
        "type": "object",
        "properties": {
@@ -91,7 +91,7 @@
      [
       {
        "name": "update_document",
-       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
        "parameters": {
         "type": "object",
         "properties": {
@@ -173,7 +173,7 @@
       "type": "function",
       "function": {
        "name": "update_document",
-       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
        "parameters": {
         "type": "object",
         "properties": {
@@ -289,7 +289,7 @@
      [
       {
        "name": "update_document",
-       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
        "parameters": {
         "type": "object",
         "properties": {
@@ -369,7 +369,7 @@
     "output": [
      {
       "name": "update_document",
-      "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+      "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
       "input_schema": {
        "type": "object",
        "properties": {
@@ -453,7 +453,7 @@
      [
       {
        "name": "update_document",
-       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+       "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
        "parameters": {
         "type": "object",
         "properties": {
@@ -535,7 +535,7 @@
       "functionDeclarations": [
        {
         "name": "update_document",
-        "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+        "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
         "parameters": {
          "type": "OBJECT",
          "properties": {
@@ -690,7 +690,7 @@
        "type": "function",
        "function": {
         "name": "update_document",
-        "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+        "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
         "parameters": {
          "type": "object",
          "properties": {
@@ -777,7 +777,7 @@
     "output": [
      {
       "name": "update_document",
-      "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document.",
+      "description": "Replace the entire text of a chapter (the active one unless `chapter` names another), or write a new chapter (`new_chapter`). Use for a brand-new chapter, a full rewrite, or restructuring where most of the text changes. For a small change to an existing chapter, prefer edit_document. To add to a chapter or bring it up to date (new entries, a timeline carried further), change only what changes with edit_paragraphs or edit_document: a rewrite that would drop much of the text is held back.",
       "parameters": {
        "type": "object",
        "properties": {

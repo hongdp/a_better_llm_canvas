@@ -6,6 +6,7 @@ selection rewrite is always placed by its text in the stored chapter (the
 client's "on screen" path does not exist here), and edits beside a selection
 read the stored chapter rather than an editor.
 """
+import math
 import re
 from typing import Any, Dict, List, Optional, Union
 
@@ -18,7 +19,7 @@ from wc_text.image_preservation import reinsert_missing_images
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
 from wc_text.context_ledger import hash_content
-from wc_text.paragraphs import apply_paragraph_edits, chapter_chars, is_plain_chapter_html
+from wc_text.paragraphs import apply_paragraph_edits, chapter_chars, is_plain_chapter_html, rewrite_loss, rewrite_loss_note
 from wc_text.text import (apply_edit_blocks, apply_edit_blocks_locally, is_blank_content, strip_blank_paragraphs,
                           strip_incomplete_end_tag, trim_incomplete_html_tail, validate_canvas_replacement)
 from wc_text.title_sync import content_with_renamed_heading, leading_h1_text
@@ -353,6 +354,15 @@ async def _update_write(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
                           "The rewrite was cut off before it finished, so it was not applied." if issue == "truncated"
                           else "The rewrite abbreviated unchanged parts of the document, so applying it would have deleted content. It was not applied.",
                           f"⚠️ rewrite of {cite_chapter(target)} not applied ({issue})", retryable=False, effects={"canvasIssue": issue})
+        # A rewrite that would drop a fifth of a chapter, or its headings or list items, is held back
+        # once (rewriteLoss, run-737f3d809b45); a second send applies it.
+        loss = None if (target["id"] in ctx.run.created or target["id"] in ctx.run.rewrite_loss_warned) else rewrite_loss(st.html, candidate)
+        if loss:
+            ctx.run.rewrite_loss_warned.add(target["id"])
+            commit_doc(ctx, target, st)
+            pct = math.floor((1 - loss["after"] / loss["before"]) * 100 + 0.5)
+            return result(False, rewrite_loss_note(cite_chapter(target), loss),
+                          f"⛔ rewrite of {cite_chapter(target)} held back — would drop {pct}% (send again to apply)", retryable=True)
         _open_if_created(ctx, target)
         chars_before = chapter_chars(st.html)
         reinserted = reinsert_missing_images(candidate, st.original)

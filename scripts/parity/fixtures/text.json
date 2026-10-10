@@ -214,6 +214,72 @@
   "has_elision_markers": [
    {
     "input": [
+     "<p>第1–61章：见原条目。</p><p>第62章：新</p>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<p>（略）</p>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<p>略。</p>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<li>第五章：同上</li>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<p>此处省略三千字</p>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<p>其余内容不变</p>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<p>【下同】</p>"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "<p>他的脸色保持不变，略微一笑。</p><p>她说……</p>"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "<p>他省略了寒暄：“同上次一样。”</p>"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "<p>余同学走了过来。</p>"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "<p>数值：不变量</p>"
+    ],
+    "output": false
+   },
+   {
+    "input": [
      "<p>a</p><!-- rest unchanged --><p>z</p>"
     ],
     "output": true
