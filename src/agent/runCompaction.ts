@@ -53,7 +53,12 @@ export interface ElisionPlan {
   elided: string[]
   /** The candidates still intact, for the next check. */
   remaining: ElidableResult[]
-  /** Tokens from the first replaced result on: what the next step reads uncached. */
+  /**
+   * What the next step reads uncached: the whole prompt. Partial-prefix hits
+   * are not to be counted on — on grok, 81 of 98 messages identical still
+   * came back 1% cached, and an elision's step re-read 79k tokens where the
+   * suffix estimate said 27k (run-d9e54ca576dc).
+   */
   resentTokens: number
 }
 
@@ -108,8 +113,7 @@ export function planElisions(messages: LLMMessage[], elidable: ElidableResult[],
     elided.push(entry.trace)
   }
   if (elided.length === 0) return untouched
-  const first = Math.min(...elidable.filter(e => out[e.index] !== messages[e.index]).map(e => e.index))
-  return { messages: out, elided, remaining, resentTokens: Math.round(promptTokens(out.slice(first)) * calibrated.ratio) }
+  return { messages: out, elided, remaining, resentTokens: Math.round(promptTokens(out) * calibrated.ratio) }
 }
 
 /** The line the bubble shows for an elision, with what it costs the next step. */

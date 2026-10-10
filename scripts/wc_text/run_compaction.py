@@ -57,8 +57,8 @@ def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]]
         elided.append(entry["trace"])
     if not elided:
         return untouched
-    first = min(e["index"] for e in elidable if 0 <= e["index"] < len(out) and out[e["index"]] is not messages[e["index"]])
-    resent = math.floor(prompt_tokens(out[first:]) * calibrated["ratio"] + 0.5)
+    # The whole prompt: partial-prefix cache hits are not to be counted on (resentTokens).
+    resent = math.floor(prompt_tokens(out) * calibrated["ratio"] + 0.5)
     return {"messages": out, "elided": elided, "remaining": remaining, "resentTokens": resent}
 
 

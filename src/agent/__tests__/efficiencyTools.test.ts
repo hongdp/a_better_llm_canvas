@@ -122,16 +122,50 @@ describe('edit_paragraphs', () => {
     expect(f.lastWrite('doc-4')).toContain('diff-')
   })
 
-  it('applies nothing when an anchor is stale, and quotes the current text', async () => {
+  // run-d9e54ca576dc: all-or-nothing threw away two good edits for four mistyped anchors.
+  it('applies the edits that fit and returns the stale one with the current text', async () => {
     const f = book()
     const out = await exec(editParagraphsTool, {
       chapter: '4',
       edits: [{ paragraph: 1, action: 'replace', html: '<p>x</p>', starts_with: '一' }, { paragraph: 3, action: 'delete', starts_with: '二' }]
     }, f.ctx)
-    expect(out.ok).toBe(false)
+    expect(out.ok).toBe(true)
+    expect(out.content).toContain('NOT applied (1)')
     expect(out.content).toContain('¶3 does not start with what you gave; it now reads: 三。')
+    expect(stripDiffMarkup(f.lastWrite('doc-4')!)).toBe('<p>x</p><p>二。</p><p>三。</p><p>四。</p><p>五。</p>')
+    expect(out.trace).toContain('1 change; 1 not applied')
+  })
+
+  it('applies nothing when no anchor matches', async () => {
+    const f = book()
+    const out = await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 3, action: 'delete', starts_with: '二' }] }, f.ctx)
+    expect(out.ok).toBe(false)
     expect(f.lastWrite('doc-4')).toBeUndefined()
     expect(out.trace).toContain('1 anchor out of date')
+  })
+
+  it('keeps a list entry an entry, and lands an anchor with a one-character slip', async () => {
+    const card = '<h1>人物卡</h1><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul>'
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '人物卡', content: card }] })
+    const read = await exec(readChapterTool, { chapters: ['2'] }, f.ctx)
+    expect(read.content).toContain('¶3 • 身份：缥缈宗太上长老，炼虚期。')
+    expect(read.content).toContain('to rewrite it whole, read it with format="html" first')
+    const out = await exec(editParagraphsTool, {
+      chapter: '2',
+      edits: [{ paragraph: 3, action: 'replace', html: '<p>身份：缥缈宗太上长老，化神期。</p>', starts_with: '身份：缆缈宗太上长老' }]
+    }, f.ctx)
+    expect(out.ok).toBe(true)
+    expect(stripDiffMarkup(f.lastWrite('doc-2')!)).toBe('<h1>人物卡</h1><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，化神期。</p></li><li><p>气运：SSS级。</p></li></ul>')
+  })
+
+  it('reads a list of scattered paragraphs in one call', async () => {
+    const f = book()
+    const out = await exec(readChapterTool, { chapters: ['4'], paragraphs: '1,3-4，5' }, f.ctx)
+    expect(out.ok).toBe(true)
+    expect(out.content).toContain('¶1 一。')
+    expect(out.content).toContain('¶3 三。\n¶4 四。')
+    expect(out.content).toContain('¶5 五。')
+    expect(out.content).not.toContain('¶2 二。')
   })
 
   it('refuses a chapter the user edited meanwhile', async () => {

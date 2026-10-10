@@ -725,9 +725,14 @@ What was built, in both loops:
   SEARCH to copy: `replace`, `insert_before`, `insert_after`, `delete`, each
   with `html` (new blocks; bare text becomes a `<p>`). Every edit carries
   `starts_with`, the first characters of the paragraph's text as the model
-  saw it: if any anchor no longer matches, nothing is applied and the result
-  quotes the current text of those paragraphs (Grok Build's hashline edits:
-  atomic, stale anchors answered with fresh ones). Numbers refer to the
+  saw it. Since 2026-10-10 each edit is checked on its own: one whose anchor
+  no longer matches is left out and its paragraph's current text quoted,
+  the rest apply (all-or-nothing threw away two good edits of six for four
+  anchors that wrote 缥缈宗 as 缆缈宗, run-d9e54ca576dc); and an anchor
+  matches with a slip — one character in 6–15, two from 16 (`anchorMatches`).
+  A list entry is a paragraph of its own (`paragraphBlocks`) and an edit
+  of one stays an `<li>` (`asItems`); read accepts "1,8,10-12"; a text read
+  of a formatted chapter says a whole rewrite needs its HTML. Numbers refer to the
   chapter before the call; edits apply bottom-up. The paragraphs are cut from
   the stored HTML by position (`paragraphSpans`), so untouched text keeps
   its exact bytes; a chapter whose HTML the splitter and the numbering do not

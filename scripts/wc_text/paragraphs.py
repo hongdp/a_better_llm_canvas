@@ -38,10 +38,30 @@ def top_level_blocks(html: str) -> List[str]:
 _IMAGE_RE = re.compile(r"<img\b|\{\{IMAGE_PLACEHOLDER_[0-9]+\}\}", re.I)
 
 
+def paragraph_blocks(html: str) -> List[str]:
+    """Port of paragraphBlocks: the top-level blocks, a list counting each of its items."""
+    out: List[str] = []
+
+    def add(node) -> None:
+        if isinstance(node, Element):
+            out.append(serialize(node))
+        else:
+            text = _js_trim(node.data)
+            if text:
+                out.append(f"<p>{text}</p>")
+    for node in parse_fragment(html).children:
+        if isinstance(node, Element) and node.tag.lower() in ("ul", "ol"):
+            for child in node.children:
+                add(child)
+        else:
+            add(node)
+    return out
+
+
 def chapter_paragraphs(html: str) -> List[Dict]:
     out: List[Dict] = []
     number = 0
-    for block in top_level_blocks(html):
+    for block in paragraph_blocks(html):
         text = _js_trim(re.sub(r"\{\{IMAGE_PLACEHOLDER_[0-9]+\}\}", "", block_text(block)))
         image = bool(_IMAGE_RE.search(block))
         if not text and not image:
@@ -53,6 +73,8 @@ def chapter_paragraphs(html: str) -> List[Dict]:
             kind = "image"
         elif re.match(r"<p\b", block, re.I):
             kind = "paragraph"
+        elif re.match(r"<li\b", block, re.I):
+            kind = "item"
         else:
             kind = "other"
         out.append({"number": number, "html": block, "text": text, "kind": kind})
@@ -66,7 +88,8 @@ def chapter_chars(html: str) -> int:
 def numbered_line(p: Dict) -> str:
     if p["kind"] == "image":
         return f"¶{p['number']} [image]"
-    return f"¶{p['number']} {'# ' if p['kind'] == 'heading' else ''}{re.sub(r'\n+', ' / ', p['text'])}"
+    mark = "# " if p["kind"] == "heading" else "• " if p["kind"] == "item" else ""
+    return f"¶{p['number']} {mark}{re.sub(r'\n+', ' / ', p['text'])}"
 
 
 # ── Paragraphs by position (agentic_chat_loop.md §0.11) ─────────────────────
@@ -143,6 +166,14 @@ def paragraph_spans(html: str) -> List[Dict]:
                 end = at
                 break
             pos = at
+        if name in ("ul", "ol"):
+            # A list counts its items (paragraph_blocks): their spans, inside it.
+            closing = re.search(r"</" + name + _WS_CLASS + r"*>$", html[i:end], re.I)
+            inner_end = end - len(closing.group(0)) if closing else end
+            for s in paragraph_spans(html[close_at:inner_end]):
+                out.append({**s, "start": s["start"] + close_at, "end": s["end"] + close_at})
+            i = end
+            continue
         out.append({"start": i, "end": end, "html": html[i:end], "loose": False})
         i = end
     return out
@@ -176,7 +207,32 @@ def _squash(s: str) -> str:
 
 def _anchor_of(s: str) -> str:
     out = re.sub(r"^¶\d+" + _WS_CLASS + "*", "", _squash(s))
-    return re.sub(r"^#" + _WS_CLASS + "+", "", out)
+    out = re.sub(r"^#" + _WS_CLASS + "+", "", out)
+    return re.sub(r"^•" + _WS_CLASS + "*", "", out)
+
+
+def _levenshtein(a: str, b: str) -> int:
+    prev = list(range(len(b) + 1))
+    for i in range(1, len(a) + 1):
+        cur = [i]
+        for j in range(1, len(b) + 1):
+            cur.append(min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (0 if a[i - 1] == b[j - 1] else 1)))
+        prev = cur
+    return prev[len(b)]
+
+
+def anchor_matches(text: str, anchor: str) -> bool:
+    """Port of anchorMatches: the paragraph starts with the anchor, a slip or two allowed in a long one."""
+    t = _squash(text)
+    if t.startswith(anchor):
+        return True
+    k = 2 if len(anchor) >= 16 else 1 if len(anchor) >= 6 else 0
+    if k == 0:
+        return False
+    for length in range(len(anchor) - k, len(anchor) + k + 1):
+        if 0 < length <= len(t) and _levenshtein(anchor, t[:length]) <= k:
+            return True
+    return False
 
 
 def as_blocks(html: str) -> str:
@@ -186,11 +242,17 @@ def as_blocks(html: str) -> str:
     return "".join("<p>" + p.replace("\n", "<br>") + "</p>" for p in parts if p)
 
 
+def as_items(html: str) -> str:
+    """Port of asItems: content beside or in place of a list entry stays an entry."""
+    return _js_trim(html) if re.match(_WS_CLASS + r"*<li\b", html, re.I) else f"<li>{as_blocks(html)}</li>"
+
+
 def _is_int(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
 def apply_paragraph_edits(html: str, edits: List[Dict]) -> Dict:
+    """Port of applyParagraphEdits: each edit checked on its own; the ones that fit apply, the rest are reported."""
     spans = numbered_paragraph_spans(html)
     if spans is None:
         return {"ok": False, "error": "this chapter's HTML could not be split into paragraphs reliably; use edit_document with SEARCH text from its HTML instead", "stale": []}
@@ -199,6 +261,7 @@ def apply_paragraph_edits(html: str, edits: List[Dict]) -> Dict:
     stale: List[Dict] = []
     errors: List[str] = []
     removed = set()
+    valid: List[Dict] = []
     for e in edits:
         n = e["paragraph"]
         span = spans[n - 1] if _is_int(n) and 1 <= n <= len(spans) else None
@@ -215,7 +278,7 @@ def apply_paragraph_edits(html: str, edits: List[Dict]) -> Dict:
         if not anchor:
             errors.append(f"¶{n}: starts_with is empty — give the first words of the paragraph as you read them")
             continue
-        if not _squash(span["text"]).startswith(anchor) and not (span["kind"] == "image" and re.match(r"^\[?image\]?$", anchor, re.I)):
+        if not anchor_matches(span["text"], anchor) and not (span["kind"] == "image" and re.match(r"^\[?image\]?$", anchor, re.I)):
             stale.append({"number": span["number"], "text": "[image]" if span["kind"] == "image" else span["text"]})
             continue
         if e["action"] == "replace" and span["kind"] == "image":
@@ -226,23 +289,24 @@ def apply_paragraph_edits(html: str, edits: List[Dict]) -> Dict:
                 errors.append(f"¶{n} is replaced or deleted twice")
                 continue
             removed.add(n)
-    if stale or errors:
-        lines = errors + [f"¶{s['number']} does not start with what you gave; it now reads: {s['text'][:160] + '…' if len(s['text']) > 160 else s['text']}" for s in stale]
-        return {"ok": False, "error": "nothing was applied:\n" + "\n".join(lines), "stale": stale}
+        valid.append(e)
+    skipped = errors + [f"¶{s['number']} does not start with what you gave; it now reads: {s['text'][:160] + '…' if len(s['text']) > 160 else s['text']}" for s in stale]
+    if not valid:
+        return {"ok": False, "error": "nothing was applied:\n" + "\n".join(skipped), "stale": stale}
     rank = {"insert_after": 0, "replace": 1, "delete": 1, "insert_before": 2}
     splices = []
-    for order, e in enumerate(edits):
+    for order, e in enumerate(valid):
         span = spans[e["paragraph"] - 1]
         at = span["end"] if e["action"] == "insert_after" else span["start"]
         to = span["end"] if e["action"] in ("replace", "delete") else at
-        splices.append({"at": at, "to": to, "text": "" if e["action"] == "delete" else as_blocks(e.get("html") or ""),
-                        "paragraph": e["paragraph"], "rank": rank[e["action"]], "order": order})
+        text = "" if e["action"] == "delete" else as_items(e.get("html") or "") if span["kind"] == "item" else as_blocks(e.get("html") or "")
+        splices.append({"at": at, "to": to, "text": text, "paragraph": e["paragraph"], "rank": rank[e["action"]], "order": order})
     splices.sort(key=lambda s: (-s["at"], -s["paragraph"], s["rank"], -s["order"]))
     out = html
     for s in splices:
         out = out[:s["at"]] + s["text"] + out[s["to"]:]
     return {"ok": True, "html": out, "paragraphsBefore": len(spans), "paragraphsAfter": len(chapter_paragraphs(out)),
-            "firstChanged": min(e["paragraph"] for e in edits)}
+            "firstChanged": min(e["paragraph"] for e in valid), "applied": len(valid), "skipped": skipped, "stale": stale}
 
 
 #: A whole rewrite keeps at least this share of a chapter's text unless the model insists (rewriteLoss).

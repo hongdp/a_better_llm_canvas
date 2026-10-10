@@ -695,8 +695,30 @@ def test_edit_paragraphs_changes_paragraphs_by_number_and_refuses_a_stale_anchor
     fake2 = _efficiency_book()
     stale = run_tool(edit_paragraphs_tool, {"chapter": "4", "edits": [{"paragraph": 1, "action": "replace", "html": "x", "starts_with": "一"},
                                                                       {"paragraph": 3, "action": "delete", "starts_with": "二"}]}, fake2.ctx)
-    assert not stale["ok"] and "¶3 does not start with what you gave; it now reads: 三。" in stale["content"]
-    assert fake2.last_write("doc-4") is None
+    # The edit that fits applies; the stale one comes back (run-d9e54ca576dc).
+    assert stale["ok"] and "NOT applied (1)" in stale["content"] and "¶3 does not start with what you gave; it now reads: 三。" in stale["content"]
+    assert strip_diff_markup(fake2.last_write("doc-4")) == "<p>x</p><p>二。</p><p>三。</p><p>四。</p><p>五。</p>"
+    assert stale["trace"] == '✏️ edited #4 "第四章" by paragraph (1 change; 1 not applied)'
+    fake3 = _efficiency_book()
+    none = run_tool(edit_paragraphs_tool, {"chapter": "4", "edits": [{"paragraph": 3, "action": "delete", "starts_with": "二"}]}, fake3.ctx)
+    assert not none["ok"] and fake3.last_write("doc-4") is None and "1 anchor out of date" in none["trace"]
+
+
+def test_a_card_is_read_and_edited_entry_by_entry_and_a_slipped_anchor_lands():
+    card = "<h1>人物卡</h1><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul>"
+    fake = FakeBook("<p>start</p>", chapters=[{"id": "doc-2", "title": "人物卡", "content": card}])
+    read = run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    assert "¶3 • 身份：缥缈宗太上长老，炼虚期。" in read["content"] and 'read it with format="html" first' in read["content"]
+    out = run_tool(edit_paragraphs_tool, {"chapter": "2", "edits": [
+        {"paragraph": 3, "action": "replace", "html": "<p>身份：缥缈宗太上长老，化神期。</p>", "starts_with": "身份：缆缈宗太上长老"}]}, fake.ctx)
+    assert out["ok"]
+    assert strip_diff_markup(fake.last_write("doc-2")) == "<h1>人物卡</h1><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，化神期。</p></li><li><p>气运：SSS级。</p></li></ul>"
+
+
+def test_read_takes_a_list_of_scattered_paragraphs():
+    fake = _efficiency_book()
+    out = run_tool(read_chapter_tool, {"chapters": ["4"], "paragraphs": "1,3-4，5"}, fake.ctx)
+    assert out["ok"] and "¶1 一。" in out["content"] and "¶3 三。\n¶4 四。" in out["content"] and "¶5 五。" in out["content"] and "¶2 二。" not in out["content"]
 
 
 def test_plan_done_on_a_write_marks_the_item_and_starts_the_next():

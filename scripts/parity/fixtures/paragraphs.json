@@ -27,7 +27,7 @@
      "<h2>A</h2><ul><li>一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一一</li></ul>"
     ],
     "output": {
-     "before": 204,
+     "before": 202,
      "after": 251,
      "lostHeadings": 0,
      "lostItems": 2
@@ -236,30 +236,36 @@
      },
      {
       "number": 5,
-      "html": "<ul><li>一</li><li>二 &amp; 三</li></ul>",
-      "text": "一\n二 & 三",
-      "kind": "other"
+      "html": "<li>一</li>",
+      "text": "一",
+      "kind": "item"
      },
      {
       "number": 6,
+      "html": "<li>二 &amp; 三</li>",
+      "text": "二 & 三",
+      "kind": "item"
+     },
+     {
+      "number": 7,
       "html": "<p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p>",
       "text": "",
       "kind": "image"
      },
      {
-      "number": 7,
+      "number": 8,
       "html": "<p>{{IMAGE_PLACEHOLDER_0}}</p>",
       "text": "",
       "kind": "image"
      },
      {
-      "number": 8,
+      "number": 9,
       "html": "<p>loose text here</p>",
       "text": "loose text here",
       "kind": "paragraph"
      },
      {
-      "number": 9,
+      "number": 10,
       "html": "<p>a&nbsp;b<br>c</p>",
       "text": "a b\nc",
       "kind": "paragraph"
@@ -329,12 +335,18 @@
      },
      {
       "number": 4,
-      "html": "<ul><li>a</li><li>b</li></ul>",
-      "text": "a\nb",
-      "kind": "other"
+      "html": "<li>a</li>",
+      "text": "a",
+      "kind": "item"
      },
      {
       "number": 5,
+      "html": "<li>b</li>",
+      "text": "b",
+      "kind": "item"
+     },
+     {
+      "number": 6,
       "html": "<p>loose</p>",
       "text": "loose",
       "kind": "paragraph"
@@ -366,9 +378,9 @@
      },
      {
       "number": 4,
-      "html": "<ul><li><ins class=\"diff-addition\" data-diff-id=\"diff-d\">new item</ins></li></ul>",
+      "html": "<li><ins class=\"diff-addition\" data-diff-id=\"diff-d\">new item</ins></li>",
       "text": "new item",
-      "kind": "other"
+      "kind": "item"
      },
      {
       "number": 5,
@@ -390,7 +402,7 @@
     "input": [
      "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>"
     ],
-    "output": 61
+    "output": 60
    },
    {
     "input": [
@@ -443,12 +455,146 @@
     "input": [
      {
       "number": 4,
-      "html": "<ul><li>x</li><li>y</li></ul>",
-      "text": "x\ny",
-      "kind": "other"
+      "html": "<li>x</li>",
+      "text": "x",
+      "kind": "item"
      }
     ],
-    "output": "¶4 x / y"
+    "output": "¶4 • x"
+   },
+   {
+    "input": [
+     {
+      "number": 5,
+      "html": "<li>y</li>",
+      "text": "y",
+      "kind": "item"
+     }
+    ],
+    "output": "¶5 • y"
+   }
+  ],
+  "paragraph_spans_card": [
+   {
+    "input": [
+     "<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>"
+    ],
+    "output": [
+     {
+      "start": 0,
+      "end": 12,
+      "html": "<h1>人物卡</h1>",
+      "loose": false
+     },
+     {
+      "start": 12,
+      "end": 32,
+      "html": "<p>整理范围：原作第1–87章</p>",
+      "loose": false
+     },
+     {
+      "start": 32,
+      "end": 43,
+      "html": "<h2>姬雪</h2>",
+      "loose": false
+     },
+     {
+      "start": 47,
+      "end": 78,
+      "html": "<li><p>身份：缥缈宗太上长老，炼虚期。</p></li>",
+      "loose": false
+     },
+     {
+      "start": 78,
+      "end": 102,
+      "html": "<li><p>气运：SSS级。</p></li>",
+      "loose": false
+     },
+     {
+      "start": 107,
+      "end": 119,
+      "html": "<h2>独孤灵</h2>",
+      "loose": false
+     },
+     {
+      "start": 124,
+      "end": 169,
+      "html": "<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>",
+      "loose": false
+     }
+    ]
+   }
+  ],
+  "numbered_paragraph_spans_card": [
+   {
+    "input": [
+     "<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>"
+    ],
+    "output": [
+     {
+      "start": 0,
+      "end": 12,
+      "html": "<h1>人物卡</h1>",
+      "loose": false,
+      "number": 1,
+      "text": "人物卡",
+      "kind": "heading"
+     },
+     {
+      "start": 12,
+      "end": 32,
+      "html": "<p>整理范围：原作第1–87章</p>",
+      "loose": false,
+      "number": 2,
+      "text": "整理范围：原作第1–87章",
+      "kind": "paragraph"
+     },
+     {
+      "start": 32,
+      "end": 43,
+      "html": "<h2>姬雪</h2>",
+      "loose": false,
+      "number": 3,
+      "text": "姬雪",
+      "kind": "heading"
+     },
+     {
+      "start": 47,
+      "end": 78,
+      "html": "<li><p>身份：缥缈宗太上长老，炼虚期。</p></li>",
+      "loose": false,
+      "number": 4,
+      "text": "身份：缥缈宗太上长老，炼虚期。",
+      "kind": "item"
+     },
+     {
+      "start": 78,
+      "end": 102,
+      "html": "<li><p>气运：SSS级。</p></li>",
+      "loose": false,
+      "number": 5,
+      "text": "气运：SSS级。",
+      "kind": "item"
+     },
+     {
+      "start": 107,
+      "end": 119,
+      "html": "<h2>独孤灵</h2>",
+      "loose": false,
+      "number": 6,
+      "text": "独孤灵",
+      "kind": "heading"
+     },
+     {
+      "start": 124,
+      "end": 169,
+      "html": "<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>",
+      "loose": false,
+      "number": 7,
+      "text": "身份：缥缈宗掌门。嵌套",
+      "kind": "item"
+     }
+    ]
    }
   ],
   "paragraph_spans": [
@@ -482,9 +628,15 @@
       "loose": false
      },
      {
-      "start": 118,
-      "end": 155,
-      "html": "<ul><li>一</li><li>二 &amp; 三</li></ul>",
+      "start": 122,
+      "end": 132,
+      "html": "<li>一</li>",
+      "loose": false
+     },
+     {
+      "start": 132,
+      "end": 150,
+      "html": "<li>二 &amp; 三</li>",
       "loose": false
      },
      {
@@ -870,6 +1022,103 @@
     "output": ""
    }
   ],
+  "paragraph_blocks": [
+   {
+    "input": [
+     "<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>"
+    ],
+    "output": [
+     "<h1>人物卡</h1>",
+     "<p>整理范围：原作第1–87章</p>",
+     "<h2>姬雪</h2>",
+     "<li><p>身份：缥缈宗太上长老，炼虚期。</p></li>",
+     "<li><p>气运：SSS级。</p></li>",
+     "<h2>独孤灵</h2>",
+     "<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>"
+    ]
+   },
+   {
+    "input": [
+     "<ol><li>a</li>x<li>b</li></ol><p>c</p>"
+    ],
+    "output": [
+     "<li>a</li>",
+     "<p>x</p>",
+     "<li>b</li>",
+     "<p>c</p>"
+    ]
+   },
+   {
+    "input": [
+     "<ul></ul>"
+    ],
+    "output": []
+   }
+  ],
+  "anchor_matches": [
+   {
+    "input": [
+     "身份：缥缈宗太上长老，炼虚期",
+     "身份：缆缈宗太上长老"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "身份：缥缈宗太上长老",
+     "身份：缆缆宗太上长老"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "abc",
+     "abd"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "整理范围：原作第1–87章，人物",
+     "整理范围：原作第1–94章，人物状态"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "The quick brown fox jumps",
+     "The quikc brown fox"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "短",
+     "短"
+    ],
+    "output": true
+   }
+  ],
+  "as_items": [
+   {
+    "input": [
+     "<p>x</p>"
+    ],
+    "output": "<li><p>x</p></li>"
+   },
+   {
+    "input": [
+     "<li>y</li>"
+    ],
+    "output": "<li>y</li>"
+   },
+   {
+    "input": [
+     "plain"
+    ],
+    "output": "<li><p>plain</p></li>"
+   }
+  ],
   "apply_paragraph_edits": [
    {
     "input": [
@@ -899,7 +1148,10 @@
      "html": "<h1>T</h1>\n<p>Uno</p><p>Two <em>b</em></p> <p>Three</p><p>Four</p><p>Five</p>",
      "paragraphsBefore": 5,
      "paragraphsAfter": 6,
-     "firstChanged": 2
+     "firstChanged": 2,
+     "applied": 3,
+     "skipped": [],
+     "stale": []
     }
    },
    {
@@ -931,7 +1183,10 @@
      "html": "<p>pre</p><h1>New</h1>\n<p>mid</p><p>One a</p><p>Two <em>b</em></p> <p><img src=\"x.png\"></p><p>Three</p>",
      "paragraphsBefore": 5,
      "paragraphsAfter": 7,
-     "firstChanged": 1
+     "firstChanged": 1,
+     "applied": 3,
+     "skipped": [],
+     "stale": []
     }
    },
    {
@@ -998,8 +1253,15 @@
      ]
     ],
     "output": {
-     "ok": false,
-     "error": "nothing was applied:\n¶2 is replaced or deleted twice",
+     "ok": true,
+     "html": "<h1>T</h1>\n<p>Two <em>b</em></p> <p><img src=\"x.png\"></p><p>Three</p>",
+     "paragraphsBefore": 5,
+     "paragraphsAfter": 4,
+     "firstChanged": 2,
+     "applied": 1,
+     "skipped": [
+      "¶2 is replaced or deleted twice"
+     ],
      "stale": []
     }
    },
@@ -1074,6 +1336,76 @@
      "ok": false,
      "error": "this chapter's HTML could not be split into paragraphs reliably; use edit_document with SEARCH text from its HTML instead",
      "stale": []
+    }
+   },
+   {
+    "input": [
+     "<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>",
+     [
+      {
+       "paragraph": 4,
+       "action": "replace",
+       "html": "<p>身份：缥缈宗太上长老，化神期。</p>",
+       "startsWith": "身份：缆缈宗太上长老"
+      },
+      {
+       "paragraph": 5,
+       "action": "insert_after",
+       "html": "外形：白衣。",
+       "startsWith": "• 气运"
+      },
+      {
+       "paragraph": 7,
+       "action": "delete",
+       "startsWith": "身份：缥缈宗掌门"
+      }
+     ]
+    ],
+    "output": {
+     "ok": true,
+     "html": "<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，化神期。</p></li><li><p>气运：SSS级。</p></li><li><p>外形：白衣。</p></li></ul><h2>独孤灵</h2><ul>\n\n</ul>",
+     "paragraphsBefore": 7,
+     "paragraphsAfter": 7,
+     "firstChanged": 4,
+     "applied": 3,
+     "skipped": [],
+     "stale": []
+    }
+   },
+   {
+    "input": [
+     "<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>",
+     [
+      {
+       "paragraph": 2,
+       "action": "replace",
+       "html": "<p>整理范围：原作第1–94章</p>",
+       "startsWith": "整理范围"
+      },
+      {
+       "paragraph": 4,
+       "action": "replace",
+       "html": "<p>x</p>",
+       "startsWith": "完全不同的开头文字"
+      }
+     ]
+    ],
+    "output": {
+     "ok": true,
+     "html": "<h1>人物卡</h1><p>整理范围：原作第1–94章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>",
+     "paragraphsBefore": 7,
+     "paragraphsAfter": 7,
+     "firstChanged": 2,
+     "applied": 1,
+     "skipped": [
+      "¶4 does not start with what you gave; it now reads: 身份：缥缈宗太上长老，炼虚期。"
+     ],
+     "stale": [
+      {
+       "number": 4,
+       "text": "身份：缥缈宗太上长老，炼虚期。"
+      }
+     ]
     }
    }
   ]

@@ -11,7 +11,7 @@ from wc_text.context_ledger import hash_content
 from wc_text.diff import strip_diff_markup
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
-from wc_text.paragraphs import chapter_paragraphs, numbered_line
+from wc_text.paragraphs import chapter_paragraphs, is_plain_chapter_html, numbered_line
 from wc_text.pending_changes import pending_changes, render_pending_changes
 from wc_text.text import is_blank_content
 
@@ -77,6 +77,26 @@ def _chapter_refs(raw: Dict[str, Any]) -> List[Any]:
 
 # ── read_chapter ─────────────────────────────────────────────────────────────
 
+def _parse_ranges(raw: Any) -> Union[List[Optional[Dict[str, Any]]], str]:
+    """Port of parseRanges: "1,8,10-12" as several ranges; one range, or none, is a list of one."""
+    if isinstance(raw, str) and re.search(r"[,，、]", raw):
+        parts: Optional[List[Any]] = [js_trim(p) for p in re.split(r"[,，、]", raw) if js_trim(p)]
+    elif isinstance(raw, list) and len(raw) > 2:
+        parts = raw
+    else:
+        parts = None
+    if parts is None:
+        one = _parse_range(raw)
+        return one if isinstance(one, str) else [one]
+    out: List[Optional[Dict[str, Any]]] = []
+    for part in parts:
+        r = _parse_range(part)
+        if isinstance(r, str):
+            return r
+        out.append(r)
+    return out
+
+
 def _parse_range(raw: Any) -> Union[Dict[str, Any], None, str]:
     import json
     if raw is None or raw == "":
@@ -139,20 +159,25 @@ def _read_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
                 ref = part
             if ref is None or ref == "":
                 return f"part {i + 1} names no chapter"
-            rng = _parse_range(p.get("paragraphs") if p else None)
-            if isinstance(rng, str):
-                return f"part {i + 1}: {rng}"
+            ranges = _parse_ranges(p.get("paragraphs") if p else None)
+            if isinstance(ranges, str):
+                return f"part {i + 1}: {ranges}"
             section = p.get("section") if p and isinstance(p.get("section"), str) and js_trim(p["section"]) else None
-            items.append({"ref": ref, "range": rng, "section": section})
+            items.extend({"ref": ref, "range": rng, "section": section} for rng in ranges)
+        if len(items) > MAX_READ_PARTS:
+            return f"at most {MAX_READ_PARTS} parts in one call ({len(items)} were given; each paragraph range counts)"
         return {"items": items, "format": fmt, **extra}
     refs = _chapter_refs(raw)
     if not refs and not task:
         return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts"; or a task, to read the whole book for it)'
-    rng = _parse_range(raw.get("paragraphs"))
-    if isinstance(rng, str):
-        return rng
+    ranges = _parse_ranges(raw.get("paragraphs"))
+    if isinstance(ranges, str):
+        return ranges
     section = raw.get("section") if isinstance(raw.get("section"), str) and js_trim(raw["section"]) else None
-    return {"items": [{"ref": ref, "range": rng, "section": section} for ref in refs], "format": fmt, **extra}
+    items = [{"ref": ref, "range": rng, "section": section} for ref in refs for rng in ranges]
+    if len(items) > MAX_READ_PARTS:
+        return f"at most {MAX_READ_PARTS} parts in one call ({len(items)} were given; each paragraph range counts)"
+    return {"items": items, "format": fmt, **extra}
 
 
 async def _fits_in_one_read(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -> bool:
@@ -308,7 +333,10 @@ async def _read_items(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -
                 if last < to else "")
         stored = next((c["content"] for c in ctx.document.chapters() if c["id"] == chapter["id"]), "")
         pending = render_pending_changes(pending_changes(stored))
-        parts.append(f"=== {cite_chapter(chapter)} — {len(paras)} paragraphs, {total_chars} characters{span}, {fmt} ===\n" + "\n".join(lines) + more + (f"\n\n{pending}" if pending else ""))
+        # A text read hides formatting; a whole rewrite of this chapter needs its HTML (run-d9e54ca576dc).
+        formatted = ("\n[This chapter has formatting a text read does not show (lists, emphasis, images…): to rewrite it whole, read it with format=\"html\" first; edit_paragraphs works from these ¶ numbers.]"
+                     if fmt == "text" and not is_plain_chapter_html(html) else "")
+        parts.append(f"=== {cite_chapter(chapter)} — {len(paras)} paragraphs, {total_chars} characters{span}, {fmt} ===\n" + "\n".join(lines) + more + (f"\n\n{pending}" if pending else "") + formatted)
         traces.append(f"{cite_chapter(chapter)}{'' if whole else f' ¶{start}–{last}'} ({used / 1000:.1f}k, {fmt})")
 
         ctx.run.reads[key] = ctx.run.step
@@ -345,7 +373,7 @@ read_tool = Tool(
     parameters={"type": "object", "properties": {
         "chapters": {"type": "array", "description": "Chapter numbers from the CHAPTER INDEX (or exact titles), or attachment references (A1).", "items": {"type": "string"}},
         "format": {"type": "string", "description": '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).'},
-        "paragraphs": {"type": "string", "description": 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.'},
+        "paragraphs": {"type": "string", "description": 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15), or several: "1,8,10-12". Default: the whole chapter.'},
         "section": {"type": "string", "description": 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter), or a run, "第62–87章".'},
         "task": {"type": "string", "description": 'Only when you need more than one read returns: what the notes are for, e.g. "list every promise 晓晓 makes and whether it is kept". When what you asked for fits, you get the text instead.'},
         "confirmed": {"type": "boolean", "description": "true only after the user agreed to a task-read past 200,000 input tokens."},

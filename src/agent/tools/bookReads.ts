@@ -14,7 +14,7 @@ import { chapterOutline, type ToolContext, type ToolResult } from '../types'
 import { stripDiffMarkup } from '../../utils/diff'
 import { htmlToPlainText } from '../../utils/llmContext'
 import { hashContent } from '../../utils/contextLedger'
-import { chapterParagraphs, numberedLine } from '../../utils/paragraphs'
+import { chapterParagraphs, isPlainChapterHtml, numberedLine } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
 import { ATTACHMENT_RUN_READ_CAP, LIST_SECTION_LINES, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, renderSectionList, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
@@ -97,6 +97,28 @@ export interface ParagraphRange {
  * anything else, so the model learns the syntax instead of silently reading
  * the wrong part.
  */
+/**
+ * Several ranges at once — "1,8,10-12" — as read takes them: the model asked
+ * for ten scattered paragraphs this way and was refused (run-d9e54ca576dc).
+ * One range, or none, is a list of one.
+ */
+export function parseRanges(raw: unknown): Array<ParagraphRange | null> | string {
+  const list = typeof raw === 'string' && /[,，、]/.test(raw) ? raw.split(/[,，、]/).map(p => p.trim()).filter(Boolean)
+    : Array.isArray(raw) && raw.length > 2 ? raw
+    : null
+  if (!list) {
+    const one = parseRange(raw)
+    return typeof one === 'string' ? one : [one]
+  }
+  const out: Array<ParagraphRange | null> = []
+  for (const part of list) {
+    const r = parseRange(part)
+    if (typeof r === 'string') return r
+    out.push(r)
+  }
+  return out
+}
+
 export function parseRange(raw: unknown): ParagraphRange | null | string {
   if (raw === undefined || raw === null || raw === '') return null
   if (Array.isArray(raw) && raw.length >= 1 && raw.length <= 2 && raw.every(n => Number.isInteger(Number(n)))) {
@@ -201,7 +223,7 @@ export const readTool = defineTool<ReadArgs>({
         items: { type: 'string' }
       },
       format: { type: 'string', description: '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).' },
-      paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.' },
+      paragraphs: { type: 'string', description: 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15), or several: "1,8,10-12". Default: the whole chapter.' },
       section: { type: 'string', description: 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter), or a run, "第62–87章".' },
       task: { type: 'string', description: 'Only when you need more than one read returns: what the notes are for, e.g. "list every promise 晓晓 makes and whether it is kept". When what you asked for fits, you get the text instead.' },
       confirmed: { type: 'boolean', description: 'true only after the user agreed to a task-read past 200,000 input tokens.' },
@@ -234,19 +256,22 @@ export const readTool = defineTool<ReadArgs>({
         const p = part && typeof part === 'object' ? part as Record<string, unknown> : null
         const ref = p ? (p.chapter ?? (Array.isArray(p.chapters) ? p.chapters[0] : p.chapters)) : part
         if (ref === undefined || ref === null || ref === '') return `part ${i + 1} names no chapter`
-        const range = parseRange(p?.paragraphs)
-        if (typeof range === 'string') return `part ${i + 1}: ${range}`
+        const ranges = parseRanges(p?.paragraphs)
+        if (typeof ranges === 'string') return `part ${i + 1}: ${ranges}`
         const section = typeof p?.section === 'string' && p.section.trim() ? p.section : undefined
-        items.push({ ref, range, ...(section ? { section } : {}) })
+        for (const range of ranges) items.push({ ref, range, ...(section ? { section } : {}) })
       }
+      if (items.length > MAX_READ_PARTS) return `at most ${MAX_READ_PARTS} parts in one call (${items.length} were given; each paragraph range counts)`
       return { items, format, ...extra }
     }
     const refs = chapterRefs(raw)
     if (refs.length === 0 && !task) return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts"; or a task, to read the whole book for it)'
-    const range = parseRange(raw.paragraphs)
-    if (typeof range === 'string') return range
+    const ranges = parseRanges(raw.paragraphs)
+    if (typeof ranges === 'string') return ranges
     const section = typeof raw.section === 'string' && raw.section.trim() ? raw.section : undefined
-    return { items: refs.map(ref => ({ ref, range, ...(section ? { section } : {}) })), format, ...extra }
+    const items = refs.flatMap(ref => ranges.map(range => ({ ref, range, ...(section ? { section } : {}) })))
+    if (items.length > MAX_READ_PARTS) return `at most ${MAX_READ_PARTS} parts in one call (${items.length} were given; each paragraph range counts)`
+    return { items, format, ...extra }
   },
   execute: async ({ items, format, task, confirmed }, ctx): Promise<ToolResult> => {
     // More than one read returns, with a task: batches outside the conversation (read_and_list.md §2).
@@ -391,7 +416,15 @@ async function readItems(items: ReadItem[], format: 'text' | 'html', ctx: ToolCo
     // can be done exactly (utils/pendingChanges).
     const stored = ctx.document.chapters().find(c => c.id === chapter.id)?.content ?? ''
     const pending = renderPendingChanges(pendingChanges(stored))
-    parts.push(`=== ${citeChapter(chapter)} — ${paras.length} paragraphs, ${totalChars} characters${span}, ${format} ===\n${lines.join('\n')}${more}${pending ? `\n\n${pending}` : ''}`)
+    /*
+     * A text read hides formatting. A model that read a card as text wrote it
+     * whole, was refused for not having seen its HTML, read it and wrote it
+     * again — a minute of output thrown away (run-d9e54ca576dc). Say so here.
+     */
+    const formatted = format === 'text' && !isPlainChapterHtml(html)
+      ? `\n[This chapter has formatting a text read does not show (lists, emphasis, images…): to rewrite it whole, read it with format="html" first; edit_paragraphs works from these ¶ numbers.]`
+      : ''
+    parts.push(`=== ${citeChapter(chapter)} — ${paras.length} paragraphs, ${totalChars} characters${span}, ${format} ===\n${lines.join('\n')}${more}${pending ? `\n\n${pending}` : ''}${formatted}`)
     traces.push(`${citeChapter(chapter)}${whole ? '' : ` ¶${from}–${last}`} (${(used / 1000).toFixed(1)}k, ${format})`)
 
     ctx.run.reads.set(key, ctx.run.step)
