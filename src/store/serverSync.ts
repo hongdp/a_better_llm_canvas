@@ -172,6 +172,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
                 summary: d.summary ?? undefined,
                 summaryContentHash: d.summaryContentHash ?? undefined,
                 ...(typeof d.revision === 'number' ? { revision: d.revision } : {}),
+                ...(d.pinned ? { pinned: true } : {}),
               })),
               local
             ), local)

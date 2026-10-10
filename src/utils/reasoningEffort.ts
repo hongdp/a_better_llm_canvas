@@ -11,9 +11,8 @@
  * There is no capability API to ask. xAI's /language-models returns pricing
  * and modalities and nothing about reasoning; OpenAI's and Anthropic's model
  * lists are equally silent. So the supported levels live in the table below,
- * and anything the table gets wrong is caught at request time: a provider that
- * rejects the parameter makes the caller drop it and retry once
- * (see isReasoningEffortRejection).
+ * and anything the table gets wrong shows up as the provider's own error on
+ * that request.
  */
 
 /** Normalized levels. 'default' means "send nothing, let the provider decide". */
@@ -128,18 +127,4 @@ const THINKING_BUDGET_TOKENS: Record<Exclude<ReasoningEffort, 'default'>, number
 
 export function reasoningBudgetTokens(effort: Exclude<ReasoningEffort, 'default'>): number {
   return THINKING_BUDGET_TOKENS[effort]
-}
-
-/**
- * Did the provider reject the request BECAUSE of the effort parameter?
- *
- * The capability table is a best guess about other people's APIs, so a wrong
- * guess must degrade to "send it without the parameter" rather than to a
- * failed turn. Matches the shapes providers actually return for an unknown or
- * unsupported field.
- */
-export function isReasoningEffortRejection(errorText: string): boolean {
-  const text = (errorText || '').toLowerCase()
-  if (!/reasoning_effort|thinking|reasoning/.test(text)) return false
-  return /unsupported|not supported|unknown|unrecognized|invalid|does not support|cannot be used/.test(text)
 }

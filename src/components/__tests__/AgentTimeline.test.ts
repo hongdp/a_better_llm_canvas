@@ -30,13 +30,13 @@ describe('AgentTimeline', () => {
       { type: 'text', text: 'Done.' },
       { type: 'tool', line: '⚠️ edited #2: 1 of 2 located', ok: false }
     ],
-    prefix: '[Attached Context: 人物表 (auto)]',
+    prefix: '（前言）',
     suffix: '⚠️ 1 suggested change could not be located'
   }
 
   it('interleaves each step\'s text with the calls it made, between the label and the warnings', () => {
     expect(lines(render(base))).toEqual([
-      'agent-timeline-text agent-timeline-prefix|[Attached Context: 人物表 (auto)]',
+      'agent-timeline-text agent-timeline-prefix|（前言）',
       'agent-timeline-text|Let me read the outline.',
       'agent-tool-line|📖 read #3',
       'agent-timeline-text|Done.',

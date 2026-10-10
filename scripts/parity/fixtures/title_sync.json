@@ -39,48 +39,6 @@
     "output": null
    }
   ],
-  "title_following_heading": [
-   {
-    "input": [
-     "<h1>Old</h1>",
-     "<h1>New</h1>",
-     "Old"
-    ],
-    "output": "New"
-   },
-   {
-    "input": [
-     "<h1>Old</h1>",
-     "<h1>Old</h1>",
-     "Renamed"
-    ],
-    "output": null
-   },
-   {
-    "input": [
-     "<p>x</p>",
-     "<p>y</p>",
-     "T"
-    ],
-    "output": null
-   },
-   {
-    "input": [
-     "<h1>A</h1>",
-     "<h1>A</h1>",
-     "A"
-    ],
-    "output": null
-   },
-   {
-    "input": [
-     "",
-     "<h1>Fresh</h1>",
-     null
-    ],
-    "output": "Fresh"
-   }
-  ],
   "content_with_renamed_heading": [
    {
     "input": [

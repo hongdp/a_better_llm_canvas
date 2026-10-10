@@ -90,22 +90,7 @@ export function buildChapterIndex(
 ${lines.join('\n')}`
 }
 
-// ── Whole-book mode helpers (escalation ladder, spec §6) ─────────────────────
-
-/**
- * Extract a chapter's heading tree (h1–h3) from its stored HTML — the free
- * "Rung 0" structural digest. Deterministic, zero LLM cost; for
- * outline-shaped tasks this is most of the signal.
- */
-export function extractHeadingTree(html: string): string {
-  const lines: string[] = []
-  for (const match of html.matchAll(/<h([1-3])[^>]*>([\s\S]*?)<\/h\1>/gi)) {
-    const level = Number(match[1])
-    const text = htmlToPlainText(match[2]).replace(/\s+/g, ' ').trim()
-    if (text) lines.push(`${'  '.repeat(level - 1)}- ${text}`)
-  }
-  return lines.join('\n')
-}
+// ── analyze_book batch budgets ──────────────────────────────────────────────
 
 /**
  * Approximate context-window budgets per provider, in characters (~4 chars

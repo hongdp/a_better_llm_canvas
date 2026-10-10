@@ -204,13 +204,6 @@ def test_analyze_book_runs_on_a_server_run(book, monkeypatch):
     assert "NOTES: 两章都在。" in json.dumps(provider.requests[2]["messages"], ensure_ascii=False)
 
 
-def test_polish_chapter_port_is_callable():
-    port = server_runs._PolishPort(server_runs.RunEngine(), server_runs.Run("run-x", "alice", "book-1", {"provider": "grok"}))
-    assert callable(port.run) and port.owner.id == "run-x"
-    analyze = server_runs._AnalyzePort(server_runs.RunEngine(), server_runs.Run("run-y", "alice", "book-1", {"provider": "grok"}))
-    assert callable(analyze.run) and analyze.owner.id == "run-y"
-
-
 # ── a step that fails (agentic_chat_loop.md §0.10) ────────────────────────────
 
 def test_a_step_that_broke_mid_reply_is_written_again(book, monkeypatch):

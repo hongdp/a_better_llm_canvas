@@ -6,15 +6,16 @@
 import { describe, it, expect, vi } from 'vitest'
 import type { ChatMessage } from '../../types/chat'
 import type { ServerRunSummary } from '../../services/serverRuns'
-import { applyRunEvent, ensureRunMessages, bubbleOf, bubbleStillWaiting, KEPT_DRAFT_NOTE, type RunLive } from '../chat/serverRunEvents'
+import { applyRunEvent, ensureRunMessages, bubbleOf, bubbleStillWaiting, KEPT_DRAFT_NOTE, runUsageDelta, type RunLive } from '../chat/serverRunEvents'
 import { applyBookEvent, connectBookEvents } from '../../store/bookEvents'
 import { onRunCatchUp, onRunEvent } from '../../store/runEvents'
 import { ASSISTANT_PLACEHOLDER } from '../chat/streamHandlers'
+import { useAppStore } from '../../store/useAppStore'
 
 const run = (over: Partial<ServerRunSummary> = {}): ServerRunSummary => ({
   id: 'run-1', bookId: 'book-1', status: 'running', createdAt: '2026-10-08T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z',
   userMessageId: 'u1', assistantMessageId: 'a1', prompt: '写第一章', activeDocumentId: 'doc-1', clientId: 'tab',
-  record: { status: 'running', steps: 0, trace: [], touched: [], timeline: [], prefix: '[Attached Context: 大纲 (auto)]' },
+  record: { status: 'running', steps: 0, trace: [], touched: [], timeline: [], prefix: '（前言）' },
   ...over
 })
 const base: ChatMessage[] = [
@@ -41,7 +42,7 @@ describe('applyRunEvent', () => {
     const bubble = out[1]
     expect(bubbleOf(out, 'run-1')).toBe('a1')
     expect(bubble.agent?.live).toBe('好的，开始写。\n\n✍️ #2 "第二章" … 120 chars')
-    expect(bubble.content).toBe('[Attached Context: 大纲 (auto)]\n\n好的，开始写。\n\n✍️ #2 "第二章" … 120 chars')
+    expect(bubble.content).toBe('（前言）\n\n好的，开始写。\n\n✍️ #2 "第二章" … 120 chars')
     expect(bubble.content).not.toContain('<canvas>')
   })
 
@@ -146,5 +147,40 @@ describe('the book event stream', () => {
     off()
     vi.unstubAllGlobals()
     vi.useRealTimers()
+  })
+})
+
+describe('runUsageDelta', () => {
+  it('counts what a run spent since the last report, never less than nothing', () => {
+    expect(runUsageDelta(undefined, undefined)).toBeNull()
+    const first = runUsageDelta(undefined, { promptTokens: 100, completionTokens: 10 })
+    expect(first?.delta).toEqual({ promptTokens: 100, completionTokens: 10, cachedPromptTokens: 0 })
+    const second = runUsageDelta(first!.total, { promptTokens: 250, completionTokens: 30, cachedPromptTokens: 90 })
+    expect(second?.delta).toEqual({ promptTokens: 150, completionTokens: 20, cachedPromptTokens: 90 })
+    // The same report again, or an older one: nothing to add.
+    expect(runUsageDelta(second!.total, { promptTokens: 250, completionTokens: 30, cachedPromptTokens: 90 })).toBeNull()
+    expect(runUsageDelta(second!.total, { promptTokens: 100, completionTokens: 10 })).toBeNull()
+  })
+})
+
+describe('a pin set in another tab', () => {
+  it('arrives with the chapter list, without touching the chapter text', async () => {
+    useAppStore.setState({
+      activeBookId: 'book-1', activeDocumentId: 'd1',
+      documents: [
+        { id: 'd1', title: '第一章', content: '<p>正文</p>', contentLoaded: true, createdAt: 't', updatedAt: 't', revision: 3 },
+        { id: 'd2', title: '人物卡', content: '<p>卡</p>', contentLoaded: true, createdAt: 't', updatedAt: 't', revision: 1 }
+      ]
+    })
+    const fetchFn = vi.fn(async () => ({ ok: true, json: async () => ({ documents: [
+      { id: 'd1', title: '第一章', createdAt: 't', updatedAt: 't', revision: 3, pinned: false },
+      { id: 'd2', title: '人物卡', createdAt: 't', updatedAt: 't', revision: 1, pinned: true }
+    ] }) }))
+    await applyBookEvent({ id: 2, type: 'document', kind: 'pinned', documentId: 'd2', revision: 1, clientId: 'other-tab' } as never, { bookId: 'book-1', fetchFn: fetchFn as never })
+    const docs = useAppStore.getState().documents
+    expect(docs.find(d => d.id === 'd2')?.pinned).toBe(true)
+    expect(docs.find(d => d.id === 'd2')?.content).toBe('<p>卡</p>')
+    expect(docs.find(d => d.id === 'd1')?.pinned ?? false).toBe(false)
+    expect(fetchFn).toHaveBeenCalledTimes(1)
   })
 })

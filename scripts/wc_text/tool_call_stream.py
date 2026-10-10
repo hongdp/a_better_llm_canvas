@@ -41,21 +41,6 @@ def partial_string_argument(arguments_text: str, key: str) -> Optional[str]:
     return "".join(out)
 
 
-def apply_tool_call_delta(accumulators: Dict[int, Dict[str, Any]], delta: Dict[str, Any]) -> None:
-    index = delta.get("index") if isinstance(delta.get("index"), int) and not isinstance(delta.get("index"), bool) else 0
-    existing = accumulators.get(index) or {"argumentsText": ""}
-    if delta.get("id"):
-        existing["id"] = delta["id"]
-    fn = delta.get("function") or {}
-    if fn.get("name"):
-        existing["name"] = fn["name"]
-    if delta.get("signature"):
-        existing["signature"] = delta["signature"]
-    if fn.get("arguments") is not None:
-        existing["argumentsText"] = fn["arguments"] if delta.get("replace") else existing["argumentsText"] + fn["arguments"]
-    accumulators[index] = existing
-
-
 def finish_tool_calls(accumulators: Dict[int, Dict[str, Any]]) -> List[Dict[str, Any]]:
     out = []
     for _, acc in sorted(accumulators.items()):

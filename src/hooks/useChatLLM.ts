@@ -11,7 +11,7 @@ import { interruptedTurnReminder, wrapReminder } from '../agent/reminders'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, type SummarizableMessage } from '../utils/conversationSummary'
 import { loadChatSummary, saveChatSummary } from '../store/chatSummaryStore'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, type ImagePlaceholderEntry } from '../utils/imagePreservation'
-import { selectReferenceChapters } from '../utils/contextSelection'
+import { selectReferenceChapters, pinnedContextIds } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { applyToolCallDelta, finishToolCalls, type ToolCallAccumulator } from '../utils/toolCallStream'
 import { toOpenAITools } from '../utils/documentTools'
@@ -48,7 +48,7 @@ import { resyncBook } from '../store/bookEvents'
 import { CLIENT_ID, needsTextSync } from '../store/documentSync'
 import { clearPendingSave } from '../store/syncRuntime'
 import { mergeVersions } from '../store/versionMerge'
-import { applyRunEvent, ensureRunMessages, bubbleStillWaiting, type RunLive } from './chat/serverRunEvents'
+import { applyRunEvent, ensureRunMessages, bubbleStillWaiting, type RunLive, runUsageDelta, type RunUsage } from './chat/serverRunEvents'
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
 import type { AgentTurnRecord } from '../types/chat'
 import type { ThinkingBlock } from '../types/llm'
@@ -158,8 +158,9 @@ function continueRecord(prior: AgentTurnRecord | undefined, next: AgentTurnRecor
 
 /**
  * One compact line telling the model what a past turn did with its tools.
- * Tool exchanges are not replayed across turns (spec D4) — the chapters come
- * back through the ledger — but the model should know it read or changed them.
+ * Tool exchanges are not replayed across turns (spec D4), and a chapter read
+ * last turn is not carried either — only pinned chapters ride along
+ * (pinned_context.md) — but the model should know it read or changed them.
  */
 function agentHistoryNote(m: HistorySourceMessage): string {
   const trace = m.role === 'assistant' ? m.agent?.trace : undefined
@@ -410,6 +411,17 @@ export function useChatLLM({
   const serverRunRef = useRef<{ id: string; toolCtx: ToolContext; startId: string; sendingTab: boolean } | null>(null)
   // The step in flight of each server run this tab watches (chat/serverRunEvents).
   const serverLiveRef = useRef(new Map<string, RunLive>())
+  /** Each server run's usage this tab has already counted into the session totals. */
+  const serverUsageRef = useRef(new Map<string, RunUsage>())
+  /** Count what a server run spent since its last report (the footer's Session Tokens and Last turn). */
+  const countServerUsage = useCallback((runId: string, usage: ServerRunEvent['usage']) => {
+    const counted = runUsageDelta(serverUsageRef.current.get(runId), usage)
+    if (!counted) return
+    serverUsageRef.current.set(runId, counted.total)
+    const s = useAppStore.getState()
+    s.addSessionTokens(counted.delta.promptTokens, counted.delta.completionTokens, counted.delta.cachedPromptTokens)
+    s.setLastTurnCache({ provider: s.activeProvider, promptTokens: counted.delta.promptTokens, cachedTokens: counted.delta.cachedPromptTokens, firstTokenMs: null })
+  }, [])
   // Chapters the server run locks (its `lock` events), merged into the edit lock.
   const serverLockRef = useRef<string[]>([])
   // The run's `step` means its writes are in the store; the editor converges
@@ -1393,6 +1405,7 @@ export function useChatLLM({
         return
       }
       case 'step': {
+        countServerUsage(event.runId, event.usage)
         if (mine) settleServerPreviewSoon()
         s.setMessages(applyRunEvent(s.messages, event, serverLiveRef.current))
         forceSave()
@@ -1400,6 +1413,10 @@ export function useChatLLM({
       }
       case 'paused':
       case 'finished': {
+        if (event.kind === 'finished') {
+          countServerUsage(event.runId, event.result?.usage)
+          serverUsageRef.current.delete(event.runId)
+        }
         if (mine) {
           settleCanvasPreview(storedOpen())
           serverLockRef.current = []
@@ -1421,7 +1438,7 @@ export function useChatLLM({
       default:
         return
     }
-  }, [attachServerRun, settleCanvasPreview, settleServerPreviewSoon, publishEditLock, forceSave, setSaveStatus])
+  }, [attachServerRun, settleCanvasPreview, settleServerPreviewSoon, publishEditLock, forceSave, setSaveStatus, countServerUsage])
 
   useEffect(() => onRunEvent(event => { void handleRunEvent(event) }), [handleRunEvent])
 
@@ -1854,6 +1871,12 @@ export function useChatLLM({
     inContextIds: string[]
   } | null> => {
     const { promptText, images, historySource } = opts
+    // With the agent tools on, the pinned chapters ride along
+    // (docs/features/pinned_context.md): their text must be here first.
+    const pre = useAppStore.getState()
+    const agentContext = resolveRunSettings(pre.activeProvider, pre.providerConfigs[pre.activeProvider]).agentTools
+    const pinnedUnloaded = pre.documents.filter(d => d.pinned && d.contentLoaded === false && d.id !== pre.activeDocumentId).map(d => d.id)
+    if (agentContext && pinnedUnloaded.length > 0) await pre.ensureDocumentContents(pinnedUnloaded)
     const s = useAppStore.getState()
 
     const ledgerScope = `${s.activeBookId ?? ''}|${s.activeProvider}|${s.providerConfigs[s.activeProvider]?.model ?? ''}`
@@ -1863,11 +1886,15 @@ export function useChatLLM({
       seenRef.current = new Map()
     }
 
-    // The prefetch (agentic_chat_loop.md D7): the scorer attaches what the
-    // request is likely to need — title mentions, adjacency, keyword overlap,
-    // continuity — under the context budget. Nothing is chosen by hand; the
-    // model reads anything else it needs with its tools.
-    const selection = selectReferenceChapters({
+    /*
+     * Which chapters ride ahead of the history.
+     * Agent tools on: the ones the writer pinned, nothing else — the model
+     *   reads the rest with its tools (pinned_context.md: of 125 chapters the
+     *   scorer had attached across 39 turns, 19 were read or written, and its
+     *   churn cut the cache to 8%).
+     * Tools off: the scorer's prefetch, as before — that model cannot read.
+     */
+    const selection = agentContext ? null : selectReferenceChapters({
       promptText,
       recentHistory: historySource.filter(m => m.id !== 'welcome').map(m => m.content),
       documents: s.documents,
@@ -1876,7 +1903,7 @@ export function useChatLLM({
       modelReadIds: modelReadIdsRef.current,
       ledgerIds: ledgerRef.current.entries.map(e => e.id)
     })
-    previousAttachedIdsRef.current = selection.attachedIds
+    if (selection) previousAttachedIdsRef.current = selection.attachedIds
 
     const systemPrompt = buildSystemPrompt()
 
@@ -1958,7 +1985,7 @@ export function useChatLLM({
       ? { agentTools: true, markers: freshnessMarkers(s.documents, s.activeDocumentId, inContext, seenRef.current, turnCounterRef.current) }
       : {}
 
-    const autoIds = selection.autoIds
+    const autoIds = selection?.autoIds ?? []
     // Cache-first assembly: chapters go into an append-only block ahead of
     // the history, so an unchanged set costs nothing to re-send. New
     // admissions are ordered most-stable-first, because removing an entry
@@ -1966,12 +1993,6 @@ export function useChatLLM({
     // constantly (the outline) belong at the END, where invalidating them
     // costs only themselves. See docs/features/cache_first_context.md.
     const bookOrder = s.documents.map(d => d.id)
-    const desiredIds = orderAdmissionsByStability(
-      selection.attachedIds,
-      s.documents.map(d => ({ id: d.id, updatedAt: d.updatedAt })),
-      bookOrder,
-      s.activeDocumentId
-    )
     // Hashed on the ACCEPTED reading, which is what the ledger renders:
     // accepting a pending diff changes the HTML but not what the model
     // reads, and must not cost a re-send (see ledgerBlock).
@@ -1979,6 +2000,15 @@ export function useChatLLM({
       const accepted = stripDiffMarkup(d.content)
       return { id: d.id, chars: Math.min(accepted.length, MAX_LEDGER_DOC_CHARS), hash: hashContent(accepted) }
     })
+    const wanted = selection
+      ? selection.attachedIds
+      : pinnedContextIds(s.documents.map((d, i) => ({ id: d.id, pinned: d.pinned && d.contentLoaded !== false, chars: docsForPlan[i].chars })), s.activeDocumentId)
+    const desiredIds = orderAdmissionsByStability(
+      wanted,
+      s.documents.map(d => ({ id: d.id, updatedAt: d.updatedAt })),
+      bookOrder,
+      s.activeDocumentId
+    )
 
     // Removing a chapter used to raise a consent card here (the drop costs
     // a re-prefill of everything after it in the cached prefix). Removed by
@@ -2000,7 +2030,8 @@ export function useChatLLM({
     ledgerRef.current = plan.ledger
     previousAttachedIdsRef.current = attachedIds
     const dynamicContext = buildTail(agentTail(attachedIds))
-    const attachmentsText = buildAttachmentsLabel(attachedIds, s.documents, autoIds)
+    // Agent turns carry no label: the pins in the sidebar are what rides along.
+    const attachmentsText = agentContext ? '' : buildAttachmentsLabel(attachedIds, s.documents, autoIds)
 
     // The turn after a Stop says so (agentic_chat_loop.md §0.8).
     const interrupted = wasTurnInterrupted(historySource) ? `\n\n${wrapReminder(interruptedTurnReminder())}` : ''

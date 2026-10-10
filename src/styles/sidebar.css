@@ -334,3 +334,15 @@
   font-size: 0.68rem;
   color: var(--text-muted);
 }
+
+/* A pinned chapter rides along on every agent turn (pinned_context.md). */
+.chapter-pin-mark {
+  display: flex;
+  align-items: center;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.chapter-action-btn.pinned {
+  color: var(--accent);
+}

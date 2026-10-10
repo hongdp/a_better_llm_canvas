@@ -155,6 +155,9 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/** Pin chapters by title: with the agent tools on, only pinned chapters ride ahead of the history (pinned_context.md). */
+const pinTitles = (...titles: string[]) => useAppStore.setState(st => ({ documents: st.documents.map(d => titles.includes(d.title) ? { ...d, pinned: true } : d) }))
+
 describe('what a step offers', () => {
   it('offers grok (markup) the read/navigate tools, update_document and edit_paragraphs natively; other writes stay tags', async () => {
     responses.push('好的。\n<doc_status>unchanged</doc_status>')
@@ -222,7 +225,7 @@ describe('finding and reading a chapter (D6)', () => {
     h.unmount()
   })
 
-  it('carries what the turn read into the next turn: a trace line in history, the chapter in context', async () => {
+  it('carries what the turn read into the next turn as a trace line, not as text (pinned_context.md)', async () => {
     responses.push({ text: '', toolCalls: [{ index: 0, id: 'r1', name: 'read_chapter', argumentsText: '{"chapters":[3]}' }] })
     responses.push('大纲讲了两章。\n<doc_status>unchanged</doc_status>')
     responses.push('好。\n<doc_status>unchanged</doc_status>')
@@ -232,10 +235,10 @@ describe('finding and reading a chapter (D6)', () => {
 
     const turn2 = calls[2]
     expect(turn2.some(m => m.role === 'assistant' && m.content.includes('[Tools used in this turn:'))).toBe(true)
-    // Continuity admitted the chapter into the ledger, so it is in full now…
-    expect(turn2.some(m => m.content.includes('REFERENCED CHAPTERS') && m.content.includes('主角离开村子'))).toBe(true)
-    // …and the index says so (D8).
-    expect(turn2.at(-1)?.content).toContain('3. "故事线" [in context]')
+    // A read is not carried into the next turn's context: only pins are. The
+    // model reads it again when it needs it, and the index says it is not here (D8).
+    expect(turn2.some(m => m.content.includes('REFERENCED CHAPTERS'))).toBe(false)
+    expect(turn2.at(-1)?.content).toContain('3. "故事线" [read earlier, not in context]')
     h.unmount()
   })
 })
@@ -249,6 +252,7 @@ describe('a chapter the user revised between turns (D8)', () => {
     responses.push('读完了。\n<doc_status>unchanged</doc_status>')
     responses.push('好的。\n<doc_status>unchanged</doc_status>')
     responses.push('好的。\n<doc_status>unchanged</doc_status>')
+    pinTitles('故事线')
     const h = renderChatHook()
     await send(h, '看看大纲')
     await send(h, '记住它')
@@ -276,8 +280,8 @@ describe('the ledger when a chapter in it is edited (append-update)', () => {
       ]
     })
     responses.push('好。\n<doc_status>unchanged</doc_status>', '好。\n<doc_status>unchanged</doc_status>')
+    pinTitles('故事线', '世界观')
     const h = renderChatHook()
-    // Named in the request, so the prefetch puts both in the ledger (D7).
     await send(h, '看看故事线和世界观')
     const ledger1 = calls[0].find(m => m.content.startsWith('REFERENCED CHAPTERS'))?.content ?? ''
     // The first entry is the one whose edit used to re-send everything after it.
@@ -305,6 +309,7 @@ describe('the ledger when a chapter in it is edited (append-update)', () => {
         doc('doc-x', '人物表', diffHtml('<p>主角叫阿青。</p>', '<p>主角叫阿红。</p>'))
       ]
     })
+    pinTitles('人物表')
     responses.push('好。\n<doc_status>unchanged</doc_status>')
     const h = renderChatHook()
     await send(h, '看看')

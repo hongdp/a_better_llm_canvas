@@ -156,6 +156,111 @@
     "output": []
    }
   ],
+  "pinned_context_ids": [
+   {
+    "input": [
+     [
+      {
+       "id": "a",
+       "pinned": true,
+       "chars": 100
+      },
+      {
+       "id": "b",
+       "chars": 50
+      },
+      {
+       "id": "c",
+       "pinned": true,
+       "chars": 20000
+      },
+      {
+       "id": "d",
+       "pinned": true,
+       "chars": 300
+      }
+     ],
+     "c"
+    ],
+    "output": [
+     "a",
+     "d"
+    ]
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a",
+       "pinned": true,
+       "chars": 30000
+      },
+      {
+       "id": "b",
+       "pinned": true,
+       "chars": 40000
+      },
+      {
+       "id": "c",
+       "pinned": true,
+       "chars": 20000
+      }
+     ],
+     null
+    ],
+    "output": [
+     "a",
+     "c"
+    ]
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a",
+       "pinned": true,
+       "chars": 10
+      },
+      {
+       "id": "b",
+       "pinned": true,
+       "chars": 10
+      }
+     ],
+     "x",
+     15
+    ],
+    "output": [
+     "a"
+    ]
+   },
+   {
+    "input": [
+     [],
+     null
+    ],
+    "output": []
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a",
+       "pinned": false,
+       "chars": 1
+      }
+     ],
+     null
+    ],
+    "output": []
+   }
+  ],
+  "pinned_budget": [
+   {
+    "input": [],
+    "output": 60000
+   }
+  ],
   "select_reference_chapters": [
    {
     "input": [

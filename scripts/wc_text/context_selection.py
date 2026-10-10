@@ -91,3 +91,21 @@ def select_reference_chapters(inp: Dict, options: Optional[Dict] = None) -> Dict
             dropped.append(doc["id"])
     return {"attachedIds": [*kept_ledger, *auto_ids], "autoIds": auto_ids, "droppedForBudget": dropped,
             "scores": scores, "estimatedChars": used}
+
+
+#: Most chapter text the pinned chapters may bring into a turn (pinned_context.md §2).
+PINNED_CONTEXT_CHARS = 60_000
+
+
+def pinned_context_ids(documents: List[Dict], active_document_id: Optional[str], max_chars: int = PINNED_CONTEXT_CHARS) -> List[str]:
+    """Port of pinnedContextIds: the pinned chapters in book order, the active one excluded, within the budget."""
+    out: List[str] = []
+    used = 0
+    for d in documents:
+        if not d.get("pinned") or d["id"] == active_document_id:
+            continue
+        if used + d["chars"] > max_chars:
+            continue
+        out.append(d["id"])
+        used += d["chars"]
+    return out

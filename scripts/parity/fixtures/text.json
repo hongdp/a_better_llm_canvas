@@ -2203,62 +2203,6 @@
     "output": "<p>keep  inside</p>"
    }
   ],
-  "count_words": [
-   {
-    "input": [
-     "<p>Hello world</p>"
-    ],
-    "output": 2
-   },
-   {
-    "input": [
-     "<p>你好世界</p>"
-    ],
-    "output": 4
-   },
-   {
-    "input": [
-     "<p>你好 world and 世界</p>"
-    ],
-    "output": 6
-   },
-   {
-    "input": [
-     "<p>kept <del>gone words</del></p>"
-    ],
-    "output": 1
-   },
-   {
-    "input": [
-     "<p>a &amp; b &lt; c</p>"
-    ],
-    "output": 3
-   },
-   {
-    "input": [
-     "<p>a&nbsp;b</p>"
-    ],
-    "output": 2
-   },
-   {
-    "input": [
-     "<p>don't stop re-enter self‑aware</p>"
-    ],
-    "output": 5
-   },
-   {
-    "input": [
-     ""
-    ],
-    "output": 0
-   },
-   {
-    "input": [
-     "<p>Ünïcödé wörds 123 and カタカナ 한글</p>"
-    ],
-    "output": 10
-   }
-  ],
   "parse_doc_status": [
    {
     "input": [

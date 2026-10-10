@@ -88,6 +88,8 @@ export interface ServerRunEvent {
   status?: ServerRunStatus
   result?: ServerRunResult
   resumed?: boolean
+  /** On `step`: the run's usage so far (cumulative), for the footer's session counter. */
+  usage?: ServerRunResult['usage']
 }
 
 function headers(): Record<string, string> {

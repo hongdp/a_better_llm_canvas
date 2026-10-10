@@ -155,3 +155,32 @@ export function bubbleOf(messages: ChatMessage[], runId: string): string | undef
 export function bubbleStillWaiting(m: ChatMessage): boolean {
   return m.role === 'assistant' && (m.content === ASSISTANT_PLACEHOLDER || m.agent?.status === 'running' || m.agent?.status === 'queued' || m.agent?.status === 'paused')
 }
+
+/** A run's token usage as its events report it: cumulative over the run. */
+export interface RunUsage { promptTokens: number; completionTokens: number; cachedPromptTokens: number }
+
+/**
+ * What a run spent since the last report this tab counted: the footer's
+ * session counter adds it (pinned_context.md §3). Server runs used to add
+ * nothing, so the counter stayed at 0 with serverRuns on. Never negative: a
+ * report older than the one counted (a replay) adds nothing.
+ */
+export function runUsageDelta(
+  previous: RunUsage | undefined,
+  current: { promptTokens?: number; completionTokens?: number; cachedPromptTokens?: number } | undefined
+): { delta: RunUsage; total: RunUsage } | null {
+  if (!current) return null
+  const total: RunUsage = {
+    promptTokens: current.promptTokens ?? 0,
+    completionTokens: current.completionTokens ?? 0,
+    cachedPromptTokens: current.cachedPromptTokens ?? 0
+  }
+  const before = previous ?? { promptTokens: 0, completionTokens: 0, cachedPromptTokens: 0 }
+  const delta: RunUsage = {
+    promptTokens: Math.max(0, total.promptTokens - before.promptTokens),
+    completionTokens: Math.max(0, total.completionTokens - before.completionTokens),
+    cachedPromptTokens: Math.max(0, total.cachedPromptTokens - before.cachedPromptTokens)
+  }
+  if (delta.promptTokens === 0 && delta.completionTokens === 0) return null
+  return { delta, total }
+}

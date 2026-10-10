@@ -155,6 +155,14 @@ def init_db():
             conn.execute("ALTER TABLE documents ADD COLUMN revision INTEGER NOT NULL DEFAULT 1")
             print("[Init] Migrated documents table: added revision column.")
 
+        # Schema migration: a chapter the writer pinned rides along on every
+        # agent turn (docs/features/pinned_context.md). Metadata: setting it
+        # does not bump the revision.
+        doc_columns = {row["name"] for row in conn.execute("PRAGMA table_info(documents)").fetchall()}
+        if "pinned" not in doc_columns:
+            conn.execute("ALTER TABLE documents ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0")
+            print("[Init] Migrated documents table: added pinned column.")
+
         # Schema migration: an agentic turn's record (timeline, chapters it
         # changed — src/types/chat.ts AgentTurnRecord), stored as JSON. Without
         # it the bubble lost its tool timeline and "changed this turn" block on

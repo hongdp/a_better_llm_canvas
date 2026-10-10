@@ -18,12 +18,6 @@ describe('getTimestampId', () => {
     expect(ts).toBeLessThanOrEqual(after)
   })
 
-  it('generates distinct IDs when called rapidly (different ms)', () => {
-    const ids = new Set(Array.from({ length: 10 }, () => getTimestampId('p')))
-    // At minimum they should all start with 'p-'
-    ids.forEach(id => expect(id).toMatch(/^p-/))
-  })
-
   it('handles an empty prefix', () => {
     const id = getTimestampId('')
     expect(id).toMatch(/^-\d+$/)

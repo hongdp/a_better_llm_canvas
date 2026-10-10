@@ -131,7 +131,8 @@ function apiHeaders(): Record<string, string> {
  * retry immediately (404), so this costs nothing when the server really died.
  */
 const MAX_STREAM_RECONNECTS = 1
-const STREAM_RECONNECT_DELAY_MS = 500
+/** The pause before a re-attach. Mutable only so tests need not sleep through it. */
+export const streamReconnect = { delayMs: 500 }
 
 /**
  * A `thinking_block` event's payload, checked field by field: it is replayed
@@ -286,7 +287,7 @@ async function attachToJob(
       // once from what was rendered — a transient drop then costs nothing but
       // a pause, and only a job that is really gone becomes an error.
       if (reconnectsLeft > 0 && !signal?.aborted) {
-        await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
+        await new Promise(resolve => setTimeout(resolve, streamReconnect.delayMs))
         return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen, responseItemsSeen)
       }
       // Keep the persisted record: a later page load can still pick the job up
@@ -304,7 +305,7 @@ async function attachToJob(
     //   stop), and not when the server refused (a 404 will 404 again).
     const retryable = !signal?.aborted && !(error instanceof StreamRefusedError)
     if (retryable && reconnectsLeft > 0) {
-      await new Promise(resolve => setTimeout(resolve, STREAM_RECONNECT_DELAY_MS))
+      await new Promise(resolve => setTimeout(resolve, streamReconnect.delayMs))
       return attachToJob(jobId, offset, callbacks, signal, reconnectsLeft - 1, fullText, thinkingBlocksSeen, responseItemsSeen)
     }
     callbacks.onError(error instanceof Error ? error : new Error(String(error)))

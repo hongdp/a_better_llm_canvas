@@ -1,5 +1,11 @@
 # Wake-on-request cloud endpoint
 
+> **Archived 2026-10-10.** The experiment ended with the verdict below
+> (quality loses to grok). The wake proxy, its controllers, the VM scripts and
+> their tests were removed in the test audit — nothing in the app ran them; they
+> are in git history. What stays: the RunPod provider tab in the app,
+> `validate_pod.sh`, `measure.py` and the measured numbers in this file.
+
 A GPU VM that starts when you send a message and stops when you stop writing.
 Only the first request after a nap waits.
 

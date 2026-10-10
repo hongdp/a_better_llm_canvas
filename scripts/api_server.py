@@ -175,8 +175,8 @@ async def create_book(request: Request):
             doc_updated = doc.get("updatedAt", now)
 
             conn.execute(
-                "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (doc_id, username, book_id, doc_title, idx, doc_created, doc_updated)
+                "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (doc_id, username, book_id, doc_title, idx, doc_created, doc_updated, 1 if doc.get("pinned") else 0)
             )
             save_document_content(username, book_id, doc_id, doc_content)
 
@@ -269,7 +269,7 @@ async def get_book(request: Request, book_id: str):
         # IndexError for an unselected column, which 500s the whole endpoint
         # (this is how `summary`/`summary_content_hash` broke book switching).
         docs = conn.execute(
-            "SELECT id, title, sort_order, created_at, updated_at, summary, summary_content_hash, revision "
+            "SELECT id, title, sort_order, created_at, updated_at, summary, summary_content_hash, revision, pinned "
             "FROM documents WHERE username = ? AND book_id = ? ORDER BY sort_order",
             (username, safe_book_id)
         ).fetchall()
@@ -306,6 +306,7 @@ async def get_book(request: Request, book_id: str):
                     "summary": d["summary"],
                     "summaryContentHash": d["summary_content_hash"],
                     "revision": d["revision"],
+                    "pinned": bool(d["pinned"]),
                 }
                 for d in docs
             ],
@@ -573,6 +574,7 @@ async def get_document(request: Request, book_id: str, doc_id: str):
         "summary": doc["summary"],
         "summaryContentHash": doc["summary_content_hash"],
         "revision": doc["revision"],
+        "pinned": bool(doc["pinned"]),
     }
 
 
@@ -629,6 +631,10 @@ async def update_document(request: Request, book_id: str, doc_id: str):
         if "summaryContentHash" in body:
             updates.append("summary_content_hash = ?")
             params.append(body["summaryContentHash"])
+        if "pinned" in body:
+            # Metadata like the summary: no revision bump (pinned_context.md §2).
+            updates.append("pinned = ?")
+            params.append(1 if body["pinned"] else 0)
         updates.append("updated_at = ?")
         params.append(now)
         if changes_chapter:
@@ -679,6 +685,12 @@ async def update_document(request: Request, book_id: str, doc_id: str):
     if changes_chapter:
         server_events.hub.publish(username, safe_book_id, {
             "type": "document", "kind": "updated", "documentId": safe_doc_id,
+            "revision": revision, "clientId": server_events.client_id_of(request)
+        })
+    elif "pinned" in body:
+        # Other tabs resync the chapter list, which carries the pin.
+        server_events.hub.publish(username, safe_book_id, {
+            "type": "document", "kind": "pinned", "documentId": safe_doc_id,
             "revision": revision, "clientId": server_events.client_id_of(request)
         })
     # The write bumped the book's updated_at; return the stamp so the client
@@ -751,9 +763,9 @@ async def create_documents(request: Request, book_id: str):
 
             try:
                 conn.execute(
-                    "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, summary, summary_content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at, summary, summary_content_hash, pinned) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (doc_id, username, safe_book_id, doc_title, sort_order, doc_created, doc_updated,
-                     doc.get("summary"), doc.get("summaryContentHash"))
+                     doc.get("summary"), doc.get("summaryContentHash"), 1 if doc.get("pinned") else 0)
                 )
             except sqlite3.IntegrityError:
                 # Used to surface as a 500. The id exists: it is a conflict,
@@ -890,279 +902,6 @@ async def delete_version(request: Request, book_id: str, version_id: str):
     if os.path.exists(ver_file):
         os.remove(ver_file)
 
-    return {"success": True}
-
-
-# ============================================================
-# LEGACY COMPATIBILITY — /api/storage shim
-# ============================================================
-# These endpoints allow the old frontend to continue working during
-# the transition period. They internally delegate to the new SQLite layer.
-
-@app.get("/api/storage")
-async def get_storage_legacy(request: Request, bookId: str = "default"):
-    """Legacy: load full book state (compatibility shim)."""
-    username = get_authenticated_username(request)
-    safe_book_id = sanitize_id(bookId, "bookId")
-
-    conn = get_db()
-    try:
-        book = conn.execute(
-            "SELECT * FROM books WHERE username = ? AND id = ?",
-            (username, safe_book_id)
-        ).fetchone()
-        if not book:
-            return {}
-
-        # Get documents with content
-        docs = conn.execute(
-            "SELECT id, title, sort_order, created_at, updated_at FROM documents WHERE username = ? AND book_id = ? ORDER BY sort_order",
-            (username, safe_book_id)
-        ).fetchall()
-
-        full_docs = []
-        for d in docs:
-            content = load_document_content(username, safe_book_id, d["id"])
-            full_docs.append({
-                "id": d["id"],
-                "title": d["title"],
-                "content": content,
-                "createdAt": d["created_at"],
-                "updatedAt": d["updated_at"],
-            })
-
-        # Get versions with content
-        versions = conn.execute(
-            "SELECT * FROM versions WHERE username = ? AND book_id = ? ORDER BY timestamp DESC",
-            (username, safe_book_id)
-        ).fetchall()
-        full_versions = []
-        for v in versions:
-            content = load_version_content(username, safe_book_id, v["id"])
-            full_versions.append({
-                "id": v["id"],
-                "documentId": v["document_id"],
-                "title": v["title"],
-                "timestamp": v["timestamp"],
-                "content": content,
-            })
-
-        # Get global user settings (shared across all books)
-        settings = conn.execute(
-            "SELECT * FROM book_settings WHERE username = ? AND book_id = ?",
-            (username, GLOBAL_SETTINGS_BOOK_ID)
-        ).fetchone()
-
-        # Get messages
-        msgs = conn.execute(
-            "SELECT * FROM messages WHERE username = ? AND book_id = ? ORDER BY sort_order",
-            (username, safe_book_id)
-        ).fetchall()
-
-        result = {
-            "bookTitle": book["title"],
-            "documents": full_docs,
-            "versions": full_versions,
-            "activeDocumentId": book["active_document_id"],
-            "messages": [
-                {
-                    "id": m["id"],
-                    "role": m["role"],
-                    "content": m["content"],
-                    "timestamp": m["timestamp"],
-                    **({"thinking": m["thinking"]} if m["thinking"] else {}),
-                    **({"model": m["model"]} if m["model"] else {}),
-                    **({"inputTokens": m["input_tokens"]} if m["input_tokens"] else {}),
-                    **({"outputTokens": m["output_tokens"]} if m["output_tokens"] else {}),
-                    **({"cacheHitTokens": m["cache_hit_tokens"]} if m["cache_hit_tokens"] else {}),
-                    **_agent_field(m),
-                    **_reasoning_items_field(m),
-                }
-                for m in msgs
-            ],
-        }
-
-        if settings:
-            if settings["active_provider"]:
-                result["activeProvider"] = settings["active_provider"]
-            if settings["provider_configs"]:
-                try:
-                    result["providerConfigs"] = json.loads(settings["provider_configs"])
-                except Exception:
-                    pass
-            if settings["custom_system_prompts"]:
-                try:
-                    result["customSystemPrompts"] = json.loads(settings["custom_system_prompts"])
-                except Exception:
-                    pass
-            if settings["active_system_prompt_id"]:
-                result["activeSystemPromptId"] = settings["active_system_prompt_id"]
-            if settings["theme"]:
-                result["theme"] = settings["theme"]
-            result["debugMode"] = bool(settings["debug_mode"])
-
-        return result
-    finally:
-        conn.close()
-
-
-@app.post("/api/storage")
-async def save_storage_legacy(request: Request, bookId: str = "default"):
-    """Legacy: save full book state (compatibility shim)."""
-    username = get_authenticated_username(request)
-    safe_book_id = sanitize_id(bookId, "bookId")
-
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON body.")
-
-    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    conn = get_db()
-    try:
-        # Upsert book
-        book_title = body.get("bookTitle", "Untitled Book")
-        active_doc_id = body.get("activeDocumentId", "")
-        conn.execute(
-            """INSERT INTO books (id, username, title, active_document_id, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?)
-               ON CONFLICT(username, id) DO UPDATE SET
-               title = excluded.title, active_document_id = excluded.active_document_id, updated_at = excluded.updated_at""",
-            (safe_book_id, username, book_title, active_doc_id, now, now)
-        )
-        record_last_active_book(conn, username, safe_book_id, now)
-
-        # Full replace documents
-        if "documents" in body:
-            # Delete existing
-            existing_docs = conn.execute(
-                "SELECT id FROM documents WHERE username = ? AND book_id = ?",
-                (username, safe_book_id)
-            ).fetchall()
-            for d in existing_docs:
-                delete_document_content(username, safe_book_id, d["id"])
-            conn.execute(
-                "DELETE FROM documents WHERE username = ? AND book_id = ?",
-                (username, safe_book_id)
-            )
-
-            # Insert new
-            for idx, doc in enumerate(body["documents"]):
-                doc_id = doc.get("id", f"doc-{int(datetime.now().timestamp() * 1000)}-{idx}")
-                doc_title = doc.get("title", f"Chapter {idx + 1}")
-                doc_content = doc.get("content", "")
-                doc_created = doc.get("createdAt", now)
-                doc_updated = doc.get("updatedAt", now)
-
-                conn.execute(
-                    "INSERT INTO documents (id, username, book_id, title, sort_order, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (doc_id, username, safe_book_id, doc_title, idx, doc_created, doc_updated)
-                )
-                save_document_content(username, safe_book_id, doc_id, doc_content)
-
-        # Full replace versions
-        if "versions" in body:
-            conn.execute(
-                "DELETE FROM versions WHERE username = ? AND book_id = ?",
-                (username, safe_book_id)
-            )
-            for ver in body["versions"]:
-                ver_id = ver.get("id", f"ver-{int(datetime.now().timestamp() * 1000)}")
-                ver_doc_id = ver.get("documentId", "")
-                ver_title = ver.get("title", "Untitled")
-                ver_timestamp = ver.get("timestamp", now)
-                ver_content = ver.get("content", "")
-
-                conn.execute(
-                    "INSERT INTO versions (id, username, book_id, document_id, title, timestamp) VALUES (?, ?, ?, ?, ?, ?)",
-                    (ver_id, username, safe_book_id, ver_doc_id, ver_title, ver_timestamp)
-                )
-                save_version_content(username, safe_book_id, ver_id, ver_content)
-
-        # Upsert global settings
-        conn.execute(
-            """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
-               custom_system_prompts, active_system_prompt_id, theme, debug_mode)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(username, book_id) DO UPDATE SET
-               active_provider = excluded.active_provider,
-               provider_configs = excluded.provider_configs,
-               custom_system_prompts = excluded.custom_system_prompts,
-               active_system_prompt_id = excluded.active_system_prompt_id,
-               theme = excluded.theme,
-               debug_mode = excluded.debug_mode
-            """,
-            (
-                username, GLOBAL_SETTINGS_BOOK_ID,
-                body.get("activeProvider"),
-                json.dumps(body.get("providerConfigs")) if body.get("providerConfigs") else None,
-                json.dumps(body.get("customSystemPrompts")) if body.get("customSystemPrompts") else None,
-                body.get("activeSystemPromptId"),
-                body.get("theme"),
-                1 if body.get("debugMode") else 0
-            )
-        )
-
-        # Full replace messages
-        if "messages" in body:
-            conn.execute(
-                "DELETE FROM messages WHERE username = ? AND book_id = ?",
-                (username, safe_book_id)
-            )
-            for idx, msg in enumerate(body["messages"]):
-                msg_id = msg.get("id", f"msg-{int(datetime.now().timestamp() * 1000)}-{idx}")
-                conn.execute(
-                    """INSERT INTO messages (id, username, book_id, role, content, timestamp,
-                       thinking, model, input_tokens, output_tokens, cache_hit_tokens, sort_order, agent, reasoning_items)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        msg_id, username, safe_book_id,
-                        msg.get("role", "assistant"),
-                        msg.get("content", ""),
-                        msg.get("timestamp", now),
-                        msg.get("thinking"),
-                        msg.get("model"),
-                        msg.get("inputTokens"),
-                        msg.get("outputTokens"),
-                        msg.get("cacheHitTokens"),
-                        idx,
-                        _agent_json(msg),
-                    _reasoning_items_json(msg)
-                    )
-                )
-
-        conn.commit()
-        return {"success": True}
-    finally:
-        conn.close()
-
-
-# Legacy delete book endpoint (compatibility)
-@app.post("/api/books/delete")
-async def delete_book_legacy(request: Request):
-    username = get_authenticated_username(request)
-    try:
-        body = await request.json()
-        book_id = body.get("bookId")
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid payload.")
-
-    if not book_id:
-        raise HTTPException(status_code=400, detail="Missing bookId.")
-
-    safe_book_id = sanitize_id(book_id, "bookId")
-
-    conn = get_db()
-    try:
-        conn.execute("DELETE FROM books WHERE username = ? AND id = ?", (username, safe_book_id))
-        conn.execute("DELETE FROM book_settings WHERE username = ? AND book_id = ?", (username, safe_book_id))
-        conn.execute("DELETE FROM messages WHERE username = ? AND book_id = ?", (username, safe_book_id))
-        conn.commit()
-    finally:
-        conn.close()
-
-    server_attachments.delete_book_attachments(username, safe_book_id)
-    delete_book_content_dir(username, safe_book_id)
     return {"success": True}
 
 

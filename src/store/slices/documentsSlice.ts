@@ -32,6 +32,7 @@ export interface DocumentsSlice {
   deleteDocument: (id: string) => void
   updateDocument: (id: string, updates: Partial<CanvasDocument>) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
+  setDocumentPinned: (id: string, pinned: boolean) => void
   setDocumentSummary: (id: string, summary: string, contentHash: string) => void
   /**
    * Ensure the given documents' content is loaded (server books lazy-load
@@ -300,6 +301,29 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
         saveDocumentsToIndexedDB(updatedDocs, false)
         return { documents: updatedDocs }
       })
+    },
+
+    setDocumentPinned: (id, pinned) => {
+      // Metadata, like a summary: no updatedAt bump, no revision (pinned_context.md §2).
+      set((state) => {
+        const updatedDocs = state.documents.map((d) => (d.id === id ? { ...d, pinned } : d))
+        saveDocumentsToIndexedDB(updatedDocs, false)
+        return { documents: updatedDocs }
+      })
+      const state = useAppStore.getState()
+      if (state.user && state.activeBookId) {
+        fetch(`/api/books/${state.activeBookId}/documents/${id}`, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-Token': state.csrfToken || '',
+            [CLIENT_ID_HEADER]: CLIENT_ID
+          },
+          body: JSON.stringify({ pinned })
+        }).then(res => res.ok ? res.json() : null)
+          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
+          .catch(e => console.error('Failed to sync the chapter pin to the server', e))
+      }
     },
 
     setDocumentSummary: (id, summary, contentHash) => {

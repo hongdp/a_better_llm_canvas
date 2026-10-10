@@ -245,6 +245,7 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
                 summary: d.summary ?? undefined,
                 summaryContentHash: d.summaryContentHash ?? undefined,
                 ...(typeof d.revision === 'number' ? { revision: d.revision } : {}),
+                ...(d.pinned ? { pinned: true } : {}),
               })),
               state.documents
             )

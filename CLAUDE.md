@@ -122,7 +122,7 @@ docs/
   design.md               # Architecture + Decision Log (register new design docs here)
   features/               # Per-feature design specs
 public/                   # PWA manifest, service worker (sw.js), icons
-.githooks/pre-push        # Runs `npm test` before every push
+.githooks/pre-push        # Runs `npm test`, then the backend pytest suite, before every push
 ```
 
 ## Common Commands
@@ -134,7 +134,7 @@ npm run dev -- --storage-dir <path> --host   # custom storage dir, expose to LAN
 npm run dev:debug           # Vite debug mode
 npm run build               # tsc -b && vite build (always run before considering work done)
 npm run lint                # eslint .
-npm test                    # vitest run (the pre-push gate)
+npm test                    # vitest run (the pre-push gate, with pytest after it)
 npm run test:watch          # vitest watch
 npm run test:coverage       # coverage over utils, services/import, store/persistence
 npm run parity:fixtures     # regenerate scripts/parity/fixtures from the TypeScript
@@ -344,6 +344,16 @@ and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
 `plan_done` (an attribute on tags); eight look-up-only steps in a row get one
 reminder.
 
+**Context with the agent tools on is pinned, not chosen**
+(`docs/features/pinned_context.md`): a turn carries the CHAPTER INDEX, the
+active chapter, and only the chapters the writer pinned
+(`CanvasDocument.pinned`, `documents.pinned`, ≤ 60,000 chars,
+`pinnedContextIds`) in the ledger ahead of the history; the model reads the
+rest with its tools, and the bubble carries no `[Attached Context]` label.
+The keyword scorer (`selectReferenceChapters`) runs only with the tools off.
+Do not reintroduce automatic admissions on agent turns: measured, they went
+unused and their churn cost the cache.
+
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.
 documentProtocol` picks per provider (`utils/protocolChoice.ts`), default
@@ -383,7 +393,7 @@ double-submit tokens. Per-user storage isolated as `state_<username>.json` /
 per-book files; metadata indexed in a local SQLite DB at `.local_db/metadata.db`
 (DELETE journal mode, kept off network mounts). Endpoints are under `/api/*`:
 auth (`/api/auth/*`), books (`/api/books`, `/api/books/{id}`), nested documents
-and versions, legacy `/api/storage`, and scraping (`/api/import-url`,
+and versions, and scraping (`/api/import-url`,
 `/api/import-file`). **Performance**: list endpoints extract metadata by regex
 over the first few KB of large JSON files rather than full-parsing; the save
 endpoint reorders JSON keys so `bookTitle`/`updatedAt` stay within that window.
@@ -458,7 +468,8 @@ localStorage pointer — a new device must land in the book last worked in.
 - `master` is the default/deployable branch. Feature branches: `feat/<desc>`.
 - **Conventional commits**: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`.
 - A `pre-push` git hook (`.githooks/pre-push`, wired by `npm run prepare`) runs
-  `npm test` and blocks the push on failure. Bypass only in emergencies with
+  `npm test`, then the backend pytest suite (skipped with a warning where
+  pytest/fastapi are missing), and blocks the push on failure. Bypass only in emergencies with
   `git push --no-verify` (discouraged).
 - Before committing: run the unit suite (`npm test`), type-check/build
   (`npm run build` or `npx tsc --noEmit`), and a security scan of the diff for

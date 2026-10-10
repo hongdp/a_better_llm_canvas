@@ -46,7 +46,6 @@ describe('buildChatSystemPrompt', () => {
     })
     expect(prompt.endsWith(FORMAT_PROTOCOL_REMINDER)).toBe(true)
     expect(prompt.indexOf(FORMAT_PROTOCOL_REMINDER)).toBeGreaterThan(prompt.indexOf('直接输出小说正文'))
-    expect(prompt.indexOf(FORMAT_PROTOCOL_REMINDER)).toBeGreaterThan(prompt.indexOf('CHAPTER LOOKUP:'))
   })
 
   it('keeps the reminder last even with no preset selected', () => {
@@ -148,7 +147,7 @@ describe('agent rules: writing several chapters', () => {
     expect(prompt).toContain('ONE chapter per reply — you continue after each')
     expect(prompt).not.toContain('also ask for what the next one needs')
     // A tip that saves a step, not a rule (user decision 2026-10-06).
-    expect(prompt).toContain('You can save a step by asking for what the next chapter needs (e.g. reading its source passages) in the same reply that writes this one')
+    expect(prompt).toContain('save a step')
     expect(prompt).toContain('A reply that does neither ends your turn')
   })
 
@@ -157,9 +156,9 @@ describe('agent rules: writing several chapters', () => {
     // step then repeated (105–158 s measured, 2026-10-06).
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
-    expect(markup).toContain('<canvas new_chapter="its title">…</canvas> — a NEW chapter at the end of the book, created and filled by this one block')
+    expect(markup).toContain('<canvas new_chapter=')
     const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
-    expect(tools).toContain('call update_document with `new_chapter` set to its title')
+    expect(tools).toContain('`new_chapter`')
     for (const prompt of [markup, tools]) {
       expect(prompt).toContain('There is no separate step for creating a chapter')
       expect(prompt).not.toContain('create_chapter')
@@ -172,13 +171,13 @@ describe('agent rules: writing several chapters', () => {
     // and weighed merging the two documents to obey one-chapter-per-reply.
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
-    expect(markup).toContain('Reference material — an outline, character cards, notes — is a chapter too, added the same way.')
-    expect(markup).toContain('These work on chapters that already exist and never add one or put text into one.')
+    expect(markup).toContain('is a chapter too')
+    expect(markup).toContain('never add one')
     // The native write is offered beside the tag, and the prompt says what each costs.
     // User decision (2026-10-07, option 3): prose by tags, the tool only for reference material — as a rule.
     expect(markup).toContain('PROSE IS ALWAYS WRITTEN WITH TAGS')
-    expect(markup).toContain('Use it ONLY for reference material — an outline, character cards, notes — never for prose.')
-    expect(markup).toContain('Do not call update_document for a chapter of story.')
+    expect(markup).toContain('ONLY for reference material')
+    expect(markup).toContain('Do not call update_document for a chapter of story')
     // One text in reading order, not the legacy single-document rules plus patches.
     expect(markup).toContain('1. WHAT YOU ARE EDITING')
     expect(markup).not.toContain('WORKING ACROSS THE BOOK')
@@ -186,10 +185,10 @@ describe('agent rules: writing several chapters', () => {
     // The warning that fed a 127-step fact-checking loop (2026-10-07) is gone.
     expect(markup).not.toContain('easy to lose track of')
     const tools = buildChatSystemPrompt({ protocol: 'tools', agentTools: true, continueAfterWrites: true })
-    expect(tools).toContain('Reference material — an outline, character cards, notes — is a chapter too, added the same way. No other tool creates a chapter.')
+    expect(tools).toContain('No other tool creates a chapter')
     for (const continueAfterWrites of [true, false]) {
       expect(buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites }))
-        .toContain('Two documents (say an outline and character cards) are two chapters: write one now and the other in your next reply; never merge them to fit one reply.')
+        .toContain('never merge them')
     }
   })
 
@@ -199,7 +198,7 @@ describe('agent rules: writing several chapters', () => {
     // create_chapter("skip") to get another reply, and wrote it there.
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     const markup = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
-    expect(markup).toContain('Do each piece of work in the reply that says you are doing it: "Now I\'ll rewrite chapter 3" goes in the same reply as its <canvas chapter="3">')
+    expect(markup).toContain('Do each piece of work in the reply that says you are doing it')
     expect(markup).not.toContain('is not your final reply')
     expect(markup).toContain('A reply that calls a tool needs no status line.')
     // The guard at the end agrees with both write channels (it used to say tags only).

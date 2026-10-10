@@ -7,7 +7,6 @@ and U+00A0 escaped; void elements lose their slash and have no end tag; a
 block left open is closed. Everything that compares with those bytes goes
 through here rather than slicing the source.
 """
-import html as html_lib
 from html.parser import HTMLParser
 from typing import List, Optional, Tuple, Union
 

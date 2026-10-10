@@ -29,17 +29,6 @@ def leading_h1_text(html: str) -> Optional[str]:
     return text or None
 
 
-def title_following_heading(prev_content: str, next_content: str, current_title: Optional[str]) -> Optional[str]:
-    next_h1 = leading_h1_text(next_content)
-    if not next_h1:
-        return None
-    if next_h1 == current_title:
-        return None
-    if next_h1 == leading_h1_text(prev_content):
-        return None
-    return next_h1
-
-
 def _escape_html_text(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 

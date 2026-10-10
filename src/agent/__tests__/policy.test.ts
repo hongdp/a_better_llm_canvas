@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { decideAfterStep, detectStepFailure, stepsLeft, defaultMaxSteps, type ExecutedCall, type RunBudgets, type StepPolicy } from '../policy'
+import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepPolicy } from '../policy'
 import { collectStep, planWrites } from '../invocations'
 import { ToolRegistry, defineTool } from '../registry'
 import { DOCUMENT_WRITE_TOOLS } from '../tools/documentWrites'
@@ -92,11 +92,6 @@ describe('decideAfterStep (spec D3)', () => {
   it('treats a step limit of 0 as no limit', () => {
     expect(decide([call('read')], { stepsTaken: 500, budgets: { ...budgets, maxSteps: 0 } })).toEqual({ action: 'continue', corrective: false, final: false })
     expect(stepsLeft({ ...budgets, maxSteps: 0 }, 10_000)).toBe(Infinity)
-  })
-
-  it('gives local models more steps than grok', () => {
-    expect(defaultMaxSteps('grok')).toBe(6)
-    expect(defaultMaxSteps('ollama')).toBe(10)
   })
 })
 

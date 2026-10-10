@@ -299,7 +299,8 @@ class ServerPorts:
                 cached = {"revision": meta["revision"], "content": load_document_content(self.username, self.book_id, meta["id"])}
                 self._contents[meta["id"]] = cached
             out.append({"id": meta["id"], "title": meta["title"], "content": cached["content"], "summary": meta.get("summary"),
-                        "updatedAt": meta.get("updated_at"), "revision": meta["revision"], "loaded": True})
+                        "updatedAt": meta.get("updated_at"), "revision": meta["revision"], "loaded": True,
+                        "pinned": bool(meta.get("pinned"))})
         return out
 
     def open_id(self) -> str:

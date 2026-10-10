@@ -78,11 +78,3 @@ export function loadScrollPosition(documentId: string): number {
   const entry = read()[documentId]
   return entry && typeof entry.top === 'number' ? entry.top : 0
 }
-
-export function clearScrollPosition(documentId: string): void {
-  const map = read()
-  if (map[documentId]) {
-    delete map[documentId]
-    write(map)
-  }
-}

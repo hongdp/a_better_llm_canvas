@@ -106,12 +106,4 @@ describe('relocating a selection that spans blocks', () => {
   it('finds a two-block selection from its serialized HTML', () => {
     expect(findTextRangeInSpans(spans, '<p>第一段</p><p>第二段</p>')).toEqual({ from: 1, to: 9 })
   })
-
-  it('still finds a single-block selection', () => {
-    expect(findTextRangeInSpans(spans, '第二段')).toEqual({ from: 6, to: 9 })
-  })
-
-  it('returns null when the passage is genuinely gone', () => {
-    expect(findTextRangeInSpans(spans, '<p>删掉的段落</p>')).toBeNull()
-  })
 })

@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach } from 'vitest'
 import {
   saveScrollPosition,
   loadScrollPosition,
-  clearScrollPosition,
   capEntries
 } from '../scrollMemory'
 
@@ -30,12 +29,6 @@ describe('scrollMemory', () => {
   it('forgets the entry once the reader is back near the top', () => {
     saveScrollPosition('doc-1', 800)
     saveScrollPosition('doc-1', 5)
-    expect(loadScrollPosition('doc-1')).toBe(0)
-  })
-
-  it('clears an entry on request', () => {
-    saveScrollPosition('doc-1', 800)
-    clearScrollPosition('doc-1')
     expect(loadScrollPosition('doc-1')).toBe(0)
   })
 

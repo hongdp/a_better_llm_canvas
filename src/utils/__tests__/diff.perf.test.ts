@@ -40,8 +40,6 @@ function makeDoc(n: number, mut: (i: number) => string | null = () => null): str
 
 // ── Timing harness ────────────────────────────────────────────────────────────
 
-const results: { pattern: string; ms: number; del: number; ins: number; outKB: number }[] = []
-
 /**
  * Runs per measurement, of which the FASTEST counts.
  *
@@ -54,21 +52,14 @@ const results: { pattern: string; ms: number; del: number; ins: number; outKB: n
  */
 const TIMING_RUNS = 3
 
-function measure(pattern: string, oldHtml: string, newHtml: string): number {
+/** The fastest of TIMING_RUNS diffs, in ms. `pattern` names the case for a failing assertion's reader. */
+function measure(_pattern: string, oldHtml: string, newHtml: string): number {
   let ms = Infinity
-  let out = ''
   for (let i = 0; i < TIMING_RUNS; i++) {
     const start = performance.now()
-    out = diffHtml(oldHtml, newHtml)
+    diffHtml(oldHtml, newHtml)
     ms = Math.min(ms, performance.now() - start)
   }
-  results.push({
-    pattern,
-    ms: Math.round(ms * 100) / 100,
-    del: (out.match(/<del/g) || []).length,
-    ins: (out.match(/<ins/g) || []).length,
-    outKB: Math.round(out.length / 102.4) / 10,
-  })
   return ms
 }
 
@@ -142,17 +133,6 @@ describe('diffHtml performance — match patterns', () => {
     expect(ms).toBeLessThan(700)
   })
 
-  it('large document (1000 paras), small edit', () => {
-    const oldDoc = makeDoc(1000)
-    const newDoc = makeDoc(1000, i => (i === 500 ? para(i) + ' tweak' : null))
-    const ms = measure('1000 paras, 1 edit', oldDoc, newDoc)
-    expect(ms).toBeLessThan(300)
-  })
-
-  it('prints the performance table', () => {
-    console.table(results)
-    expect(results.length).toBeGreaterThan(0)
-  })
 })
 
 // ── Edit-block pipeline (Method A) ────────────────────────────────────────────

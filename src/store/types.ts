@@ -30,6 +30,7 @@ export interface ServerDocumentMeta {
   updatedAt: string
   summary?: string | null
   summaryContentHash?: string | null
+  pinned?: boolean
   revision?: number
 }
 

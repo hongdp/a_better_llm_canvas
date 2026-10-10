@@ -639,6 +639,47 @@
       ]
      }
     ]
+   },
+   {
+    "input": [
+     [
+      {
+       "name": "e",
+       "description": "",
+       "parameters": {
+        "type": "object",
+        "description": "",
+        "properties": {},
+        "required": []
+       }
+      }
+     ]
+    ],
+    "output": [
+     {
+      "functionDeclarations": [
+       {
+        "name": "e",
+        "description": "",
+        "parameters": {
+         "type": "OBJECT",
+         "properties": {},
+         "required": []
+        }
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "input": [
+     []
+    ],
+    "output": [
+     {
+      "functionDeclarations": []
+     }
+    ]
    }
   ],
   "from_openai_tools": [

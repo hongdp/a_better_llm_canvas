@@ -70,14 +70,17 @@ export async function resyncBook(deps: BookEventDeps): Promise<void> {
       return {
         id: m.id, title: m.title, content: '', contentLoaded: false, createdAt: m.createdAt, updatedAt: m.updatedAt,
         summary: m.summary ?? undefined, summaryContentHash: m.summaryContentHash ?? undefined,
-        ...(typeof m.revision === 'number' ? { revision: m.revision } : {})
+        ...(typeof m.revision === 'number' ? { revision: m.revision } : {}),
+        ...(m.pinned ? { pinned: true } : {})
       }
     }
+    // The pin is metadata the server owns: another tab's change arrives here.
+    const withPin = Boolean(m.pinned) === Boolean(mine.pinned) ? mine : { ...mine, pinned: Boolean(m.pinned) }
     if (typeof m.revision === 'number' && !mine.unsynced && mine.revision !== m.revision) {
-      if (mine.contentLoaded === false) return { ...mine, title: m.title, revision: m.revision }
+      if (mine.contentLoaded === false) return { ...withPin, title: m.title, revision: m.revision }
       stale.push(m.id)
     }
-    return mine
+    return withPin
   })
   const documents = mergeServerChapters(listed, local)
   const activeGone = !documents.some(d => d.id === useAppStore.getState().activeDocumentId)

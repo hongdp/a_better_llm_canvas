@@ -11,7 +11,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from server_db import get_db
 from wc_text.chapter_index import build_chapter_index  # noqa: F401 — re-exported for callers that need the index alone
 from wc_text.context_ledger import hash_content, ledger_chapter_ids, order_admissions_by_stability, plan_ledger_turn
-from wc_text.context_selection import select_reference_chapters
+from wc_text.context_selection import pinned_context_ids, select_reference_chapters
 from wc_text.attachments import render_attachment_index
 from wc_text.context_window import cjk_ratio_of, estimate_tokens, history_budget_chars, resolve_context_window_tokens
 from wc_text.conversation_summary import build_summary_request, parse_summary_reply, plan_conversation_summary, summary_messages
@@ -136,7 +136,9 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
     """
     settings = resolve_run_settings(provider, config)
     protocol = resolve_document_protocol(provider, config.get("documentProtocol"))
-    selection = select_reference_chapters({
+    # Agent tools on: only the chapters the writer pinned ride ahead of the history, and the model
+    # reads the rest (pinned_context.md). Tools off: the scorer's prefetch, as before.
+    selection = None if settings["agentTools"] else select_reference_chapters({
         "promptText": prompt_text,
         "recentHistory": [m["content"] for m in history if m.get("id") != "welcome"],
         "documents": documents,
@@ -145,7 +147,8 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
         "modelReadIds": state.get("modelReadIds") or [],
         "ledgerIds": [e["id"] for e in state["ledger"]["entries"]],
     })
-    state["previousAttachedIds"] = selection["attachedIds"]
+    if selection is not None:
+        state["previousAttachedIds"] = selection["attachedIds"]
 
     system_prompt = {"role": "system", "content": build_chat_system_prompt({
         "customInstructions": custom_instructions, "agentTools": settings["agentTools"],
@@ -201,12 +204,14 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
     state["turn"] = int(state.get("turn") or 0) + 1
     seen = state.setdefault("seen", {})
     book_order = [d["id"] for d in documents]
-    desired = order_admissions_by_stability(selection["attachedIds"], [{"id": d["id"], "updatedAt": d.get("updatedAt")} for d in documents],
-                                            book_order, active_document_id)
     docs_for_plan = []
     for d in documents:
         accepted = strip_diff_markup(d["content"])
         docs_for_plan.append({"id": d["id"], "chars": min(len(accepted), MAX_LEDGER_DOC_CHARS), "hash": hash_content(accepted)})
+    wanted = selection["attachedIds"] if selection is not None else pinned_context_ids(
+        [{"id": d["id"], "pinned": bool(d.get("pinned")), "chars": docs_for_plan[i]["chars"]} for i, d in enumerate(documents)], active_document_id)
+    desired = order_admissions_by_stability(wanted, [{"id": d["id"], "updatedAt": d.get("updatedAt")} for d in documents],
+                                            book_order, active_document_id)
     by_id = {d["id"]: d for d in documents}
     plan = plan_ledger_turn(state["ledger"], desired, docs_for_plan, active_document_id,
                             {"render": lambda doc_id, kind: ledger_block(by_id[doc_id], kind) if doc_id in by_id else ""})
@@ -218,7 +223,8 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
     tail = build_volatile_tail(documents, active_document_id, selected_text,
                                lambda html: replace_images_with_placeholders(html, image_registry),
                                {"agentTools": True, "markers": markers} if settings["agentTools"] else {})
-    attachments_text = build_attachments_label(attached_ids, documents, selection["autoIds"])
+    # Agent turns carry no label: the pins in the sidebar are what rides along.
+    attachments_text = "" if selection is None else build_attachments_label(attached_ids, documents, selection["autoIds"])
     # The turn after a Stop says so (agentic_chat_loop.md §0.8).
     interrupted = f"\n\n{wrap_reminder(interrupted_turn_reminder())}" if was_turn_interrupted(history) else ""
     # The book's reference files, by reference (attachments_and_web.md §1).

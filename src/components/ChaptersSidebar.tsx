@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, FileText } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, FileText, Pin } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
 import { ImportUrlModal } from './ImportUrlModal'
@@ -36,6 +36,7 @@ export const ChaptersSidebar: React.FC = () => {
     createNewBook,
     switchBook,
     deleteBook,
+    setDocumentPinned,
     isStreaming
   } = useAppStore()
 
@@ -390,6 +391,9 @@ export const ChaptersSidebar: React.FC = () => {
                 <GripVertical size={13} />
               </div>
 
+              {doc.pinned && (
+                <span className="chapter-pin-mark" title={t.sidebar.pinnedHint}><Pin size={12} /></span>
+              )}
               <span className="chapter-title">{doc.title || 'Untitled Chapter'}</span>
               
               <div
@@ -411,7 +415,18 @@ export const ChaptersSidebar: React.FC = () => {
                   >
                     <FileText size={13} />
                   </button>
-                )}                <button
+                )}
+                <button
+                  onClick={() => setDocumentPinned(doc.id, !doc.pinned)}
+                  className={`btn-icon chapter-action-btn${doc.pinned ? ' pinned' : ''}`}
+                  title={doc.pinned ? t.sidebar.unpinChapter : t.sidebar.pinChapter}
+                  aria-pressed={Boolean(doc.pinned)}
+                  type="button"
+                  style={{ padding: '0.15rem' }}
+                >
+                  <Pin size={13} />
+                </button>
+                <button
                   onClick={() => handleMoveUp(idx)}
                   disabled={idx === 0 || isStreaming}
                   className="btn-icon chapter-action-btn move-up"

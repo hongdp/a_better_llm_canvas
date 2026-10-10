@@ -146,6 +146,34 @@ describe('a turn with serverRuns on', () => {
     h.unmount()
   })
 
+  // The footer's Session Tokens stayed at 0 with serverRuns on (2026-10-10).
+  it('counts a server run\'s usage into the session totals, step by step', async () => {
+    useAppStore.setState({ sessionInputTokens: 0, sessionOutputTokens: 0, sessionCacheHitTokens: 0, sessionCacheMissTokens: 0, lastTurnCache: null })
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    const runId = 'run-1'
+    const record = { status: 'running' as const, steps: 1, trace: [], touched: [], timeline: [] }
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId, run: summary({ assistantMessageId: bubble().id }) }) })
+    act(() => { emitRunEvent({ type: 'run', kind: 'step', runId, record, usage: { promptTokens: 1000, completionTokens: 100, cachedPromptTokens: 0 } }) })
+    act(() => { emitRunEvent({ type: 'run', kind: 'step', runId, record: { ...record, steps: 2 }, usage: { promptTokens: 2200, completionTokens: 150, cachedPromptTokens: 1000 } }) })
+    let st = useAppStore.getState()
+    expect(st.sessionInputTokens).toBe(2200)
+    expect(st.sessionOutputTokens).toBe(150)
+    expect(st.sessionCacheHitTokens).toBe(1000)
+    expect(st.lastTurnCache).toMatchObject({ promptTokens: 1200, cachedTokens: 1000 })
+    // The finish reports the same total again (or one more step): counted once.
+    act(() => {
+      emitRunEvent({ type: 'run', kind: 'finished', runId, status: 'done', run: summary({ status: 'done', assistantMessageId: bubble().id }),
+        result: { content: '好了。', record: { ...record, status: 'done', steps: 3 }, usage: { promptTokens: 3500, completionTokens: 170, cachedPromptTokens: 2100 } } })
+    })
+    st = useAppStore.getState()
+    expect(st.sessionInputTokens).toBe(3500)
+    expect(st.sessionOutputTokens).toBe(170)
+    expect(st.sessionCacheHitTokens).toBe(2100)
+    h.unmount()
+  })
+
   // Seen 2026-10-10: the phone's stream was suspended while the run
   // finished; the bubble stayed "working" with the timer counting.
   it('settles a run whose finish was missed once the tab catches up', async () => {

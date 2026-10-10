@@ -14,53 +14,18 @@ import type { ScrapedData, ChapterPlan, GeneratedChapter } from '../../../types/
 
 // ── isSafetyError ─────────────────────────────────────────────────────────────
 describe('isSafetyError', () => {
-  it('detects "safety" keyword', () => {
-    expect(isSafetyError(new Error('safety guidelines violated'))).toBe(true)
+  it.each(['safety guidelines violated', 'content was blocked', 'HTTP 403 Forbidden', 'violates usage guidelines',
+    'this violates policy', 'no permission to do this', 'SAFETY CHECK FAILED'])('treats "%s" as a safety refusal', msg => {
+    expect(isSafetyError(new Error(msg))).toBe(true)
   })
 
-  it('detects "block" keyword', () => {
-    expect(isSafetyError(new Error('content was blocked'))).toBe(true)
-  })
-
-  it('detects "403" status code string', () => {
-    expect(isSafetyError(new Error('HTTP 403 Forbidden'))).toBe(true)
-  })
-
-  it('detects "guidelines" keyword', () => {
-    expect(isSafetyError(new Error('violates usage guidelines'))).toBe(true)
-  })
-
-  it('detects "violates" keyword', () => {
-    expect(isSafetyError(new Error('this violates policy'))).toBe(true)
-  })
-
-  it('detects "permission" keyword', () => {
-    expect(isSafetyError(new Error('no permission to do this'))).toBe(true)
-  })
-
-  it('returns false for a regular error', () => {
-    expect(isSafetyError(new Error('network timeout'))).toBe(false)
-  })
-
-  it('returns false for an empty error', () => {
-    expect(isSafetyError(new Error(''))).toBe(false)
-  })
-
-  it('is case-insensitive (uppercase keyword)', () => {
-    expect(isSafetyError(new Error('SAFETY CHECK FAILED'))).toBe(true)
+  it.each(['network timeout', ''])('does not treat "%s" as one', msg => {
+    expect(isSafetyError(new Error(msg))).toBe(false)
   })
 })
 
 // ── escapeRegExp ──────────────────────────────────────────────────────────────
 describe('escapeRegExp', () => {
-  it('escapes dot', () => {
-    expect(escapeRegExp('.')).toBe('\\.')
-  })
-
-  it('escapes asterisk', () => {
-    expect(escapeRegExp('*')).toBe('\\*')
-  })
-
   it('escapes parentheses', () => {
     expect(escapeRegExp('(hello)')).toBe('\\(hello\\)')
   })

@@ -314,12 +314,6 @@ export const getCookie = (name: string): string | null => {
   return null
 }
 
-export const clearCookie = (name: string) => {
-  if (typeof document !== 'undefined') {
-    document.cookie = `${name}=; path=/; max-age=0`
-  }
-}
-
 // ── Retired settings ──────────────────────────────────────────────────────────
 /**
  * Forget settings whose features are gone, once per load: the whole-book
