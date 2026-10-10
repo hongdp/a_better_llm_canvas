@@ -464,6 +464,30 @@ describe('what a plan may call done, and an HTML read that no edit followed', ()
   })
 })
 
+describe('a streak of look-ups (agentic_chat_loop.md §0.11)', () => {
+  it('eight look-up-only steps in a row get one reminder to batch them', async () => {
+    const reads = Array.from({ length: 10 }, (_, i) => calls('', [`c${i}`, 'read_chapter', `{"chapter":"1","paragraphs":"${i + 1}"}`]))
+    const h = harness({ replies: [...reads, text('done\n<doc_status>unchanged</doc_status>')], budgets: { maxSteps: 0 } })
+    await h.run.start()
+    const said = h.requests.map(r => r.some(m => m.content.includes('only looked things up')))
+    expect(said.indexOf(true)).toBe(8)
+    expect(h.requests[8].at(-1)?.content).toContain('The last 8 steps only looked things up and wrote nothing')
+    expect(h.requests[8].at(-1)?.content).toContain('read_chapter with parts, grep with patterns. Then write.')
+    // Once: the later requests carry the same message (it is history), no new one.
+    expect(h.requests[10].filter(m => m.content.includes('only looked things up'))).toHaveLength(1)
+  })
+
+  it('a write breaks the streak', async () => {
+    const reads = (n: number, from: number) => Array.from({ length: n }, (_, i) => calls('', [`c${from + i}`, 'read_chapter', `{"chapter":"1","paragraphs":"${from + i + 1}"}`]))
+    const h = harness({
+      replies: [...reads(5, 0), text('<canvas><p>beta</p></canvas>'), ...reads(5, 5), text('done\n<doc_status>unchanged</doc_status>')],
+      budgets: { maxSteps: 0 }, policy: { continueAfterWrites: true, feedBackFailedWrites: true }
+    })
+    await h.run.start()
+    expect(h.requests.some(r => r.some(m => m.content.includes('only looked things up')))).toBe(false)
+  })
+})
+
 describe('a run that outgrows the window (agentic_chat_loop.md §0.9, within a run)', () => {
   const done = text('done\n<doc_status>unchanged</doc_status>')
   const bigRead = readTool(args => ({ ok: true, content: `TEXT OF ${String(args.chapter)} ` + 'word '.repeat(400), trace: `read ${String(args.chapter)}` }))

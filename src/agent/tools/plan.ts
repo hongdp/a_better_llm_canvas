@@ -8,7 +8,7 @@
  * list with statuses, a status-only call merging into the list.
  */
 import { defineTool } from '../registry'
-import { writesSoFar, type ToolResult } from '../types'
+import { writesSoFar, type ToolContext, type ToolResult } from '../types'
 import { applyPlanUpdate, renderPlan, type PlanItem } from '../../utils/plan'
 import { isBlankContent } from '../../utils/text'
 import { planNotWrittenNote } from '../reminders'
@@ -16,6 +16,51 @@ import { planNotWrittenNote } from '../reminders'
 const titleKey = (title: string) => title.replace(/\s+/g, '').toLowerCase()
 /** An item whose title says it changes the book, in either language. */
 const WRITE_ITEM_RE = /写|改|补|删|增|润色|rewrite|write|edit|revise|insert|add|create|polish|delete|rename|expand|fix/i
+
+/** `plan_done` as a write's argument: ids as a list, or one comma-separated string. */
+export function planDoneArg(raw: Record<string, unknown> | null): string[] {
+  const value = raw?.plan_done
+  const list = Array.isArray(value) ? value : typeof value === 'string' ? value.split(/[,，\s]+/) : []
+  return [...new Set(list.map(v => String(v).trim()).filter(Boolean))]
+}
+
+/**
+ * Mark plan items done because the write that finished them landed
+ * (agentic_chat_loop.md §0.11): the bookkeeping rides on the write instead of
+ * taking a step of its own. The next pending item becomes in progress when
+ * none is. Returns the plan as the result shows it, or '' with nothing to do.
+ */
+export function markPlanDone(ctx: ToolContext, ids: string[]): string {
+  if (ids.length === 0) return ''
+  if (ctx.run.plan.length === 0) return 'plan_done was ignored: there is no plan.'
+  const unknown = ids.filter(id => !ctx.run.plan.some(i => i.id === id))
+  let plan: PlanItem[] = ctx.run.plan.map(i => ids.includes(i.id) ? { ...i, status: 'done' as const } : i)
+  if (!plan.some(i => i.status === 'in_progress')) {
+    const next = plan.find(i => i.status === 'pending')
+    if (next) {
+      plan = plan.map(i => i.id === next.id ? { ...i, status: 'in_progress' as const } : i)
+      ctx.run.planBaseline.set(next.id, writesSoFar(ctx.run))
+    }
+  }
+  ctx.run.plan = plan
+  return renderPlan(plan) + (unknown.length > 0 ? `\n(plan_done: ${unknown.map(u => `"${u}"`).join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not in the plan.)` : '')
+}
+
+/** A write's result with its plan_done applied — only when the write landed. */
+export function withPlanDone(ctx: ToolContext, result: ToolResult, ids: string[]): ToolResult {
+  if (!result.ok || ids.length === 0) return result
+  const note = markPlanDone(ctx, ids)
+  if (!note) return result
+  const done = ctx.run.plan.filter(i => i.status === 'done' || i.status === 'dropped').length
+  return { ...result, content: `${result.content}\n\n${note}`, trace: `${result.trace} · 📋 plan ${done}/${ctx.run.plan.length}` }
+}
+
+/** The plan_done property every write tool's schema gets. */
+export const PLAN_DONE_PARAMETER = {
+  type: 'array',
+  description: 'Optional: ids of plan items this write completes. They are marked done once it lands, with no separate plan call.',
+  items: { type: 'string' }
+} as const
 
 export const planTool = defineTool<{ items: unknown; merge: boolean | undefined }>({
   name: 'plan',

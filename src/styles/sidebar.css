@@ -235,3 +235,102 @@
 .layout-tablet-square .sidebar-resize-handle {
   display: none;
 }
+
+/* Attachments: the book's reference files (attachments_and_web.md §1). */
+.attachments-section {
+  border-top: 1px solid var(--border-color);
+  padding: 0.4rem 0.5rem 0.5rem;
+  max-height: 40%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.attachments-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem;
+}
+
+.attachments-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.25rem 0.1rem;
+  cursor: pointer;
+}
+
+.attachments-toggle:hover {
+  color: var(--text-primary);
+}
+
+.attachments-list {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.2rem;
+}
+
+.attachments-note {
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+  padding: 0.2rem 0.3rem;
+}
+
+.attachments-error {
+  color: var(--diff-remove-text);
+}
+
+.attachment-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.35rem 0.4rem;
+  border-radius: 6px;
+  color: var(--text-secondary);
+}
+
+.attachment-item:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.attachment-ref {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--accent);
+  border: 1px solid var(--border-color-hover);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  flex-shrink: 0;
+}
+
+.attachment-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.attachment-name {
+  font-size: 0.82rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.attachment-meta {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}

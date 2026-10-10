@@ -12,13 +12,14 @@ from server_db import get_db
 from wc_text.chapter_index import build_chapter_index  # noqa: F401 — re-exported for callers that need the index alone
 from wc_text.context_ledger import hash_content, ledger_chapter_ids, order_admissions_by_stability, plan_ledger_turn
 from wc_text.context_selection import select_reference_chapters
+from wc_text.attachments import render_attachment_index
 from wc_text.context_window import cjk_ratio_of, estimate_tokens, history_budget_chars, resolve_context_window_tokens
 from wc_text.conversation_summary import build_summary_request, parse_summary_reply, plan_conversation_summary, summary_messages
 from wc_text.diff import strip_diff_markup
 from wc_text.dynamic_context import build_ledger_messages, build_volatile_tail, ledger_block
 from wc_text.freshness import freshness_markers
 from wc_text.image_preservation import replace_images_with_placeholders
-from wc_text.llm_context import build_attachments_label, strip_chat_display_artifacts, trim_history_for_context, was_turn_interrupted
+from wc_text.llm_context import build_attachments_label, html_to_plain_text, strip_chat_display_artifacts, trim_history_for_context, was_turn_interrupted
 from wc_text.reminders import interrupted_turn_reminder, wrap_reminder
 from wc_text.policy import resolve_run_settings
 from wc_text.protocol_choice import resolve_document_protocol
@@ -98,6 +99,19 @@ def save_chat_summary(username: str, book_id: str, summary: Dict[str, str], now:
     save_state(username, book_id, CHAT_SUMMARY_SCOPE, summary, now)
 
 
+def text_seen_in_context(documents: List[Dict[str, Any]], in_context_ids: List[str]) -> Dict[str, str]:
+    """Port of useChatLLM's textSeenInContext: the chapters whose whole current text the request carries (§0.11)."""
+    out: Dict[str, str] = {}
+    for doc_id in in_context_ids:
+        doc = next((d for d in documents if d["id"] == doc_id), None)
+        if doc is None:
+            continue
+        accepted = strip_diff_markup(doc["content"])
+        if len(html_to_plain_text(accepted)) <= MAX_LEDGER_DOC_CHARS:
+            out[doc_id] = hash_content(accepted)
+    return out
+
+
 def agent_history_note(message: Dict[str, Any]) -> str:
     trace = (message.get("agent") or {}).get("trace") if message.get("role") == "assistant" else None
     if not trace:
@@ -109,6 +123,7 @@ def agent_history_note(message: Dict[str, Any]) -> str:
 async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str, images: Optional[List[str]], history: List[Dict[str, Any]],
                            documents: List[Dict[str, Any]], active_document_id: str, selected_text: str, custom_instructions: Optional[str],
                            context_window_tokens: Optional[int], state: Dict[str, Any], image_registry: List[Dict[str, str]],
+                           attachments: Optional[List[Dict[str, Any]]] = None,
                            stored_summary: Optional[Dict[str, str]] = None,
                            summarize: Optional[Callable[[str, str], Awaitable[str]]] = None) -> Dict[str, Any]:
     """The messages of a run's first step, and the context state after it.
@@ -206,7 +221,10 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
     attachments_text = build_attachments_label(attached_ids, documents, selection["autoIds"])
     # The turn after a Stop says so (agentic_chat_loop.md §0.8).
     interrupted = f"\n\n{wrap_reminder(interrupted_turn_reminder())}" if was_turn_interrupted(history) else ""
-    final_user: Dict[str, Any] = {"role": "user", "content": f"{tail}\n\nUSER REQUEST:\n{prompt_text}{interrupted}"}
+    # The book's reference files, by reference (attachments_and_web.md §1).
+    index = render_attachment_index(attachments or []) if settings["agentTools"] else ""
+    files = f"\n\n{index}" if index else ""
+    final_user: Dict[str, Any] = {"role": "user", "content": f"{tail}{files}\n\nUSER REQUEST:\n{prompt_text}{interrupted}"}
     if images:
         final_user["images"] = images
     api_messages = [system_prompt, *prefix, *summary_prefix, *history_messages, final_user]

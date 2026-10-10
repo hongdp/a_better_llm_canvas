@@ -3,6 +3,8 @@ open_chapter, delete_chapter."""
 import re
 from typing import Any, Dict, List, Optional, Union
 
+from wc_text.attachments import (ATTACHMENT_RUN_READ_CAP, attachment_budget_note, find_attachment_section, render_attachment_part,
+                                 resolve_attachment_ref)
 from wc_text.chapters import cite_chapter, resolve_chapter
 from wc_text.context_ledger import hash_content
 from wc_text.diff import strip_diff_markup
@@ -39,6 +41,27 @@ def accepted_html(ctx: ToolContext, doc_id: str) -> str:
     if working:
         return working.html
     return strip_diff_markup(next((c["content"] for c in ctx.document.chapters() if c["id"] == doc_id), ""))
+
+
+_ATTACHMENT_REF = re.compile(r"^\s*(?:A|附件)\s*\d+\s*$", re.I)
+
+
+def resolve_ref(ref: Any, chapters: List[Dict[str, Any]], attachments: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """A chapter or an attachment (docs/features/attachments_and_web.md §1): "A1" is an attachment,
+    anything else a chapter first and an attachment's name second. {"chapter"}, {"attachment"} or {"error"}."""
+    if attachments and _ATTACHMENT_REF.match(str(ref)):
+        att = resolve_attachment_ref(ref, attachments)
+        if att is not None:
+            return {"attachment": att}
+    r = resolve_chapter(ref, chapters)
+    if not isinstance(r, str):
+        return {"chapter": r}
+    att = resolve_attachment_ref(ref, attachments) if attachments else None
+    return {"attachment": att} if att is not None else {"error": r}
+
+
+def attachment_list(ctx: ToolContext) -> List[Dict[str, Any]]:
+    return ctx.attachments.list() if ctx.attachments is not None else []
 
 
 def _chapter_refs(raw: Dict[str, Any]) -> List[Any]:
@@ -88,39 +111,109 @@ def _is_intlike(n: Any) -> bool:
     return False
 
 
+MAX_READ_PARTS = 12
+
+
 def _read_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
     if raw is None:
         return "its arguments could not be parsed"
+    fmt = "html" if raw.get("format") == "html" else "text"
+    parts = raw.get("parts")
+    if isinstance(parts, list) and parts:
+        if len(parts) > MAX_READ_PARTS:
+            return f"at most {MAX_READ_PARTS} parts in one call ({len(parts)} were given)"
+        items = []
+        for i, part in enumerate(parts):
+            p = part if isinstance(part, dict) else None
+            if p is not None:
+                ref = p.get("chapter")
+                if ref is None:
+                    chs = p.get("chapters")
+                    ref = chs[0] if isinstance(chs, list) and chs else chs
+            else:
+                ref = part
+            if ref is None or ref == "":
+                return f"part {i + 1} names no chapter"
+            rng = _parse_range(p.get("paragraphs") if p else None)
+            if isinstance(rng, str):
+                return f"part {i + 1}: {rng}"
+            section = p.get("section") if p and isinstance(p.get("section"), str) and js_trim(p["section"]) else None
+            items.append({"ref": ref, "range": rng, "section": section})
+        return {"items": items, "format": fmt}
     refs = _chapter_refs(raw)
     if not refs:
-        return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX])'
+        return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts")'
     rng = _parse_range(raw.get("paragraphs"))
     if isinstance(rng, str):
         return rng
-    return {"refs": refs, "format": "html" if raw.get("format") == "html" else "text", "range": rng}
+    section = raw.get("section") if isinstance(raw.get("section"), str) and js_trim(raw["section"]) else None
+    return {"items": [{"ref": ref, "range": rng, "section": section} for ref in refs], "format": fmt}
 
 
 async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
-    refs, fmt, rng = args["refs"], args["format"], args["range"]
+    items, fmt = args["items"], args["format"]
     chapters = ctx.document.chapters()
+    attachments = attachment_list(ctx)
     resolved: List[Dict[str, Any]] = []
     errors: List[str] = []
-    for ref in refs:
-        r = resolve_chapter(ref, chapters)
-        if isinstance(r, str):
-            errors.append(r)
-        elif not any(c["id"] == r["id"] for c in resolved):
-            resolved.append(r)
+    for item in items:
+        r = resolve_ref(item["ref"], chapters, attachments)
+        if "error" in r:
+            errors.append(r["error"])
+            continue
+        key = ("a", r["attachment"]["id"]) if "attachment" in r else ("c", r["chapter"]["id"])
+        if item.get("section") and "attachment" not in r:
+            errors.append(f'section="{item["section"]}" names a part of an attachment; for a chapter, pass paragraphs instead.')
+            continue
+        if not any(x["key"] == key and x["range"] == item["range"] and x.get("section") == item.get("section") for x in resolved):
+            resolved.append({**r, "key": key, "range": item["range"], "section": item.get("section")})
     if not resolved:
         return _fail("read_chapter", "\n".join(errors))
 
-    await ctx.document.ensure_loaded([c["id"] for c in resolved])
+    await ctx.document.ensure_loaded(list(dict.fromkeys(x["chapter"]["id"] for x in resolved if "chapter" in x)))
 
     parts: List[str] = []
     traces: List[str] = []
     budget = READ_CALL_CAP
-    skipped: List[Dict[str, Any]] = []
-    for chapter in resolved:
+    skipped: List[str] = []
+    for entry in resolved:
+        rng = entry["range"]
+        if "attachment" in entry:
+            # A reference file: text only, never written (attachments_and_web.md §1).
+            att = entry["attachment"]
+            paras = await ctx.attachments.paragraphs(att["id"])
+            if entry.get("section"):
+                # A section by its heading: "第三十章" and "第30章" are the same chapter.
+                sec = find_attachment_section(att["sections"], entry["section"])
+                if sec is None:
+                    sample = ", ".join(f'"{s["title"]}"' for s in att["sections"][:6])
+                    errors.append(f'{att["ref"]} "{att["name"]}" has no section matching "{entry["section"]}".'
+                                  + (f" Its sections begin {sample}…; grep chapters=[\"{att['ref']}\"] for a heading." if sample else " It has no section headings; grep it instead."))
+                    continue
+                rng = {"from": sec["from"], "to": sec["to"]}
+            start = rng["from"] if rng else 1
+            if start > len(paras):
+                errors.append(f'{att["ref"]} "{att["name"]}" has {len(paras)} paragraphs; there is no ¶{start}.')
+                continue
+            # Never the whole file: the turn's reads of attachments are capped (§1, user requirement).
+            left = ATTACHMENT_RUN_READ_CAP - ctx.run.attachment_chars
+            if left <= 0:
+                errors.append(attachment_budget_note(att["ref"], ctx.run.attachment_chars))
+                continue
+            if budget <= 0:
+                skipped.append(f'{att["ref"]}{f" ¶{start}" if rng else ""}')
+                continue
+            out = render_attachment_part(att, paras, start, rng["to"] if rng else None, min(READ_CHAPTER_CAP, budget, left))
+            if out["last"] < start:
+                # Not even its first paragraph fits in what the turn has left.
+                errors.append(attachment_budget_note(att["ref"], ctx.run.attachment_chars))
+                continue
+            budget -= out["used"]
+            ctx.run.attachment_chars += out["used"]
+            parts.append(out["content"])
+            traces.append(f'{att["ref"]} "{att["name"]}" ¶{start}–{out["last"]} ({out["used"] / 1000:.1f}k, attachment)')
+            continue
+        chapter = entry["chapter"]
         if user_edited(ctx, chapter["id"]):
             forget_chapter(ctx, chapter["id"])
         html = accepted_html(ctx, chapter["id"])
@@ -143,7 +236,7 @@ async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
             traces.append(f"{cite_chapter(chapter)} (repeat)")
             continue
         if budget <= 0:
-            skipped.append(chapter)
+            skipped.append(f"{cite_chapter(chapter)}{f' ¶{start}–{to}' if rng else ''}")
             continue
 
         cap = min(READ_CHAPTER_CAP, budget)
@@ -171,11 +264,14 @@ async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
 
         ctx.run.reads[key] = ctx.run.step
         ctx.run.read_ids[chapter["id"]] = None
+        if whole:
+            # The whole current text, seen: enough to rewrite a plain chapter (§0.11).
+            ctx.run.text_seen[chapter["id"]] = hash_content(html)
         if fmt == "html":
             ctx.run.html_shown.add(chapter["id"])
             ctx.run.known.setdefault(chapter["id"], stored)
     if skipped:
-        parts.append(f"[Not returned — this call reached its {READ_CALL_CAP}-character limit: {', '.join(cite_chapter(c) for c in skipped)}. Ask for them in another call.]")
+        parts.append(f"[Not returned — this call reached its {READ_CALL_CAP}-character limit: {', '.join(skipped)}. Ask for them in another call.]")
     if errors:
         parts.append("\n".join(errors))
     return result(not errors, "\n\n".join(parts), f"📖 read {', '.join(traces)}", retryable=bool(errors) and not traces)
@@ -186,15 +282,24 @@ read_chapter_tool = Tool(
     description=(
         "Read one or more chapters. Find them in the CHAPTER INDEX and pass their numbers. "
         'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency; '
-        '"html" returns the chapter\'s HTML without numbers, for editing — edits copy their SEARCH text from it. '
+        '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. '
         'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. '
+        f'To look at several places at once, pass parts (up to {MAX_READ_PARTS}), e.g. [{{"chapter":"3","paragraphs":"10-16"}},{{"chapter":"8","paragraphs":"30-36"}}]: one call, one step. '
         f"A long chapter comes back in parts of at most {READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. "
-        "If no title or summary tells you where something is, use grep."),
+        "If no title or summary tells you where something is, use grep. "
+        'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range, or with section (a heading such as "第三十章"; 第30章 is the same chapter). '
+        "A turn reads at most 100,000 characters of attachments: find passages with grep, or let analyze_book read a whole file."),
     parameters={"type": "object", "properties": {
-        "chapters": {"type": "array", "description": "Chapter numbers from the CHAPTER INDEX (or exact titles).", "items": {"type": "string"}},
-        "format": {"type": "string", "description": '"text" (default, numbered paragraphs) or "html" (for editing).'},
+        "chapters": {"type": "array", "description": "Chapter numbers from the CHAPTER INDEX (or exact titles), or attachment references (A1).", "items": {"type": "string"}},
+        "format": {"type": "string", "description": '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).'},
         "paragraphs": {"type": "string", "description": 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.'},
-    }, "required": ["chapters"]},
+        "section": {"type": "string", "description": 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter).'},
+        "parts": {"type": "array", "description": "Instead of chapters/paragraphs: several places to read in one call, each a chapter and an optional paragraph range.",
+                  "items": {"type": "object", "properties": {
+                      "chapter": {"type": "string", "description": "A chapter number from the CHAPTER INDEX (or its exact title)."},
+                      "paragraphs": {"type": "string", "description": "Optional range, as in paragraphs above."},
+                      "section": {"type": "string", "description": "Attachments only: a section by its heading."}}, "required": ["chapter"]}},
+    }},
     kind="read", parse=_read_parse, execute=_read_execute,
 )
 
@@ -208,42 +313,48 @@ def _compile_pattern(pattern: str):
         return re.compile(re.escape(pattern), re.I), True
 
 
+MAX_GREP_PATTERNS = 10
+
+
 def _grep_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
-    pattern = raw.get("pattern") if raw and isinstance(raw.get("pattern"), str) else (raw.get("query") if raw and isinstance(raw.get("query"), str) else "")
-    if not js_trim(pattern):
+    listed = [p for p in raw.get("patterns") if isinstance(p, str) and js_trim(p)] if raw and isinstance(raw.get("patterns"), list) else []
+    single = raw.get("pattern") if raw and isinstance(raw.get("pattern"), str) else (raw.get("query") if raw and isinstance(raw.get("query"), str) else "")
+    patterns = list(dict.fromkeys(listed if listed else ([single] if js_trim(single) else [])))
+    if not patterns:
         return "the pattern was empty"
+    if len(patterns) > MAX_GREP_PATTERNS:
+        return f"at most {MAX_GREP_PATTERNS} patterns in one call ({len(patterns)} were given)"
 
     def num(v: Any, fallback: int, cap: int) -> int:
         return max(0, min(cap, int(v))) if isinstance(v, (int, float)) and not isinstance(v, bool) else fallback
-    return {"pattern": pattern, "refs": _chapter_refs(raw) if raw else [], "output": "chapters" if raw and raw.get("output") == "chapters" else "snippets",
+    return {"patterns": patterns, "refs": _chapter_refs(raw) if raw else [], "output": "chapters" if raw and raw.get("output") == "chapters" else "snippets",
             "context": num(raw.get("context") if raw else None, DEFAULT_CONTEXT, MAX_CONTEXT),
             "maxResults": max(1, num(raw.get("max_results") if raw else None, DEFAULT_SEARCH_RESULTS, MAX_SEARCH_RESULTS))}
 
 
-async def _grep_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
-    pattern, refs, output, context, max_results = args["pattern"], args["refs"], args["output"], args["context"], args["maxResults"]
-    all_chapters = ctx.document.chapters()
-    scope = [{**c, "number": i + 1} for i, c in enumerate(all_chapters)]
-    if refs:
-        picked: List[Dict[str, Any]] = []
-        for ref in refs:
-            r = resolve_chapter(ref, all_chapters)
-            if isinstance(r, str):
-                return _fail("grep", r)
-            if not any(c["id"] == r["id"] for c in picked):
-                picked.append(scope[r["number"] - 1])
-        scope = picked
-    await ctx.document.ensure_loaded([c["id"] for c in scope])
-    loaded_now = ctx.document.chapters()
-    unloaded = [c for c in scope if next((n for n in loaded_now if n["id"] == c["id"]), {}).get("loaded") is False]
+def _search_pattern(pattern: str, scope: List[Dict[str, Any]], ctx: ToolContext, output: str, context: int, max_results: int, scoped: bool,
+                    attached: Optional[List[Any]] = None) -> Dict[str, Any]:
     regex, literal = _compile_pattern(pattern)
-
     hits: List[str] = []
     per_chapter: List[str] = []
     total = 0
+    for att, paras in attached or []:
+        # A reference file named in `chapters` (attachments_and_web.md §1); never searched otherwise.
+        label = f'{att["ref"]} "{att["name"]}"'
+        count = 0
+        for n, text in enumerate(paras, start=1):
+            for m in regex.finditer(text):
+                if not m.group(0):
+                    continue
+                count += 1
+                if output == "snippets" and len(hits) < max_results:
+                    start = max(0, m.start() - context)
+                    end = min(len(text), m.end() + context)
+                    hits.append(f'{label} ¶{n}: {"…" if start > 0 else ""}{re.sub(r"\s+", " ", text[start:end])}{"…" if end < len(text) else ""}')
+        if count:
+            per_chapter.append(f'{label} — {count} match{"" if count == 1 else "es"}')
+            total += count
     for chapter in scope:
-        if chapter in unloaded:
-            continue
         count = 0
         for para in chapter_paragraphs(accepted_html(ctx, chapter["id"])):
             text = para["text"]
@@ -265,18 +376,53 @@ async def _grep_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
         elif count > 0:
             per_chapter.append(f'#{chapter["number"]} "{chapter["title"]}" — {count} match{"" if count == 1 else "es"}')
             total += count
-
-    scope_note = f" in {len(scope)} chapter(s)" if refs else ""
+    scope_note = f" in {len(scope) + len(attached or [])} chapter(s)" if scoped else ""
     literal_note = " (not a valid regular expression; searched as plain text)" if literal else ""
     if total == 0:
         head = f"No matches for /{pattern}/{scope_note}{literal_note}."
     else:
         head = f"{total} match(es) in {len(per_chapter)} chapter(s){scope_note}{literal_note}" + (f"; showing the first {len(hits)}" if output == "snippets" and total > len(hits) else "") + ":"
+    return {"pattern": pattern, "head": head, "lines": per_chapter if output == "chapters" else hits, "total": total, "chapterCount": len(per_chapter)}
+
+
+async def _grep_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    patterns, refs, output, context, max_results = args["patterns"], args["refs"], args["output"], args["context"], args["maxResults"]
+    all_chapters = ctx.document.chapters()
+    scope = [{**c, "number": i + 1} for i, c in enumerate(all_chapters)]
+    attachments_scope: List[Dict[str, Any]] = []
+    if refs:
+        picked: List[Dict[str, Any]] = []
+        known = attachment_list(ctx)
+        for ref in refs:
+            r = resolve_ref(ref, all_chapters, known)
+            if "error" in r:
+                return _fail("grep", r["error"])
+            if "attachment" in r:
+                if not any(a["id"] == r["attachment"]["id"] for a in attachments_scope):
+                    attachments_scope.append(r["attachment"])
+            elif not any(c["id"] == r["chapter"]["id"] for c in picked):
+                picked.append(scope[r["chapter"]["number"] - 1])
+        scope = picked
+    await ctx.document.ensure_loaded([c["id"] for c in scope])
+    attached = [(a, await ctx.attachments.paragraphs(a["id"])) for a in attachments_scope]
+    loaded_now = ctx.document.chapters()
+    unloaded = [c for c in scope if next((n for n in loaded_now if n["id"] == c["id"]), {}).get("loaded") is False]
+    searchable = [c for c in scope if c not in unloaded]
+    results = [_search_pattern(p, searchable, ctx, output, context, max_results, bool(refs), attached) for p in patterns]
+
     skipped = [f"Not searched — their text could not be loaded: {', '.join(f'#{c['number']} \"{c['title']}\"' for c in unloaded)}."] if unloaded else []
-    where = "in the whole book" if not refs else (f"in {', '.join(f'#{c['number']}' for c in scope)}" if len(scope) <= 4 else f"in {len(scope)} chapters")
-    across = f" in {len(per_chapter)} chapter(s)" if len(per_chapter) > 1 or (not refs and per_chapter) else ""
-    return result(True, "\n".join([head, *(per_chapter if output == "chapters" else hits), *skipped]),
-                  f"🔎 grep /{pattern}/ {where} → {total} match{'' if total == 1 else 'es'}{across}" + (f" · {len(unloaded)} not loaded" if unloaded else ""))
+    labels = [f"#{c['number']}" for c in scope] + [a["ref"] for a, _ in attached]
+    where = "in the whole book" if not refs else (f"in {', '.join(labels)}" if len(labels) <= 4 else f"in {len(labels)} chapters")
+    not_loaded = f" · {len(unloaded)} not loaded" if unloaded else ""
+    if len(results) == 1:
+        r = results[0]
+        across = f" in {r['chapterCount']} chapter(s)" if r["chapterCount"] > 1 or (not refs and r["chapterCount"]) else ""
+        return result(True, "\n".join([r["head"], *r["lines"], *skipped]),
+                      f"🔎 grep /{r['pattern']}/ {where} → {r['total']} match{'' if r['total'] == 1 else 'es'}{across}" + not_loaded)
+    total = sum(r["total"] for r in results)
+    content = "\n\n".join(["\n".join([f"=== /{r['pattern']}/ ===", r["head"], *r["lines"]]) for r in results] + skipped)
+    each = ", ".join("/" + r["pattern"] + "/ " + str(r["total"]) for r in results)
+    return result(True, content, f"🔎 grep {len(results)} patterns {where} → {each} ({total} in all)" + not_loaded)
 
 
 grep_tool = Tool(
@@ -284,15 +430,17 @@ grep_tool = Tool(
     description=(
         "Search the book like grep: a regular expression (case-insensitive) over every chapter's text, or only the chapters you name. "
         'Use it to locate where a name, phrase, object or event appears before reading — e.g. "阿青|阿红", "第[一二三]次", "outline". '
-        'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read_chapter paragraphs="…"; output "chapters" returns only the chapters that match, with counts. '
-        "Chapter titles are searched too."),
+        f"To check several things at once, pass patterns (up to {MAX_GREP_PATTERNS}): each is searched and reported on its own — one call, one step. "
+        'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read_chapter paragraphs="…", or change it with edit_paragraphs; output "chapters" returns only the chapters that match, with counts. '
+        'Chapter titles are searched too. An attachment (A1…) is searched only when named in chapters.'),
     parameters={"type": "object", "properties": {
         "pattern": {"type": "string", "description": "A JavaScript regular expression, matched case-insensitively. Plain words work as they are."},
-        "chapters": {"type": "array", "description": "Optional: limit the search to these chapters (numbers from the CHAPTER INDEX, or titles).", "items": {"type": "string"}},
+        "patterns": {"type": "array", "description": f"Instead of pattern: up to {MAX_GREP_PATTERNS} expressions, each searched and reported separately.", "items": {"type": "string"}},
+        "chapters": {"type": "array", "description": "Optional: limit the search to these chapters (numbers from the CHAPTER INDEX, or titles), or search attachments (A1).", "items": {"type": "string"}},
         "output": {"type": "string", "description": '"snippets" (default) or "chapters".'},
         "context": {"type": "integer", "description": f"Characters of text on each side of a match in snippets. Default {DEFAULT_CONTEXT}, at most {MAX_CONTEXT}."},
-        "max_results": {"type": "integer", "description": f"Snippets to return. Default {DEFAULT_SEARCH_RESULTS}, at most {MAX_SEARCH_RESULTS}."},
-    }, "required": ["pattern"]},
+        "max_results": {"type": "integer", "description": f"Snippets to return per pattern. Default {DEFAULT_SEARCH_RESULTS}, at most {MAX_SEARCH_RESULTS}."},
+    }},
     kind="read", parse=_grep_parse, execute=_grep_execute,
 )
 

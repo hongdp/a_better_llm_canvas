@@ -104,6 +104,12 @@ function App() {
   // Image generation modal state
   const [isImageGenOpen, setIsImageGenOpen] = useState(false)
 
+  // The book's reference files (attachments_and_web.md §1): the sidebar
+  // lists them and the agent's index is built from them.
+  useEffect(() => {
+    if (isStoreInitialized && user) void useAppStore.getState().loadAttachments(activeBookId)
+  }, [isStoreInitialized, user, activeBookId])
+
   // Clear timeout on unmount
   useEffect(() => {
     return () => {

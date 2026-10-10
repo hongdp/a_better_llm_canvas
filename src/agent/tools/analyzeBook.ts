@@ -5,12 +5,16 @@
  * `ctx.analyze`, which is absent where no model is wired.
  */
 import { defineTool } from '../registry'
-import { citeChapter, resolveChapter } from '../chapters'
+import { citeChapter } from '../chapters'
+import { attachmentList, resolveRef } from './bookReads'
+import { attachmentChunks, type AttachmentMeta } from '../../utils/attachments'
 import type { ToolResult } from '../types'
 import { stripDiffMarkup } from '../../utils/diff'
 
 /** Notes returned to the model, at most — the size of one chapter read. */
 const NOTES_CAP = 20_000
+/** An attachment is cut into pieces of at most this many characters before batching (attachments_and_web.md §1). */
+export const ATTACHMENT_CHUNK_CHARS = 40_000
 
 export const analyzeBookTool = defineTool<{ task: string; refs: unknown[] }>({
   name: 'analyze_book',
@@ -21,7 +25,7 @@ export const analyzeBookTool = defineTool<{ task: string; refs: unknown[] }>({
     type: 'object',
     properties: {
       task: { type: 'string', description: 'What the notes are for, e.g. "list every promise 晓晓 makes and whether it is kept".' },
-      chapters: { type: 'array', items: { type: 'string' }, description: 'Optional: only these chapters (numbers from the CHAPTER INDEX, or titles).' }
+      chapters: { type: 'array', items: { type: 'string' }, description: 'Optional: only these chapters (numbers from the CHAPTER INDEX, or titles), or attachments (A1) — a whole attached novel is read section by section.' }
     },
     required: ['task']
   },
@@ -38,12 +42,16 @@ export const analyzeBookTool = defineTool<{ task: string; refs: unknown[] }>({
     if (!analyze) return { ok: false, retryable: false, content: 'No model is available to analyze the book.', trace: '⚠️ analyze_book: not available' }
     const all = ctx.document.chapters()
     let scope = all.map((c, i) => ({ ...c, number: i + 1 }))
+    const files: AttachmentMeta[] = []
     if (refs.length > 0) {
       const picked: typeof scope = []
+      const known = attachmentList(ctx)
       for (const ref of refs) {
-        const r = resolveChapter(ref, all)
-        if (typeof r === 'string') return { ok: false, retryable: true, content: `analyze_book was not run: ${r}`, trace: `⚠️ analyze_book: ${r.split('\n')[0]}` }
-        if (!picked.some(c => c.id === r.id)) picked.push(scope[r.number - 1])
+        const r = resolveRef(ref, all, known)
+        if ('error' in r) return { ok: false, retryable: true, content: `analyze_book was not run: ${r.error}`, trace: `⚠️ analyze_book: ${r.error.split('\n')[0]}` }
+        if ('attachment' in r) {
+          if (!files.some(a => a.id === r.attachment.id)) files.push(r.attachment)
+        } else if (!picked.some(c => c.id === r.chapter.id)) picked.push(scope[r.chapter.number - 1])
       }
       scope = picked
     }
@@ -60,13 +68,19 @@ export const analyzeBookTool = defineTool<{ task: string; refs: unknown[] }>({
         content: ctx.run.docs.get(c.id)?.html ?? stripDiffMarkup(now.find(n => n.id === c.id)?.content ?? '')
       }))
       .filter(c => c.content.trim())
+    // A whole novel as an attachment: a section per pseudo-chapter, cut to fit a batch.
+    for (const att of files) {
+      const paras = await (ctx.attachments as NonNullable<typeof ctx.attachments>).paragraphs(att.id)
+      attachmentChunks(att, paras, ATTACHMENT_CHUNK_CHARS).forEach((chunk, i) => chapters.push({ id: `${att.id}#${i}`, title: chunk.title, content: chunk.text }))
+    }
 
     const out = await analyze.run(task, chapters, (done, total) => {
       ctx.ui.progress(`📚 reading the book for analysis … batch ${Math.min(done + 1, total)}/${total}`)
     })
     ctx.ui.progress(null)
 
-    const where = refs.length === 0 ? 'the book' : scope.length <= 4 ? scope.map(c => `#${c.number}`).join(', ') : `${scope.length} chapters`
+    const labels = [...scope.map(c => `#${c.number}`), ...files.map(a => a.ref)]
+    const where = refs.length === 0 ? 'the book' : labels.length <= 4 ? labels.join(', ') : `${labels.length} chapters`
     const notes = out.notes.length > NOTES_CAP ? `${out.notes.slice(0, NOTES_CAP)}\n[notes cut at ${NOTES_CAP} characters]` : out.notes
     const ended = out.stopped ? ` Stopped by the user after ${out.batches} of ${out.total} batches.`
       : out.failed ? ` Batch ${out.batches + 1} of ${out.total} failed (${out.failed}); the notes cover the batches before it.`

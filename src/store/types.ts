@@ -10,6 +10,7 @@ import type { SettingsSlice } from './slices/settingsSlice'
 import type { UiSlice } from './slices/uiSlice'
 import type { BooksSlice } from './slices/booksSlice'
 import type { AuthSlice } from './slices/authSlice'
+import type { AttachmentsSlice } from './slices/attachmentsSlice'
 
 export type AppState = DocumentsSlice &
   VersionsSlice &
@@ -17,7 +18,8 @@ export type AppState = DocumentsSlice &
   SettingsSlice &
   UiSlice &
   BooksSlice &
-  AuthSlice
+  AuthSlice &
+  AttachmentsSlice
 
 // Minimal shapes of the document/version metadata returned by the books API
 // (content is omitted server-side and lazy-loaded on demand).

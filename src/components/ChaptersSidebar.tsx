@@ -3,6 +3,7 @@ import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
 import { ImportUrlModal } from './ImportUrlModal'
+import { AttachmentsSection } from './AttachmentsSection'
 import { useTranslation } from '../i18n'
 import { SIDEBAR_WIDTH, clampSize, loadPersistedSize, savePersistedSize } from '../utils/layoutPrefs'
 
@@ -470,6 +471,8 @@ export const ChaptersSidebar: React.FC = () => {
           )
         })}
       </div>
+
+      <AttachmentsSection />
 
       <div style={{ padding: '1rem', borderTop: '1px solid var(--border-color)', display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
         <button

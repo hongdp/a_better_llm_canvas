@@ -42,6 +42,17 @@ function editsByChapter(blocks: EditBlock[]): Record<string, unknown>[] {
   return [...groups.entries()].map(([chapter, edits]) => (chapter ? { chapter, edits } : { edits }))
 }
 
+/** The plan item ids named by `plan_done="a,b"` on the reply's <canvas> and <edit> tags, in order, once each. */
+export function planDoneAttributes(text: string): string[] {
+  const ids: string[] = []
+  for (const m of text.matchAll(/<(?:canvas|edit)\b[^>]*?\bplan_done\s*=\s*(?:"([^"]*)"|'([^']*)')/gi)) {
+    for (const id of (m[1] ?? m[2] ?? '').split(/[,，\s]+/)) {
+      if (id && !ids.includes(id)) ids.push(id)
+    }
+  }
+  return ids
+}
+
 function markupInvocations(parsed: ParsedAssistantResponse, step: number): ToolInvocation[] {
   let n = 0
   const make = (name: string, args: Record<string, unknown>, unclosed?: boolean): ToolInvocation => ({
@@ -116,8 +127,16 @@ export function collectStep(
   }
 
   const parsed = parseAssistantResponse(text)
+  const markup = markupInvocations(parsed, step)
+  // `plan_done="…"` on any tag of the reply goes to its LAST write, so the
+  // items are marked once every write of the reply has landed (§0.11).
+  const planDone = planDoneAttributes(text)
+  if (planDone.length > 0 && markup.length > 0) {
+    const last = markup[markup.length - 1]
+    markup[markup.length - 1] = { ...last, args: { ...(last.args ?? {}), plan_done: planDone } }
+  }
   return {
-    invocations: [...native, ...markupInvocations(parsed, step)],
+    invocations: [...native, ...markup],
     chatText: parsed.chatText,
     strayMarkup: parsed.strayMarkup,
     unknownCalls,

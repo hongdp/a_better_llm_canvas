@@ -36,6 +36,8 @@ import server_scrape
 import server_generation
 import server_events
 import server_runs
+import server_attachments
+import server_web
 from server_config import sanitize_id
 from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID, record_last_active_book, clear_last_active_book
 from server_auth import get_authenticated_username
@@ -118,7 +120,10 @@ app.include_router(server_scrape.router)
 app.include_router(server_generation.router)
 # Server-side agent runs (/api/books/{id}/runs*, backend_authority.md §4.3)
 server_runs.ensure_tables()
+server_attachments.ensure_tables()
 app.include_router(server_runs.router)
+app.include_router(server_attachments.router)
+app.include_router(server_web.router)
 
 
 # ============================================================
@@ -493,6 +498,7 @@ async def delete_book_endpoint(request: Request, book_id: str):
         conn.close()
 
     # Delete content files
+    server_attachments.delete_book_attachments(username, safe_book_id)
     delete_book_content_dir(username, safe_book_id)
     return {"success": True}
 
@@ -1155,6 +1161,7 @@ async def delete_book_legacy(request: Request):
     finally:
         conn.close()
 
+    server_attachments.delete_book_attachments(username, safe_book_id)
     delete_book_content_dir(username, safe_book_id)
     return {"success": True}
 

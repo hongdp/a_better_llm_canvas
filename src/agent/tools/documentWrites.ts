@@ -41,15 +41,27 @@ import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { reinsertMissingImages } from '../../utils/imagePreservation'
 import { htmlToPlainText } from '../../utils/llmContext'
-import { chapterChars } from '../../utils/paragraphs'
+import { chapterChars, isPlainChapterHtml } from '../../utils/paragraphs'
+import { hashContent } from '../../utils/contextLedger'
 import { contentWithRenamedHeading, leadingH1Text } from '../../utils/titleSync'
 import { nearestHint } from '../../utils/editHints'
+import { applyParagraphEdits, type ParagraphAction, type ParagraphEdit } from '../../utils/paragraphs'
+import { PLAN_DONE_PARAMETER, planDoneArg, withPlanDone } from './plan'
 
 const schemaOf = (name: DocumentToolName) => {
   const tool = DOCUMENT_TOOLS.find(t => t.name === name)
   if (!tool) throw new Error(`No schema for ${name}`)
-  return { name: tool.name, description: tool.description, parameters: tool.parameters }
+  // Every write may finish plan items (agentic_chat_loop.md §0.11).
+  return {
+    name: tool.name,
+    description: tool.description,
+    parameters: { ...tool.parameters, properties: { ...tool.parameters.properties, plan_done: PLAN_DONE_PARAMETER } }
+  }
 }
+
+/** A tool result once it is ready — synchronously when it already is. */
+const then = (r: ToolResult | Promise<ToolResult>, fn: (r: ToolResult) => ToolResult): ToolResult | Promise<ToolResult> =>
+  r instanceof Promise ? r.then(fn) : fn(r)
 
 // ── Targets ─────────────────────────────────────────────────────────────────
 
@@ -329,6 +341,25 @@ export function withLoaded(ctx: ToolContext, target: Target, fn: () => ToolResul
   return ctx.document.ensureLoaded([target.id]).then(fn)
 }
 
+/**
+ * The model has seen enough of a chapter to rewrite it whole: its HTML this
+ * run, or — for a chapter of plain paragraphs, whose text view is its HTML —
+ * its whole current text (agentic_chat_loop.md §0.11).
+ *
+ * Problem: 12 of 24 rewrites in three days of logs were preceded by a step
+ *   that only read the chapter's HTML, three more were refused "not read
+ *   yet" first; the model had the chapter's whole text in context already.
+ * Fix: a rewrite of a plain chapter whose current accepted reading has the
+ *   hash the model saw (RunState.textSeen) goes through. Anything the text
+ *   view hides (an image, a tag inside a paragraph, a list) still needs the
+ *   HTML read.
+ */
+export function seenEnoughToRewrite(ctx: ToolContext, id: string, acceptedHtml: string): boolean {
+  if (ctx.run.htmlShown.has(id)) return true
+  const seen = ctx.run.textSeen.get(id)
+  return seen !== undefined && seen === hashContent(acceptedHtml) && isPlainChapterHtml(acceptedHtml)
+}
+
 const unseen = (target: Target): ToolResult => ({
   ok: false,
   retryable: true,
@@ -393,7 +424,7 @@ const htmlArg = (raw: Record<string, unknown> | null) =>
 
 // ── update_document ─────────────────────────────────────────────────────────
 
-export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; argumentsLost: boolean }>({
+export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; argumentsLost: boolean; planDone: string[] }>({
   ...schemaOf('update_document'),
   kind: 'write',
   markupForm: true,
@@ -401,7 +432,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
   isAvailable: () => true,
   // Unparseable arguments mean the call was cut off mid-document. That is a
   // truncated rewrite, not an unusable request, and it is reported as one.
-  parse: raw => ({ html: htmlArg(raw), chapter: rewriteTarget(raw), argumentsLost: raw === null }),
+  parse: raw => ({ html: htmlArg(raw), chapter: rewriteTarget(raw), argumentsLost: raw === null, planDone: planDoneArg(raw) }),
   preview: (text, ctx) => {
     // The live preview: the partial `html` argument is readable long before
     // the JSON closes (205 deltas measured on a real stream). The target is
@@ -420,13 +451,13 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
       : before('chapter') ? completeScalarArgument(text, 'chapter') : undefined
     previewRewrite(ctx, ref, trimIncompleteHtmlTail(partial))
   },
-  execute: ({ html, chapter, argumentsLost }, ctx, call): ToolResult | Promise<ToolResult> => {
+  execute: ({ html, chapter, argumentsLost, planDone }, ctx, call): ToolResult | Promise<ToolResult> => {
     const target = resolveTarget(chapter, ctx)
     if (typeof target === 'string') return { ok: false, retryable: true, content: target, trace: `⚠️ rewrite: ${target.split('\n')[0]}` }
     ctx.ui.progress(null)
     if (ctx.document.openId() !== target.id) ctx.editor.discardPreview()
 
-    return withLoaded(ctx, target, () => {
+    return then(withLoaded(ctx, target, () => {
       if (userEdited(ctx, target.id)) return editedMeanwhile(ctx, target)
       const closed = !argumentsLost && call.unclosed !== true
       if (closed && !html.trim()) {
@@ -438,7 +469,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
         return { ok: false, retryable: false, content: `${citeChapter(target)} has a selection rewrite in this turn; a full rewrite would overwrite it.`, trace: '⚠️ rewrite skipped: it would overwrite the selection rewrite' }
       }
       const st = docState(ctx, target)
-      if (!ctx.run.htmlShown.has(target.id) && !isBlankContent(st.html)) {
+      if (!seenEnoughToRewrite(ctx, target.id, st.html) && !isBlankContent(st.html)) {
         if (isNewChapterRef(chapter)) {
           // A rewrite of text the model never saw could destroy the user's.
           return {
@@ -449,7 +480,15 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
             trace: `⛔ new_chapter "${target.title}" is #${target.number}, not read — not overwritten`
           }
         }
-        return unseen(target)
+        return {
+          ok: false,
+          retryable: true,
+          content: `You have not seen the whole current text of ${citeChapter(target)} in this turn, so it was not rewritten. ` +
+            (isPlainChapterHtml(st.html)
+              ? `Read it (read_chapter with chapters=[${target.number}]; text format is enough for this chapter), then write it.`
+              : `It has formatting or images a text read does not show: read its HTML (read_chapter with chapters=[${target.number}] and format="html"), then write it.`),
+          trace: `⛔ rewrite of ${citeChapter(target)} refused — not read yet`
+        }
       }
 
       // Guard the destructive full-document replacement: a response that was
@@ -514,13 +553,13 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
         trace: `✏️ rewrote ${citeChapter(target)} (${chars} chars)`,
         effects: { reinsertedImages: reinserted }
       }
-    })
+    }), r => withPlanDone(ctx, r, planDone))
   }
 })
 
 // ── edit_document ───────────────────────────────────────────────────────────
 
-export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknown }>({
+export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknown; planDone: string[] }>({
   ...schemaOf('edit_document'),
   kind: 'write',
   markupForm: true,
@@ -532,9 +571,13 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       .filter((e): e is { search: string; replace?: unknown } =>
         !!e && typeof e === 'object' && typeof (e as { search?: unknown }).search === 'string')
       .map(e => ({ search: e.search, replace: typeof e.replace === 'string' ? e.replace : '' }))
-    return edits.length > 0 ? { edits, chapter: chapterArg(raw) } : 'it contained no usable edit (each needs a "search" string)'
+    return edits.length > 0 ? { edits, chapter: chapterArg(raw), planDone: planDoneArg(raw) } : 'it contained no usable edit (each needs a "search" string)'
   },
-  execute: ({ edits, chapter }, ctx): ToolResult | Promise<ToolResult> => {
+  execute: ({ edits, chapter, planDone }, ctx): ToolResult | Promise<ToolResult> => then(editDocument(edits, chapter, ctx), r => withPlanDone(ctx, r, planDone))
+})
+
+function editDocument(edits: EditBlock[], chapter: unknown, ctx: ToolContext): ToolResult | Promise<ToolResult> {
+  {
     const target = resolveTarget(chapter, ctx)
     if (typeof target === 'string') return { ok: false, retryable: true, content: target, trace: `⚠️ edit: ${target.split('\n')[0]}` }
     if (!ctx.run.htmlShown.has(target.id)) return unseen(target)
@@ -609,7 +652,7 @@ export const editDocumentTool = defineTool<{ edits: EditBlock[]; chapter: unknow
       return report(failed, '', chapterChars(st.html), [], before)
     })
   }
-})
+}
 
 // ── replace_selection ───────────────────────────────────────────────────────
 
@@ -714,6 +757,112 @@ export const replaceSelectionTool = defineTool<{ html: string }>({
 })
 
 export const DOCUMENT_WRITE_TOOLS = [updateDocumentTool, editDocumentTool, replaceSelectionTool]
+
+// ── edit_paragraphs ─────────────────────────────────────────────────────────
+
+const PARAGRAPH_ACTIONS: ParagraphAction[] = ['replace', 'insert_before', 'insert_after', 'delete']
+
+/** "12", 12, "¶12": a paragraph number; null for anything else. */
+function paragraphNumber(raw: unknown): number | null {
+  const m = /^\s*¶?\s*(\d+)\s*$/.exec(String(raw ?? ''))
+  return m ? Number(m[1]) : null
+}
+
+/**
+ * Edits addressed by paragraph number (agentic_chat_loop.md §0.11).
+ *
+ * Problem: 12 of 17 SEARCH edits in three days of logs were preceded by a
+ *   step that only read the chapter's HTML, to copy SEARCH text from it —
+ *   after grep or a text read had already shown the paragraph and its ¶.
+ * Fix: address the paragraph by that number, anchored by its first words
+ *   (Grok Build's hashline edits): the anchor catches a chapter that changed
+ *   since, the whole call is refused then, and the result gives the current
+ *   text to anchor on. The cut is made in the stored HTML by position
+ *   (utils/paragraphs applyParagraphEdits), so nothing else moves.
+ */
+export const editParagraphsTool = defineTool<{ chapter: unknown; edits: ParagraphEdit[]; planDone: string[] }>({
+  name: 'edit_paragraphs',
+  description:
+    'Change paragraphs of a chapter by their ¶ numbers — the numbers grep and text reads show — with no HTML read and no SEARCH text. ' +
+    'Each edit: paragraph (its ¶ number), action ("replace", "insert_before", "insert_after" or "delete"), html (the new paragraph(s) for replace and inserts; plain text becomes <p> paragraphs, a blank line separating them), ' +
+    'and starts_with: the first words of that paragraph as you read it. Numbers refer to the chapter as it was before this call. ' +
+    'If any starts_with no longer matches (the chapter changed), nothing is applied and you get those paragraphs\' current text. ' +
+    'For changes to most of a chapter, rewrite it instead.',
+  parameters: {
+    type: 'object',
+    properties: {
+      chapter: { type: 'string', description: 'The chapter number from the CHAPTER INDEX (default: the active chapter).' },
+      edits: {
+        type: 'array',
+        description: 'The changes, in any order.',
+        items: {
+          type: 'object',
+          properties: {
+            paragraph: { type: 'integer', description: 'The ¶ number, as grep or read_chapter showed it.' },
+            action: { type: 'string', description: '"replace", "insert_before", "insert_after" or "delete".' },
+            html: { type: 'string', description: 'The new paragraph(s): HTML blocks, or plain text. Not used by delete.' },
+            starts_with: { type: 'string', description: 'The first few words of that paragraph as you read it.' }
+          },
+          required: ['paragraph', 'action', 'starts_with']
+        }
+      },
+      plan_done: PLAN_DONE_PARAMETER
+    },
+    required: ['edits']
+  },
+  kind: 'write',
+  isAvailable: () => true,
+  parse: raw => {
+    if (!raw) return 'its arguments could not be parsed'
+    const list = Array.isArray(raw.edits) ? raw.edits : []
+    if (list.length === 0) return 'no edits were given (pass "edits": [{paragraph, action, html, starts_with}])'
+    const edits: ParagraphEdit[] = []
+    for (const [i, item] of list.entries()) {
+      const e = item && typeof item === 'object' ? item as Record<string, unknown> : {}
+      const paragraph = paragraphNumber(e.paragraph)
+      if (paragraph === null) return `edit ${i + 1} has no paragraph number`
+      const action = String(e.action ?? '').trim().toLowerCase() as ParagraphAction
+      if (!PARAGRAPH_ACTIONS.includes(action)) return `edit ${i + 1}: action must be one of ${PARAGRAPH_ACTIONS.join(', ')}`
+      const startsWith = typeof e.starts_with === 'string' ? e.starts_with : typeof e.startsWith === 'string' ? e.startsWith : ''
+      edits.push({ paragraph, action, startsWith, ...(typeof e.html === 'string' ? { html: e.html } : {}) })
+    }
+    return { chapter: chapterArg(raw), edits, planDone: planDoneArg(raw) }
+  },
+  execute: ({ chapter, edits, planDone }, ctx): ToolResult | Promise<ToolResult> => {
+    if (isNewChapterRef(chapter)) return { ok: false, retryable: true, content: 'edit_paragraphs changes an existing chapter; write a new one with update_document.', trace: '⚠️ edit_paragraphs: not a new chapter' }
+    const target = resolveTarget(chapter, ctx)
+    if (typeof target === 'string') return { ok: false, retryable: true, content: target, trace: `⚠️ edit_paragraphs: ${target.split('\n')[0]}` }
+    // The selection rewrite keeps its own diff in that chapter; edits beside
+    // it go through edit_document, which places them around it.
+    if (target.isStart && ctx.run.selectionAttempted) {
+      return { ok: false, retryable: true, content: `${citeChapter(target)} has a selection rewrite in this turn; change other parts of it with edit_document.`, trace: '⚠️ edit_paragraphs: beside a selection rewrite' }
+    }
+    return then(withLoaded(ctx, target, (): ToolResult => {
+      if (userEdited(ctx, target.id)) return editedMeanwhile(ctx, target)
+      const st = docState(ctx, target)
+      const outcome = applyParagraphEdits(st.html, edits.map(e => (e.html === undefined ? e : { ...e, html: ctx.images.restore(e.html) })))
+      if (!outcome.ok) {
+        return {
+          ok: false,
+          retryable: true,
+          content: `edit_paragraphs on ${citeChapter(target)}: ${outcome.error}`,
+          trace: `⚠️ edit_paragraphs on ${citeChapter(target)}: nothing applied${outcome.stale.length > 0 ? ` (${outcome.stale.length} anchor${outcome.stale.length === 1 ? '' : 's'} out of date)` : ''}`
+        }
+      }
+      st.html = stripBlankParagraphs(outcome.html)
+      st.dirty = true
+      commitDoc(ctx, target, st)
+      touch(ctx, target, 'edits', edits.length, 0)
+      const shift = outcome.paragraphsAfter - outcome.paragraphsBefore
+      return {
+        ok: true,
+        content: `Applied ${edits.length} paragraph edit(s) to ${citeChapter(target)}. It now has ${outcome.paragraphsAfter} paragraphs and ${chapterChars(st.html)} characters.` +
+          (shift !== 0 ? ` Paragraphs after ¶${outcome.firstChanged} moved by ${shift > 0 ? '+' : ''}${shift}: take their new numbers from grep or a read before editing them again.` : ''),
+        trace: `✏️ edited ${citeChapter(target)} by paragraph (${edits.length} change${edits.length === 1 ? '' : 's'})`
+      }
+    }), r => withPlanDone(ctx, r, planDone))
+  }
+})
 
 // ── rename_chapter ──────────────────────────────────────────────────────────
 

@@ -626,3 +626,95 @@ def test_html_read_without_an_edit_is_nudged_once_at_the_ending():
     assert len(h.requests) == 3
     assert "Your last read of a chapter's HTML (read #1 ¶88 (html)) is the step before an edit" in h.requests[2][-1]["content"]
     assert h.summary["endReason"] == "answered"
+
+
+# ── tools that save steps (agentic_chat_loop.md §0.11) ──────────────────────
+
+from wc_agent.tools.book_reads import grep_tool  # noqa: E402
+from wc_agent.tools.document_writes import edit_paragraphs_tool  # noqa: E402
+from wc_agent.tools.plan import plan_tool  # noqa: E402
+from wc_text.context_ledger import hash_content  # noqa: E402
+
+_PLAIN = "<h1>第二章</h1><p>阿青推开门。</p><p>屋里没有人。</p><p>她坐了下来。</p>"
+_FORMATTED = "<p>阿青推开<em>门</em>。</p><p>屋里没有人。</p>"
+
+
+def _efficiency_book() -> FakeBook:
+    return FakeBook("<p>start</p>", chapters=[{"id": "doc-2", "title": "第二章", "content": _PLAIN},
+                                              {"id": "doc-3", "title": "第三章", "content": _FORMATTED},
+                                              {"id": "doc-4", "title": "第四章", "content": "<p>一。</p><p>二。</p><p>三。</p><p>四。</p><p>五。</p>"}])
+
+
+def test_read_chapter_parts_read_several_places_in_one_call():
+    fake = _efficiency_book()
+    out = run_tool(read_chapter_tool, {"parts": [{"chapter": "2", "paragraphs": "2-3"}, {"chapter": "4", "paragraphs": "4-5"}, {"chapter": "4", "paragraphs": "1"}]}, fake.ctx)
+    assert out["ok"] and "¶2 阿青推开门。" in out["content"] and "¶4 四。\n¶5 五。" in out["content"] and "¶1 一。" in out["content"]
+    assert out["trace"] == '📖 read #2 "第二章" ¶2–3 (0.0k, text), #4 "第四章" ¶4–5 (0.0k, text), #4 "第四章" ¶1–1 (0.0k, text)'
+    assert "at most 12 parts" in run_tool(read_chapter_tool, {"parts": [{"chapter": "2"}] * 13}, fake.ctx)["content"]
+
+
+def test_grep_patterns_are_reported_one_by_one():
+    fake = _efficiency_book()
+    out = run_tool(grep_tool, {"patterns": ["阿青", "五|六", "不存在"]}, fake.ctx)
+    assert "=== /阿青/ ===\n2 match(es) in 2 chapter(s):" in out["content"]
+    assert '=== /五|六/ ===\n1 match(es) in 1 chapter(s):\n#4 "第四章" ¶5: 五。' in out["content"]
+    assert out["trace"] == "🔎 grep 3 patterns in the whole book → /阿青/ 2, /五|六/ 1, /不存在/ 0 (3 in all)"
+    single = run_tool(grep_tool, {"pattern": "五"}, fake.ctx)
+    assert single["content"] == '1 match(es) in 1 chapter(s):\n#4 "第四章" ¶5: 五。'
+
+
+def test_a_plain_chapter_is_rewritten_after_its_whole_text_was_read():
+    fake = _efficiency_book()
+    update = DOCUMENT_WRITE_TOOLS[0]
+    assert run_tool(update, {"chapter": "2", "html": "<p>x</p>"}, fake.ctx)["trace"] == '⛔ rewrite of #2 "第二章" refused — not read yet'
+    run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    assert run_tool(update, {"chapter": "2", "html": "<p>新的。</p>"}, fake.ctx)["ok"]
+    fake2 = _efficiency_book()
+    run_tool(read_chapter_tool, {"chapters": ["3"]}, fake2.ctx)
+    out = run_tool(update, {"chapter": "3", "html": "<p>x</p>"}, fake2.ctx)
+    assert not out["ok"] and "formatting or images a text read does not show" in out["content"]
+
+
+def test_text_in_context_at_the_start_counts_until_the_chapter_changes():
+    fake = _efficiency_book()
+    fake.ctx.run.text_seen["doc-2"] = hash_content(_PLAIN)
+    fake.user_edits("doc-2", _PLAIN + "<p>用户加的。</p>")
+    assert not run_tool(DOCUMENT_WRITE_TOOLS[0], {"chapter": "2", "html": "<p>x</p>"}, fake.ctx)["ok"]
+
+
+def test_edit_paragraphs_changes_paragraphs_by_number_and_refuses_a_stale_anchor():
+    fake = _efficiency_book()
+    out = run_tool(edit_paragraphs_tool, {"chapter": "4", "edits": [
+        {"paragraph": 2, "action": "replace", "html": "<p>贰。</p>", "starts_with": "二"},
+        {"paragraph": 4, "action": "delete", "starts_with": "¶4 四"},
+        {"paragraph": 5, "action": "insert_after", "html": "六。", "starts_with": "五"}]}, fake.ctx)
+    assert out["ok"] and out["trace"] == '✏️ edited #4 "第四章" by paragraph (3 changes)'
+    assert strip_diff_markup(fake.last_write("doc-4")) == "<p>一。</p><p>贰。</p><p>三。</p><p>五。</p><p>六。</p>"
+    fake2 = _efficiency_book()
+    stale = run_tool(edit_paragraphs_tool, {"chapter": "4", "edits": [{"paragraph": 1, "action": "replace", "html": "x", "starts_with": "一"},
+                                                                      {"paragraph": 3, "action": "delete", "starts_with": "二"}]}, fake2.ctx)
+    assert not stale["ok"] and "¶3 does not start with what you gave; it now reads: 三。" in stale["content"]
+    assert fake2.last_write("doc-4") is None
+
+
+def test_plan_done_on_a_write_marks_the_item_and_starts_the_next():
+    fake = _efficiency_book()
+    run_tool(plan_tool, {"items": [{"id": "ch2", "title": "改写第二章", "status": "in_progress"}, {"id": "ch4", "title": "改写第四章"}]}, fake.ctx)
+    refused = run_tool(DOCUMENT_WRITE_TOOLS[0], {"chapter": "2", "html": "<p>新。</p>", "plan_done": "ch2"}, fake.ctx)
+    assert not refused["ok"] and fake.ctx.run.plan[0]["status"] == "in_progress"
+    run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    out = run_tool(DOCUMENT_WRITE_TOOLS[0], {"chapter": "2", "html": "<p>新。</p>", "plan_done": ["ch2"]}, fake.ctx)
+    assert out["ok"] and out["trace"].endswith("· 📋 plan 1/2") and "☑ 改写第二章\n▶ 改写第四章" in out["content"]
+    out = run_tool(edit_paragraphs_tool, {"chapter": "4", "edits": [{"paragraph": 1, "action": "delete", "starts_with": "一"}], "plan_done": "ch4, nope"}, fake.ctx)
+    assert '(plan_done: "nope" is not in the plan.)' in out["content"]
+    assert [i["status"] for i in fake.ctx.run.plan] == ["done", "done"]
+
+
+def test_eight_lookup_only_steps_get_one_reminder():
+    reads = [calls("", (f"c{i}", "read_chapter", json.dumps({"chapter": "1", "paragraphs": str(i + 1)}))) for i in range(10)]
+    h = Harness([*reads, DONE], budgets={"maxSteps": 0})
+    asyncio.run(h.run.start())
+    said = [any("only looked things up" in (m.get("content") or "") for m in r) for r in h.requests]
+    assert said.index(True) == 8
+    assert "The last 8 steps only looked things up and wrote nothing" in h.requests[8][-1]["content"]
+    assert sum("only looked things up" in (m.get("content") or "") for m in h.requests[10]) == 1

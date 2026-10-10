@@ -8,6 +8,8 @@
  * Nothing here touches React: tools reach the editor and the store only
  * through the ports in {@link ToolContext}, so they run under a fake in tests.
  */
+import type { AttachmentMeta } from '../utils/attachments'
+import type { WebPage, WebSearchResult } from '../utils/webText'
 import type { JsonSchema, ToolSpec } from '../utils/documentTools'
 import type { AppState } from '../store/types'
 import type { AgentTouchedChapter } from '../types/chat'
@@ -254,6 +256,15 @@ export interface RunState {
   plan: PlanItem[]
   /** Writes landed (writesSoFar) when each plan item started: a "done" needs more since. */
   planBaseline: Map<string, number>
+  /**
+   * Chapters whose WHOLE current text the model has seen this run, by the
+   * hash of the accepted reading it saw (agentic_chat_loop.md §0.11): in
+   * context at the start (the ledger, not cut) or a whole text read. A plain
+   * chapter may then be rewritten without an HTML read.
+   */
+  textSeen: Map<string, string>
+  /** Characters of attachments read into the conversation this run (capped: ATTACHMENT_RUN_READ_CAP). */
+  attachmentChars: number
   /** A question the model asked the user this step (`ask_user`); the loop stops for the answer. */
   question: AskedQuestion | null
 }
@@ -270,7 +281,14 @@ export function chapterOutline(chapters: Array<{ id: string; title: string }>): 
   return chapters.map(c => `${c.id}\u0000${c.title}`).join('\u0001')
 }
 
-export function createRunState(init: { startId: string; inContext?: Iterable<string>; startContent?: string; startOutline?: string }): RunState {
+export function createRunState(init: {
+  startId: string
+  inContext?: Iterable<string>
+  startContent?: string
+  startOutline?: string
+  /** Hashes of the accepted readings of the chapters whose whole text the request carries. */
+  textSeen?: Iterable<[string, string]>
+}): RunState {
   return {
     ...(init.startOutline !== undefined ? { startOutline: init.startOutline } : {}),
     step: 0,
@@ -287,6 +305,8 @@ export function createRunState(init: { startId: string; inContext?: Iterable<str
     selectionApplied: false,
     plan: [],
     planBaseline: new Map(),
+    textSeen: new Map(init.textSeen ?? []),
+    attachmentChars: 0,
     question: null
   }
 }
@@ -344,10 +364,24 @@ export interface AnalyzePort {
   run(task: string, chapters: AnalyzeChapter[], onProgress: (done: number, total: number) => void): Promise<AnalyzeOutcome>
 }
 
+/** The book's reference files (docs/features/attachments_and_web.md §1). */
+export interface AttachmentsPort {
+  list(): AttachmentMeta[]
+  paragraphs(id: string): Promise<string[]>
+}
+
+/** The anonymous browser (attachments_and_web.md §2). Absent when web access is off. */
+export interface WebPort {
+  search(query: string, maxResults: number): Promise<WebSearchResult[]>
+  read(url: string): Promise<WebPage>
+}
+
 export interface ToolContext {
   getState: () => AppState
   polish?: PolishPort
   analyze?: AnalyzePort
+  attachments?: AttachmentsPort
+  web?: WebPort
   editor: EditorPort
   selection: SelectionPort
   document: DocumentPort

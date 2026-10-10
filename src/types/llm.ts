@@ -66,6 +66,12 @@ export interface ProviderConfig {
    */
   longReasoningReminderTokens?: number
   /**
+   * web_search / web_read through the server's headless browser
+   * (attachments_and_web.md §2). Absent = on; offered only when the server
+   * has a browser.
+   */
+  webAccess?: boolean
+  /**
    * Per request, not a setting: 'none' forbids new tool calls while keeping
    * the tools in the request (the agentic run's final step).
    */

@@ -1,8 +1,9 @@
 """Port of src/agent/invocations.ts — one step's output as tool invocations."""
 import json
+import re
 from typing import Any, Callable, Dict, List, Optional
 
-from .jsstr import js_trim
+from .jsstr import JS_WS, js_trim
 from .text import parse_assistant_response, strip_stray_document_markup
 
 
@@ -50,6 +51,21 @@ def _markup_invocations(parsed: Dict[str, Any], step: int) -> List[Dict[str, Any
     return out
 
 
+_WS = "[" + "".join("\\" + c if c in "\\]^-" else c for c in JS_WS) + "]"
+_PLAN_DONE_RE = re.compile(r"<(?:canvas|edit)\b[^>]*?\bplan_done" + _WS + r"*=" + _WS + r"*(?:\"([^\"]*)\"|'([^']*)')", re.I)
+_ID_SPLIT_RE = re.compile(r"[,，" + JS_WS + r"]+")
+
+
+def plan_done_attributes(text: str) -> List[str]:
+    """Port of planDoneAttributes: the plan item ids on the reply's <canvas>/<edit> tags (`plan_done="a,b"`)."""
+    ids: List[str] = []
+    for m in _PLAN_DONE_RE.finditer(text):
+        for item in _ID_SPLIT_RE.split(m.group(1) if m.group(1) is not None else (m.group(2) or "")):
+            if item and item not in ids:
+                ids.append(item)
+    return ids
+
+
 def collect_step(text: str, native_calls: List[Dict[str, Any]], lookup: Callable[[str], Optional[Dict[str, Any]]], step: int,
                  opts: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """`lookup(name)` returns the tool's {kind, markupForm} or None (the registry's get)."""
@@ -72,7 +88,12 @@ def collect_step(text: str, native_calls: List[Dict[str, Any]], lookup: Callable
         return {"invocations": native, "chatText": stray["text"], "strayMarkup": stray["removed"], "unknownCalls": unknown, "markupKind": None}
 
     parsed = parse_assistant_response(text)
-    return {"invocations": [*native, *_markup_invocations(parsed, step)], "chatText": parsed["chatText"],
+    markup = _markup_invocations(parsed, step)
+    plan_done = plan_done_attributes(text)
+    if plan_done and markup:
+        last = markup[-1]
+        markup[-1] = {**last, "args": {**(last.get("args") or {}), "plan_done": plan_done}}
+    return {"invocations": [*native, *markup], "chatText": parsed["chatText"],
             "strayMarkup": parsed["strayMarkup"], "unknownCalls": unknown, "markupKind": parsed["kind"]}
 
 
