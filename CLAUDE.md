@@ -313,7 +313,10 @@ escapes its own tag in quoted text. Both loops (`src/agent`, `wc_agent`)
 carry every one of these. History past the budget is **summarized**, not
 cut (`utils/conversationSummary`, agentic_chat_loop.md §0.9): the dropped
 prefix becomes a fixed-section note placed after the ledger, refreshed only
-when the cut moves past it; each transport keeps its own copy.
+when the cut moves past it; each transport keeps its own copy. Within a run,
+old read results are elided in place before a step that would not fit the
+window (`agent/runCompaction`, `promptTokenLimit`; the latest step's results
+are never touched).
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

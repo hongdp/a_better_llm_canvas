@@ -42,6 +42,8 @@ from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
 from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder
 from wc_text.chapter_index import WHOLE_BOOK_CONTEXT_CHARS
+from wc_text.context_window import resolve_context_window_tokens
+from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
 from wc_text.document_tools import to_openai_tools
 from wc_text.image_preservation import replace_images_with_placeholders, restore_image_placeholders
 from wc_text.jsstr import js_trim
@@ -589,6 +591,9 @@ class RunEngine:
         for doc_id in ctx.run.known:
             ports.watched[doc_id] = next((c["revision"] for c in chapters if c["id"] == doc_id), 0)
         long_reasoning = config.get("longReasoningReminderTokens")
+        # The prompt a step may use: the window's target less the output (wc_text.run_compaction).
+        prompt_limit = (target_prompt_tokens(get_cache_profile(provider), resolve_context_window_tokens(provider, config.get("model") or "", req.get("contextWindowTokens")))
+                        - int(config.get("maxOutputTokens") or 16_384))
         run.agent = AgentRun(
             registry=CHAT_TOOLS, ctx=ctx, write_protocol=assembled["protocol"],
             driver=lambda messages, step, final: self._step(run, messages, step, final),
@@ -596,7 +601,7 @@ class RunEngine:
             can_continue=True, agent_tools=settings["agentTools"], initial_messages=assembled["apiMessages"],
             guard=lambda agent: self._guard(run, agent),
             long_reasoning_tokens=int(long_reasoning) if isinstance(long_reasoning, (int, float)) and long_reasoning > 0 else 0,
-            reminders=lambda agent: self._reminders(run, agent))
+            reminders=lambda agent: self._reminders(run, agent), prompt_token_limit=max(0, prompt_limit))
 
     def _history_for(self, run: Run) -> List[Dict[str, Any]]:
         """The conversation before this turn.

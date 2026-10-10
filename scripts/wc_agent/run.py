@@ -13,6 +13,7 @@ from wc_text.invocations import arguments_text_of, collect_step, plan_writes
 from wc_text.jsstr import js_trim
 from wc_text.plan import unfinished_plan_items
 from wc_text.policy import decide_after_step, detect_step_failure, steps_left
+from wc_text.run_compaction import elision_trace, plan_elisions
 from wc_text.reminders import (PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge, long_reasoning_reminder,
                                plan_reminder, plan_unfinished_nudge, repeat_nudge, steer_message, unbacked_claim_nudge, wrap_reminder)
 from wc_text.stream_handlers import NO_ACTION_RETRY_INSTRUCTION, STEP_LIMIT_NOTE
@@ -46,7 +47,8 @@ class AgentRun:
                  driver: Callable[[List[Dict[str, Any]], int, bool], Awaitable[StepOutput]], observer: Any,
                  budgets: Dict[str, Any], policy: Dict[str, Any], can_continue: bool, initial_messages: List[Dict[str, Any]],
                  agent_tools: bool = True, guard: Optional[Callable[["AgentRun"], Optional[Dict[str, Any]]]] = None,
-                 long_reasoning_tokens: int = 0, reminders: Optional[Callable[["AgentRun"], List[str]]] = None) -> None:
+                 long_reasoning_tokens: int = 0, reminders: Optional[Callable[["AgentRun"], List[str]]] = None,
+                 prompt_token_limit: int = 0) -> None:
         self.registry = registry
         self.ctx = ctx
         self.write_protocol = write_protocol
@@ -59,6 +61,12 @@ class AgentRun:
         self.guard = guard
         self.long_reasoning_tokens = long_reasoning_tokens
         self.host_reminders = reminders
+        #: Past ELIDE_ABOVE of this, the oldest read results are elided before the next step (wc_text.run_compaction). 0 = never.
+        self.prompt_token_limit = prompt_token_limit
+        #: Read results in the messages that may be elided when the prompt outgrows the window.
+        self.elidable: List[Dict[str, Any]] = []
+        #: Where the latest step's results start in the messages: never elided.
+        self.last_results_start = 0
         self.long_reasoning_due: Optional[Dict[str, int]] = None
         self.plan_nudges = 0
         #: The trace of the last HTML read that no write has followed yet (the step before an edit).
@@ -266,6 +274,7 @@ class AgentRun:
         # The model asked the user something: the results are appended so the
         # call is answered, then the run waits for the answer (resume_with_answer).
         if self.ctx.run.question and not self.cancelled:
+            self.last_results_start = len(self.messages)
             self.messages = [*self.messages, *self._result_messages(out, ran, results)]
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": steps_left(self.budgets, self.steps_taken) == 1}
             self.paused = {"reason": "question", **self.ctx.run.question}
@@ -306,11 +315,13 @@ class AgentRun:
         if continuing:
             if decision.get("corrective"):
                 self.corrective_used += 1
+            self.last_results_start = len(self.messages)
             self.messages = [*self.messages, *append_reminders(self._result_messages(out, ran, results), self._collect_reminders())]
             if steer:
                 self.messages = [*self.messages, {"role": "user", "content": steer}]
             if decision.get("final"):
                 self.messages = [*self.messages, {"role": "user", "content": STEP_LIMIT_NOTE}]
+            self._compact_if_needed()
             # Before the observer: a snapshot taken there must know a step follows.
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": decision["final"]}
             await _maybe_await(self.observer.on_step_executed(self.progress()))
@@ -320,6 +331,19 @@ class AgentRun:
             "failedUpdate": None, "exhaustedCorrective": False, "unretriableFailedUpdate": False,
             "endReason": "cancelled" if self.cancelled else (decision["reason"] if decision["action"] == "end" else "step_limit"),
         })
+
+    def _compact_if_needed(self) -> None:
+        """Keep the next step's prompt inside the window: past the threshold, the oldest read results become a note."""
+        if self.prompt_token_limit <= 0 or not self.elidable:
+            return
+        plan = plan_elisions(self.messages, self.elidable, self.prompt_token_limit, self.last_results_start)
+        self.elidable = plan["remaining"]
+        if not plan["elided"]:
+            return
+        self.messages = plan["messages"]
+        line = elision_trace(plan["elided"])
+        self.trace.append(line)
+        self.timeline.append({"type": "tool", "line": line, "ok": True})
 
     def _collect_reminders(self) -> List[str]:
         """The automated context beside the next step's results (wc_text.reminders)."""
@@ -366,6 +390,8 @@ class AgentRun:
             reply["responseItems"] = out.response_items
         messages = [reply]
         for inv, r in native:
+            if r["ok"] and self._kind_of(inv) == "read":
+                self.elidable.append({"index": self.last_results_start + len(messages), "trace": r["trace"]})
             messages.append({"role": "tool", "toolCallId": inv["id"], "name": inv["name"], "content": r["content"]})
         lost = (f"- NOT APPLIED: {self.step_dropped} document block(s) in your reply did not reach the document — a full rewrite beside <edit> blocks for the same chapter, "
                 "a rewrite beside a selection rewrite, or markup that could not be read. Write what you still want changed in a reply of its own."
@@ -421,6 +447,7 @@ class AgentRun:
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
             "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
             "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers),
+            "elidable": list(self.elidable), "lastResultsStart": self.last_results_start,
         }
 
     def restore(self, snap: Dict[str, Any], stored: Callable[[str], Optional[str]]) -> None:
@@ -457,5 +484,7 @@ class AgentRun:
         run.plan_baseline = dict(snap.get("planBaseline") or {})
         self.claim_nudged = bool(snap.get("claimNudged"))
         self.pending_steers = list(snap.get("pendingSteers") or [])
+        self.elidable = list(snap.get("elidable") or [])
+        self.last_results_start = int(snap.get("lastResultsStart") or 0)
         if snap.get("next"):
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": snap.get("final", False)}

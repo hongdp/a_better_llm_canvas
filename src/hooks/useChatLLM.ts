@@ -1567,7 +1567,13 @@ export function useChatLLM({
       agentTools: settings.agentTools,
       canContinue,
       initialMessages,
-      longReasoningTokens: s.providerConfigs[s.activeProvider]?.longReasoningReminderTokens ?? 0
+      longReasoningTokens: s.providerConfigs[s.activeProvider]?.longReasoningReminderTokens ?? 0,
+      // The prompt a step may use: the window's target less the output
+      // (agent/runCompaction elides old read results past it).
+      promptTokenLimit: targetPromptTokens(
+        getCacheProfile(s.activeProvider),
+        resolveContextWindowTokens(s.activeProvider, s.providerConfigs[s.activeProvider]?.model ?? '', s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? ''])
+      ) - (s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384)
     })
     rcRef.current = { ...info, run, toolCtx }
     currentRunRef.current = run

@@ -528,6 +528,38 @@ def test_plan_refuses_done_on_a_write_item_with_nothing_written():
     assert [i["status"] for i in h.summary["plan"]] == ["done", "done"]
 
 
+def test_old_read_results_are_elided_when_the_prompt_outgrows_the_window():
+    async def big_read(args, ctx, call):
+        return {"ok": True, "content": f"TEXT OF {args.get('chapter')} " + "word " * 400, "trace": f"read {args.get('chapter')}"}
+    h = Harness([calls("", ("c1", "read_chapter", '{"chapter":"1"}')), calls("", ("c2", "read_chapter", '{"chapter":"2"}')),
+                 calls("", ("c3", "read_chapter", '{"chapter":"3"}')), DONE])
+    h.registry = ToolRegistry([*DOCUMENT_WRITE_TOOLS, read_tool(big_read)])
+    h.run.registry = h.registry
+    h.run.prompt_token_limit = 1_000
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 4
+    third = {m.get("toolCallId"): m["content"] for m in h.requests[2] if m.get("role") == "tool"}
+    assert third["c1"] == "[This result was elided to keep the conversation within the model's context window: read 1. Read it again if you need its text.]"
+    assert "TEXT OF 2" in third["c2"]
+    assert "🧹 elided 1 earlier result to stay within the context window" in h.summary["trace"]
+    fourth = {m.get("toolCallId"): m["content"] for m in h.requests[3] if m.get("role") == "tool"}
+    assert "elided" in fourth["c2"] and "TEXT OF 3" in fourth["c3"]
+    snap = h.run.snapshot()
+    assert snap["lastResultsStart"] > 0 and all(e["index"] < snap["lastResultsStart"] + 10 for e in snap["elidable"])
+
+
+def test_a_run_within_its_limit_is_left_alone():
+    async def big_read(args, ctx, call):
+        return {"ok": True, "content": f"TEXT OF {args.get('chapter')} " + "word " * 400, "trace": f"read {args.get('chapter')}"}
+    h = Harness([calls("", ("c1", "read_chapter", '{"chapter":"1"}')), calls("", ("c2", "read_chapter", '{"chapter":"2"}')), DONE])
+    h.registry = ToolRegistry([*DOCUMENT_WRITE_TOOLS, read_tool(big_read)])
+    h.run.registry = h.registry
+    h.run.prompt_token_limit = 100_000
+    asyncio.run(h.run.start())
+    assert "TEXT OF 1" in next(m["content"] for m in h.requests[2] if m.get("toolCallId") == "c1")
+    assert not any(t.startswith("🧹") for t in h.summary["trace"])
+
+
 def test_a_message_sent_during_a_step_follows_its_results():
     h = Harness([])
     def first(messages):

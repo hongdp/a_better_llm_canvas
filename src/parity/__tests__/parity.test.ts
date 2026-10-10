@@ -50,6 +50,7 @@ import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type Pl
 import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
+import { planElisions, promptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/parity/fixtures')
@@ -74,6 +75,18 @@ const paras = (changed: boolean) => Array.from({ length: 40 }, (_, i) => `<p>Par
 
 interface Case { input: unknown[]; output: unknown }
 interface Module { module: string; cases: Record<string, Case[]> }
+
+/** A run's messages after three reads (sys, user, then assistant/tool pairs) for the run-compaction cases. */
+const RUN_MESSAGES: LLMMessage[] = [
+  { role: 'system', content: 'sys' }, { role: 'user', content: 'request' },
+  { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read_chapter', argumentsText: '{"chapter":"1"}' }] },
+  { role: 'tool', toolCallId: 'c1', name: 'read_chapter', content: 'TEXT OF 1 ' + 'word '.repeat(400) },
+  { role: 'assistant', content: '', toolCalls: [{ id: 'c2', name: 'read_chapter', argumentsText: '{"chapter":"2"}' }] },
+  { role: 'tool', toolCallId: 'c2', name: 'read_chapter', content: '第二章 ' + '字'.repeat(900) },
+  { role: 'assistant', content: '', toolCalls: [{ id: 'c3', name: 'read_chapter', argumentsText: '{"chapter":"3"}' }] },
+  { role: 'tool', toolCallId: 'c3', name: 'read_chapter', content: 'TEXT OF 3 ' + 'word '.repeat(400) }
+]
+const RUN_ELIDABLE = [{ index: 3, trace: 'read 1' }, { index: 5, trace: 'read 2' }, { index: 7, trace: 'read 3' }]
 
 /** n turns of `chars` chars each (u0 a0 u1 a1 …) for the conversation-summary cases. */
 const SUMMARY_TURNS = (n: number, chars = 1000): SummarizableMessage[] =>
@@ -645,6 +658,19 @@ const MODULES: Module[] = [
       ]),
       parse_summary_reply: run(parseSummaryReply, [['Here.\n<summary>\n1. x\n</summary>\ndone'], ['plain'], ['<summary>  </summary>'], [''], ['<SUMMARY>a</SUMMARY>']]),
       summary_messages: run(summaryMessages, [['NOTE'], ['two\nlines']])
+    }
+  },
+  {
+    module: 'run_compaction',
+    cases: {
+      constants: run(() => ({ ELIDE_ABOVE, ELIDE_TO }), [[]]),
+      elided_result_note: run(elidedResultNote, [['read #1 "A" ¶1–40 (12.3k, html)']]),
+      elision_trace: run(elisionTrace, [[['a']], [['a', 'b']]]),
+      prompt_tokens: run(promptTokens, [[RUN_MESSAGES], [[]], [[{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'read_chapter', argumentsText: '{"chapter":"1"}' }] }]]]),
+      plan_elisions: run(planElisions, [
+        [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 100_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 2],
+        [RUN_MESSAGES, [], 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 0, 5], [RUN_MESSAGES, [{ index: 40, trace: 'gone' }], 10, 5]
+      ])
     }
   },
   {
