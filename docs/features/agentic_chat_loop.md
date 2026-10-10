@@ -603,6 +603,83 @@ and a SEARCH that no longer matches gets the nearest-paragraph hint, which
 is enough to re-read. Both loops; the candidates and the cut index are in
 the server run's snapshot.
 
+*Measured, not only estimated* (2026-10-09). `estimateTokens` counts CJK
+at one token a character and the rest at four characters a token, which can
+be off by half either way on mixed text — eliding early breaks the cache for
+nothing, eliding late still overflows. Every finished step reports the real
+prompt tokens it was sent (`usage.promptTokens`: input including cached, on
+every provider). The loop keeps that number and the message count it
+covered; the check then counts the covered prefix at its measured size, and
+scales the estimate of everything after it, and of each result it elides,
+by the prefix's measured/estimated ratio (clamped to ¼…4). A step with no
+usage falls back to the plain estimate.
+
+### 0.10 When a step fails (2026-10-09)
+
+Third pass over Grok Build, the sampler layer this time: its retry policy,
+its idle timeout and the xAI repetition detector its sampler opts into.
+Until now a step that failed in any way ended the turn: no transport retried
+a 429 or a 503, a server run marked itself `error` and dropped its snapshot,
+so six finished steps were lost to one bad response, and a stuck stream was
+noticed after ten minutes.
+
+- **Retrying a call that never started.** `utils/retryPolicy`,
+  `wc_text/retry_policy` (pure, parity-tested): statuses 408, 429, 500, 502,
+  503, 504, 520–524 and 529 are retried, and so are connection failures; a
+  context-length rejection never is, whatever its status. Up to
+  `MAX_TRANSPORT_RETRIES` (4) more attempts, waiting `Retry-After` when the
+  provider sends one (capped at 30 s), else 1, 2, 4, 8 s, each ±20 %. Only a
+  call that produced nothing yet is retried — the backend job checks that
+  no text and no tool call has streamed; the tab's direct path retries only
+  errors raised before the stream opened (an HTTP status, a failed fetch).
+  Aborting cancels the wait. A tab on the remote transport gets the backend
+  job's retries; the job tells its readers (`retry` event) and the log says
+  each one.
+- **A step that broke mid-reply** (server runs). The engine discards the
+  step's preview, tells the tab the step starts over (`step_started` again
+  and a progress line), and sends the same request once more. A tab-run
+  does not: its remote job's buffer is already rendered by offset, and the
+  turn ends with the error as before.
+- **A run that cannot get a step through is paused, not ended.** When the
+  retries are spent — or the stream went idle (below) — a server run pauses
+  with reason `step_failed` and the error, its snapshot kept; `/resume`
+  sends the same step again. A rejection that retrying cannot fix (401,
+  403, a 400 for a bad request, a context-length error) still ends the run
+  with its error.
+- **An idle stream is a failure.** Grok Build times a stream by the gap
+  between chunks, not by its whole length, and does not retry a stuck one.
+  Measured on grok-4.6 (2026-10-09): at high effort the reasoning summary
+  streams throughout, the longest silence was 3.6 s, and 11.7 s in another
+  request. grok's read timeout is now 180 s (`IDLE_TIMEOUT_SECONDS`); other
+  providers keep 600 s — a local server prefilling a long prompt, or an
+  OpenAI reasoning model thinking, sends nothing for minutes. An idle step
+  is not retried by the job; a server run pauses on it.
+- **A reply that loops on itself** (grok, server runs). xAI's Responses API
+  reports repetition when asked (`x-grok-doom-loop-check: 1024`,
+  `x-grok-exact-repetition-check: 64`): a `response.doom_loop_check` event
+  with cumulative triggers such as `tail_repetition:16@response`. Measured
+  on our key: a reply told to repeat a sentence 150 times drew the trigger
+  at about 4,600 characters, and the response failed ten characters later
+  with `server_error: Internal error during token generation` — twice; the
+  same request without the headers completed. So the detector ends the
+  generation, and a run that asks for it must treat the failure as the
+  loop, not as a transient error. The job records the triggers
+  (`loop_triggers`); a step that failed after one is retried once with a
+  reminder appended (it was stopped for repeating itself; write it again
+  without repeating; if the user asked for repetition, only as much as they
+  asked; if stuck, ask). A second loop pauses the run (`repeating_output`,
+  with the trigger), and resuming it sends that step without the check:
+  the user has seen what it was writing and chose to go on. A response that
+  completes despite a trigger is kept and only logged. Side calls (polish,
+  analyze, the conversation summary) and tab-runs do not send the headers.
+  Grok Build acts only on `@thinking` triggers and treats `@response` ones as
+  warnings; here the server's own failure decides, since a looping chapter
+  is what this app most needs caught.
+- **Not built**: Grok Build's 413 image strip and its connection prewarm
+  (our requests are small and not behind its edge), the resend of a looping
+  turn's truncated reasoning (the retry here starts the reply over), and
+  retries in the tab's own stream after it opened.
+
 ### 0.7 Settings and transports
 
 - **Per-provider settings:**

@@ -1,5 +1,5 @@
 """Port of src/agent/runCompaction.ts — keeping a run's prompt inside the model's window."""
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .context_window import estimate_tokens
 
@@ -20,11 +20,25 @@ def prompt_tokens(messages: List[Dict[str, Any]]) -> int:
     return total
 
 
-def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]], limit_tokens: int, keep_from: int) -> Dict[str, Any]:
+_RATIO_MIN = 0.25
+_RATIO_MAX = 4
+
+
+def calibrated_prompt_tokens(messages: List[Dict[str, Any]], measured: Optional[Dict[str, int]]) -> Dict[str, float]:
+    if not measured or not (measured.get("tokens") or 0) > 0 or measured.get("length", 0) <= 0 or measured["length"] > len(messages):
+        return {"tokens": prompt_tokens(messages), "ratio": 1}
+    estimated = prompt_tokens(messages[:measured["length"]])
+    ratio = min(max(measured["tokens"] / estimated, _RATIO_MIN), _RATIO_MAX) if estimated > 0 else 1
+    return {"tokens": measured["tokens"] + prompt_tokens(messages[measured["length"]:]) * ratio, "ratio": ratio}
+
+
+def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]], limit_tokens: int, keep_from: int,
+                  measured: Optional[Dict[str, int]] = None) -> Dict[str, Any]:
     untouched = {"messages": messages, "elided": [], "remaining": elidable}
     if not (limit_tokens and limit_tokens > 0) or not elidable:
         return untouched
-    tokens = prompt_tokens(messages)
+    calibrated = calibrated_prompt_tokens(messages, measured)
+    tokens = calibrated["tokens"]
     if tokens <= limit_tokens * ELIDE_ABOVE:
         return untouched
     out = list(messages)
@@ -37,7 +51,7 @@ def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]]
             remaining.append(entry)
             continue
         note = elided_result_note(entry["trace"])
-        tokens += estimate_tokens(note) - estimate_tokens(m.get("content") or "")
+        tokens += (estimate_tokens(note) - estimate_tokens(m.get("content") or "")) * calibrated["ratio"]
         out[index] = {**m, "content": note}
         elided.append(entry["trace"])
     if not elided:

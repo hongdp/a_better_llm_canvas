@@ -50,7 +50,8 @@ import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type Pl
 import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
-import { planElisions, promptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
+import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
+import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/parity/fixtures')
@@ -669,8 +670,25 @@ const MODULES: Module[] = [
       prompt_tokens: run(promptTokens, [[RUN_MESSAGES], [[]], [[{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'read_chapter', argumentsText: '{"chapter":"1"}' }] }]]]),
       plan_elisions: run(planElisions, [
         [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 100_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 2],
-        [RUN_MESSAGES, [], 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 0, 5], [RUN_MESSAGES, [{ index: 40, trace: 'gone' }], 10, 5]
+        [RUN_MESSAGES, [], 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 0, 5], [RUN_MESSAGES, [{ index: 40, trace: 'gone' }], 10, 5],
+        [RUN_MESSAGES, RUN_ELIDABLE, 3_000, 7, { tokens: 3_100, length: 6 }], [RUN_MESSAGES, RUN_ELIDABLE, 3_000, 7, { tokens: 100, length: 6 }],
+        [RUN_MESSAGES, RUN_ELIDABLE, 3_000, 7, { tokens: 900_000, length: 6 }], [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 7, { tokens: 5, length: 40 }]
+      ]),
+      calibrated_prompt_tokens: run(calibratedPromptTokens, [
+        [RUN_MESSAGES, null], [RUN_MESSAGES, { tokens: 1_234, length: 4 }], [RUN_MESSAGES, { tokens: 0, length: 4 }], [RUN_MESSAGES, { tokens: 10, length: 99 }],
+        [[{ role: 'user', content: '' }, { role: 'user', content: 'abc' }], { tokens: 7, length: 1 }]
       ])
+    }
+  },
+  {
+    module: 'retry_policy',
+    cases: {
+      constants: run(() => ({ MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES }), [[]]),
+      is_retryable_status: run(isRetryableStatus, [[429, ''], [503, 'busy'], [400, ''], [401, 'x'], [529, ''], [413, 'prompt is too long'], [408, 'timeout']]),
+      is_context_length_error: run(isContextLengthError, [[400, "This model's maximum context length is 131072 tokens"], [413, 'Prompt is too long'], [422, 'too many tokens in input'], [400, 'bad tool'], [503, 'context length']]),
+      parse_retry_after: run(parseRetryAfter, [['7'], [' 1.5 '], ['0'], ['-3'], ['Wed, 21 Oct 2026 07:28:00 GMT'], [''], [null]]),
+      retry_delay_ms: run(retryDelayMs, [[1, null], [2, null], [4, null], [6, null], [1, 12], [1, 0.4], [3, 600], [0, null]]),
+      with_jitter: run(withJitter, [[1000, 0], [1000, 0.5], [1000, 0.999], [2500, 0.25], [1000, -1], [1000, 2], [1, 0.5]])
     }
   },
   {

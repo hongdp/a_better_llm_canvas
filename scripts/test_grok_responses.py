@@ -159,7 +159,7 @@ def test_a_rejected_ciphertext_is_retried_once_without_the_items():
             return b'{"code":"invalid-argument","error":"Could not decrypt the provided encrypted_content."}'
 
     @asynccontextmanager
-    async def fake_stream(url, headers, body):
+    async def fake_stream(url, headers, body, read_timeout=None):
         _Response.calls += 1
         bodies.append(body)
         yield _Response()

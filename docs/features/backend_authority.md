@@ -402,6 +402,16 @@ summaries and imports are untouched.
   so a restart keeps it. The client sends it from `handleSendMessage` when a
   run is attached and streaming; the user message goes into the chat with no
   bubble of its own.
+- **Step failures** (agentic_chat_loop.md §0.10): a generation job retries
+  a call that produced nothing yet (retryable statuses, connection errors;
+  `Retry-After` honored) and records why it failed (`error_kind`:
+  `transient`, `idle`, `repetition`, `context`, `fatal`) and whether output
+  had started. The engine's step driver retries a step that broke mid-reply
+  or looped once, and raises `StepUnavailable` when retries are spent or the
+  stream went idle; the loop puts the step back and pauses the run
+  (`step_failed` or `repeating_output`). Run steps on grok send the xAI
+  repetition-check headers; a resume after `repeating_output` sends the
+  next step without them.
 - **The conversation summary** (agentic_chat_loop.md §0.9) lives per book in
   `run_context` under scope `chat-summary` (`{upToId, text}`); the run's
   request assembly plans the cut, calls the model through `_ModelCall`

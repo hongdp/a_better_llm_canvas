@@ -316,7 +316,15 @@ prefix becomes a fixed-section note placed after the ledger, refreshed only
 when the cut moves past it; each transport keeps its own copy. Within a run,
 old read results are elided in place before a step that would not fit the
 window (`agent/runCompaction`, `promptTokenLimit`; the latest step's results
-are never touched).
+are never touched), sized by the last step's measured prompt tokens.
+**A failing step** (agentic_chat_loop.md §0.10): a call that produced
+nothing is retried (`utils/retryPolicy`; 429/5xx/connection, `Retry-After`,
+never a context-length error) by the backend job and the tab's direct path;
+a server-run step that broke mid-reply or looped (xAI's repetition-check
+headers, which END the generation on a trigger) is redone once; when that
+is not enough the run **pauses** (`step_failed`, `repeating_output`) with
+its snapshot instead of ending. grok's stream read timeout is 180 s (idle),
+other providers 600 s.
 
 **Two document protocols, one per model.** The markup above is one of them;
 the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.

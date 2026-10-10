@@ -2,6 +2,63 @@ import type { ProviderConfig, LLMMessage, StreamCallbacks, ThinkingBlock } from 
 import { resolveReasoningEffort, reasoningBudgetTokens } from '../utils/reasoningEffort'
 import { fromOpenAITools, toAnthropicTools, toGeminiTools } from '../utils/documentTools'
 import { toGrokResponsesInput, toResponsesTools, toOpenAIMessages, toAnthropicMessages, toGeminiContents } from './providerMessages'
+import { MAX_TRANSPORT_RETRIES, isRetryableStatus, parseRetryAfter, retryDelayMs, withJitter } from '../utils/retryPolicy'
+
+/** A provider answered with an error status before streaming: what the retry policy needs to judge it. */
+export class ProviderHttpError extends Error {
+  readonly status: number
+  readonly retryAfter: number | null
+  constructor(message: string, status: number, retryAfter: number | null) {
+    super(message)
+    this.name = 'ProviderHttpError'
+    this.status = status
+    this.retryAfter = retryAfter
+  }
+}
+
+async function httpError(label: string, response: Response): Promise<ProviderHttpError> {
+  const text = await response.text().catch(() => '')
+  return new ProviderHttpError(`${label} API error (${response.status}): ${text || response.statusText}`, response.status,
+    parseRetryAfter(response.headers?.get?.('retry-after')))
+}
+
+/** A fetch that failed before any response (offline, DNS, reset): worth another try. */
+const isNetworkFailure = (e: unknown): boolean =>
+  e instanceof TypeError && /fetch|network|load failed/i.test(e.message)
+
+/**
+ * Send a direct call again while it fails before its stream opened
+ * (agentic_chat_loop.md §0.10, utils/retryPolicy): a retryable status or a
+ * network failure, waiting Retry-After or 1, 2, 4, 8 s. Errors inside an open
+ * stream are reported by the provider functions themselves and never reach
+ * here, so nothing that streamed is sent twice. Stop cancels the wait.
+ */
+export async function withTransportRetry<T>(
+  call: () => Promise<T>,
+  signal?: AbortSignal,
+  opts: { sleep?: (ms: number, signal?: AbortSignal) => Promise<void>; random?: () => number } = {}
+): Promise<T> {
+  const sleep = opts.sleep ?? abortableSleep
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await call()
+    } catch (e) {
+      const retryable = e instanceof ProviderHttpError ? isRetryableStatus(e.status, e.message) : isNetworkFailure(e)
+      if (!retryable || attempt > MAX_TRANSPORT_RETRIES || signal?.aborted) throw e
+      const delay = withJitter(retryDelayMs(attempt, e instanceof ProviderHttpError ? e.retryAfter : null), (opts.random ?? Math.random)())
+      console.warn(`[LLM] ${(e as Error).message.slice(0, 200)}; retry ${attempt}/${MAX_TRANSPORT_RETRIES} in ${(delay / 1000).toFixed(1)}s`)
+      await sleep(delay, signal)
+      if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    }
+  }
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
+  })
+}
 
 /**
  * A base URL typed with a trailing slash is normal; the resulting `//path`
@@ -105,17 +162,19 @@ export async function streamLLM(
       }
     }
 
-    if (provider === 'grok') {
-      await streamGrokResponses(messages, config, debugCallbacks)
-    } else if (provider === 'openai' || provider === 'ollama' || provider === 'runpod') {
-      await streamOpenAI(messages, config, debugCallbacks)
-    } else if (provider === 'gemini') {
-      await streamGemini(messages, config, debugCallbacks)
-    } else if (provider === 'anthropic') {
-      await streamAnthropic(messages, config, debugCallbacks)
-    } else {
-      throw new Error(`Unsupported LLM provider: ${provider}`)
-    }
+    await withTransportRetry(async () => {
+      if (provider === 'grok') {
+        await streamGrokResponses(messages, config, debugCallbacks)
+      } else if (provider === 'openai' || provider === 'ollama' || provider === 'runpod') {
+        await streamOpenAI(messages, config, debugCallbacks)
+      } else if (provider === 'gemini') {
+        await streamGemini(messages, config, debugCallbacks)
+      } else if (provider === 'anthropic') {
+        await streamAnthropic(messages, config, debugCallbacks)
+      } else {
+        throw new Error(`Unsupported LLM provider: ${provider}`)
+      }
+    }, config.signal)
   } catch (error) {
     callbacks.onError(error instanceof Error ? error : new Error(String(error) || 'Unknown network error'))
   }
@@ -193,10 +252,7 @@ async function streamOpenAI(
     signal: config.signal,
   })
 
-  if (!response.ok) {
-    const errText = await response.text()
-    throw new Error(`OpenAI API error (${response.status}): ${errText || response.statusText}`)
-  }
+  if (!response.ok) throw await httpError('OpenAI', response)
 
   await readSSEStream(response, (dataString) => {
     if (dataString === '[DONE]') return
@@ -274,9 +330,10 @@ async function streamGrokResponses(
       console.warn('[LLM] xAI rejected the replayed reasoning; retrying without it')
       const stripped = messages.map(m => (m.responseItems ? { ...m, responseItems: undefined } : m))
       response = await fetch(url, { method: 'POST', headers, body: JSON.stringify({ ...body, input: toGrokResponsesInput(stripped) }), signal: config.signal })
-      if (!response.ok) throw new Error(`xAI API error (${response.status}): ${(await response.text()) || response.statusText}`)
+      if (!response.ok) throw await httpError('xAI', response)
     } else {
-      throw new Error(`xAI API error (${response.status}): ${errText || response.statusText}`)
+      throw new ProviderHttpError(`xAI API error (${response.status}): ${errText || response.statusText}`, response.status,
+        parseRetryAfter(response.headers?.get?.('retry-after')))
     }
   }
 
@@ -416,10 +473,7 @@ async function streamGemini(
     signal: config.signal,
   })
 
-  if (!response.ok) {
-    const errText = await response.text()
-    throw new Error(`Gemini API error (${response.status}): ${errText || response.statusText}`)
-  }
+  if (!response.ok) throw await httpError('Gemini', response)
 
   const reader = response.body?.getReader()
   if (!reader) throw new Error('Response body is not readable')
@@ -630,10 +684,7 @@ async function streamAnthropic(
     signal: config.signal,
   })
 
-  if (!response.ok) {
-    const errText = await response.text()
-    throw new Error(`Anthropic API error (${response.status}): ${errText || response.statusText}`)
-  }
+  if (!response.ok) throw await httpError('Anthropic', response)
 
   // Reasoning blocks being assembled, by content-block index. With extended
   // thinking on, a step that called a tool must be replayed with these blocks

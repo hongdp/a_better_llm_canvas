@@ -48,6 +48,8 @@ export function RunControls({ record, onAction, onAnswer, disabled }: {
   const reason = pause?.reason === 'repeating' ? t.agent.pausedRepeating
     : pause?.reason === 'unattended' ? t.agent.pausedUnattended
     : pause?.reason === 'token_budget' ? t.agent.pausedBudget
+    : pause?.reason === 'step_failed' ? t.agent.pausedStepFailed(pause.message)
+    : pause?.reason === 'repeating_output' ? t.agent.pausedRepeatingOutput
     : pause?.message ?? ''
   return (
     <div className="run-controls">

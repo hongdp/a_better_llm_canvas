@@ -44,6 +44,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import re
 from urllib.parse import urlparse
 import secrets
@@ -58,6 +59,8 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from server_auth import get_authenticated_username
+from wc_text.retry_policy import (MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, parse_retry_after,
+                                  retry_delay_ms, with_jitter)
 
 logger = logging.getLogger("web_canvas.generation")
 
@@ -144,6 +147,19 @@ TERMINAL_EVENT_TYPES = frozenset({"done", "error", "aborted"})
 # models can think for minutes before the first token).
 HTTP_CONNECT_TIMEOUT = 30.0
 HTTP_READ_TIMEOUT = 600.0
+# Problem: a stuck stream was noticed only when the 600 s read timeout fired.
+# Root cause: one timeout for every provider, sized for the slowest silence —
+#   a local server prefilling a long prompt, or an OpenAI reasoning model
+#   thinking, sends nothing for minutes.
+# Fix: grok streams its reasoning summary throughout (measured 2026-10-09:
+#   the longest silence 3.6 s at high effort, 11.7 s in another request), so
+#   its streams fail after 180 s without a byte; the others keep 600 s.
+#   httpx's read timeout is per read, i.e. exactly the idle gap.
+IDLE_TIMEOUT_SECONDS = {"grok": 180.0}
+# xAI's repetition detectors (agentic_chat_loop.md §0.10): sent on a server
+# run's steps. A trigger ENDS the generation (measured), so a step that
+# failed after one is the loop, not a transient error.
+LOOP_CHECK_HEADERS = {"x-grok-doom-loop-check": "1024", "x-grok-exact-repetition-check": "64"}
 
 SUPPORTED_PROVIDERS = ("openai", "ollama", "runpod", "grok", "gemini", "anthropic")
 
@@ -182,7 +198,26 @@ _DATA_URL_RE = re.compile(r"^data:(image/[a-zA-Z+.-]+);base64,(.+)$")
 
 
 class ProviderError(Exception):
-    """A provider-reported failure that should become the job's error event."""
+    """A provider-reported failure that should become the job's error event.
+
+    `status` is the HTTP status when there was one, `retry_after` the
+    provider's Retry-After in seconds, `transient` a failure reported inside
+    the stream that the same request may survive (xAI's server_error).
+    """
+
+    def __init__(self, message: str, status: Optional[int] = None, retry_after: Optional[float] = None, transient: bool = False) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+        self.transient = transient
+
+
+def _http_error(provider_label: str, response: Any, text: str) -> ProviderError:
+    """The error for a response that failed before streaming, with what the retry policy needs."""
+    headers = getattr(response, "headers", None) or {}
+    retry_after = parse_retry_after(headers.get("retry-after") if hasattr(headers, "get") else None)
+    return ProviderError(f"{provider_label} API error ({response.status_code}): {text or 'request failed'}",
+                         status=response.status_code, retry_after=retry_after)
 
 
 class _JobAborted(Exception):
@@ -277,6 +312,15 @@ class GenerationJob:
         self.conversation: Optional[str] = None
         self.model: Optional[str] = None
         self.first_reasoning_latency: Optional[float] = None
+        #: Why the job failed, for the run engine (agentic_chat_loop.md §0.10):
+        #: transient | idle | repetition | context | fatal. None while running or done.
+        self.error_kind: Optional[str] = None
+        #: The job had streamed text or a tool call when it failed.
+        self.failed_after_output = False
+        #: xAI repetition-detector triggers seen (cumulative), with `loopCheck` on.
+        self.loop_triggers: List[str] = []
+        #: Attempts that failed before any output and were sent again.
+        self.retries = 0
         # One queue per attached SSE reader. Everything here runs on the single
         # event loop, so plain set mutation is safe without a lock.
         self.subscribers: set = set()
@@ -402,6 +446,27 @@ class GenerationJob:
         if len(self.reasoning_text) < JOURNAL_MAX_CHARS:
             self.reasoning_text += text[: JOURNAL_MAX_CHARS - len(self.reasoning_text)]
         self._publish({"type": "reasoning", "text": text})
+
+    def note_loop_triggers(self, triggers: Any) -> None:
+        """Record xAI repetition-detector triggers (each report is cumulative)."""
+        if not isinstance(triggers, list):
+            return
+        new = [str(t) for t in triggers if isinstance(t, str) and t not in self.loop_triggers]
+        if new:
+            self.loop_triggers.extend(new)
+            logger.info("Job %s: repetition detector fired: %s", self.job_id, ", ".join(new))
+
+    @property
+    def has_output(self) -> bool:
+        """Text or a tool call has streamed: sending the request again would duplicate it."""
+        return self.length > 0 or bool(self.tool_calls)
+
+    def reset_for_retry(self) -> None:
+        """Forget what a failed attempt that produced nothing left behind."""
+        self.tool_calls = {}
+        self.thinking_blocks = []
+        self.response_items = []
+        self.loop_triggers = []
 
     def finish(
         self,
@@ -1062,9 +1127,9 @@ def build_anthropic_request(
 # ══════════════════════════════════════════════════════════════════════════════
 
 @asynccontextmanager
-async def _http_stream(url: str, headers: Dict[str, str], body: Dict[str, Any]):
+async def _http_stream(url: str, headers: Dict[str, str], body: Dict[str, Any], read_timeout: Optional[float] = None):
     """Open a streaming POST. The single seam tests patch to stub the network."""
-    timeout = httpx.Timeout(HTTP_READ_TIMEOUT, connect=HTTP_CONNECT_TIMEOUT)
+    timeout = httpx.Timeout(read_timeout or HTTP_READ_TIMEOUT, connect=HTTP_CONNECT_TIMEOUT)
     async with httpx.AsyncClient(timeout=timeout) as client:
         async with client.stream("POST", url, headers=headers, json=body) as response:
             yield response
@@ -1248,11 +1313,12 @@ async def _stream_grok_responses(
     if config.get("conversationId"):
         logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"grok:{config['conversationId']}", body))
 
+    if config.get("loopCheck"):
+        headers = {**headers, **LOOP_CHECK_HEADERS}
     usage: Optional[Dict[str, Any]] = None
-    async with _http_stream(url, headers, body) as response:
+    async with _http_stream(url, headers, body, read_timeout=IDLE_TIMEOUT_SECONDS["grok"]) as response:
         if response.status_code >= 400:
-            err = await _read_error_text(response)
-            raise ProviderError(f"xAI API error ({response.status_code}): {err or 'request failed'}")
+            raise _http_error("xAI", response, await _read_error_text(response))
         async for line in response.aiter_lines():
             _check_abort(job)
             trimmed = (line or "").strip()
@@ -1284,7 +1350,10 @@ async def _stream_grok_responses(
                     if item.get("type") == "function_call" and isinstance(item.get("arguments"), str):
                         job.replace_tool_call_arguments(index, item["arguments"])
                     job.note_response_item(item)
+            elif kind == "response.doom_loop_check":
+                job.note_loop_triggers((event.get("doom_loop_check") or {}).get("triggers"))
             elif kind in ("response.completed", "response.incomplete"):
+                job.note_loop_triggers(((event.get("response") or {}).get("doom_loop_check") or {}).get("triggers"))
                 u = (event.get("response") or {}).get("usage") or {}
                 usage = {
                     "promptTokens": u.get("input_tokens") or 0,
@@ -1294,7 +1363,10 @@ async def _stream_grok_responses(
                 }
             elif kind in ("response.failed", "error"):
                 failure = (event.get("response") or {}).get("error") or event
-                raise ProviderError(f"xAI API error: {failure.get('message') or failure.get('code') or 'response failed'}")
+                code = str(failure.get("code") or "")
+                message = str(failure.get("message") or "")
+                raise ProviderError(f"xAI API error: {message or code or 'response failed'}",
+                                    transient=code in ("server_error", "internal_error", "overloaded") or "internal error" in message.lower())
     return usage
 
 
@@ -1313,7 +1385,7 @@ async def _stream_openai(
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
             err = await _read_error_text(response)
-            raise ProviderError(f"OpenAI API error ({response.status_code}): {err or 'request failed'}")
+            raise _http_error("OpenAI", response, err)
 
         async for line in response.aiter_lines():
             _check_abort(job)
@@ -1389,7 +1461,7 @@ async def _stream_anthropic(
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
             err = await _read_error_text(response)
-            raise ProviderError(f"Anthropic API error ({response.status_code}): {err or 'request failed'}")
+            raise _http_error("Anthropic", response, err)
 
         async for line in response.aiter_lines():
             _check_abort(job)
@@ -1573,7 +1645,7 @@ async def _stream_gemini(
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
             err = await _read_error_text(response)
-            raise ProviderError(f"Gemini API error ({response.status_code}): {err or 'request failed'}")
+            raise _http_error("Gemini", response, err)
 
         async for text in response.aiter_text():
             _check_abort(job)
@@ -1623,6 +1695,56 @@ async def _dispatch_provider(
     raise ProviderError(f"Unsupported LLM provider: {provider}")
 
 
+def classify_failure(exc: BaseException, job: GenerationJob) -> str:
+    """Why a job failed (agentic_chat_loop.md §0.10): transient | idle | repetition | context | fatal."""
+    if job.loop_triggers:
+        # The detector ends the generation (measured): whatever the error says, the loop is the cause.
+        return "repetition"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "idle"
+    if isinstance(exc, httpx.TransportError):
+        return "transient"
+    if isinstance(exc, ProviderError):
+        if exc.status is not None:
+            if is_context_length_error(exc.status, str(exc)):
+                return "context"
+            return "transient" if is_retryable_status(exc.status, str(exc)) else "fatal"
+        return "transient" if exc.transient else "fatal"
+    return "fatal"
+
+
+async def _dispatch_with_retries(job: GenerationJob, provider: str, config: Dict[str, Any], messages: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """One provider call, sent again while it fails transiently before producing anything.
+
+    Problem: a 429, a 503 or a dropped connection ended the turn, and on a
+      server run it ended the run, with every finished step's progress.
+    Fix: the same request is sent again (wc_text.retry_policy: Retry-After
+      when given, else 1, 2, 4, 8 s with jitter, at most four more times) —
+      only while nothing has streamed, so nothing is duplicated. A request
+      that started streaming is the run engine's to redo (server_runs._step).
+    """
+    attempt = 0
+    while True:
+        try:
+            return await _dispatch_provider(job, provider, config, messages)
+        except (asyncio.CancelledError, _JobAborted):
+            raise
+        except Exception as exc:  # noqa: BLE001 — classified, then retried or re-raised
+            kind = classify_failure(exc, job)
+            if kind != "transient" or job.has_output or attempt >= MAX_TRANSPORT_RETRIES or job.abort_requested:
+                raise
+            attempt += 1
+            job.retries = attempt
+            retry_after = getattr(exc, "retry_after", None)
+            delay = with_jitter(retry_delay_ms(attempt, retry_after), random.random()) / 1000
+            logger.info("Job %s: %s; retry %d/%d in %.1fs", job.job_id, str(exc)[:200] or type(exc).__name__, attempt, MAX_TRANSPORT_RETRIES, delay)
+            job.reset_for_retry()
+            job._publish({"type": "retry", "attempt": attempt, "max": MAX_TRANSPORT_RETRIES, "delayMs": int(delay * 1000),
+                          "reason": (str(exc) or type(exc).__name__)[:200]})
+            await asyncio.sleep(delay)
+            _check_abort(job)
+
+
 async def run_job(
     job: GenerationJob,
     provider: str,
@@ -1632,7 +1754,7 @@ async def run_job(
     """Drive one provider stream to a terminal job state. Never raises."""
     try:
         try:
-            usage = await _dispatch_provider(job, provider, config, messages)
+            usage = await _dispatch_with_retries(job, provider, config, messages)
         except ProviderError as exc:
             # A replayed reasoning item the service can no longer decrypt
             # (key rotation, model change) is a 400 for the whole turn: once
@@ -1666,8 +1788,13 @@ async def run_job(
         # surface as an unretrieved task exception on a job nobody awaits.
         job.finish("aborted")
     except Exception as exc:  # noqa: BLE001 — any provider failure becomes an error event
-        message = str(exc) or "Unknown network error"
-        logger.warning("Generation job %s failed: %s", job.job_id, message)
+        message = str(exc) or type(exc).__name__ or "Unknown network error"
+        job.error_kind = classify_failure(exc, job)
+        job.failed_after_output = job.has_output
+        if job.error_kind == "idle":
+            message = f"The model sent nothing for {int(IDLE_TIMEOUT_SECONDS.get(provider, HTTP_READ_TIMEOUT))} s; the stream was given up."
+        logger.warning("Generation job %s failed (%s%s): %s", job.job_id, job.error_kind,
+                       ", after output" if job.failed_after_output else "", message)
         job.finish("error", error=message)
 
 

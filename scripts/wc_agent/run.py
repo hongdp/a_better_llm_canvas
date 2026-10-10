@@ -26,6 +26,18 @@ from .types import ToolContext, seen_chapters, writes_so_far
 UNKNOWN_TOOL_KIND = "read"
 
 
+class StepUnavailable(Exception):
+    """The driver could not get this step through (agentic_chat_loop.md §0.10).
+
+    The loop puts the step back and pauses with `pause` ({reason, message, …});
+    a resume sends the same step again.
+    """
+
+    def __init__(self, pause: Dict[str, Any]) -> None:
+        super().__init__(pause.get("message") or pause.get("reason") or "step unavailable")
+        self.pause = pause
+
+
 class StepOutput:
     def __init__(self, text: str, native_calls: Optional[List[Dict[str, Any]]] = None, thinking: Optional[List[Any]] = None,
                  response_items: Optional[List[Any]] = None, usage: Optional[Dict[str, Any]] = None) -> None:
@@ -67,6 +79,8 @@ class AgentRun:
         self.elidable: List[Dict[str, Any]] = []
         #: Where the latest step's results start in the messages: never elided.
         self.last_results_start = 0
+        #: The last step's real prompt size and the messages it covered (calibrates the elision check).
+        self.measured: Optional[Dict[str, int]] = None
         self.long_reasoning_due: Optional[Dict[str, int]] = None
         self.plan_nudges = 0
         #: The trace of the last HTML read that no write has followed yet (the step before an edit).
@@ -121,6 +135,11 @@ class AgentRun:
     def cancel(self) -> None:
         self.cancelled = True
 
+    @property
+    def has_next(self) -> bool:
+        """A step is waiting to be sent (a resume continues with it)."""
+        return self._next is not None
+
     def steer(self, text: str) -> None:
         """A message the user sent mid-turn: appended as a user message once the step in flight has finished."""
         if js_trim(text):
@@ -143,7 +162,14 @@ class AgentRun:
                     return
             pending = self._next
             self._next = None
-            out = await self.driver(pending["messages"], pending["step"], pending["final"])
+            try:
+                out = await self.driver(pending["messages"], pending["step"], pending["final"])
+            except StepUnavailable as exc:
+                # Paused, not ended: the step goes back, the snapshot keeps it.
+                self._next = pending
+                self.paused = exc.pause
+                await _maybe_await(self.observer.on_paused(exc.pause, self.progress()))
+                return
             await self.step_done(out)
             # A step may leave the run waiting (a question for the user): the
             # next step is kept for the resume, not started now.
@@ -163,6 +189,9 @@ class AgentRun:
     async def step_done(self, out: StepOutput) -> None:
         if self.finished:
             return
+        # What this step was sent is self.messages, untouched until its results are appended.
+        if out.usage and out.usage.get("promptTokens"):
+            self.measured = {"tokens": int(out.usage["promptTokens"]), "length": len(self.messages)}
         self.steps_taken += 1
         if out.usage:
             for key in ("promptTokens", "completionTokens", "cachedPromptTokens"):
@@ -336,7 +365,7 @@ class AgentRun:
         """Keep the next step's prompt inside the window: past the threshold, the oldest read results become a note."""
         if self.prompt_token_limit <= 0 or not self.elidable:
             return
-        plan = plan_elisions(self.messages, self.elidable, self.prompt_token_limit, self.last_results_start)
+        plan = plan_elisions(self.messages, self.elidable, self.prompt_token_limit, self.last_results_start, self.measured)
         self.elidable = plan["remaining"]
         if not plan["elided"]:
             return
@@ -447,7 +476,7 @@ class AgentRun:
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
             "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
             "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers),
-            "elidable": list(self.elidable), "lastResultsStart": self.last_results_start,
+            "elidable": list(self.elidable), "lastResultsStart": self.last_results_start, "measured": self.measured,
         }
 
     def restore(self, snap: Dict[str, Any], stored: Callable[[str], Optional[str]]) -> None:
@@ -486,5 +515,6 @@ class AgentRun:
         self.pending_steers = list(snap.get("pendingSteers") or [])
         self.elidable = list(snap.get("elidable") or [])
         self.last_results_start = int(snap.get("lastResultsStart") or 0)
+        self.measured = snap.get("measured")
         if snap.get("next"):
             self._next = {"messages": self.messages, "step": self.steps_taken, "final": snap.get("final", False)}
