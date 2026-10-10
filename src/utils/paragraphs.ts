@@ -18,7 +18,8 @@ export interface ChapterParagraph {
   html: string
   /** Its plain text ('' for an image). */
   text: string
-  kind: 'paragraph' | 'heading' | 'image' | 'other'
+  /** `item`: one entry of a list — numbered on its own (see paragraphBlocks). */
+  kind: 'paragraph' | 'heading' | 'image' | 'item' | 'other'
 }
 
 const decodeEntities = (s: string) => s
@@ -45,9 +46,36 @@ export function topLevelBlocks(html: string): string[] {
   })
 }
 
+/**
+ * The blocks the numbering counts: the top-level blocks, except that a list
+ * counts each of its items.
+ *
+ * Problem: a character card keeps each person's fields as one <ul>, which a
+ *   text read showed as ONE paragraph; a model replaced that paragraph with
+ *   one <p>, flattening every field into a line (run-d9e54ca576dc).
+ * Fix: number each <li> of a top-level list on its own, so an entry is read,
+ *   grepped and edited as itself (applyParagraphEdits keeps it an <li>).
+ *   topLevelBlocks stays whole-list: polishing and pending changes cut the
+ *   chapter into blocks and put them back.
+ */
+export function paragraphBlocks(html: string): string[] {
+  const doc = new DOMParser().parseFromString(`<body>${html}</body>`, 'text/html')
+  const out: string[] = []
+  const add = (node: ChildNode) => {
+    if (node.nodeType === Node.ELEMENT_NODE) { out.push((node as Element).outerHTML); return }
+    const text = node.textContent?.trim()
+    if (text) out.push(`<p>${text}</p>`)
+  }
+  for (const node of [...doc.body.childNodes]) {
+    if (node.nodeType === Node.ELEMENT_NODE && /^(UL|OL)$/i.test((node as Element).tagName)) [...node.childNodes].forEach(add)
+    else add(node)
+  }
+  return out
+}
+
 export function chapterParagraphs(html: string): ChapterParagraph[] {
   let number = 0
-  return topLevelBlocks(html).flatMap(block => {
+  return paragraphBlocks(html).flatMap(block => {
     // An image placeholder token is an image, not words.
     const text = blockText(block).replace(/\{\{IMAGE_PLACEHOLDER_\d+\}\}/g, '').trim()
     const image = IMAGE_RE.test(block)
@@ -56,6 +84,7 @@ export function chapterParagraphs(html: string): ChapterParagraph[] {
     const kind: ChapterParagraph['kind'] = /^<h[1-6]\b/i.test(block) ? 'heading'
       : image && !text ? 'image'
       : /^<p\b/i.test(block) ? 'paragraph'
+      : /^<li\b/i.test(block) ? 'item'
       : 'other'
     return [{ number, html: block, text, kind }]
   })
@@ -69,10 +98,10 @@ export function chapterParagraphs(html: string): ChapterParagraph[] {
 export const chapterChars = (html: string) =>
   chapterParagraphs(html).reduce((sum, p) => sum + p.text.length, 0)
 
-/** One numbered line of a text-format read: "¶12 …", headings marked "#". */
+/** One numbered line of a text-format read: "¶12 …", headings marked "#", list entries "•". */
 export function numberedLine(p: ChapterParagraph): string {
   if (p.kind === 'image') return `¶${p.number} [image]`
-  return `¶${p.number} ${p.kind === 'heading' ? '# ' : ''}${p.text.replace(/\n+/g, ' / ')}`
+  return `¶${p.number} ${p.kind === 'heading' ? '# ' : p.kind === 'item' ? '• ' : ''}${p.text.replace(/\n+/g, ' / ')}`
 }
 
 // ── Paragraphs by position (agentic_chat_loop.md §0.11) ─────────────────────
@@ -153,6 +182,16 @@ export function paragraphSpans(html: string): ParagraphSpan[] {
       if (depth === 0) { end = at; break }
       re.lastIndex = at
     }
+    if (name === 'ul' || name === 'ol') {
+      // A list counts its items (paragraphBlocks): their spans, inside it.
+      const closing = new RegExp(`</${name}\\s*>$`, 'i').exec(html.slice(i, end))
+      const innerEnd = closing ? end - closing[0].length : end
+      for (const s of paragraphSpans(html.slice(closeAt, innerEnd))) {
+        out.push({ ...s, start: s.start + closeAt, end: s.end + closeAt })
+      }
+      i = end
+      continue
+    }
     out.push({ start: i, end, html: html.slice(i, end), loose: false })
     i = end
   }
@@ -211,13 +250,43 @@ export interface ParagraphEdit {
 }
 
 export type ParagraphEditOutcome =
-  | { ok: true; html: string; paragraphsBefore: number; paragraphsAfter: number; firstChanged: number }
+  | { ok: true; html: string; paragraphsBefore: number; paragraphsAfter: number; firstChanged: number
+      /** Edits applied, and the ones left out with why (an edit that no longer fits is skipped, not fatal). */
+      applied: number; skipped: string[]; stale: Array<{ number: number; text: string }> }
   | { ok: false; error: string; stale: Array<{ number: number; text: string }> }
 
 const ACTIONS: ParagraphAction[] = ['replace', 'insert_before', 'insert_after', 'delete']
 const squash = (s: string) => s.replace(/\s+/g, ' ').trim()
-/** The anchor as the model may copy it from a text read: "¶12 # Title" is "Title". */
-const anchorOf = (s: string) => squash(s).replace(/^¶\d+\s*/, '').replace(/^#\s+/, '')
+/** The anchor as the model may copy it from a text read: "¶12 # Title" is "Title", "¶4 • 身份…" is "身份…". */
+const anchorOf = (s: string) => squash(s).replace(/^¶\d+\s*/, '').replace(/^#\s+/, '').replace(/^•\s*/, '')
+
+/** Edit distance between two short strings (anchors are a sentence at most). */
+function levenshtein(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]
+    for (let j = 1; j <= b.length; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = cur
+  }
+  return prev[b.length]
+}
+
+/**
+ * Whether a paragraph starts with the anchor the model gave — allowing a
+ * slip or two in a long one. A model copying Chinese lines writes a rare
+ * character as a look-alike now and then (缆缈宗 for 缥缈宗: four of six
+ * anchors of one call, run-d9e54ca576dc), and an anchor is there to catch a
+ * paragraph that MOVED, which a one-character difference does not mean.
+ */
+export function anchorMatches(text: string, anchor: string): boolean {
+  const t = squash(text)
+  if (t.startsWith(anchor)) return true
+  const k = anchor.length >= 16 ? 2 : anchor.length >= 6 ? 1 : 0
+  for (let len = anchor.length - k; k > 0 && len <= anchor.length + k; len++) {
+    if (len > 0 && len <= t.length && levenshtein(anchor, t.slice(0, len)) <= k) return true
+  }
+  return false
+}
 const BLOCK_HTML_RE = /^\s*<(?:p|h[1-6]|blockquote|ul|ol|div|hr|figure|img|pre|table)\b/i
 
 /** New content as blocks: HTML as it is, bare text as one paragraph per blank-line-separated part. */
@@ -227,13 +296,21 @@ export function asBlocks(html: string): string {
     .map(part => `<p>${part.replace(/\n/g, '<br>')}</p>`).join('')
 }
 
+/** New content beside or in place of a list entry: still an entry (`<li>`), whatever was sent. */
+export function asItems(html: string): string {
+  return /^\s*<li\b/i.test(html) ? html.trim() : `<li>${asBlocks(html)}</li>`
+}
+
 /**
- * Apply edits addressed by paragraph number (edit_paragraphs). All or
- * nothing: an anchor that no longer matches, a number past the end, a
- * replace of an image, or two replacements of one paragraph refuse the
- * whole call, the stale ones reported with their current text. Numbers are
- * the chapter's before the call; splices go back to front so none moves
- * another, and everything else keeps its bytes.
+ * Apply edits addressed by paragraph number (edit_paragraphs). Each edit is
+ * checked on its own: one whose anchor no longer matches (allowing a slip,
+ * anchorMatches), whose number is past the end, that replaces an image, or
+ * that replaces a paragraph twice is left out and reported; the rest apply.
+ * Problem: all-or-nothing threw away two good edits for four mistyped
+ *   anchors after a 3½-minute step (run-d9e54ca576dc).
+ * Numbers are the chapter's before the call; splices go back to front so
+ * none moves another, and everything else keeps its bytes. A list entry
+ * stays a list entry (asItems).
  */
 export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): ParagraphEditOutcome {
   const spans = numberedParagraphSpans(html)
@@ -242,13 +319,14 @@ export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): Parag
   const stale: Array<{ number: number; text: string }> = []
   const errors: string[] = []
   const removed = new Set<number>()
+  const valid: ParagraphEdit[] = []
   for (const e of edits) {
     const span = spans[e.paragraph - 1]
     if (!ACTIONS.includes(e.action)) { errors.push(`¶${e.paragraph}: unknown action "${e.action}"`); continue }
     if (!Number.isInteger(e.paragraph) || !span) { errors.push(`¶${e.paragraph}: the chapter has ${spans.length} paragraphs`); continue }
     if ((e.action === 'replace' || e.action.startsWith('insert')) && !(e.html ?? '').trim()) { errors.push(`¶${e.paragraph}: ${e.action} needs html`); continue }
     if (!anchorOf(e.startsWith)) { errors.push(`¶${e.paragraph}: starts_with is empty — give the first words of the paragraph as you read them`); continue }
-    if (!squash(span.text).startsWith(anchorOf(e.startsWith)) && !(span.kind === 'image' && /^\[?image\]?$/i.test(anchorOf(e.startsWith)))) {
+    if (!anchorMatches(span.text, anchorOf(e.startsWith)) && !(span.kind === 'image' && /^\[?image\]?$/i.test(anchorOf(e.startsWith)))) {
       stale.push({ number: span.number, text: span.kind === 'image' ? '[image]' : span.text })
       continue
     }
@@ -257,23 +335,23 @@ export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): Parag
       if (removed.has(e.paragraph)) { errors.push(`¶${e.paragraph} is replaced or deleted twice`); continue }
       removed.add(e.paragraph)
     }
+    valid.push(e)
   }
-  if (stale.length > 0 || errors.length > 0) {
-    const lines = [
-      ...errors,
-      ...stale.map(s => `¶${s.number} does not start with what you gave; it now reads: ${s.text.length > 160 ? `${s.text.slice(0, 160)}…` : s.text}`)
-    ]
-    return { ok: false, error: `nothing was applied:\n${lines.join('\n')}`, stale }
-  }
+  const skipped = [
+    ...errors,
+    ...stale.map(s => `¶${s.number} does not start with what you gave; it now reads: ${s.text.length > 160 ? `${s.text.slice(0, 160)}…` : s.text}`)
+  ]
+  if (valid.length === 0) return { ok: false, error: `nothing was applied:\n${skipped.join('\n')}`, stale }
   // Splices back to front. At one position a later paragraph's operation is
   // applied first, and within a paragraph its replacement before its
   // insert_before, so the result reads in paragraph order.
   const rank: Record<ParagraphAction, number> = { insert_after: 0, replace: 1, delete: 1, insert_before: 2 }
-  const splices = edits.map((e, order) => {
+  const splices = valid.map((e, order) => {
     const span = spans[e.paragraph - 1]
     const at = e.action === 'insert_after' ? span.end : span.start
     const to = e.action === 'replace' || e.action === 'delete' ? span.end : at
-    return { at, to, text: e.action === 'delete' ? '' : asBlocks(e.html ?? ''), paragraph: e.paragraph, rank: rank[e.action], order }
+    const text = e.action === 'delete' ? '' : span.kind === 'item' ? asItems(e.html ?? '') : asBlocks(e.html ?? '')
+    return { at, to, text, paragraph: e.paragraph, rank: rank[e.action], order }
   }).sort((a, b) => b.at - a.at || b.paragraph - a.paragraph || a.rank - b.rank || b.order - a.order)
   let out = html
   for (const s of splices) out = out.slice(0, s.at) + s.text + out.slice(s.to)
@@ -282,7 +360,10 @@ export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): Parag
     html: out,
     paragraphsBefore: spans.length,
     paragraphsAfter: chapterParagraphs(out).length,
-    firstChanged: Math.min(...edits.map(e => e.paragraph))
+    firstChanged: Math.min(...valid.map(e => e.paragraph)),
+    applied: valid.length,
+    skipped,
+    stale
   }
 }
 

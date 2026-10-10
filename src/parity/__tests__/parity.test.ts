@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
 import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
 import type { LLMMessage } from '../../types/llm'
-import { rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
+import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
@@ -90,6 +90,9 @@ const ATTACH_LIST = [
   { id: 'x1', ref: 'A1', name: '原著.txt', chars: 120, paragraphs: 9, sections: [{ title: '(opening)', from: 1, to: 1 }, { title: '第一章 初见', from: 2, to: 4 }, { title: '第二章 再见', from: 5, to: 6 }] },
   { id: 'x2', ref: 'A2', name: 'notes.md', chars: 30, paragraphs: 3, sections: [] }
 ]
+
+/** A character card: fields as list entries under each heading (run-d9e54ca576dc). */
+const CARD = '<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>'
 
 /** A chapter with a heading, inline markup and an image, for the paragraph-span cases. */
 const SPANNED = '<h1>T</h1>\n<p>One a</p><p>Two <em>b</em></p> <p><img src="x.png"></p><p>Three</p>'
@@ -353,10 +356,15 @@ const MODULES: Module[] = [
       chapter_paragraphs: run(chapterParagraphs, [[CHAPTER], [ENGLISH], ['<p>{{IMAGE_PLACEHOLDER_3}}</p>'], ['<h1>标题</h1><p>一。</p><p></p><p><img src="x"></p><ul><li>a</li><li>b</li></ul>loose'], [DIFFED]]),
       chapter_chars: run(chapterChars, [[CHAPTER], [ENGLISH], ['']]),
       numbered_line: run(numberedLine, chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>').map(p => [p] as [typeof p])),
+      paragraph_spans_card: run(paragraphSpans, [[CARD]]),
+      numbered_paragraph_spans_card: run(numberedParagraphSpans, [[CARD]]),
       paragraph_spans: run(paragraphSpans, [[CHAPTER], [ENGLISH], [''], [SPANNED], ['loose <p>a</p> tail'], ['<!-- c --><p>a</p></p><div><div>x</div></div><br/><p class="x>y">q</p>'], ['<p>never closed'], ['<p>a<p>b</p>']]),
       numbered_paragraph_spans: run(numberedParagraphSpans, [[CHAPTER], [ENGLISH], [SPANNED], ['<p>a<p>b</p>'], ['<p>x &#8217; y</p>'], ['']]),
       is_plain_chapter_html: run(isPlainChapterHtml, [[CHAPTER], [ENGLISH], [SPANNED], ['<h1>标题</h1><p>一。</p><p>二<br>三</p><p></p>'], ['<p class="a">x</p>'], ['<p>x</p><ul><li>a</li></ul>'], ['loose'], ['']]),
       as_blocks: run(asBlocks, [['<p>x</p>'], ['  <h2>t</h2> '], ['one\n\ntwo\nlines'], ['plain'], ['  ']]),
+      paragraph_blocks: run(paragraphBlocks, [[CARD], ['<ol><li>a</li>x<li>b</li></ol><p>c</p>'], ['<ul></ul>']]),
+      anchor_matches: run(anchorMatches, [['身份：缥缈宗太上长老，炼虚期', '身份：缆缈宗太上长老'], ['身份：缥缈宗太上长老', '身份：缆缆宗太上长老'], ['abc', 'abd'], ['整理范围：原作第1–87章，人物', '整理范围：原作第1–94章，人物状态'], ['The quick brown fox jumps', 'The quikc brown fox'], ['短', '短']]),
+      as_items: run(asItems, [['<p>x</p>'], ['<li>y</li>'], ['plain']]),
       apply_paragraph_edits: run(applyParagraphEdits, [
         [SPANNED, [{ paragraph: 2, action: 'replace', html: '<p>Uno</p>', startsWith: 'One' }, { paragraph: 5, action: 'insert_after', html: 'Four\n\nFive', startsWith: '¶5 Three' }, { paragraph: 4, action: 'delete', startsWith: '[image]' }]],
         [SPANNED, [{ paragraph: 1, action: 'insert_before', html: '<p>pre</p>', startsWith: '# T' }, { paragraph: 1, action: 'replace', html: '<h1>New</h1>', startsWith: 'T' }, { paragraph: 2, action: 'insert_before', html: '<p>mid</p>', startsWith: 'One' }]],
@@ -365,7 +373,10 @@ const MODULES: Module[] = [
         [SPANNED, [{ paragraph: 2, action: 'delete', startsWith: 'One' }, { paragraph: 2, action: 'replace', html: '<p>x</p>', startsWith: 'One' }]],
         [SPANNED, [{ paragraph: 2, action: 'replace', startsWith: 'One' }, { paragraph: 3, action: 'move', startsWith: 'Two' }, { paragraph: 3, action: 'delete', startsWith: '  ' }]],
         [SPANNED, []], ['<p>a<p>b</p>', [{ paragraph: 1, action: 'delete', startsWith: 'a' }]],
-        [CHAPTER, [{ paragraph: 2, action: 'insert_after', html: '<p>新段。</p>', startsWith: chapterParagraphs(CHAPTER)[1]?.text.slice(0, 4) ?? 'x' }]]
+        [CHAPTER, [{ paragraph: 2, action: 'insert_after', html: '<p>新段。</p>', startsWith: chapterParagraphs(CHAPTER)[1]?.text.slice(0, 4) ?? 'x' }]],
+        // A list entry edited as itself; a mistyped anchor still lands; the edits that fit apply, the others come back.
+        [CARD, [{ paragraph: 4, action: 'replace', html: '<p>身份：缥缈宗太上长老，化神期。</p>', startsWith: '身份：缆缈宗太上长老' }, { paragraph: 5, action: 'insert_after', html: '外形：白衣。', startsWith: '• 气运' }, { paragraph: 7, action: 'delete', startsWith: '身份：缥缈宗掌门' }]],
+        [CARD, [{ paragraph: 2, action: 'replace', html: '<p>整理范围：原作第1–94章</p>', startsWith: '整理范围' }, { paragraph: 4, action: 'replace', html: '<p>x</p>', startsWith: '完全不同的开头文字' }]]
       ] as Array<[string, ParagraphEdit[]]>)
     }
   },

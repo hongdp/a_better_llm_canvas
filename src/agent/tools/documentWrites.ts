@@ -802,7 +802,7 @@ export const editParagraphsTool = defineTool<{ chapter: unknown; edits: Paragrap
     'Change paragraphs of a chapter by their ¶ numbers — the numbers grep and text reads show — with no HTML read and no SEARCH text. ' +
     'Each edit: paragraph (its ¶ number), action ("replace", "insert_before", "insert_after" or "delete"), html (the new paragraph(s) for replace and inserts; plain text becomes <p> paragraphs, a blank line separating them), ' +
     'and starts_with: the first words of that paragraph as you read it. Numbers refer to the chapter as it was before this call. ' +
-    'If any starts_with no longer matches (the chapter changed), nothing is applied and you get those paragraphs\' current text. ' +
+    'An edit whose starts_with no longer matches (the paragraph moved or changed) is not applied — the others are — and you get that paragraph\'s current text. A list entry is a paragraph of its own and stays a list entry. ' +
     'For changes to most of a chapter, rewrite it instead.',
   parameters: {
     type: 'object',
@@ -868,13 +868,16 @@ export const editParagraphsTool = defineTool<{ chapter: unknown; edits: Paragrap
       st.html = stripBlankParagraphs(outcome.html)
       st.dirty = true
       commitDoc(ctx, target, st)
-      touch(ctx, target, 'edits', edits.length, 0)
+      touch(ctx, target, 'edits', outcome.applied, 0)
       const shift = outcome.paragraphsAfter - outcome.paragraphsBefore
+      const left = outcome.skipped.length
       return {
+        // Some applied: a write landed. What was left out goes back to the model as a retry.
         ok: true,
-        content: `Applied ${edits.length} paragraph edit(s) to ${citeChapter(target)}. It now has ${outcome.paragraphsAfter} paragraphs and ${chapterChars(st.html)} characters.` +
-          (shift !== 0 ? ` Paragraphs after ¶${outcome.firstChanged} moved by ${shift > 0 ? '+' : ''}${shift}: take their new numbers from grep or a read before editing them again.` : ''),
-        trace: `✏️ edited ${citeChapter(target)} by paragraph (${edits.length} change${edits.length === 1 ? '' : 's'})`
+        content: `Applied ${outcome.applied} paragraph edit(s) to ${citeChapter(target)}. It now has ${outcome.paragraphsAfter} paragraphs and ${chapterChars(st.html)} characters.` +
+          (shift !== 0 ? ` Paragraphs after ¶${outcome.firstChanged} moved by ${shift > 0 ? '+' : ''}${shift}: take their new numbers from grep or a read before editing them again.` : '') +
+          (left > 0 ? `\nNOT applied (${left}) — redo these with numbers and anchors from a fresh read:\n${outcome.skipped.join('\n')}` : ''),
+        trace: `✏️ edited ${citeChapter(target)} by paragraph (${outcome.applied} change${outcome.applied === 1 ? '' : 's'}${left > 0 ? `; ${left} not applied` : ''})`
       }
     }), r => withPlanDone(ctx, r, planDone))
   }

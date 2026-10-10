@@ -593,13 +593,15 @@ async def _paragraphs_write(args: Dict[str, Any], ctx: ToolContext) -> Dict[str,
         st.html = strip_blank_paragraphs(outcome["html"])
         st.dirty = True
         commit_doc(ctx, target, st)
-        touch(ctx, target, "edits", len(edits), 0)
+        touch(ctx, target, "edits", outcome["applied"], 0)
         shift = outcome["paragraphsAfter"] - outcome["paragraphsBefore"]
         moved = (f" Paragraphs after ¶{outcome['firstChanged']} moved by {'+' if shift > 0 else ''}{shift}: take their new numbers from grep or a read before editing them again."
                  if shift else "")
-        n = len(edits)
-        return result(True, f"Applied {n} paragraph edit(s) to {cite_chapter(target)}. It now has {outcome['paragraphsAfter']} paragraphs and {chapter_chars(st.html)} characters." + moved,
-                      f"✏️ edited {cite_chapter(target)} by paragraph ({n} change{'' if n == 1 else 's'})")
+        n = outcome["applied"]
+        left = len(outcome["skipped"])
+        rest = (f"\nNOT applied ({left}) — redo these with numbers and anchors from a fresh read:\n" + "\n".join(outcome["skipped"])) if left else ""
+        return result(True, f"Applied {n} paragraph edit(s) to {cite_chapter(target)}. It now has {outcome['paragraphsAfter']} paragraphs and {chapter_chars(st.html)} characters." + moved + rest,
+                      f"✏️ edited {cite_chapter(target)} by paragraph ({n} change{'' if n == 1 else 's'}{f'; {left} not applied' if left else ''})")
 
     return await with_loaded(ctx, target, write)
 
@@ -610,7 +612,7 @@ edit_paragraphs_tool = Tool(
         "Change paragraphs of a chapter by their ¶ numbers — the numbers grep and text reads show — with no HTML read and no SEARCH text. "
         'Each edit: paragraph (its ¶ number), action ("replace", "insert_before", "insert_after" or "delete"), html (the new paragraph(s) for replace and inserts; plain text becomes <p> paragraphs, a blank line separating them), '
         "and starts_with: the first words of that paragraph as you read it. Numbers refer to the chapter as it was before this call. "
-        "If any starts_with no longer matches (the chapter changed), nothing is applied and you get those paragraphs' current text. "
+        "An edit whose starts_with no longer matches (the paragraph moved or changed) is not applied — the others are — and you get that paragraph's current text. A list entry is a paragraph of its own and stays a list entry. "
         "For changes to most of a chapter, rewrite it instead."),
     parameters={"type": "object", "properties": {
         "chapter": {"type": "string", "description": "The chapter number from the CHAPTER INDEX (default: the active chapter)."},

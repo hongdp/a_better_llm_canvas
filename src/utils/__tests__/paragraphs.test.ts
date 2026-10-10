@@ -8,8 +8,10 @@ describe('chapterParagraphs', () => {
       [1, 'heading', '标题'],
       [2, 'paragraph', '一。'],
       [3, 'image', ''],
-      [4, 'other', 'a\nb'],
-      [5, 'paragraph', 'loose']
+      // Each list entry on its own (run-d9e54ca576dc: a card's fields were one ¶).
+      [4, 'item', 'a'],
+      [5, 'item', 'b'],
+      [6, 'paragraph', 'loose']
     ])
   })
 
@@ -18,7 +20,7 @@ describe('chapterParagraphs', () => {
   })
 
   it('renders one line per paragraph for a text read', () => {
-    const [h, p, img, list] = chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>')
-    expect([h, p, img, list].map(numberedLine)).toEqual(['¶1 # T', '¶2 a & b', '¶3 [image]', '¶4 x / y'])
+    const [h, p, img, x, y] = chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>')
+    expect([h, p, img, x, y].map(numberedLine)).toEqual(['¶1 # T', '¶2 a & b', '¶3 [image]', '¶4 • x', '¶5 • y'])
   })
 })
