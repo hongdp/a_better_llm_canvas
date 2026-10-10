@@ -113,7 +113,7 @@ export const ATTACHMENT_RUN_READ_CAP = 100_000
 
 export function attachmentBudgetNote(ref: string, used: number): string {
   return `${ref} was not read: this turn has already read ${used} characters of attachments, the most one turn may — a whole file is never read into the conversation. ` +
-    `Find the passages you need with grep chapters=["${ref}"] and read only those paragraphs, or let analyze_book chapters=["${ref}"] section="第62–87章" read a range in batches and return notes.`
+    `Find the passages you need with grep chapters=["${ref}"] and read only those paragraphs, or read a range with a task (chapters=["${ref}"] section="第62–87章" task="…") to get notes from batches outside the conversation.`
 }
 
 /** Lines of the index before the rest is summarized. */
@@ -131,7 +131,7 @@ export function renderAttachmentIndex(list: AttachmentMeta[], maxLines: number =
       lines.push(`  ¶${s.from}–${s.to} ${s.title}`)
     }
   }
-  return 'ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=["A1"] section="第三十章" (or a paragraph range), search with grep chapters=["A1"], or let analyze_book chapters=["A1"] section="第62–87章" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\n' +
+  return 'ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read chapters=["A1"] section="第三十章" (or a paragraph range), search with grep chapters=["A1"], or read a range with a task (chapters=["A1"] section="第62–87章" task="…") for notes; a turn reads at most 100,000 characters of them, and they cannot be written):\n' +
     lines.join('\n') + (hidden > 0 ? `\n  … ${hidden} more sections (grep for a heading to find one)` : '')
 }
 
@@ -273,4 +273,30 @@ export function findAttachmentRange(sections: AttachmentSection[], query: string
     }
   }
   return findAttachmentSection(sections, q)
+}
+
+/** Sections one `list source="A1"` call shows (read_and_list.md §3). */
+export const LIST_SECTION_LINES = 200
+
+/**
+ * An attachment's sections with their ¶ spans, from the `start`-th (1-based)
+ * on, at most `maxLines`, and how to continue — what `list source="A1"`
+ * returns, so the model can read a range by its numbers next.
+ * `continueArgs` is repeated in the continue hint (e.g. ` section="第60–90章"`).
+ */
+export function renderSectionList(meta: Pick<AttachmentMeta, 'ref' | 'name' | 'chars' | 'paragraphs'>, sections: AttachmentSection[],
+  start: number = 1, maxLines: number = LIST_SECTION_LINES, continueArgs: string = ''): string {
+  const head = `=== ${meta.ref} "${meta.name}" — ${meta.paragraphs} paragraphs, ${meta.chars} characters ===`
+  if (sections.length === 0) {
+    return `${head}
+No section headings here. Find places with grep chapters=["${meta.ref}"] and read them by ¶ (read chapters=["${meta.ref}"] paragraphs="…").`
+  }
+  const first = Math.max(1, Math.min(start, sections.length))
+  const shown = sections.slice(first - 1, first - 1 + maxLines)
+  const last = first - 1 + shown.length
+  const lines = shown.map((s, i) => `${first + i}. ¶${s.from}–${s.to} ${s.title}`)
+  const more = last < sections.length
+    ? `\n[Sections ${first}–${last} of ${sections.length}. Continue with list source="${meta.ref}"${continueArgs} from=${last + 1}.]`
+    : (first > 1 ? `\n[Sections ${first}–${last} of ${sections.length}.]` : '')
+  return `${head}\n${lines.join('\n')}${more}\nRead one by its ¶ range: read chapters=["${meta.ref}"] paragraphs="a-b" (or section="…").`
 }

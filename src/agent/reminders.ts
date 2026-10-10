@@ -128,12 +128,12 @@ export const LOOKUP_NUDGE_STEPS = 8
  *   look-up steps were 66 % of all prompt tokens in three days of logs.
  * Fix: once a run has only looked for LOOKUP_NUDGE_STEPS steps, it is told
  *   to put several look-ups in one call and, where a question spans many
- *   chapters, to let analyze_book read them. Once per run.
+ *   chapters, to read them with a task (notes back). Once per run.
  */
 export function lookupStreakNudge(steps: number, analyzeOffered: boolean): string {
   return `The last ${steps} steps only looked things up and wrote nothing, and every step sends the whole conversation again. ` +
-    'Check several places in ONE call: read_chapter with parts, grep with patterns' +
-    (analyzeOffered ? '; for a question that spans many chapters, let analyze_book read them for you' : '') +
+    'Check several places in ONE call: read with parts, grep with patterns' +
+    (analyzeOffered ? '; for a question that spans many chapters, read them with a task and get notes back' : '') +
     '. Then write.'
 }
 

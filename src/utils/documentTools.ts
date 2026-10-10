@@ -81,7 +81,7 @@ export const DOCUMENT_TOOLS: DocumentTool[] = [
   {
     name: 'edit_document',
     description:
-      'Change specific passages of a chapter (the active one unless `chapter` names another), leaving everything else untouched. Preferred for rewriting a sentence or paragraph, fixing wording, or inserting and removing a section. For another chapter, read its HTML with read_chapter first.',
+      'Change specific passages of a chapter (the active one unless `chapter` names another), leaving everything else untouched. Preferred for rewriting a sentence or paragraph, fixing wording, or inserting and removing a section. For another chapter, read its HTML with read first.',
     parameters: {
       type: 'object',
       properties: {

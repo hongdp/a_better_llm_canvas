@@ -190,7 +190,8 @@ def test_stop_aborts_the_step_and_holds_the_queue(book, monkeypatch):
 
 def test_analyze_book_runs_on_a_server_run(book, monkeypatch):
     """Regression: the port kept the run as `self.run`, hiding its run() method — every call failed."""
-    call = {"text": "", "calls": [("a1", "analyze_book", json.dumps({"task": "审阅", "chapters": ["1", "2"]}))]}
+    # By its old name (an alias of read, read_and_list.md §4), for the whole book: read in batches.
+    call = {"text": "", "calls": [("a1", "analyze_book", json.dumps({"task": "审阅"}))]}
     provider = Scripted([call, "NOTES: 两章都在。", "好的。\n<doc_status>unchanged</doc_status>"])
     monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
 
@@ -200,7 +201,7 @@ def test_analyze_book_runs_on_a_server_run(book, monkeypatch):
         return run
     run = asyncio.run(main())
     assert run.status == "done"
-    assert any(line.startswith("📚 analyzed") and "(failed)" not in line for line in run.record["trace"]), run.record["trace"]
+    assert any(line.startswith("📚 read the book for a task") and "(failed)" not in line for line in run.record["trace"]), run.record["trace"]
     assert "NOTES: 两章都在。" in json.dumps(provider.requests[2]["messages"], ensure_ascii=False)
 
 

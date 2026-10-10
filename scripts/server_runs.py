@@ -36,7 +36,6 @@ from server_db import get_db
 from wc_agent.polish import analyze_in_batches, default_polish_model, plan_analysis, polish_html
 from wc_agent.registry import ToolRegistry, to_tool_specs
 from wc_agent.run import AgentRun, StepOutput, StepUnavailable
-from wc_agent.tools.analyze_book import analyze_book_tool
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
 from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite
@@ -57,7 +56,7 @@ from wc_text.tool_call_stream import finish_tool_calls
 logger = logging.getLogger("web_canvas.runs")
 router = APIRouter()
 
-CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, *BOOK_TOOLS, polish_chapter_tool, analyze_book_tool, *WEB_TOOLS, plan_tool, ask_user_tool])
+CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, *BOOK_TOOLS, polish_chapter_tool, *WEB_TOOLS, plan_tool, ask_user_tool])
 
 # ── Limits (the "Runaway runs" decision) ─────────────────────────────────────
 #: Steps that repeated the same calls and wrote nothing before the run is

@@ -405,6 +405,8 @@ export interface AgentTool<A = Record<string, unknown>> extends ToolSpec {
    * markup — it writes the tag instead (D1). A write WITHOUT a tag form
    * (polish_chapter) is offered natively to every model.
    */
+  /** Earlier names a call may still use (history, habit); never offered (read_and_list.md §4). */
+  aliases?: string[]
   markupForm?: boolean
   /**
    * Offered natively to a markup model too (with the agent tools on), beside

@@ -287,7 +287,7 @@ class AgentRun:
         if wrote_now:
             self.html_read_pending = None
         for inv, r in zip(ran, results):
-            if inv["name"] == "read_chapter" and (inv.get("args") or {}).get("format") == "html" and r["ok"]:
+            if inv["name"] in ("read", "read_chapter") and (inv.get("args") or {}).get("format") == "html" and r["ok"]:
                 self.html_read_pending = r["trace"]
 
         decision = decide_after_step({"executed": executed, "stepsTaken": self.steps_taken, "correctiveUsed": self.corrective_used,
@@ -395,7 +395,7 @@ class AgentRun:
         lookups = self.lookup_streak()
         if not self.lookup_nudged and lookups >= LOOKUP_NUDGE_STEPS:
             self.lookup_nudged = True
-            out.append(lookup_streak_nudge(lookups, any(t.name == "analyze_book" for t in self.offered_tools())))
+            out.append(lookup_streak_nudge(lookups, self.ctx.analyze is not None))
         if self.host_reminders is not None:
             out.extend(self.host_reminders(self))
         return out

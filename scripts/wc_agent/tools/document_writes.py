@@ -183,7 +183,7 @@ def edited_meanwhile(ctx: ToolContext, target: Target) -> Dict[str, Any]:
     forget_chapter(ctx, target["id"])
     return result(False,
                   f"The user edited {cite_chapter(target)} while you were working, so your copy of it is out of date and this change was NOT applied. "
-                  f"Read it again (read_chapter with chapters=[{target['number']}] and format=\"html\") and make the change on its current text, keeping the user's edits.",
+                  f"Read it again (read with chapters=[{target['number']}] and format=\"html\") and make the change on its current text, keeping the user's edits.",
                   f"⚠️ {cite_chapter(target)} was edited by the user meanwhile — not written", retryable=True)
 
 
@@ -241,7 +241,7 @@ def seen_enough_to_rewrite(ctx: ToolContext, doc_id: str, accepted_html: str) ->
 def _unseen(target: Target) -> Dict[str, Any]:
     return result(False,
                   f"You have not seen the current HTML of {cite_chapter(target)} in this turn, so SEARCH text cannot be copied from it. "
-                  f"Call read_chapter with chapters=[{target['number']}] and format=\"html\" first.",
+                  f"Call read with chapters=[{target['number']}] and format=\"html\" first.",
                   f"⛔ edit of {cite_chapter(target)} refused — not read yet", retryable=True)
 
 
@@ -339,11 +339,11 @@ async def _update_write(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
             if is_new_chapter_ref(chapter):
                 return result(False,
                               f'A chapter titled "{target["title"]}" already exists as #{target["number"]} and has text you have not read in this turn, so it was NOT overwritten and no chapter was added. '
-                              f"To rewrite it, read it first (read_chapter with chapters=[{target['number']}]); to add a new chapter, give it a title no chapter has.",
+                              f"To rewrite it, read it first (read with chapters=[{target['number']}]); to add a new chapter, give it a title no chapter has.",
                               f'⛔ new_chapter "{target["title"]}" is #{target["number"]}, not read — not overwritten', retryable=True)
-            how = (f"Read it (read_chapter with chapters=[{target['number']}]; text format is enough for this chapter), then write it."
+            how = (f"Read it (read with chapters=[{target['number']}]; text format is enough for this chapter), then write it."
                    if is_plain_chapter_html(st.html) else
-                   f'It has formatting or images a text read does not show: read its HTML (read_chapter with chapters=[{target["number"]}] and format="html"), then write it.')
+                   f'It has formatting or images a text read does not show: read its HTML (read with chapters=[{target["number"]}] and format="html"), then write it.')
             return result(False, f"You have not seen the whole current text of {cite_chapter(target)} in this turn, so it was not rewritten. " + how,
                           f"⛔ rewrite of {cite_chapter(target)} refused — not read yet", retryable=True)
         candidate = strip_blank_paragraphs(ctx.images.restore(html))
@@ -615,7 +615,7 @@ edit_paragraphs_tool = Tool(
     parameters={"type": "object", "properties": {
         "chapter": {"type": "string", "description": "The chapter number from the CHAPTER INDEX (default: the active chapter)."},
         "edits": {"type": "array", "description": "The changes, in any order.", "items": {"type": "object", "properties": {
-            "paragraph": {"type": "integer", "description": "The ¶ number, as grep or read_chapter showed it."},
+            "paragraph": {"type": "integer", "description": "The ¶ number, as grep or read showed it."},
             "action": {"type": "string", "description": '"replace", "insert_before", "insert_after" or "delete".'},
             "html": {"type": "string", "description": "The new paragraph(s): HTML blocks, or plain text. Not used by delete."},
             "starts_with": {"type": "string", "description": "The first few words of that paragraph as you read it."},

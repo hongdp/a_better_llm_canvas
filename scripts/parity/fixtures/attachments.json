@@ -16,7 +16,7 @@
      "A1",
      100012
     ],
-    "output": "A1 was not read: this turn has already read 100012 characters of attachments, the most one turn may — a whole file is never read into the conversation. Find the passages you need with grep chapters=[\"A1\"] and read only those paragraphs, or let analyze_book chapters=[\"A1\"] section=\"第62–87章\" read a range in batches and return notes."
+    "output": "A1 was not read: this turn has already read 100012 characters of attachments, the most one turn may — a whole file is never read into the conversation. Find the passages you need with grep chapters=[\"A1\"] and read only those paragraphs, or read a range with a task (chapters=[\"A1\"] section=\"第62–87章\" task=\"…\") to get notes from batches outside the conversation."
    }
   ],
   "parse_chapter_number": [
@@ -129,6 +129,219 @@
      "第一百零二章"
     ],
     "output": 102
+   }
+  ],
+  "render_section_list": [
+   {
+    "input": [
+     {
+      "id": "x1",
+      "ref": "A1",
+      "name": "原著.txt",
+      "chars": 120,
+      "paragraphs": 9,
+      "sections": [
+       {
+        "title": "(opening)",
+        "from": 1,
+        "to": 1
+       },
+       {
+        "title": "第一章 初见",
+        "from": 2,
+        "to": 4
+       },
+       {
+        "title": "第二章 再见",
+        "from": 5,
+        "to": 6
+       }
+      ]
+     },
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 1
+      },
+      {
+       "title": "第一章 初见",
+       "from": 2,
+       "to": 4
+      },
+      {
+       "title": "第二章 再见",
+       "from": 5,
+       "to": 6
+      }
+     ]
+    ],
+    "output": "=== A1 \"原著.txt\" — 9 paragraphs, 120 characters ===\n1. ¶1–1 (opening)\n2. ¶2–4 第一章 初见\n3. ¶5–6 第二章 再见\nRead one by its ¶ range: read chapters=[\"A1\"] paragraphs=\"a-b\" (or section=\"…\")."
+   },
+   {
+    "input": [
+     {
+      "id": "x2",
+      "ref": "A2",
+      "name": "notes.md",
+      "chars": 30,
+      "paragraphs": 3,
+      "sections": []
+     },
+     []
+    ],
+    "output": "=== A2 \"notes.md\" — 3 paragraphs, 30 characters ===\nNo section headings here. Find places with grep chapters=[\"A2\"] and read them by ¶ (read chapters=[\"A2\"] paragraphs=\"…\")."
+   },
+   {
+    "input": [
+     {
+      "id": "x1",
+      "ref": "A1",
+      "name": "原著.txt",
+      "chars": 120,
+      "paragraphs": 9,
+      "sections": [
+       {
+        "title": "(opening)",
+        "from": 1,
+        "to": 1
+       },
+       {
+        "title": "第一章 初见",
+        "from": 2,
+        "to": 4
+       },
+       {
+        "title": "第二章 再见",
+        "from": 5,
+        "to": 6
+       }
+      ]
+     },
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 1
+      },
+      {
+       "title": "第一章 初见",
+       "from": 2,
+       "to": 4
+      },
+      {
+       "title": "第二章 再见",
+       "from": 5,
+       "to": 6
+      }
+     ],
+     2,
+     1,
+     " section=\"第一–二章\""
+    ],
+    "output": "=== A1 \"原著.txt\" — 9 paragraphs, 120 characters ===\n2. ¶2–4 第一章 初见\n[Sections 2–2 of 3. Continue with list source=\"A1\" section=\"第一–二章\" from=3.]\nRead one by its ¶ range: read chapters=[\"A1\"] paragraphs=\"a-b\" (or section=\"…\")."
+   },
+   {
+    "input": [
+     {
+      "id": "x1",
+      "ref": "A1",
+      "name": "原著.txt",
+      "chars": 120,
+      "paragraphs": 9,
+      "sections": [
+       {
+        "title": "(opening)",
+        "from": 1,
+        "to": 1
+       },
+       {
+        "title": "第一章 初见",
+        "from": 2,
+        "to": 4
+       },
+       {
+        "title": "第二章 再见",
+        "from": 5,
+        "to": 6
+       }
+      ]
+     },
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 1
+      },
+      {
+       "title": "第一章 初见",
+       "from": 2,
+       "to": 4
+      },
+      {
+       "title": "第二章 再见",
+       "from": 5,
+       "to": 6
+      }
+     ],
+     3,
+     5
+    ],
+    "output": "=== A1 \"原著.txt\" — 9 paragraphs, 120 characters ===\n3. ¶5–6 第二章 再见\n[Sections 3–3 of 3.]\nRead one by its ¶ range: read chapters=[\"A1\"] paragraphs=\"a-b\" (or section=\"…\")."
+   },
+   {
+    "input": [
+     {
+      "id": "x1",
+      "ref": "A1",
+      "name": "原著.txt",
+      "chars": 120,
+      "paragraphs": 9,
+      "sections": [
+       {
+        "title": "(opening)",
+        "from": 1,
+        "to": 1
+       },
+       {
+        "title": "第一章 初见",
+        "from": 2,
+        "to": 4
+       },
+       {
+        "title": "第二章 再见",
+        "from": 5,
+        "to": 6
+       }
+      ]
+     },
+     [
+      {
+       "title": "(opening)",
+       "from": 1,
+       "to": 1
+      },
+      {
+       "title": "第一章 初见",
+       "from": 2,
+       "to": 4
+      },
+      {
+       "title": "第二章 再见",
+       "from": 5,
+       "to": 6
+      }
+     ],
+     99,
+     2
+    ],
+    "output": "=== A1 \"原著.txt\" — 9 paragraphs, 120 characters ===\n3. ¶5–6 第二章 再见\n[Sections 3–3 of 3.]\nRead one by its ¶ range: read chapters=[\"A1\"] paragraphs=\"a-b\" (or section=\"…\")."
+   }
+  ],
+  "list_section_lines": [
+   {
+    "input": [],
+    "output": 200
    }
   ],
   "find_attachment_range": [
@@ -1363,7 +1576,7 @@
       }
      ]
     ],
-    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or let analyze_book chapters=[\"A1\"] section=\"第62–87章\" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\n  ¶5–6 第二章 再见\nA2 \"notes.md\" — 30 characters, 3 paragraphs"
+    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or read a range with a task (chapters=[\"A1\"] section=\"第62–87章\" task=\"…\") for notes; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\n  ¶5–6 第二章 再见\nA2 \"notes.md\" — 30 characters, 3 paragraphs"
    },
    {
     "input": [
@@ -1409,7 +1622,7 @@
      ],
      3
     ],
-    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read_chapter chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or let analyze_book chapters=[\"A1\"] section=\"第62–87章\" read a range and return notes; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\nA2 \"notes.md\" — 30 characters, 3 paragraphs\n  … 1 more sections (grep for a heading to find one)"
+    "output": "ATTACHMENTS (reference files the user attached to this book — not chapters: read a section with read chapters=[\"A1\"] section=\"第三十章\" (or a paragraph range), search with grep chapters=[\"A1\"], or read a range with a task (chapters=[\"A1\"] section=\"第62–87章\" task=\"…\") for notes; a turn reads at most 100,000 characters of them, and they cannot be written):\nA1 \"原著.txt\" — 120 characters, 9 paragraphs, 3 sections\n  ¶1–1 (opening)\n  ¶2–4 第一章 初见\nA2 \"notes.md\" — 30 characters, 3 paragraphs\n  … 1 more sections (grep for a heading to find one)"
    }
   ],
   "render_attachment_part": [

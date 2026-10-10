@@ -284,7 +284,7 @@ export function editedMeanwhile(ctx: ToolContext, target: Target): ToolResult {
     ok: false,
     retryable: true,
     content: `The user edited ${citeChapter(target)} while you were working, so your copy of it is out of date and this change was NOT applied. ` +
-      `Read it again (read_chapter with chapters=[${target.number}] and format="html") and make the change on its current text, keeping the user's edits.`,
+      `Read it again (read with chapters=[${target.number}] and format="html") and make the change on its current text, keeping the user's edits.`,
     trace: `⚠️ ${citeChapter(target)} was edited by the user meanwhile — not written`
   }
 }
@@ -364,7 +364,7 @@ const unseen = (target: Target): ToolResult => ({
   ok: false,
   retryable: true,
   content: `You have not seen the current HTML of ${citeChapter(target)} in this turn, so SEARCH text cannot be copied from it. ` +
-    `Call read_chapter with chapters=[${target.number}] and format="html" first.`,
+    `Call read with chapters=[${target.number}] and format="html" first.`,
   trace: `⛔ edit of ${citeChapter(target)} refused — not read yet`
 })
 
@@ -476,7 +476,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
             ok: false,
             retryable: true,
             content: `A chapter titled "${target.title}" already exists as #${target.number} and has text you have not read in this turn, so it was NOT overwritten and no chapter was added. ` +
-              `To rewrite it, read it first (read_chapter with chapters=[${target.number}]); to add a new chapter, give it a title no chapter has.`,
+              `To rewrite it, read it first (read with chapters=[${target.number}]); to add a new chapter, give it a title no chapter has.`,
             trace: `⛔ new_chapter "${target.title}" is #${target.number}, not read — not overwritten`
           }
         }
@@ -485,8 +485,8 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
           retryable: true,
           content: `You have not seen the whole current text of ${citeChapter(target)} in this turn, so it was not rewritten. ` +
             (isPlainChapterHtml(st.html)
-              ? `Read it (read_chapter with chapters=[${target.number}]; text format is enough for this chapter), then write it.`
-              : `It has formatting or images a text read does not show: read its HTML (read_chapter with chapters=[${target.number}] and format="html"), then write it.`),
+              ? `Read it (read with chapters=[${target.number}]; text format is enough for this chapter), then write it.`
+              : `It has formatting or images a text read does not show: read its HTML (read with chapters=[${target.number}] and format="html"), then write it.`),
           trace: `⛔ rewrite of ${citeChapter(target)} refused — not read yet`
         }
       }
@@ -814,7 +814,7 @@ export const editParagraphsTool = defineTool<{ chapter: unknown; edits: Paragrap
         items: {
           type: 'object',
           properties: {
-            paragraph: { type: 'integer', description: 'The ¶ number, as grep or read_chapter showed it.' },
+            paragraph: { type: 'integer', description: 'The ¶ number, as grep or read showed it.' },
             action: { type: 'string', description: '"replace", "insert_before", "insert_after" or "delete".' },
             html: { type: 'string', description: 'The new paragraph(s): HTML blocks, or plain text. Not used by delete.' },
             starts_with: { type: 'string', description: 'The first few words of that paragraph as you read it.' }

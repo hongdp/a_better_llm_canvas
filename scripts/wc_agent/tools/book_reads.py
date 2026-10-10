@@ -1,10 +1,11 @@
-"""Port of src/agent/tools/bookReads.ts — read_chapter, grep, list_chapters,
-open_chapter, delete_chapter."""
+"""Port of src/agent/tools/bookReads.ts — read, grep, list, open_chapter,
+delete_chapter (read_and_list.md: read and list replace read_chapter,
+analyze_book and list_chapters, which stay as aliases)."""
 import re
 from typing import Any, Dict, List, Optional, Union
 
-from wc_text.attachments import (ATTACHMENT_RUN_READ_CAP, attachment_budget_note, find_attachment_range, render_attachment_part,
-                                 resolve_attachment_ref)
+from wc_text.attachments import (ATTACHMENT_RUN_READ_CAP, LIST_SECTION_LINES, attachment_budget_note, find_attachment_range,
+                                 render_attachment_part, render_section_list, resolve_attachment_ref)
 from wc_text.chapters import cite_chapter, resolve_chapter
 from wc_text.context_ledger import hash_content
 from wc_text.diff import strip_diff_markup
@@ -118,6 +119,10 @@ def _read_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
     if raw is None:
         return "its arguments could not be parsed"
     fmt = "html" if raw.get("format") == "html" else "text"
+    task = js_trim(raw["task"]) if isinstance(raw.get("task"), str) and js_trim(raw["task"]) else None
+    extra: Dict[str, Any] = {"confirmed": raw.get("confirmed") is True}
+    if task:
+        extra["task"] = task
     parts = raw.get("parts")
     if isinstance(parts, list) and parts:
         if len(parts) > MAX_READ_PARTS:
@@ -139,19 +144,63 @@ def _read_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
                 return f"part {i + 1}: {rng}"
             section = p.get("section") if p and isinstance(p.get("section"), str) and js_trim(p["section"]) else None
             items.append({"ref": ref, "range": rng, "section": section})
-        return {"items": items, "format": fmt}
+        return {"items": items, "format": fmt, **extra}
     refs = _chapter_refs(raw)
-    if not refs:
-        return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts")'
+    if not refs and not task:
+        return 'no chapter was named (pass "chapters": [numbers from the CHAPTER INDEX], or "parts"; or a task, to read the whole book for it)'
     rng = _parse_range(raw.get("paragraphs"))
     if isinstance(rng, str):
         return rng
     section = raw.get("section") if isinstance(raw.get("section"), str) and js_trim(raw["section"]) else None
-    return {"items": [{"ref": ref, "range": rng, "section": section} for ref in refs], "format": fmt}
+    return {"items": [{"ref": ref, "range": rng, "section": section} for ref in refs], "format": fmt, **extra}
+
+
+async def _fits_in_one_read(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -> bool:
+    """Port of fitsInOneRead: measured without reading; a bad reference counts as fitting."""
+    chapters = ctx.document.chapters()
+    attachments = attachment_list(ctx)
+    resolved = [(item, resolve_ref(item["ref"], chapters, attachments)) for item in items]
+    await ctx.document.ensure_loaded(list(dict.fromkeys(r["chapter"]["id"] for _, r in resolved if "chapter" in r)))
+    total = 0
+    attachment_total = 0
+    for item, r in resolved:
+        size = 0
+        rng = item.get("range")
+        if "chapter" in r:
+            paras = chapter_paragraphs(accepted_html(ctx, r["chapter"]["id"]))
+            start = rng["from"] if rng else 1
+            to = min(rng["to"] if rng and rng.get("to") is not None else len(paras), len(paras))
+            size = sum((len(p["html"]) if fmt == "html" else len(p["text"]) + 6) for p in paras if start <= p["number"] <= to)
+        elif "attachment" in r:
+            paras = await ctx.attachments.paragraphs(r["attachment"]["id"])
+            span = find_attachment_range(r["attachment"]["sections"], item["section"]) if item.get("section") else None
+            start = span["from"] if span else (rng["from"] if rng else 1)
+            to = min(span["to"] if span else (rng["to"] if rng and rng.get("to") is not None else len(paras)), len(paras))
+            size = sum(len(paras[n - 1]) + 6 for n in range(start, to + 1))
+            attachment_total += size
+        if size > READ_CHAPTER_CAP:
+            return False
+        total += size
+    return total <= READ_CALL_CAP and attachment_total <= ATTACHMENT_RUN_READ_CAP - ctx.run.attachment_chars
 
 
 async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
-    items, fmt = args["items"], args["format"]
+    from .analyze_book import read_for_task, rest_of_read_note
+    items, fmt, task = args["items"], args["format"], args.get("task")
+    # More than one read returns, with a task: batches outside the conversation (read_and_list.md §2).
+    if task and (not items or not await _fits_in_one_read(items, fmt, ctx)):
+        return await read_for_task(task, items, args.get("confirmed", False), ctx)
+    fits = True if task else await _fits_in_one_read(items, fmt, ctx)
+    out = await _read_items(items, fmt, ctx)
+    if not fits:
+        # Cut short with no task: say what reading all of it would cost, before anything is spent.
+        note = await rest_of_read_note(items, ctx)
+        if note:
+            return {**out, "content": f"{out['content']}\n\n{note}"}
+    return out
+
+
+async def _read_items(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -> Dict[str, Any]:
     chapters = ctx.document.chapters()
     attachments = attachment_list(ctx)
     resolved: List[Dict[str, Any]] = []
@@ -168,7 +217,7 @@ async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
         if not any(x["key"] == key and x["range"] == item["range"] and x.get("section") == item.get("section") for x in resolved):
             resolved.append({**r, "key": key, "range": item["range"], "section": item.get("section")})
     if not resolved:
-        return _fail("read_chapter", "\n".join(errors))
+        return _fail("read", "\n".join(errors))
 
     await ctx.document.ensure_loaded(list(dict.fromkeys(x["chapter"]["id"] for x in resolved if "chapter" in x)))
 
@@ -277,10 +326,11 @@ async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
     return result(not errors, "\n\n".join(parts), f"📖 read {', '.join(traces)}", retryable=bool(errors) and not traces)
 
 
-read_chapter_tool = Tool(
-    name="read_chapter",
+read_tool = Tool(
+    name="read",
+    aliases=["read_chapter", "analyze_book"],
     description=(
-        "Read one or more chapters. Find them in the CHAPTER INDEX and pass their numbers. "
+        "Read chapters of the book, or attachments. Find chapters in the CHAPTER INDEX and pass their numbers. "
         'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency; '
         '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. '
         'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. '
@@ -288,12 +338,17 @@ read_chapter_tool = Tool(
         f"A long chapter comes back in parts of at most {READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. "
         "If no title or summary tells you where something is, use grep. "
         'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range (¶ numbers, which grep reports; in a novel .txt a ¶ is a line), or with section (a heading such as "第三十章" — 第30章 is the same chapter — or a run, "第62–87章"). '
-        "A turn reads at most 100,000 characters of attachments: find passages with grep and read those paragraphs, or let analyze_book read a part (section or paragraphs) and return notes."),
+        "A turn reads at most 100,000 characters of attachments. "
+        'More than fits in one read (a long part, or many chapters): you get the first part, where to continue, and what reading the rest would cost. Pass task="what you need from it" to have all of it read in batches outside the conversation and get notes back — with no chapters named, the whole book. '
+        "That costs a model call per batch; past 200,000 input tokens it is not started until you ask the user with ask_user and call again with confirmed: true. "
+        "To see what can be read and where, use list."),
     parameters={"type": "object", "properties": {
         "chapters": {"type": "array", "description": "Chapter numbers from the CHAPTER INDEX (or exact titles), or attachment references (A1).", "items": {"type": "string"}},
         "format": {"type": "string", "description": '"text" (default, numbered paragraphs) or "html" (for SEARCH edits).'},
         "paragraphs": {"type": "string", "description": 'Optional paragraph range, e.g. "40-60", "45", "81-" (to the end) or "-15" (the first 15). Default: the whole chapter.'},
         "section": {"type": "string", "description": 'Attachments only: a section by its heading, e.g. "第三十章" (第30章 is the same chapter), or a run, "第62–87章".'},
+        "task": {"type": "string", "description": 'Only when you need more than one read returns: what the notes are for, e.g. "list every promise 晓晓 makes and whether it is kept". When what you asked for fits, you get the text instead.'},
+        "confirmed": {"type": "boolean", "description": "true only after the user agreed to a task-read past 200,000 input tokens."},
         "parts": {"type": "array", "description": "Instead of chapters/paragraphs: several places to read in one call, each a chapter and an optional paragraph range.",
                   "items": {"type": "object", "properties": {
                       "chapter": {"type": "string", "description": "A chapter number from the CHAPTER INDEX (or its exact title)."},
@@ -302,6 +357,9 @@ read_chapter_tool = Tool(
     }},
     kind="read", parse=_read_parse, execute=_read_execute,
 )
+
+#: Kept for callers and tests that know the old name.
+read_chapter_tool = read_tool
 
 
 # ── grep ─────────────────────────────────────────────────────────────────────
@@ -431,7 +489,7 @@ grep_tool = Tool(
         "Search the book like grep: a regular expression (case-insensitive) over every chapter's text, or only the chapters you name. "
         'Use it to locate where a name, phrase, object or event appears before reading — e.g. "阿青|阿红", "第[一二三]次", "outline". '
         f"To check several things at once, pass patterns (up to {MAX_GREP_PATTERNS}): each is searched and reported on its own — one call, one step. "
-        'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read_chapter paragraphs="…", or change it with edit_paragraphs; output "chapters" returns only the chapters that match, with counts. '
+        'output "snippets" (default) returns each match with its chapter number, paragraph number (¶) and surrounding text — read around it with read paragraphs="…", or change it with edit_paragraphs; output "chapters" returns only the chapters that match, with counts. '
         'Chapter titles are searched too. An attachment (A1…) is searched only when named in chapters.'),
     parameters={"type": "object", "properties": {
         "pattern": {"type": "string", "description": "A JavaScript regular expression, matched case-insensitively. Plain words work as they are."},
@@ -445,9 +503,57 @@ grep_tool = Tool(
 )
 
 
-# ── list_chapters ────────────────────────────────────────────────────────────
+# ── list ─────────────────────────────────────────────────────────────────────
+
+def _list_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
+    raw = raw or {}
+    rng = _parse_range(raw.get("paragraphs"))
+    if isinstance(rng, str):
+        return rng
+    source = raw.get("source") if raw.get("source") is not None else raw.get("chapter")
+    section = js_trim(raw["section"]) if isinstance(raw.get("section"), str) and js_trim(raw["section"]) else None
+    start = raw.get("from")
+    start = max(1, int(start)) if isinstance(start, (int, float)) and not isinstance(start, bool) else 1
+    out: Dict[str, Any] = {"range": rng, "from": start}
+    if source is not None and source != "":
+        out["source"] = source
+    if section:
+        out["section"] = section
+    return out
+
 
 async def _list_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    """Port of list (read_and_list.md §3)."""
+    if "source" in args:
+        r = resolve_ref(args["source"], ctx.document.chapters(), attachment_list(ctx))
+        if "error" in r:
+            return _fail("list", r["error"])
+        if "attachment" in r:
+            att = r["attachment"]
+            sections = att["sections"]
+            extra = ""
+            rng, section = args.get("range"), args.get("section")
+            if rng:
+                to = rng["to"] if rng.get("to") is not None else att["paragraphs"]
+                sections = [s for s in sections if s["to"] >= rng["from"] and s["from"] <= to]
+                extra = f' paragraphs="{rng["from"]}-{rng["to"] if rng.get("to") is not None else ""}"'
+            elif section:
+                span = find_attachment_range(att["sections"], section)
+                if span is None:
+                    return _fail("list", f'{att["ref"]} has no section matching "{section}".')
+                sections = [s for s in sections if s["to"] >= span["from"] and s["from"] <= span["to"]]
+                extra = f' section="{section}"'
+            first = min(args["from"], max(1, len(sections)))
+            last = min(len(sections), first - 1 + LIST_SECTION_LINES)
+            return result(True, render_section_list(att, sections, args["from"], LIST_SECTION_LINES, extra),
+                          f"📚 list {att['ref']} sections {first}–{last} of {len(sections)}" if sections else f"📚 list {att['ref']} (no sections)")
+        chapter = r["chapter"]
+        await ctx.document.ensure_loaded([chapter["id"]])
+        paras = chapter_paragraphs(accepted_html(ctx, chapter["id"]))
+        heads = [p for p in paras if p["kind"] == "heading"]
+        content = (f"=== {cite_chapter(chapter)} — {len(paras)} paragraphs ===\n" + "\n".join(f"¶{p['number']} # {p['text']}" for p in heads)
+                   if heads else f"{cite_chapter(chapter)} has no headings: {len(paras)} paragraphs. Read a range by ¶, or grep it.")
+        return result(True, content, f"📚 list {cite_chapter(chapter)} headings")
     lines = []
     for i, c in enumerate(ctx.document.chapters()):
         html = accepted_html(ctx, c["id"])
@@ -464,21 +570,38 @@ async def _list_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
     listing = "\n".join(lines)
     notes: List[str] = []
     if ctx.run.last_list == listing:
-        notes.append("This is identical to your previous list_chapters result: nothing has changed since then.")
+        notes.append("This is identical to your previous list result: nothing has changed since then.")
     if ctx.run.start_outline is not None and ctx.run.start_outline == chapter_outline(ctx.document.chapters()):
         write = '<canvas new_chapter="its title">…</canvas>' if ctx.run.write_protocol == "markup" else "update_document with new_chapter"
         notes.append("No chapter has been added, removed or renamed in this turn: this is the CHAPTER INDEX of your request, with sizes. "
                      f"Listing changes nothing in the book. A new chapter appears here only after you write it, with {write}.")
     ctx.run.last_list = listing
-    return result(True, f"{listing}\n\n" + "\n".join(notes) if notes else listing, "📚 list chapters")
+    atts = attachment_list(ctx)
+    files = ("" if not atts else "\n\nATTACHMENTS (read them like chapters; list source=\"A1\" shows a file's sections):\n"
+             + "\n".join(f'{a["ref"]} "{a["name"]}" — {a["chars"]} characters, {a["paragraphs"]} paragraphs, {len(a["sections"])} sections' for a in atts))
+    content = (f"{listing}\n\n" + "\n".join(notes) if notes else listing) + files
+    return result(True, content, f"📚 list chapters and {len(atts)} attachment{'' if len(atts) == 1 else 's'}" if atts else "📚 list chapters")
 
 
-list_chapters_tool = Tool(
-    name="list_chapters",
-    description=("The current list of chapters with their numbers, sizes and summaries. The CHAPTER INDEX in the request already has this as of the start of the turn; call this only when chapters were added, removed or renamed during the turn, or when you need their sizes. "
+list_tool = Tool(
+    name="list",
+    aliases=["list_chapters"],
+    description=("What can be read, and where. With no arguments: every chapter with its number, size and summary, then each attachment (A1…) with its size and number of sections. "
+                 "The CHAPTER INDEX and ATTACHMENTS in the request already have this as of the start of the turn; call it when chapters were added, removed or renamed during the turn, or when you need sizes. "
+                 f'source="A1": that attachment\'s sections, each with its ¶ span ({LIST_SECTION_LINES} per call, continue with from=), to read one by those numbers next; narrow it with section="第60–90章" or paragraphs. '
+                 'source="3": a chapter\'s headings with their ¶ numbers. '
                  "It changes nothing in the book: a new chapter is added by writing it (new_chapter)."),
-    parameters={"type": "object", "properties": {}}, kind="read", parse=lambda raw: {}, execute=_list_execute,
+    parameters={"type": "object", "properties": {
+        "source": {"type": "string", "description": "Optional: an attachment (A1) or a chapter (its number) to list the parts of."},
+        "section": {"type": "string", "description": 'With an attachment: only the sections in this run, e.g. "第60–90章".'},
+        "paragraphs": {"type": "string", "description": 'With an attachment: only the sections overlapping this ¶ range, e.g. "1200-3000".'},
+        "from": {"type": "integer", "description": "With an attachment: the section number to start from (to continue a long list)."},
+    }},
+    kind="read", parse=_list_parse, execute=_list_execute,
 )
+
+#: Kept for callers and tests that know the old name.
+list_chapters_tool = list_tool
 
 
 # ── open_chapter ─────────────────────────────────────────────────────────────
@@ -497,7 +620,7 @@ async def _open_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
                       f"📂 left {cite_chapter(target)} for the user to open")
     ctx.document.open(target["id"])
     return result(True, f"{cite_chapter(target)} is now open in the editor for the user to see. To rewrite it whole, write it now: {_full_write(ctx, target['number'])}."
-                  + ("" if target["id"] in ctx.run.html_shown else ' Only edits to parts of it need its HTML first (read_chapter, format "html").'),
+                  + ("" if target["id"] in ctx.run.html_shown else ' Only edits to parts of it need its HTML first (read, format "html").'),
                   f"📂 open {cite_chapter(target)}")
 
 
@@ -551,4 +674,4 @@ delete_chapter_tool = Tool(
     execute=_delete_execute,
 )
 
-BOOK_TOOLS = [read_chapter_tool, grep_tool, list_chapters_tool, open_chapter_tool, delete_chapter_tool, rename_chapter_tool]
+BOOK_TOOLS = [read_tool, grep_tool, list_tool, open_chapter_tool, delete_chapter_tool, rename_chapter_tool]

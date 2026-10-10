@@ -201,6 +201,8 @@ FUNCTIONS = {
     ("attachments", "section_number_of"): attachments.section_number_of,
     ("attachments", "find_attachment_section"): attachments.find_attachment_section,
     ("attachments", "find_attachment_range"): attachments.find_attachment_range,
+    ("attachments", "render_section_list"): attachments.render_section_list,
+    ("attachments", "list_section_lines"): lambda: attachments.LIST_SECTION_LINES,
     ("attachments", "normalize_attachment_text"): attachments.normalize_attachment_text,
     ("attachments", "attachment_paragraphs"): attachments.attachment_paragraphs,
     ("attachments", "attachment_paragraphs_long"): attachments.attachment_paragraphs,

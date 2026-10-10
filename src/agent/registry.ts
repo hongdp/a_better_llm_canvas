@@ -10,6 +10,8 @@ import type { AgentTool, ToolContext, ToolInvocation, ToolKind, ToolResult, Tool
 
 /** A tool with its argument type erased, as the registry holds it. */
 export interface RegisteredTool extends ToolSpec {
+  /** Earlier names a call may still use (history, habit): they run this tool, and are never offered. */
+  aliases?: string[]
   kind: ToolKind
   markupForm?: boolean
   nativeOnMarkup?: boolean
@@ -25,6 +27,7 @@ export function defineTool<A>(tool: AgentTool<A>): RegisteredTool {
     name: tool.name,
     description: tool.description,
     parameters: tool.parameters,
+    aliases: tool.aliases,
     kind: tool.kind,
     markupForm: tool.markupForm,
     nativeOnMarkup: tool.nativeOnMarkup,
@@ -56,12 +59,16 @@ export class ToolRegistry {
   }
 
   register(tool: RegisteredTool): void {
-    if (this.get(tool.name)) throw new Error(`Tool "${tool.name}" is already registered`)
+    for (const name of [tool.name, ...(tool.aliases ?? [])]) {
+      if (this.get(name)) throw new Error(`Tool "${name}" is already registered`)
+    }
     this.tools.push(tool)
   }
 
+  /** By name, or by an earlier name the tool still answers to (read_and_list.md §4). */
   get(name: string | undefined): RegisteredTool | undefined {
-    return name ? this.tools.find(t => t.name === name) : undefined
+    if (!name) return undefined
+    return this.tools.find(t => t.name === name) ?? this.tools.find(t => t.aliases?.includes(name))
   }
 
   /** The tools a step may offer, in registration order. */

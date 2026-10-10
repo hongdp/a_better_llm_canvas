@@ -37,7 +37,7 @@ def build_ledger_messages(documents: List[Dict], ledger: List[Union[str, Dict]],
     chapters = "\n".join(p for p in parts if p)
     if not chapters:
         return []
-    header = ("REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read_chapter and name it in your write):"
+    header = ("REFERENCED CHAPTERS (full text, as plain text, for details and consistency; to change one, read its HTML with read and name it in your write):"
               if opts.get("agentTools") else
               "REFERENCED CHAPTERS (read-only; use them for details and consistency, never edit them):")
     return [

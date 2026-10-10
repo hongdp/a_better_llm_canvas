@@ -5,8 +5,8 @@
  * scripts/test_attachments_web.py.
  */
 import { describe, it, expect } from 'vitest'
-import { readChapterTool, grepTool } from '../tools/bookReads'
-import { analyzeBookTool, ATTACHMENT_CHUNK_CHARS } from '../tools/analyzeBook'
+import { readChapterTool, grepTool, readTool as analyzeBookTool, listTool } from '../tools/bookReads'
+import { ATTACHMENT_CHUNK_CHARS } from '../tools/analyzeBook'
 import { planAnalysis, ANALYZE_CONFIRM_TOKENS } from '../analyzeBook'
 import { webSearchTool, webReadTool } from '../tools/web'
 import { ATTACHMENT_RUN_READ_CAP, attachmentParagraphs, attachmentSections, type AttachmentMeta } from '../../utils/attachments'
@@ -129,30 +129,34 @@ describe('analyze_book on part of an attachment, and what it costs', () => {
     const f = withNovel()
     const spy = analyzeSpy()
     f.ctx.analyze = spy.port
-    const out = await exec(analyzeBookTool, { task: '第十到十二章讲了什么', chapters: ['A1'], section: '第十–十二章' }, f.ctx)
+    // Eleven sections (~55k characters): more than one read, so it is read for the task.
+    const out = await exec(analyzeBookTool, { task: '第十到二十章讲了什么', chapters: ['A1'], section: '第十–二十章' }, f.ctx)
     expect(out.ok).toBe(true)
-    expect(spy.seen.map(c => c.title.split(' — ')[1].split(' (')[0])).toEqual(['第十章 第10回的故事', '第十一章 第11回的故事', '第十二章 第12回的故事'])
-    expect(out.trace).toContain('A1 第十–十二章')
+    const titles = spy.seen.map(c => c.title.split(' — ')[1].split(' (')[0])
+    expect(titles[0]).toBe('第十章 第10回的故事')
+    expect(titles.at(-1)).toBe('第二十章 第20回的故事')
+    expect(titles).toHaveLength(11)
+    expect(out.trace).toContain('A1 第十–二十章')
   })
 
   it('reads a ¶ range, which grep reports', async () => {
     const f = withNovel()
     const spy = analyzeSpy()
     f.ctx.analyze = spy.port
-    const out = await exec(analyzeBookTool, { task: 't', chapters: ['A1'], paragraphs: '52-102' }, f.ctx)
+    const out = await exec(analyzeBookTool, { task: 't', chapters: ['A1'], paragraphs: '52-500' }, f.ctx)
     expect(out.ok).toBe(true)
     const text = spy.seen.map(c => c.content).join('\n')
     expect(text).toContain('〔2-1〕')
     expect(text).not.toContain('〔1-50〕')
-    expect(text).not.toContain('〔3-1〕')
-    expect(out.trace).toContain('A1 ¶52–102')
+    expect(text).not.toContain('〔11-1〕')
+    expect(out.trace).toContain('A1 ¶52–500')
   })
 
   it('refuses a section that is not there, and a range without an attachment', async () => {
     const f = withNovel()
     f.ctx.analyze = analyzeSpy().port
     expect((await exec(analyzeBookTool, { task: 't', chapters: ['A1'], section: '第九十九章' }, f.ctx)).content).toContain('has no section matching')
-    expect((await exec(analyzeBookTool, { task: 't', chapters: ['2'], section: '第一章' }, f.ctx)).content).toContain('pick a part of an attachment')
+    expect((await exec(analyzeBookTool, { task: 't', chapters: ['2'], section: '第一章' }, f.ctx)).content).toContain('names a part of an attachment')
   })
 
   it('asks first past 200,000 input tokens, and runs once the user agreed', async () => {
@@ -163,7 +167,7 @@ describe('analyze_book on part of an attachment, and what it costs', () => {
     expect(first.ok).toBe(false)
     expect(first.content).toContain('1500000 input tokens in 11 model calls')
     expect(first.content).toContain('ask_user')
-    expect(first.trace).toBe('📚 analyze_book: A1 ≈ 1500k tokens in 11 calls — asks first')
+    expect(first.trace).toBe('📚 read for a task: A1 ≈ 1500k tokens in 11 calls — asks first')
     expect(spy.seen).toHaveLength(0)
     const second = await exec(analyzeBookTool, { task: 't', chapters: ['A1'], confirmed: true }, f.ctx)
     expect(second.ok).toBe(true)
@@ -178,6 +182,39 @@ describe('analyze_book on part of an attachment, and what it costs', () => {
     expect(plan.inputTokens).toBeGreaterThan(ANALYZE_CONFIRM_TOKENS)
     // One batch stays under the line even with the running notes.
     expect(plan.inputTokens / plan.calls).toBeLessThan(200_000)
+  })
+})
+
+// read_and_list.md §3: an 879-chapter attachment showed 80 headings in the
+// request, and the model grepped for the rest three steps in a row.
+describe('list', () => {
+  it('lists the chapters and then each attachment', async () => {
+    const out = await exec(listTool, {}, withNovel().ctx)
+    expect(out.content).toContain('2. "第二章"')
+    expect(out.content).toContain('A1 "万倍返还.txt" — ')
+    expect(out.content).toContain('40 sections')
+    expect(out.trace).toBe('📚 list chapters and 1 attachment')
+  })
+
+  it("pages through an attachment's sections with their ¶ spans, or only the run asked for", async () => {
+    const f = withNovel()
+    const page = await exec(listTool, { source: 'A1', from: 39 }, f.ctx)
+    expect(page.content).toContain('39. ¶1939–1989 第三十九章 第39回的故事')
+    expect(page.content).toContain('40. ¶1990–2040 第四十章 第40回的故事')
+    expect(page.trace).toBe('📚 list A1 sections 39–40 of 40')
+    const run = await exec(listTool, { source: 'A1', section: '第十–十二章' }, f.ctx)
+    expect(run.content).toContain('1. ¶460–510 第十章 第10回的故事')
+    expect(run.content).toContain('3. ¶562–612 第十二章 第12回的故事')
+    expect(run.content).not.toContain('第十三章')
+    const byParas = await exec(listTool, { source: 'A1', paragraphs: '1-60' }, f.ctx)
+    expect(byParas.trace).toBe('📚 list A1 sections 1–2 of 2')
+  })
+
+  it("lists a chapter's headings, and answers to list_chapters", async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '大纲', content: '<h1>大纲</h1><p>a</p><h2>第一卷</h2><p>b</p>' }] })
+    const out = await exec(listTool, { source: '2' }, f.ctx)
+    expect(out.content).toContain('¶1 # 大纲\n¶3 # 第一卷')
+    expect((await exec(listTool, { source: 'A9' }, f.ctx)).ok).toBe(false)
   })
 })
 

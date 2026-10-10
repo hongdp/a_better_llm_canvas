@@ -376,7 +376,7 @@ export class AgentRun {
     if (threshold > 0 && !wroteNow && reasoning > threshold) this.longReasoningDue = { atStep: this.stepsTaken + 1, tokens: reasoning }
     if (wroteNow) this.htmlReadPending = null
     ran.forEach((inv, i) => {
-      if (inv.name === 'read_chapter' && inv.args?.format === 'html' && results[i].ok) this.htmlReadPending = results[i].trace
+      if ((inv.name === 'read' || inv.name === 'read_chapter') && inv.args?.format === 'html' && results[i].ok) this.htmlReadPending = results[i].trace
     })
     for (const { result } of executed) {
       this.trace.push(result.trace)
@@ -503,7 +503,7 @@ export class AgentRun {
     const lookups = this.lookupStreak()
     if (!this.lookupNudged && lookups >= LOOKUP_NUDGE_STEPS) {
       this.lookupNudged = true
-      out.push(lookupStreakNudge(lookups, this.offeredTools().some(t => t.name === 'analyze_book')))
+      out.push(lookupStreakNudge(lookups, this.o.ctx.analyze !== undefined))
     }
     out.push(...(this.o.reminders?.() ?? []))
     return out

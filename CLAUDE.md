@@ -77,9 +77,11 @@ src/
                           #   step policy, invocation collection, freshness (D8), reminders
                           #   (what the loop tells the model between steps: repeat nudge,
                           #   long-reasoning reminder, the plan, what moved under the run),
-                          #   tools/documentWrites (3 writes), tools/bookReads (read/search/
-                          #   list/open/delete chapters; a write creates a new chapter; rename_chapter in
-                          #   documentWrites), tools/polishChapter, tools/plan (checklist),
+                          #   tools/documentWrites (3 writes), tools/bookReads (read / grep /
+                          #   list / open / delete; read_chapter, analyze_book and list_chapters
+                          #   are aliases — docs/features/read_and_list.md; a write creates a new
+                          #   chapter; rename_chapter in documentWrites), tools/analyzeBook (read
+                          #   with a task: batches outside the conversation), tools/polishChapter, tools/plan (checklist),
                           #   tools/askUser (a question the turn waits on), tools/web
                           #   (web_search / web_read through the server's browser)
   services/
@@ -336,7 +338,13 @@ headers, which END the generation on a trigger) is redone once; when that
 is not enough the run **pauses** (`step_failed`, `repeating_output`) with
 its snapshot instead of ending. grok's stream read timeout is 180 s (idle),
 other providers 600 s.
-**Fewer steps** (agentic_chat_loop.md §0.11): `read_chapter` takes `parts`
+**One way to look** (`docs/features/read_and_list.md`): `read` reads chapters
+and attachments; what does not fit in one read comes back cut with the price
+of the rest, and with a `task` it is read in batches outside the conversation
+(notes back; past 200k estimated tokens only after the user agrees). `list`
+shows what can be read: chapters, attachments, an attachment's sections with
+their ¶ spans. Old tool names stay registry aliases (`aliases` on a tool).
+**Fewer steps** (agentic_chat_loop.md §0.11): `read` takes `parts`
 and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
 `<p>`/`<h*>`) needs its current text seen (`RunState.textSeen`), not its HTML;
 `edit_paragraphs` edits by ¶ number with a `starts_with` anchor

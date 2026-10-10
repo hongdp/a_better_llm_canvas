@@ -96,8 +96,8 @@ LOOKUP_NUDGE_STEPS = 8
 
 def lookup_streak_nudge(steps: int, analyze_offered: bool) -> str:
     return (f"The last {steps} steps only looked things up and wrote nothing, and every step sends the whole conversation again. "
-            "Check several places in ONE call: read_chapter with parts, grep with patterns"
-            + ("; for a question that spans many chapters, let analyze_book read them for you" if analyze_offered else "")
+            "Check several places in ONE call: read with parts, grep with patterns"
+            + ("; for a question that spans many chapters, read them with a task and get notes back" if analyze_offered else "")
             + ". Then write.")
 
 
