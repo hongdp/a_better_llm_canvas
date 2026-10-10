@@ -40,7 +40,7 @@ export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
   // A remote llama.cpp on a rented GPU. Separate from `ollama` on purpose:
   // both are OpenAI-compatible servers with no auth, and keeping one slot for
   // each is what lets the local model and the pod stay configured at once.
-  // The default points at the SSH tunnel (scripts/cloud_endpoint/tunnel.sh)
+  // The default points at an SSH tunnel (`ssh -L 8092:localhost:<port>`)
   // rather than a pod address, because a tunnel's port survives a pod restart
   // while RunPod's own port mapping does not.
   runpod: {

@@ -26,6 +26,11 @@ export interface CanvasDocument {
   summary?: string
   /** Hash of `content` at the time `summary` was generated. Mismatch = stale. */
   summaryContentHash?: string
+  /**
+   * The writer pinned it: it rides along on every agent turn (docs/features/
+   * pinned_context.md). Metadata, synced to the server without a revision bump.
+   */
+  pinned?: boolean
 }
 
 export interface DocumentVersion {

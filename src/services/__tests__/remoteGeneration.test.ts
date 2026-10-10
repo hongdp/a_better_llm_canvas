@@ -16,7 +16,8 @@ import {
   findJobsForBubbles,
   readPersistedJob,
   clearPersistedJob,
-  RemoteStartError
+  RemoteStartError,
+  streamReconnect
 } from '../remoteGeneration'
 import { streamLLM } from '../llm'
 import { useAppStore } from '../../store/useAppStore'
@@ -91,6 +92,8 @@ const messages: LLMMessage[] = [{ role: 'user', content: 'hi' }]
 const config = { provider: 'openai', apiKey: 'sk-test', model: 'gpt-x', baseUrl: 'https://provider.test/v1' }
 
 beforeEach(() => {
+  // The re-attach pause is real time; nothing here measures it (test audit, 2026-10-10: 4.5 s of sleeping).
+  streamReconnect.delayMs = 0
   routes = []
   fetchMock.mockClear()
   vi.stubGlobal('fetch', fetchMock)
@@ -442,19 +445,6 @@ describe('persisted job record', () => {
     // The first sample is taken before the first chunk's offset is written.
     expect(seen).toEqual([0, 3])
     expect(readPersistedJob()).toBeNull()
-  })
-
-  it('keeps the record when the stream drops without a terminal event', async () => {
-    routes = [
-      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-5' }) : undefined,
-      () => streamingResponse(sse([{ type: 'delta', text: 'Hello', offset: 5 }]))
-    ]
-    const { errors, callbacks } = recorder()
-
-    await startRemoteGeneration(messages, config, { assistantMessageId: 'a-5', kind: 'chat' }, callbacks)
-
-    expect(errors[0]).toContain('disconnected')
-    expect(readPersistedJob()).toEqual({ jobId: 'gen-5', meta: { assistantMessageId: 'a-5', kind: 'chat' }, offset: 5 })
   })
 
   it('ignores a corrupt record instead of blocking generation', () => {

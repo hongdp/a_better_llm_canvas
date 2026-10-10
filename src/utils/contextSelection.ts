@@ -216,3 +216,28 @@ export function selectReferenceChapters(
     estimatedChars: usedChars
   }
 }
+
+/** Most chapter text the pinned chapters may bring into a turn (docs/features/pinned_context.md §2). */
+export const PINNED_CONTEXT_CHARS = 60_000
+
+/**
+ * The chapters a turn with the agent tools on carries ahead of the history:
+ * the pinned ones, in book order, the active chapter excluded (the tail holds
+ * it), until their chars (as the ledger counts them) would pass the budget —
+ * later pins are skipped, never cut. pinned_context.md §2.
+ */
+export function pinnedContextIds(
+  documents: Array<{ id: string; pinned?: boolean; chars: number }>,
+  activeDocumentId: string | null,
+  maxChars: number = PINNED_CONTEXT_CHARS
+): string[] {
+  const out: string[] = []
+  let used = 0
+  for (const d of documents) {
+    if (!d.pinned || d.id === activeDocumentId) continue
+    if (used + d.chars > maxChars) continue
+    out.push(d.id)
+    used += d.chars
+  }
+  return out
+}

@@ -587,18 +587,6 @@ _CJK_RE = re.compile(r"[一-鿿㐀-䶿豈-﫿぀-ゟ゠-ヿ가-힯]")
 _WORD_RE = re.compile(r"[^\W_]+(?:[''‑][^\W_]+)*")
 
 
-def count_words(html: str) -> int:
-    if not html:
-        return 0
-    clean = re.sub(r"<del\b[^>]*>([\s\S]*?)</del>", "", html, flags=re.I)
-    clean = re.sub(r"<[^>]*>", " ", clean)
-    clean = clean.replace("&nbsp;", " ")
-    clean = clean.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("&quot;", '"').replace("&#039;", "'")
-    cjk = len(_CJK_RE.findall(clean))
-    non_cjk = _CJK_RE.sub(" ", clean)
-    return cjk + len(_WORD_RE.findall(non_cjk))
-
-
 # ── Status declaration ──────────────────────────────────────────────────────
 
 _DOC_STATUS_RE = re.compile(r"<doc_status>\s*(updated|unchanged)\s*</doc_status>", re.I)

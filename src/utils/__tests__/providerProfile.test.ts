@@ -1,9 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
   getCacheProfile,
-  targetPromptTokens,
-  checkThreshold,
-  readCachedTokens
+  targetPromptTokens
 } from '../providerProfile'
 
 describe('getCacheProfile', () => {
@@ -50,47 +48,5 @@ describe('targetPromptTokens', () => {
 
   it('uses the whole window when there is no cliff', () => {
     expect(targetPromptTokens(getCacheProfile('ollama'), 262_144)).toBe(262_144)
-  })
-})
-
-describe('checkThreshold', () => {
-  it('reports a crossing with the overshoot', () => {
-    const r = checkThreshold(getCacheProfile('grok'), 214_000)!
-    expect(r.crossed).toBe(true)
-    expect(r.threshold).toBe(200_000)
-    expect(r.overBy).toBe(14_000)
-  })
-
-  it('reports staying under', () => {
-    const r = checkThreshold(getCacheProfile('grok'), 190_000)!
-    expect(r.crossed).toBe(false)
-    expect(r.overBy).toBe(0)
-  })
-
-  it('is null where the provider has no cliff', () => {
-    expect(checkThreshold(getCacheProfile('ollama'), 500_000)).toBeNull()
-  })
-})
-
-describe('readCachedTokens', () => {
-  it('reads the OpenAI-shaped path grok uses', () => {
-    const usage = { prompt_tokens: 100, prompt_tokens_details: { cached_tokens: 80 } }
-    expect(readCachedTokens(getCacheProfile('grok'), usage)).toBe(80)
-  })
-
-  it('reads the flat field anthropic uses', () => {
-    expect(readCachedTokens(getCacheProfile('anthropic'), { cache_read_input_tokens: 42 })).toBe(42)
-  })
-
-  it('returns null rather than 0 when the field is absent', () => {
-    // 0 would read as "nothing was cached"; null means "this provider did not
-    // say", which is the truth for a local endpoint.
-    expect(readCachedTokens(getCacheProfile('grok'), { prompt_tokens: 10 })).toBeNull()
-    expect(readCachedTokens(getCacheProfile('ollama'), { anything: 1 })).toBeNull()
-  })
-
-  it('survives a malformed usage object', () => {
-    expect(readCachedTokens(getCacheProfile('grok'), null)).toBeNull()
-    expect(readCachedTokens(getCacheProfile('grok'), { prompt_tokens_details: 'nope' })).toBeNull()
   })
 })

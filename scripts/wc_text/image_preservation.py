@@ -4,7 +4,7 @@ import math
 import re
 from typing import Dict, List
 
-from .dom import Element, Node, Text, inner_html, parse_fragment
+from .dom import Element, Node, inner_html, parse_fragment
 from .llm_context import _js_trim
 
 _PLACEHOLDER_TOKEN_RE = re.compile(r"\{{0,3}\s*IMAGE[_\s-]?PLACEHOLDER[_\s-]?([0-9]+)\s*\}{0,3}", re.I)

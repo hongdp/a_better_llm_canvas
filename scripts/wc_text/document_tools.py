@@ -70,14 +70,19 @@ def to_anthropic_tools(tools: List[Dict]) -> List[Dict]:
 
 
 def _clean_gemini(schema: Dict) -> Dict:
-    out: Dict[str, Any] = {"type": schema["type"].upper()}
+    """`toGeminiTools`' `clean`. Presence follows JavaScript truthiness: an empty
+    `properties` object or `required` list IS carried (both are truthy in JS), an
+    empty description is not."""
+    out: Dict[str, Any] = {}
+    if isinstance(schema.get("type"), str):
+        out["type"] = schema["type"].upper()
     if schema.get("description"):
         out["description"] = schema["description"]
-    if schema.get("properties"):
-        out["properties"] = {k: _clean_gemini(v) for k, v in schema["properties"].items()}
-    if schema.get("items"):
+    if isinstance(schema.get("properties"), dict):
+        out["properties"] = {k: _clean_gemini(v if isinstance(v, dict) else {}) for k, v in schema["properties"].items()}
+    if isinstance(schema.get("items"), dict):
         out["items"] = _clean_gemini(schema["items"])
-    if schema.get("required"):
+    if schema.get("required") is not None:
         out["required"] = schema["required"]
     return out
 

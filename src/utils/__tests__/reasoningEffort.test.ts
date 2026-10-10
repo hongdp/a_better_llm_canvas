@@ -4,7 +4,6 @@ import {
   supportsReasoningEffort,
   resolveReasoningEffort,
   reasoningBudgetTokens,
-  isReasoningEffortRejection,
   DEFAULT_REASONING_EFFORT
 } from '../reasoningEffort'
 
@@ -79,29 +78,5 @@ describe('reasoningBudgetTokens', () => {
     expect(budgets).toEqual([...budgets].sort((a, b) => a - b))
     // Anthropic rejects a budget below 1024, so 'low' must clear it.
     expect(reasoningBudgetTokens('low')).toBeGreaterThanOrEqual(1024)
-  })
-})
-
-describe('isReasoningEffortRejection', () => {
-  it('recognises a provider refusing the parameter', () => {
-    for (const msg of [
-      'Unsupported parameter: reasoning_effort',
-      '{"error":"reasoning_effort is not supported for this model"}',
-      'Unknown field: thinking',
-      'invalid value for reasoning_effort',
-      // api.x.ai's wording for grok-4.20, observed 2026-10-05
-      '{"code":"invalid-argument","error":"Model grok-4.20-0309-reasoning does not support parameter reasoningEffort."}'
-    ]) expect(isReasoningEffortRejection(msg), msg).toBe(true)
-  })
-
-  it('does not swallow unrelated failures', () => {
-    // Dropping the parameter and retrying must not become a blanket retry:
-    // these errors would still fail the second time.
-    for (const msg of [
-      'Incorrect API key provided.',
-      '429 rate limit exceeded',
-      'context length exceeded: 300000 tokens',
-      ''
-    ]) expect(isReasoningEffortRejection(msg), msg).toBe(false)
   })
 })

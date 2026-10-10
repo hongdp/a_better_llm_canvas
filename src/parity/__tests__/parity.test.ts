@@ -26,18 +26,18 @@ import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissin
 import {
   stripIncompleteEndTag, chapterAttribute, newChapterAttribute, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement,
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
-  countWords, parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
-import { getChapterDigest, buildChapterIndex, extractHeadingTree, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS, type IndexableDoc } from '../../utils/chapterIndex'
+  parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
+import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, WHOLE_BOOK_CONTEXT_CHARS, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, type RenderableDoc, type DynamicContextOptions } from '../../hooks/chat/dynamicContext'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
-import { extractKeywords, selectReferenceChapters, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
+import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
 import { buildChatSystemPrompt, promptTexts } from '../../utils/systemPrompt'
 import { DOCUMENT_TOOLS, toOpenAITools, toAnthropicTools, toGeminiTools, fromOpenAITools, type ToolSpec } from '../../utils/documentTools'
 import { acceptedHash, freshnessMarkers, type SeenRecord, type MarkableDoc } from '../../agent/freshness'
 import { resolveContextWindowTokens, estimateTokens, tokensToChars, historyBudgetChars, cjkRatioOf } from '../../utils/contextWindow'
-import { getCacheProfile, targetPromptTokens, checkThreshold, readCachedTokens } from '../../utils/providerProfile'
+import { getCacheProfile, targetPromptTokens } from '../../utils/providerProfile'
 import { resolveDocumentProtocol, type DocumentProtocol } from '../../utils/protocolChoice'
-import { leadingH1Text, titleFollowingHeading, contentWithRenamedHeading } from '../../utils/titleSync'
+import { leadingH1Text, contentWithRenamedHeading } from '../../utils/titleSync'
 import { partialStringArgument, applyToolCallDelta, finishToolCalls, type ToolCallAccumulator, type FinishedToolCall } from '../../utils/toolCallStream'
 import { splitStreamingResponse, buildCompletionWarnings, NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE } from '../../hooks/chat/streamHandlers'
 import { STEP_LIMIT_NOTE } from '../../agent/run'
@@ -304,7 +304,6 @@ const MODULES: Module[] = [
       apply_edit_blocks: run(applyEditBlocks, APPLY_EDITS),
       apply_edit_blocks_locally: run(applyEditBlocksLocally, LOCAL_EDITS, o => ({ ...(o as object), html: normalizeDiffIds((o as { html: string }).html) })),
       strip_blank_paragraphs: run(stripBlankParagraphs, [['<p></p><p> </p><p>&nbsp;</p><p><br></p><p>x</p>\n\n<p>y</p>'], ['<ul><li>a</li>\n<li>b</li></ul>\n<h2>t</h2>'], ['<p>keep  inside</p>']]),
-      count_words: run(countWords, [['<p>Hello world</p>'], ['<p>你好世界</p>'], ['<p>你好 world and 世界</p>'], ['<p>kept <del>gone words</del></p>'], ['<p>a &amp; b &lt; c</p>'], ['<p>a&nbsp;b</p>'], ["<p>don't stop re-enter self‑aware</p>"], [''], ['<p>Ünïcödé wörds 123 and カタカナ 한글</p>']]),
       parse_doc_status: run(parseDocStatus, RESPONSES.map(r => [r] as [string])),
       strip_doc_status: run(stripDocStatus, RESPONSES.map(r => [r] as [string])),
       detect_failed_document_update: run(detectFailedDocumentUpdate, RESPONSES.map(r => [r] as [string])),
@@ -435,7 +434,6 @@ const MODULES: Module[] = [
     cases: {
       get_chapter_digest: run(getChapterDigest, [[BOOK[0]], [BOOK[1]], [BOOK[3]], [BOOK[4]], [BOOK[4], 150], [{ id: 'z', title: 'z', content: '<p>\n body \n</p>', summary: '   ' }]]),
       build_chapter_index: run(buildChapterIndex, [[BOOK, 'd2'], [BOOK, 'd2', { agentTools: true, markers: { d1: 'in context', d3: 'read this turn' } }], [BOOK, null], [[BOOK[0]], 'd1'], [BIG_BOOK, 'b0', { agentTools: true }], [BIG_BOOK, 'b40']]),
-      extract_heading_tree: run(extractHeadingTree, [[CHAPTER], [ENGLISH], ['<h1>A</h1><h2>B &amp; C</h2><h3>D\n  E</h3><h4>no</h4><H2 class="x">F</H2><h1></h1><h2>open'], ['']]),
       pack_chapters_into_batches: run(packChaptersIntoBatches, [[BOOK, 100], [BOOK, 10], [[], 50], [BOOK, 100000]]),
       whole_book_context_chars: run(() => WHOLE_BOOK_CONTEXT_CHARS, [[]])
     }
@@ -481,6 +479,14 @@ const MODULES: Module[] = [
     module: 'context_selection',
     cases: {
       extract_keywords: run(extractKeywords, [['Please write about the Dragon King and chapter 3 这是一个测试句子'], ['短'], ['aaa'], [Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ')], ['日本語のテキスト and MIXED Case'], ['中文很长的一段话'.repeat(20), 10], ['']]),
+      pinned_context_ids: run(pinnedContextIds, [
+        [[{ id: 'a', pinned: true, chars: 100 }, { id: 'b', chars: 50 }, { id: 'c', pinned: true, chars: 20_000 }, { id: 'd', pinned: true, chars: 300 }], 'c'],
+        [[{ id: 'a', pinned: true, chars: 30_000 }, { id: 'b', pinned: true, chars: 40_000 }, { id: 'c', pinned: true, chars: 20_000 }], null],
+        [[{ id: 'a', pinned: true, chars: 10 }, { id: 'b', pinned: true, chars: 10 }], 'x', 15],
+        [[], null],
+        [[{ id: 'a', pinned: false, chars: 1 }], null]
+      ]),
+      pinned_budget: run(() => PINNED_CONTEXT_CHARS, [[]]),
       select_reference_chapters: run(selectReferenceChapters, [
         [SEL({ promptText: '对照大纲，写龙王出场', recentHistory: ['x', '第四章 ok'] })],
         [SEL({ promptText: 'Dragon king please', activeDocumentId: 'c1', previousAttachedIds: ['c4'], modelReadIds: ['c5'], ledgerIds: ['o', 'c1'] })],
@@ -518,8 +524,6 @@ const MODULES: Module[] = [
     cases: {
       get_cache_profile: run(getCacheProfile, [['grok'], ['ollama'], ['anthropic'], ['openai'], ['gemini'], ['runpod'], ['nope']]),
       target_prompt_tokens: run(targetPromptTokens, [[getCacheProfile('grok'), 256000], [getCacheProfile('grok'), 131072], [getCacheProfile('ollama'), 262144]]),
-      check_threshold: run(checkThreshold, [[getCacheProfile('grok'), 250000], [getCacheProfile('grok'), 1000], [getCacheProfile('ollama'), 1000]]),
-      read_cached_tokens: run(readCachedTokens, [[getCacheProfile('grok'), { prompt_tokens_details: { cached_tokens: 12 } }], [getCacheProfile('grok'), { prompt_tokens_details: {} }], [getCacheProfile('anthropic'), { cache_read_input_tokens: 7 }], [getCacheProfile('ollama'), { x: 1 }], [getCacheProfile('gemini'), 'junk'], [getCacheProfile('openai'), { prompt_tokens_details: { cached_tokens: 'no' } }]])
     }
   },
   {
@@ -532,7 +536,6 @@ const MODULES: Module[] = [
     module: 'title_sync',
     cases: {
       leading_h1_text: run(leadingH1Text, [['<h1>第一章 启程</h1><p>x</p>'], ['  <h1 class="t">A &amp; <em>B</em><del>gone</del></h1>'], ['<p>no heading</p><h1>late</h1>'], ['<h1>   </h1>'], ['<h1>unclosed'], ['']]),
-      title_following_heading: run(titleFollowingHeading, [['<h1>Old</h1>', '<h1>New</h1>', 'Old'], ['<h1>Old</h1>', '<h1>Old</h1>', 'Renamed'], ['<p>x</p>', '<p>y</p>', 'T'], ['<h1>A</h1>', '<h1>A</h1>', 'A'], ['', '<h1>Fresh</h1>', undefined]]),
       content_with_renamed_heading: run(contentWithRenamedHeading, [['<h1>Old</h1><p>x</p>', 'New & <Better>'], ['<h1>Same</h1>', 'Same'], ['<p>none</p>', 'T'], ['<h1>Old</h1>', '   '], ['<h1><ins class="diff-addition" data-diff-id="d">Old</ins></h1>', 'New'], ['<h1>Old $& $1</h1>', 'N$&'], ['\n  <h1 id="h">Old</h1><h1>Old</h1>', 'New']])
     }
   },
@@ -774,7 +777,7 @@ const MODULES: Module[] = [
       document_tools: run(() => DOCUMENT_TOOLS, [[]]),
       to_openai_tools: run(toOpenAITools, [[DOCUMENT_TOOLS], [[OTHER_TOOL]]]),
       to_anthropic_tools: run(toAnthropicTools, [[DOCUMENT_TOOLS]]),
-      to_gemini_tools: run(toGeminiTools, [[DOCUMENT_TOOLS], [[OTHER_TOOL]]]),
+      to_gemini_tools: run(toGeminiTools, [[DOCUMENT_TOOLS], [[OTHER_TOOL]], [[{ name: 'e', description: '', parameters: { type: 'object', description: '', properties: {}, required: [] } }]], [[]]]),
       from_openai_tools: run(fromOpenAITools, [[toOpenAITools(DOCUMENT_TOOLS)], [[{ type: 'function', function: { name: 'n', parameters: { type: 'object' } } }, { function: { name: 3, parameters: {} } }, null, 'junk', { function: { name: 'p', parameters: 'bad' } }, { function: { name: 'q', parameters: [] } }]], [[]]])
     }
   }

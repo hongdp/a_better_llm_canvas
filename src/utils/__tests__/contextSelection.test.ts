@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest'
 import {
   selectReferenceChapters,
   extractKeywords,
-  DEFAULT_SELECTION_OPTIONS,
+  pinnedContextIds,
+  PINNED_CONTEXT_CHARS,
   type SelectableDoc,
   type SelectionInput
 } from '../contextSelection'
@@ -175,11 +176,28 @@ describe('selectReferenceChapters content availability', () => {
   })
 })
 
-// ── defaults sanity ───────────────────────────────────────────────────────────
-describe('DEFAULT_SELECTION_OPTIONS', () => {
-  it('keeps the documented defaults', () => {
-    expect(DEFAULT_SELECTION_OPTIONS.maxTotalChars).toBe(60_000)
-    expect(DEFAULT_SELECTION_OPTIONS.perDocChars).toBe(20_000)
-    expect(DEFAULT_SELECTION_OPTIONS.scoreThreshold).toBe(40)
+// ── pinned context (pinned_context.md) ───────────────────────────────────────
+describe('pinnedContextIds', () => {
+  const docs = [
+    { id: 'outline', pinned: true, chars: 5_000 },
+    { id: 'ch1', chars: 9_000 },
+    { id: 'cards', pinned: true, chars: 20_000 },
+    { id: 'setting', pinned: true, chars: 20_000 },
+    { id: 'notes', pinned: true, chars: 20_000 },
+    { id: 'small', pinned: true, chars: 1_000 }
+  ]
+
+  it('takes only pinned chapters, in book order, never the active one', () => {
+    expect(pinnedContextIds(docs, 'cards', 100_000)).toEqual(['outline', 'setting', 'notes', 'small'])
+  })
+
+  it('skips a pin that would pass the budget but keeps later ones that fit', () => {
+    // 5k + 20k + 20k = 45k; notes would make 65k > 60k and is skipped; small still fits.
+    expect(pinnedContextIds(docs, null)).toEqual(['outline', 'cards', 'setting', 'small'])
+    expect(PINNED_CONTEXT_CHARS).toBe(60_000)
+  })
+
+  it('is empty when nothing is pinned', () => {
+    expect(pinnedContextIds([{ id: 'a', chars: 10 }, { id: 'b', pinned: false, chars: 10 }], null)).toEqual([])
   })
 })

@@ -55,10 +55,27 @@ def _freshness(docs, active, in_context, seen, turn):
     return {"markers": markers, "seen": record}
 
 
+def _accumulate(accumulators, delta):
+    """applyToolCallDelta, kept here only to build finish_tool_calls' input: the server
+    accumulates deltas itself (GenerationJob.note_tool_call), so it has no port of it."""
+    index = delta.get("index") if isinstance(delta.get("index"), int) and not isinstance(delta.get("index"), bool) else 0
+    existing = accumulators.get(index) or {"argumentsText": ""}
+    if delta.get("id"):
+        existing["id"] = delta["id"]
+    fn = delta.get("function") or {}
+    if fn.get("name"):
+        existing["name"] = fn["name"]
+    if delta.get("signature"):
+        existing["signature"] = delta["signature"]
+    if fn.get("arguments") is not None:
+        existing["argumentsText"] = fn["arguments"] if delta.get("replace") else existing["argumentsText"] + fn["arguments"]
+    accumulators[index] = existing
+
+
 def _apply_deltas(deltas):
     acc = {}
     for d in deltas:
-        tool_call_stream.apply_tool_call_delta(acc, d)
+        _accumulate(acc, d)
     return {"accumulators": {str(k): v for k, v in acc.items()}, "finished": tool_call_stream.finish_tool_calls(acc)}
 
 
@@ -95,7 +112,6 @@ FUNCTIONS = {
     ("text", "apply_edit_blocks"): text.apply_edit_blocks,
     ("text", "apply_edit_blocks_locally"): _apply_locally,
     ("text", "strip_blank_paragraphs"): text.strip_blank_paragraphs,
-    ("text", "count_words"): text.count_words,
     ("text", "parse_doc_status"): text.parse_doc_status,
     ("text", "strip_doc_status"): text.strip_doc_status,
     ("text", "detect_failed_document_update"): text.detect_failed_document_update,
@@ -135,7 +151,6 @@ FUNCTIONS = {
     ("image_preservation", "reinsert_missing_images"): image_preservation.reinsert_missing_images,
     ("chapter_index", "get_chapter_digest"): chapter_index.get_chapter_digest,
     ("chapter_index", "build_chapter_index"): chapter_index.build_chapter_index,
-    ("chapter_index", "extract_heading_tree"): chapter_index.extract_heading_tree,
     ("chapter_index", "pack_chapters_into_batches"): chapter_index.pack_chapters_into_batches,
     ("chapter_index", "whole_book_context_chars"): lambda: chapter_index.WHOLE_BOOK_CONTEXT_CHARS,
     ("dynamic_context", "render_ledger_chapter"): dynamic_context.render_ledger_chapter,
@@ -148,6 +163,8 @@ FUNCTIONS = {
     ("context_ledger", "order_admissions_by_stability"): context_ledger.order_admissions_by_stability,
     ("context_selection", "extract_keywords"): context_selection.extract_keywords,
     ("context_selection", "select_reference_chapters"): context_selection.select_reference_chapters,
+    ("context_selection", "pinned_context_ids"): context_selection.pinned_context_ids,
+    ("context_selection", "pinned_budget"): lambda: context_selection.PINNED_CONTEXT_CHARS,
     ("system_prompt", "build_chat_system_prompt"): system_prompt.build_chat_system_prompt,
     ("edit_hints", "text_similarity"): edit_hints.text_similarity,
     ("edit_hints", "describe_differences"): edit_hints.describe_differences,
@@ -223,11 +240,8 @@ FUNCTIONS = {
     ("context_window", "cjk_ratio_of"): context_window.cjk_ratio_of,
     ("provider_profile", "get_cache_profile"): provider_profile.get_cache_profile,
     ("provider_profile", "target_prompt_tokens"): provider_profile.target_prompt_tokens,
-    ("provider_profile", "check_threshold"): provider_profile.check_threshold,
-    ("provider_profile", "read_cached_tokens"): provider_profile.read_cached_tokens,
     ("protocol_choice", "resolve_document_protocol"): protocol_choice.resolve_document_protocol,
     ("title_sync", "leading_h1_text"): title_sync.leading_h1_text,
-    ("title_sync", "title_following_heading"): title_sync.title_following_heading,
     ("title_sync", "content_with_renamed_heading"): title_sync.content_with_renamed_heading,
     ("tool_call_stream", "partial_string_argument"): tool_call_stream.partial_string_argument,
     ("tool_call_stream", "apply_tool_call_delta"): _apply_deltas,

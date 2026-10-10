@@ -1,7 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import {  getChapterDigest,
   buildChapterIndex,
-  extractHeadingTree,
   packChaptersIntoBatches,
   type IndexableDoc
 } from '../chapterIndex'
@@ -90,23 +89,6 @@ describe('buildChapterIndex', () => {
   })
 })
 
-
-// ── extractHeadingTree ────────────────────────────────────────────────────────
-describe('extractHeadingTree', () => {
-  it('extracts h1-h3 with indentation by level', () => {
-    const html = '<h1>Book Part</h1><p>text</p><h2>Section A</h2><p>more</p><h3>Detail</h3>'
-    expect(extractHeadingTree(html)).toBe('- Book Part\n  - Section A\n    - Detail')
-  })
-
-  it('ignores h4+ and strips inline markup and attributes', () => {
-    const html = '<h2 id="x">The <strong>Siege</strong></h2><h4>ignored</h4>'
-    expect(extractHeadingTree(html)).toBe('  - The Siege')
-  })
-
-  it('returns empty string for heading-less content', () => {
-    expect(extractHeadingTree('<p>Just prose.</p>')).toBe('')
-  })
-})
 
 // ── packChaptersIntoBatches ───────────────────────────────────────────────────
 describe('packChaptersIntoBatches', () => {

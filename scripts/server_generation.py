@@ -20,8 +20,8 @@ changes, this one must change with it — in particular the Anthropic usage
 rules and the Gemini safety-block detection, which carry their own comments.
 That includes tool calling (docs/features/agentic_chat_loop.md): tool
 definitions arrive OpenAI-shaped in `config["tools"]` and are translated per
-provider (`_anthropic_tools`, `_gemini_tools` mirror `toAnthropicTools` /
-`toGeminiTools` in src/utils/documentTools.ts); history messages may carry
+provider through `wc_text.document_tools` (the parity-checked port of
+src/utils/documentTools.ts); history messages may carry
 `toolCalls` (assistant) or be `role: "tool"` results, and every builder
 replays them in its provider's native shape; every stream reader reports
 tool-call deltas through `GenerationJob.note_tool_call`.
@@ -59,6 +59,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from server_auth import get_authenticated_username
+# The parity-checked ports of src/utils/documentTools.ts: this module used to keep
+# its own copies, which no parity case covered (test audit, 2026-10-10).
+from wc_text.document_tools import from_openai_tools, to_anthropic_tools, to_gemini_tools
 from wc_text.retry_policy import (MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, parse_retry_after,
                                   retry_delay_ms, with_jitter)
 
@@ -693,79 +696,19 @@ def _parsed_arguments(call: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _tool_specs(tools: Any) -> List[Dict[str, Any]]:
-    """Read back the OpenAI-shaped tool list a request carries.
-
-    Mirrors `fromOpenAITools` in src/utils/documentTools.ts: the translation is
-    generic, so a tool this module has never heard of still reaches the model.
-    Malformed entries are skipped rather than failing the whole request.
-    """
-    specs: List[Dict[str, Any]] = []
-    for entry in tools if isinstance(tools, list) else []:
-        fn = entry.get("function") if isinstance(entry, dict) else None
-        if not isinstance(fn, dict):
-            continue
-        name = fn.get("name")
-        parameters = fn.get("parameters")
-        if not isinstance(name, str) or not isinstance(parameters, dict):
-            continue
-        description = fn.get("description")
-        specs.append({
-            "name": name,
-            "description": description if isinstance(description, str) else "",
-            "parameters": parameters,
-        })
-    return specs
+    """The OpenAI-shaped tool list a request carries, read back (`fromOpenAITools`;
+    malformed entries are skipped rather than failing the whole request)."""
+    return from_openai_tools(tools if isinstance(tools, list) else None)
 
 
 def _anthropic_tools(tools: Any) -> List[Dict[str, Any]]:
-    """`toAnthropicTools`: same fields, `input_schema` instead of `parameters`."""
-    return [
-        {"name": s["name"], "description": s["description"], "input_schema": s["parameters"]}
-        for s in _tool_specs(tools)
-    ]
-
-
-def _gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """`toGeminiTools`' `clean`: Gemini's schema dialect rejects the unknown keys
-    OpenAPI allows, so only the subset it accepts is carried over.
-
-    Presence tests follow JavaScript truthiness exactly: an empty
-    `properties` object or `required` list IS carried (both are truthy in JS),
-    an empty description is not.
-    """
-    out: Dict[str, Any] = {}
-    if isinstance(schema.get("type"), str):
-        out["type"] = schema["type"].upper()
-    if schema.get("description"):
-        out["description"] = schema["description"]
-    properties = schema.get("properties")
-    if isinstance(properties, dict):
-        out["properties"] = {
-            key: _gemini_schema(value if isinstance(value, dict) else {})
-            for key, value in properties.items()
-        }
-    items = schema.get("items")
-    if isinstance(items, dict):
-        out["items"] = _gemini_schema(items)
-    if schema.get("required") is not None:
-        out["required"] = schema["required"]
-    return out
+    return to_anthropic_tools(_tool_specs(tools))
 
 
 def _gemini_tools(tools: Any) -> List[Dict[str, Any]]:
+    """`toGeminiTools`, or nothing at all for a request without tools."""
     specs = _tool_specs(tools)
-    if not specs:
-        return []
-    return [{
-        "functionDeclarations": [
-            {
-                "name": s["name"],
-                "description": s["description"],
-                "parameters": _gemini_schema(s["parameters"]),
-            }
-            for s in specs
-        ]
-    }]
+    return to_gemini_tools(specs) if specs else []
 
 
 # ══════════════════════════════════════════════════════════════════════════════

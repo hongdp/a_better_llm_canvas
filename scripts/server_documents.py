@@ -24,7 +24,7 @@ def list_documents(username: str, book_id: str) -> List[Dict[str, Any]]:
     conn = get_db()
     try:
         rows = conn.execute(
-            "SELECT id, title, sort_order, revision, summary, summary_content_hash, created_at, updated_at "
+            "SELECT id, title, sort_order, revision, summary, summary_content_hash, created_at, updated_at, pinned "
             "FROM documents WHERE username = ? AND book_id = ? ORDER BY sort_order",
             (username, book_id)).fetchall()
         return [dict(r) for r in rows]

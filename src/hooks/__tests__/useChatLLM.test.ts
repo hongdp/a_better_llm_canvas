@@ -1,9 +1,8 @@
 /**
  * Flow tests for the chat orchestration hook.
  *
- * `startLLMStreaming` has three re-entrant paths that all drive the SAME
- * assistant bubble: the no-action retry,
- * and normal completion. Each re-issues the request through a ref, so a
+ * `startLLMStreaming` has two re-entrant paths that drive the SAME assistant
+ * bubble: the no-action retry and normal completion. Each re-issues the request through a ref, so a
  * mistake shows up as a duplicated bubble, a lost document update, or an
  * unbounded loop — none of which the pure unit tests can see. These tests
  * drive the real hook against a scripted `streamLLM` and assert on the store.
@@ -317,11 +316,14 @@ describe('useChatLLM — cache-first prompt layout', () => {
       activeDocumentId: 'doc-1'
     })
   })
-  // Chapters reach the ledger by the prefetch now — a title named in the
-  // request — not by pinning (agentic_chat_loop.md D7).
+  // With the agent tools on, chapters reach the ledger only by a pin
+  // (docs/features/pinned_context.md); the model reads the rest itself.
+  const pin = (...ids: string[]) => useAppStore.setState(st => ({ documents: st.documents.map(d => ids.includes(d.id) ? { ...d, pinned: true } : d) }))
+  const unpin = (...ids: string[]) => useAppStore.setState(st => ({ documents: st.documents.map(d => ids.includes(d.id) ? { ...d, pinned: false } : d) }))
 
   it('keeps every message before the tail byte-identical across turns', async () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
+    pin('doc-2')
     const harness = renderChatHook()
 
     await send(harness, '关于 Chapter 2 的第一个问题')
@@ -347,8 +349,41 @@ describe('useChatLLM — cache-first prompt layout', () => {
     harness.unmount()
   })
 
-  it('puts a chapter the request names ahead of the history, not in the final message', async () => {
+  it('attaches nothing the writer did not pin, even a chapter the request names, and shows no label', async () => {
     responses.push('<canvas><p>a</p></canvas>')
+    const harness = renderChatHook()
+
+    await send(harness, '照着 Chapter 2 写下去')
+
+    expect(calls[0].some(m => m.content.includes('REFERENCED CHAPTERS'))).toBe(false)
+    expect(calls[0].some(m => m.content.includes('the betrayal'))).toBe(false)
+    // The index still lists it, so the model can read it.
+    expect(finalUserContent(0)).toContain('Chapter 2')
+    expect(useAppStore.getState().messages.some(m => m.content.includes('[Attached Context'))).toBe(false)
+    harness.unmount()
+  })
+
+  // Tools off is now the only place the keyword scorer runs: that model
+  // cannot read a chapter itself (pinned_context.md §2).
+  it('with the agent tools off, still attaches a chapter the request names, and labels it', async () => {
+    responses.push('<canvas><p>a</p></canvas>\n<doc_status>updated</doc_status>')
+    const s = useAppStore.getState()
+    useAppStore.setState({ providerConfigs: { ...s.providerConfigs, [s.activeProvider]: { ...s.providerConfigs[s.activeProvider], agentTools: false } } })
+    try {
+      const harness = renderChatHook()
+      await send(harness, '照着 Chapter 2 写下去')
+      const ledger = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))
+      expect(ledger?.content).toContain('the betrayal')
+      expect(useAppStore.getState().messages.some(m => m.role === 'assistant' && m.content.includes('[Attached Context: Chapter 2'))).toBe(true)
+      harness.unmount()
+    } finally {
+      useAppStore.setState({ providerConfigs: s.providerConfigs })
+    }
+  })
+
+  it('puts a pinned chapter ahead of the history, not in the final message', async () => {
+    responses.push('<canvas><p>a</p></canvas>')
+    pin('doc-2')
     const harness = renderChatHook()
 
     await send(harness, '照着 Chapter 2 写下去')
@@ -363,12 +398,14 @@ describe('useChatLLM — cache-first prompt layout', () => {
     harness.unmount()
   })
 
-  it('appends a newly attached chapter without disturbing the first one', async () => {
+  it('appends a newly pinned chapter without disturbing the first one', async () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
+    pin('doc-2')
     const harness = renderChatHook()
 
     await send(harness, '先看 Chapter 2')
     // A second chapter joins: it must be APPENDED, never inserted or re-sorted.
+    pin('doc-3')
     const second = calls.length
     await send(harness, '再看 Chapter 3')
 
@@ -379,8 +416,25 @@ describe('useChatLLM — cache-first prompt layout', () => {
     harness.unmount()
   })
 
+  it('drops an unpinned chapter at the next turn', async () => {
+    responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
+    pin('doc-2', 'doc-3')
+    const harness = renderChatHook()
+
+    await send(harness, '第一轮')
+    unpin('doc-3')
+    const second = calls.length
+    await send(harness, '第二轮')
+
+    const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
+    expect(after).toContain('the betrayal')
+    expect(after).not.toContain('the return')
+    harness.unmount()
+  })
+
   it('drops the chapter the writer switches to, keeping the rest cached', async () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
+    pin('doc-2', 'doc-3')
     const harness = renderChatHook()
 
     await send(harness, '对照 Chapter 2 和 Chapter 3')

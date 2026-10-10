@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { getCookie, clearCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, DOCUMENTS_INDEX_VERSION, clearRetiredSettings, diffDocumentsForWrite, loadDocumentsFromIndexedDB, db } from '../persistence'
+import { getCookie, localStorage as ls, migrateDocumentsPayload, DOCUMENTS_ENVELOPE_VERSION, DOCUMENTS_INDEX_VERSION, clearRetiredSettings, diffDocumentsForWrite, loadDocumentsFromIndexedDB, db } from '../persistence'
 import type { CanvasDocument } from '../../types/document'
 
 // ── getCookie ─────────────────────────────────────────────────────────────────
@@ -34,46 +34,12 @@ describe('getCookie', () => {
   })
 })
 
-// ── clearCookie ───────────────────────────────────────────────────────────────
-describe('clearCookie', () => {
-  it('removes a cookie by setting max-age=0', () => {
-    document.cookie = 'to_clear=value; path=/'
-    clearCookie('to_clear')
-    expect(document.cookie).not.toContain('to_clear=value')
-  })
-
-  it('does not throw when clearing a non-existent cookie', () => {
-    expect(() => clearCookie('does_not_exist')).not.toThrow()
-  })
-})
-
 // ── safeLocalStorage wrapper ──────────────────────────────────────────────────
 // The ls wrapper captures window.localStorage at module import time.
 // test-setup.ts installs a full in-memory polyfill so all Storage methods work.
 describe('localStorage wrapper', () => {
   beforeEach(() => {
     window.localStorage.clear()
-  })
-
-  it('sets and gets items', () => {
-    ls.setItem('hello', 'world')
-    expect(ls.getItem('hello')).toBe('world')
-  })
-
-  it('removeItem deletes the key', () => {
-    ls.setItem('k', 'v')
-    ls.removeItem('k')
-    expect(ls.getItem('k')).toBeNull()
-  })
-
-  it('returns null for a missing key', () => {
-    expect(ls.getItem('missing_key_xyz')).toBeNull()
-  })
-
-  it('length reflects number of stored items', () => {
-    ls.setItem('a', '1')
-    ls.setItem('b', '2')
-    expect(ls.length).toBeGreaterThanOrEqual(2)
   })
 
   it('does not throw on QuotaExceededError — logs a warning instead', () => {

@@ -44,16 +44,6 @@ def build_chapter_index(documents: List[Dict], active_document_id: Optional[str]
             + "\n".join(lines))
 
 
-def extract_heading_tree(html: str) -> str:
-    lines = []
-    for m in re.finditer(r"<h([1-3])[^>]*>([\s\S]*?)</h\1>", html, re.I):
-        level = int(m.group(1))
-        text = _js_trim(re.sub(r"\s+", " ", html_to_plain_text(m.group(2))))
-        if text:
-            lines.append(f"{'  ' * (level - 1)}- {text}")
-    return "\n".join(lines)
-
-
 WHOLE_BOOK_CONTEXT_CHARS = {"gemini": 2_400_000, "anthropic": 480_000, "openai": 300_000, "grok": 500_000, "ollama": 80_000}
 
 
