@@ -462,6 +462,31 @@ a change, and the queue for waiting requests, and tells the model in
 reminders; `longReasoningReminderTokens` in the request config enables the
 long-reasoning reminder.
 
+**Added 2026-10-10 — catching up on missed run events.** A phone
+suspends the book's stream while the page is in the background, often
+without an error, and a run that finished meanwhile left its bubble
+"working" with the timer counting (finished 05:03, still "thinking 735s"
+at 05:08). The tab now re-lists the book's runs when the stream reconnects
+after a drop and whenever the page comes back to the foreground
+(`emitRunCatchUp`, `store/runEvents`); a stream that gave up (`CLOSED`) is
+reopened then. The run the tab follows is settled through the same handler
+as the live `finished` / `paused` event, so the bubble, the streaming flag,
+the reasoning timer and the edit locks end together.
+
+**Added 2026-10-10 — API keys at rest.** A run's request is persisted for
+restart recovery, and it carried the provider key in plain text — for
+every run ever made, finished or not, and in every copy of
+`metadata.db`. Now (`server_secrets.py`) a live run (queued, running,
+paused) stores its key sealed (Fernet) with a key file beside the database
+(`run_secret.key`, mode 0600), and a finished run (done, stopped, error)
+stores none; the stored request is rewritten on every persist. Rows written
+before this are scrubbed once at startup and the database is vacuumed, so
+the old text does not survive in free pages. If the key file is lost, a
+live run resumes without a key and its next call fails and pauses it.
+Not covered: the per-book settings sync (`book_settings.provider_configs`)
+keeps provider keys on purpose, so a new device gets them, and older
+`metadata.db.bak-*` copies still hold what they held.
+
 **Not in phase 3**, by choice: event resume by id (a reconnect lists the
 runs again), a money budget, approval for destructive tools, retiring
 `src/agent` (phase 4). The `PUT /documents/{id}` route keeps its own copy

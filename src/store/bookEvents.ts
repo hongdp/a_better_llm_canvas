@@ -16,7 +16,7 @@ import { useAppStore } from './useAppStore'
 import { saveDocumentsToIndexedDB } from './persistence'
 import { CLIENT_ID, adoptServerChapter, mergeServerChapters } from './documentSync'
 import { normalizeBrParagraphs } from '../utils/convert'
-import { emitRunEvent } from './runEvents'
+import { emitRunCatchUp, emitRunEvent } from './runEvents'
 import type { ServerRunEvent } from '../services/serverRuns'
 
 export interface BookEvent {
@@ -122,22 +122,59 @@ export async function applyBookEvent(event: BookEvent, deps: BookEventDeps): Pro
 export function connectBookEvents(bookId: string): () => void {
   if (typeof EventSource === 'undefined') return () => {}
   const deps: BookEventDeps = { bookId }
-  const source = new EventSource(`/api/books/${bookId}/events`)
+  let source: EventSource
   let dropped = false
-  source.onmessage = (message) => {
-    try {
-      void applyBookEvent(JSON.parse(message.data) as BookEvent, deps)
-    } catch (e) {
-      console.error('[bookEvents] bad event', e)
+  let closed = false
+  const open = () => {
+    source = new EventSource(`/api/books/${bookId}/events`)
+    source.onmessage = (message) => {
+      try {
+        void applyBookEvent(JSON.parse(message.data) as BookEvent, deps)
+      } catch (e) {
+        console.error('[bookEvents] bad event', e)
+      }
+    }
+    source.onerror = () => { dropped = true }
+    // EventSource reconnects on its own; what was published meanwhile is lost,
+    // so catch up once it is back: the chapters here, the runs in the chat hook.
+    source.onopen = () => {
+      if (!dropped) return
+      dropped = false
+      void resyncBook(deps)
+      emitRunCatchUp()
     }
   }
-  source.onerror = () => { dropped = true }
-  // EventSource reconnects on its own; what was published meanwhile is lost,
-  // so catch up once it is back.
-  source.onopen = () => {
-    if (!dropped) return
-    dropped = false
-    void resyncBook(deps)
+  open()
+  /*
+   * Problem: a phone suspends the stream while the page is in the
+   *   background; a run that finished meanwhile never reached the tab, whose
+   *   bubble kept "working" (2026-10-10).
+   * Root cause: the suspended stream does not always raise an error, and an
+   *   EventSource that gave up (CLOSED) never reconnects by itself.
+   * Fix: back in the foreground, reopen a closed stream and ask the runs to
+   *   catch up either way (one GET of the book's runs).
+   */
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const onVisible = () => {
+    if (closed || typeof document === 'undefined' || document.visibilityState !== 'visible') return
+    if (timer !== null) clearTimeout(timer)
+    timer = setTimeout(() => {
+      timer = null
+      if (closed) return
+      if (source.readyState === EventSource.CLOSED) {
+        open()
+        void resyncBook(deps)
+      }
+      emitRunCatchUp()
+    }, 300)
   }
-  return () => source.close()
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVisible)
+  if (typeof window !== 'undefined') window.addEventListener('focus', onVisible)
+  return () => {
+    closed = true
+    if (timer !== null) clearTimeout(timer)
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible)
+    if (typeof window !== 'undefined') window.removeEventListener('focus', onVisible)
+    source.close()
+  }
 }

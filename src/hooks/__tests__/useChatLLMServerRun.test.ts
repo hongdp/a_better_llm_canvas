@@ -14,7 +14,7 @@ import { Editor } from '@tiptap/core'
 import StarterKit from '@tiptap/starter-kit'
 import { useChatLLM } from '../useChatLLM'
 import { useAppStore, isEditLocked } from '../../store/useAppStore'
-import { emitRunEvent } from '../../store/runEvents'
+import { emitRunCatchUp, emitRunEvent } from '../../store/runEvents'
 import { recordServerCopy, serverCopies } from '../../store/documentSync'
 import { isSilentPreview } from '../chat/selectionReplace'
 import type { ServerRunSummary } from '../../services/serverRuns'
@@ -143,6 +143,44 @@ describe('a turn with serverRuns on', () => {
     expect(bubble().content).toBe('好的。\n\n写完了。')
     expect(bubble().agent?.status).toBe('done')
     expect(useAppStore.getState().versions.map(v => v.id)).toContain('ver-1')
+    h.unmount()
+  })
+
+  // Seen 2026-10-10: the phone's stream was suspended while the run
+  // finished; the bubble stayed "working" with the timer counting.
+  it('settles a run whose finish was missed once the tab catches up', async () => {
+    const stub = stubEditor('<p>原文。</p>')
+    const h = renderChatHook(stub.editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    const runId = 'run-1'
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId, run: summary({ assistantMessageId: bubble().id }) }) })
+    act(() => { emitRunEvent({ type: 'run', kind: 'lock', runId, documentIds: ['doc-1'] }) })
+    expect(useAppStore.getState().isStreaming).toBe(true)
+
+    // The finished event never arrives; the server lists the run as done.
+    listed = { runs: [{ ...summary({ status: 'done', assistantMessageId: bubble().id, userMessageId: 'u' }),
+      result: { content: '写完了。', record: { status: 'done', steps: 1, trace: [], touched: [], timeline: [{ type: 'text', text: '写完了。' }] } } }], queueHeld: false }
+    await act(async () => { emitRunCatchUp() })
+    await flush()
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(bubble().content).toBe('写完了。')
+    expect(bubble().agent?.status).toBe('done')
+    expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(false)
+    expect(useAppStore.getState().streamingReasoning).toBe('')
+    h.unmount()
+  })
+
+  it('shows a run that paused while its events were missed as paused', async () => {
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId: 'run-1', run: summary({ assistantMessageId: bubble().id }) }) })
+    listed = { runs: [summary({ status: 'paused', assistantMessageId: bubble().id, pause: { reason: 'step_failed', message: 'x' } as never })], queueHeld: false }
+    await act(async () => { emitRunCatchUp() })
+    await flush()
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(bubble().agent?.run?.status).toBe('paused')
     h.unmount()
   })
 

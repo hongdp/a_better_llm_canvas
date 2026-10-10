@@ -43,7 +43,7 @@ import { polishHtml, defaultPolishModel, type PolishTransport } from '../agent/p
 import { resolveRunSettings } from '../agent/policy'
 import { chapterOutline, createRunState, restoreSeen, type ToolContext } from '../agent/types'
 import { startServerRun, listServerRuns, serverRunAction, answerServerRun, steerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
-import { onRunEvent } from '../store/runEvents'
+import { onRunCatchUp, onRunEvent } from '../store/runEvents'
 import { resyncBook } from '../store/bookEvents'
 import { CLIENT_ID, needsTextSync } from '../store/documentSync'
 import { clearPendingSave } from '../store/syncRuntime'
@@ -1445,6 +1445,15 @@ export function useChatLLM({
     if (useAppStore.getState().activeBookId !== bookId) return
     for (const run of listed.runs) {
       const s = useAppStore.getState()
+      // The run this tab follows ended or paused while its events were missed:
+      // settle it the way the live event would, so the bubble, the streaming
+      // flag, the reasoning timer and the edit locks all end together.
+      if (serverRunRef.current?.id === run.id && (run.status === 'paused' || run.status === 'done' || run.status === 'stopped' || run.status === 'error')) {
+        await handleRunEvent(run.status === 'paused'
+          ? { type: 'run', kind: 'paused', runId: run.id, run, record: run.record, pause: run.pause ?? undefined }
+          : { type: 'run', kind: 'finished', runId: run.id, run, status: run.status, result: run.result ?? undefined })
+        continue
+      }
       if (run.status === 'queued' || run.status === 'running' || run.status === 'paused') {
         const kind = run.status === 'queued' ? 'queued' : run.status === 'paused' ? 'paused' : 'started'
         let messages = applyRunEvent(ensureRunMessages(s.messages, run), { type: 'run', kind, runId: run.id, run, record: run.record, pause: run.pause ?? undefined }, serverLiveRef.current)
@@ -1464,8 +1473,10 @@ export function useChatLLM({
         }
       }
     }
-  }, [attachServerRun])
+  }, [attachServerRun, handleRunEvent])
   useEffect(() => { void reconcileServerRuns() }, [reconcileServerRuns, activeBookId, user])
+  // Events may have been missed (the stream dropped, or the page was in the background): re-read the runs.
+  useEffect(() => onRunCatchUp(() => { void reconcileServerRuns() }), [reconcileServerRuns])
   // Ask once whether the server can browse, before the first turn's tools are fixed.
   useEffect(() => { if (user) checkWebAccess() }, [user])
 
