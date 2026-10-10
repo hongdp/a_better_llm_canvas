@@ -582,6 +582,27 @@ transport's):
   its memory flush before compaction, and a compact system prompt after it —
   the system prompt here is the protocol and stays.
 
+**Within a run** (2026-10-09, `agent/runCompaction`, `wc_text/run_compaction`).
+The summary above is made when a turn starts; a run itself only appends
+(D4), so one that reads chapter after chapter grows its prompt until the
+provider refuses a step — the first step's history budget never looked
+again. After Grok Build's intra-compaction: every successful read result
+(`read_chapter`, `grep`, `list_chapters`: the `read` kind) is a candidate;
+before each step, when the prompt (every message's text and tool-call
+arguments, `estimateTokens`) passes `ELIDE_ABOVE` (0.85) of the prompt
+limit, the oldest candidates are replaced in place by a one-line note naming
+what was read ("Read it again if you need its text") until the prompt is
+under `ELIDE_TO` (0.6) or nothing is left; the latest step's results are
+never touched, since the model has not acted on them. The prompt limit is
+the host's target for the window less the output tokens — the same numbers
+the history budget uses. The bubble's trace shows "🧹 elided N earlier
+results". Replacing a sent message ends the cached prefix there, so this
+runs only when the step would otherwise not fit. The run's `known` record
+is unchanged: an edit on a chapter whose text was elided is still allowed,
+and a SEARCH that no longer matches gets the nearest-paragraph hint, which
+is enough to re-read. Both loops; the candidates and the cut index are in
+the server run's snapshot.
+
 ### 0.7 Settings and transports
 
 - **Per-provider settings:**

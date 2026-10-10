@@ -20,6 +20,7 @@ import { appendReminders, htmlReadNudge, longReasoningReminder, planReminder, pl
 import { claimsOwnWrite, isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
+import { elisionTrace, planElisions, type ElidableResult } from './runCompaction'
 import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepDecision, type StepPolicy } from './policy'
 import type { RegisteredTool, ToolRegistry } from './registry'
 import { seenChapters, writesSoFar, type AskedQuestion, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
@@ -129,6 +130,12 @@ export interface AgentRunOptions {
   longReasoningTokens?: number
   /** Extra reminders the host has for the model, collected after each step's calls ran. */
   reminders?: () => string[]
+  /**
+   * The prompt tokens a step may use (the host's target for the model's
+   * window, less the output). Past ELIDE_ABOVE of it, the oldest read results
+   * are elided before the next step (agent/runCompaction). Absent = never.
+   */
+  promptTokenLimit?: number
 }
 
 const UNKNOWN_TOOL_KIND: ToolKind = 'read'
@@ -179,6 +186,10 @@ export class AgentRun {
   private claimNudged = false
   /** Messages the user sent while the run was working; the next step carries them (steer). */
   private readonly pendingSteers: string[] = []
+  /** Read results in the messages that may be elided when the prompt outgrows the window. */
+  private elidable: ElidableResult[] = []
+  /** Where the latest step's results start in the messages: never elided. */
+  private lastResultsStart = 0
 
   private readonly o: AgentRunOptions
 
@@ -391,6 +402,7 @@ export class AgentRun {
     // The model asked the user something: its results are appended so the
     // call is answered, then the turn ends and the next message answers it.
     if (this.o.ctx.run.question && !this.cancelled) {
+      this.lastResultsStart = this.messages.length
       this.messages = [...this.messages, ...this.resultMessages(out, ran, results)]
       this.finish({ failedUpdate: null, exhaustedCorrective: false, unretriableFailedUpdate: false, endReason: 'asked' })
       return
@@ -428,9 +440,11 @@ export class AgentRun {
 
     if (continuing && decision.action === 'continue') {
       if (decision.corrective) this.correctiveUsed++
+      this.lastResultsStart = this.messages.length
       this.messages = [...this.messages, ...appendReminders(this.resultMessages(out, ran, results), this.collectReminders())]
       if (steer) this.messages = [...this.messages, { role: 'user', content: steer }]
       if (decision.final) this.messages = [...this.messages, { role: 'user', content: STEP_LIMIT_NOTE }]
+      this.compactIfNeeded()
       this.o.observer.onStepExecuted?.(this.progress())
       void this.o.driver(this.messages, this.stepsTaken, { final: decision.final })
       return
@@ -444,6 +458,23 @@ export class AgentRun {
         ? 'cancelled'
         : decision.action === 'end' ? decision.reason : 'step_limit'
     })
+  }
+
+  /**
+   * Keep the next step's prompt inside the window: past the threshold, the
+   * oldest read results are replaced by a note (runCompaction). Shown in the
+   * bubble's trace, like a tool call.
+   */
+  private compactIfNeeded(): void {
+    const limit = this.o.promptTokenLimit ?? 0
+    if (!(limit > 0) || this.elidable.length === 0) return
+    const plan = planElisions(this.messages, this.elidable, limit, this.lastResultsStart)
+    this.elidable = plan.remaining
+    if (plan.elided.length === 0) return
+    this.messages = plan.messages
+    const line = elisionTrace(plan.elided)
+    this.trace.push(line)
+    this.timeline.push({ type: 'tool', line, ok: true })
   }
 
   /**
@@ -508,6 +539,9 @@ export class AgentRun {
       ...(out.responseItems?.length ? { responseItems: out.responseItems } : {})
     }]
     for (const { inv, result } of native) {
+      // A read's result may be elided later when the prompt outgrows the
+      // window (compactIfNeeded); its index is where this message will sit.
+      if (result.ok && this.kindOf(inv) === 'read') this.elidable.push({ index: this.lastResultsStart + messages.length, trace: result.trace })
       messages.push({ role: 'tool', toolCallId: inv.id, name: inv.name, content: result.content })
     }
     // Blocks the reply lost never reached the document. Unsaid, the model

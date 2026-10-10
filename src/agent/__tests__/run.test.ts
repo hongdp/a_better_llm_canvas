@@ -41,6 +41,7 @@ function harness(opts: {
   canContinue?: boolean
   original?: string
   longReasoningTokens?: number
+  promptTokenLimit?: number
   read?: ReturnType<typeof readTool>
   /** More tools for the registry. */
   extra?: RegisteredTool[]
@@ -74,7 +75,8 @@ function harness(opts: {
     policy: { ...DEFAULT_POLICY, ...opts.policy },
     canContinue: opts.canContinue ?? true,
     initialMessages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'request' }],
-    longReasoningTokens: opts.longReasoningTokens
+    longReasoningTokens: opts.longReasoningTokens,
+    promptTokenLimit: opts.promptTokenLimit
   })
   return { run, fake, requests, corrective, summary: () => summary as RunSummary | null }
 }
@@ -459,6 +461,44 @@ describe('what a plan may call done, and an HTML read that no edit followed', ()
     expect(h.requests).toHaveLength(3)
     expect(h.requests[2].at(-1)?.content).toContain('Your last read of a chapter\'s HTML (read #1 ¶88 (html, html)) is the step before an edit')
     expect(h.summary()?.endReason).toBe('answered')
+  })
+})
+
+describe('a run that outgrows the window (agentic_chat_loop.md §0.9, within a run)', () => {
+  const done = text('done\n<doc_status>unchanged</doc_status>')
+  const bigRead = readTool(args => ({ ok: true, content: `TEXT OF ${String(args.chapter)} ` + 'word '.repeat(400), trace: `read ${String(args.chapter)}` }))
+
+  it('elides the oldest read results, never the latest step\'s, and says so in the trace', async () => {
+    const h = harness({
+      replies: [
+        calls('', ['c1', 'read_chapter', '{"chapter":"1"}']),
+        calls('', ['c2', 'read_chapter', '{"chapter":"2"}']),
+        calls('', ['c3', 'read_chapter', '{"chapter":"3"}']),
+        done
+      ],
+      budgets: { maxSteps: 0 }, read: bigRead, promptTokenLimit: 1_000
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(4)
+    // After the second read the prompt passes 85% of 1,000 tokens: the first read goes, the second (the latest step) stays.
+    const third = h.requests[2]
+    expect(third.find(m => m.role === 'tool' && m.toolCallId === 'c1')?.content).toBe('[This result was elided to keep the conversation within the model\'s context window: read 1. Read it again if you need its text.]')
+    expect(third.find(m => m.role === 'tool' && m.toolCallId === 'c2')?.content).toContain('TEXT OF 2')
+    expect(h.summary()?.trace).toContain('🧹 elided 1 earlier result to stay within the context window')
+    // Already-elided results are not counted again; the next check elides the second read.
+    const fourth = h.requests[3]
+    expect(fourth.find(m => m.role === 'tool' && m.toolCallId === 'c2')?.content).toContain('elided')
+    expect(fourth.find(m => m.role === 'tool' && m.toolCallId === 'c3')?.content).toContain('TEXT OF 3')
+  })
+
+  it('leaves a run alone without a limit, or while it fits', async () => {
+    const h = harness({
+      replies: [calls('', ['c1', 'read_chapter', '{"chapter":"1"}']), calls('', ['c2', 'read_chapter', '{"chapter":"2"}']), done],
+      budgets: { maxSteps: 0 }, read: bigRead, promptTokenLimit: 100_000
+    })
+    await h.run.start()
+    expect(h.requests[2].find(m => m.role === 'tool' && m.toolCallId === 'c1')?.content).toContain('TEXT OF 1')
+    expect(h.summary()?.trace.some(t => t.startsWith('🧹'))).toBe(false)
   })
 })
 

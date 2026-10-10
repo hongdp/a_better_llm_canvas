@@ -12,7 +12,8 @@ import pytest
 
 from wc_text import (chapter_index, chapters, context_ledger, context_selection, context_window, conversation_summary, diff, diff_resolution,
                      document_tools, dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes,
-                     plan, policy, polish, protocol_choice, provider_profile, reminders, stream_handlers, system_prompt, text, title_sync, tool_call_stream)
+                     plan, policy, polish, protocol_choice, provider_profile, reminders, run_compaction, stream_handlers, system_prompt, text, title_sync,
+                     tool_call_stream)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -161,6 +162,11 @@ FUNCTIONS = {
     ("conversation_summary", "build_summary_request"): conversation_summary.build_summary_request,
     ("conversation_summary", "parse_summary_reply"): conversation_summary.parse_summary_reply,
     ("conversation_summary", "summary_messages"): conversation_summary.summary_messages,
+    ("run_compaction", "constants"): lambda: {"ELIDE_ABOVE": run_compaction.ELIDE_ABOVE, "ELIDE_TO": run_compaction.ELIDE_TO},
+    ("run_compaction", "elided_result_note"): run_compaction.elided_result_note,
+    ("run_compaction", "elision_trace"): run_compaction.elision_trace,
+    ("run_compaction", "prompt_tokens"): run_compaction.prompt_tokens,
+    ("run_compaction", "plan_elisions"): run_compaction.plan_elisions,
     ("reminders", "wrap_reminder"): reminders.wrap_reminder,
     ("reminders", "escape_reminder_tags"): reminders.escape_reminder_tags,
     ("reminders", "interrupted_turn_reminder"): reminders.interrupted_turn_reminder,
