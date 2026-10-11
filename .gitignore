@@ -48,3 +48,6 @@ certs/dev-key.pem
 
 # Local agent worktrees and session state
 .claude/
+
+# Release archives (npm run release)
+release/
