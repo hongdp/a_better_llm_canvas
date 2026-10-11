@@ -65,7 +65,8 @@ export const MOCK_DOCUMENTS: CanvasDocument[] = [
     content: `<h1>Getting Started with Web Canvas</h1>
 <p>Welcome to <strong>Web Canvas</strong>! This is an LLM-powered environment designed for writing and document collaboration.</p>
 <p>You can manage your chapters in the Chapters Sidebar on the left-most side of the screen.</p>
-<p>Toggle references using the tags below the chat box to include other chapters in Gemini's context!</p>`,
+<p>Ask the assistant for anything in the chat on the left: it can read, search and edit every chapter of this book, and each change arrives as a diff for you to accept or reject.</p>
+<p>Pin a chapter in the sidebar (the pin on its row) to keep it in the assistant's context on every turn — an outline, a character sheet.</p>`,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
@@ -73,8 +74,8 @@ export const MOCK_DOCUMENTS: CanvasDocument[] = [
     id: 'doc-2',
     title: 'Chapter 2: Setup Guide',
     content: `<h1>Setup and Config</h1>
-<p>This is Chapter 2. You can toggle it as a reference under the chat box so that Gemini can see its content while you edit another chapter.</p>
-<p>Make sure to enter your API key in the settings panel first.</p>`,
+<p>Open <strong>Settings</strong> (the gear in the header), pick a provider and enter its API key. The model list loads from your key.</p>
+<p>The assistant reads other chapters on its own when it needs them; pin the ones it should always have.</p>`,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   },
