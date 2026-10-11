@@ -881,7 +881,7 @@ export function useChatLLM({
     document: {
       startId: info.startId,
       original: info.originalDocContent,
-      chapters: () => useAppStore.getState().documents.map(d => ({ id: d.id, title: d.title, content: d.content, summary: d.summary, loaded: d.contentLoaded !== false })),
+      chapters: () => useAppStore.getState().documents.map(d => ({ id: d.id, title: d.title, content: d.content, loaded: d.contentLoaded !== false })),
       openId: () => useAppStore.getState().activeDocumentId,
       userMoved: () => {
         if (!view.moved && useAppStore.getState().activeDocumentId !== view.expected) view.moved = true

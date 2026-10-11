@@ -8,8 +8,6 @@ import { initializeStoreFromServer } from './store/useAppStore'
 // without blocking the initial render of the application shell.
 initializeStoreFromServer()
 
-// Watch for chapter edits/switches to keep chapter summaries lazily fresh.
-
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <App />

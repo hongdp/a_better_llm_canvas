@@ -63,12 +63,6 @@ export interface SettingsSlice {
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
 
-  /**
-   * Which provider runs background chapter summaries. 'active' follows the
-   * chat provider (the old behaviour); anything else lets a cheap or local
-   * model do the drudge work while chat stays on the expensive one.
-   */
-
   // Image analysis prompt
   imageAnalysisPrompt: string
   setImageAnalysisPrompt: (prompt: string) => void

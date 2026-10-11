@@ -158,7 +158,6 @@ FUNCTIONS = {
     ("image_preservation", "replace_images_with_placeholders"): _replace_images,
     ("image_preservation", "restore_image_placeholders"): image_preservation.restore_image_placeholders,
     ("image_preservation", "reinsert_missing_images"): image_preservation.reinsert_missing_images,
-    ("chapter_index", "get_chapter_digest"): chapter_index.get_chapter_digest,
     ("chapter_index", "build_chapter_index"): chapter_index.build_chapter_index,
     ("chapter_index", "pack_chapters_into_batches"): chapter_index.pack_chapters_into_batches,
     ("chapter_index", "analyze_batch_tokens"): lambda: chapter_index.ANALYZE_BATCH_TOKENS,

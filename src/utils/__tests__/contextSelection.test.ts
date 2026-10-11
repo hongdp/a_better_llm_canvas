@@ -16,10 +16,10 @@ const makeDoc = (id: string, title: string, overrides: Partial<SelectableDoc> = 
 })
 
 const baseDocs: SelectableDoc[] = [
-  makeDoc('a', 'Chapter 1: Origins', { summary: 'Riva discovers the buried archive beneath the city.' }),
+  makeDoc('a', 'Chapter 1: Origins'),
   makeDoc('b', 'Chapter 2: The Crossing'),
-  makeDoc('c', 'Chapter 3: Ashfall', { summary: 'The siege begins and Kael betrays the garrison.' }),
-  makeDoc('d', 'Chapter 4: Return', { summary: 'The survivors regroup in the mountains.' })
+  makeDoc('c', 'Chapter 3: Ashfall'),
+  makeDoc('d', 'Chapter 4: Return')
 ]
 
 const baseInput = (overrides: Partial<SelectionInput> = {}): SelectionInput => ({
@@ -98,9 +98,9 @@ describe('selectReferenceChapters signals', () => {
     expect(result.scores['d']).toBe(0)
   })
 
-  it('scores keyword overlap between prompt and summaries', () => {
+  it('scores keyword overlap between prompt and titles (summaries are no longer used)', () => {
     const result = selectReferenceChapters(baseInput({
-      promptText: 'Make sure the archive details stay consistent',
+      promptText: 'Make sure the origins details stay consistent',
       activeDocumentId: 'd'
     }))
     expect(result.scores['a']).toBeGreaterThan(0)
@@ -123,8 +123,8 @@ describe('selectReferenceChapters budget', () => {
   it('drops lowest-score autos first when over budget', () => {
     const bigDocs = [
       makeDoc('active', 'Chapter 0: Active'),
-      makeDoc('high', 'Chapter 1: Archive', { content: 'y'.repeat(15_000), summary: '' }),
-      makeDoc('low', 'Chapter 2: Ashfall', { content: 'z'.repeat(15_000), summary: '' })
+      makeDoc('high', 'Chapter 1: Archive', { content: 'y'.repeat(15_000) }),
+      makeDoc('low', 'Chapter 2: Ashfall', { content: 'z'.repeat(15_000) })
     ]
     const result = selectReferenceChapters(
       {

@@ -27,7 +27,7 @@ import {
   stripIncompleteEndTag, chapterAttribute, newChapterAttribute, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement,
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
-import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
+import { buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, diffTailParts, pinnedUpdates, type RenderableDoc, type DynamicContextOptions, type TailParts, type SentTail } from '../../hooks/chat/dynamicContext'
 import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking, geminiThinking } from '../../utils/reasoningEffort'
 import { planHistoryUnits, summarizableHistory, historyWindow, transcriptWeight, type HistoryEntry, type TurnTranscript } from '../../utils/turnTranscripts'
@@ -227,13 +227,13 @@ const APPLY_EDITS: Array<[string, EditBlock[]]> = [
 
 // Books. Fields the index, the ledger and the selector read; the same rows feed all three.
 const BOOK: Array<IndexableDoc & RenderableDoc & SelectableDoc> = [
-  { id: 'd1', title: '大纲', content: '<h1>大纲</h1><p>全书 outline 简述。</p>', summary: 'The outline:\n  main arc,\n villains.  ' },
-  { id: 'd2', title: '第一章 启程', content: CHAPTER, summary: '' },
+  { id: 'd1', title: '大纲', content: '<h1>大纲</h1><p>全书 outline 简述。</p>' },
+  { id: 'd2', title: '第一章 启程', content: CHAPTER },
   { id: 'd3', title: 'Chapter 3: The Cat', content: ENGLISH },
   { id: 'd4', title: '空章节', content: '', contentLoaded: false },
-  { id: 'd5', title: 'Long', content: `<p>${'x'.repeat(600)}</p>`, summary: 'y'.repeat(500) }
+  { id: 'd5', title: 'Long', content: `<p>${'x'.repeat(600)}</p>` }
 ]
-const BIG_BOOK: IndexableDoc[] = Array.from({ length: 41 }, (_, i) => ({ id: `b${i}`, title: `Ch ${i}`, content: `<p>${'c'.repeat(200)} ${i}</p>`, summary: i % 2 ? `${'s'.repeat(160)} ${i}` : undefined }))
+const BIG_BOOK: IndexableDoc[] = Array.from({ length: 41 }, (_, i) => ({ id: `b${i}`, title: `Ch ${i}`, content: `<p>${'c'.repeat(200)} ${i}</p>` }))
 const RENDER = (id: string, kind: string) => `[${kind}:${id}]`
 const LDOCS: LedgerDocLike[] = [{ id: 'd1', chars: 100, hash: 'h1' }, { id: 'd2', chars: 2000, hash: 'h2' }, { id: 'd3', chars: 300, hash: 'h3' }, { id: 'd4', chars: 400, hash: 'h4' }]
 const L = (id: string, hash: string, chars: number, extra: Partial<LedgerEntry> = {}): LedgerEntry => ({ id, hash, chars, ...extra })
@@ -247,12 +247,12 @@ const volatileTail = (docs: RenderableDoc[], active: string | null, selected: st
   return buildVolatileTail(docs, active, selected, html => replaceImagesWithPlaceholders(html, registry), opts)
 }
 const SDOCS: SelectableDoc[] = [
-  { id: 'o', title: '大纲', content: '<p>outline</p>', summary: 'dragon king villain arc' },
+  { id: 'o', title: '大纲', content: '<p>outline</p>' },
   { id: 'c1', title: '第一章', content: `<p>${'a'.repeat(30000)}</p>` },
-  { id: 'c2', title: '第二章', content: '<p>two</p>', summary: '龙王 出场' },
+  { id: 'c2', title: '第二章', content: '<p>two</p>' },
   { id: 'c3', title: 'Chapter 3: Dragon', content: '', contentLoaded: false },
   { id: 'c4', title: '第四章', content: '<p>four</p>', contentLoaded: true },
-  { id: 'c5', title: 'Notes', content: '<p>n</p>', summary: 'dragon dragon king' }
+  { id: 'c5', title: 'Notes', content: '<p>n</p>' }
 ]
 const SEL = (over: Partial<SelectionInput>): SelectionInput => ({ promptText: '', recentHistory: [], documents: SDOCS, activeDocumentId: 'c2', ...over })
 const PROMPT_OPTIONS = (['tools', 'markup'] as const).flatMap(protocol => [false, true].flatMap(agentTools => [false, true].flatMap(continueAfterWrites =>
@@ -478,7 +478,6 @@ const MODULES: Module[] = [
   {
     module: 'chapter_index',
     cases: {
-      get_chapter_digest: run(getChapterDigest, [[BOOK[0]], [BOOK[1]], [BOOK[3]], [BOOK[4]], [BOOK[4], 150], [{ id: 'z', title: 'z', content: '<p>\n body \n</p>', summary: '   ' }]]),
       build_chapter_index: run(buildChapterIndex, [[BOOK, 'd2'], [BOOK, 'd2', { agentTools: true, markers: { d1: 'in context', d3: 'read this turn' } }], [BOOK, null], [[BOOK[0]], 'd1'], [BIG_BOOK, 'b0', { agentTools: true }], [BIG_BOOK, 'b40']]),
       pack_chapters_into_batches: run(packChaptersIntoBatches, [[BOOK, 100], [BOOK, 10], [[], 50], [BOOK, 100000]]),
       analyze_batch_tokens: run(() => ANALYZE_BATCH_TOKENS, [[]]),

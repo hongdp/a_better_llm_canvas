@@ -33,7 +33,6 @@ export interface DocumentsSlice {
   updateDocument: (id: string, updates: Partial<CanvasDocument>) => void
   updateActiveDocument: (updates: Partial<CanvasDocument>) => void
   setDocumentPinned: (id: string, pinned: boolean) => void
-  setDocumentSummary: (id: string, summary: string, contentHash: string) => void
   /**
    * Ensure the given documents' content is loaded (server books lazy-load
    * metadata-only chapters). Resolves once every needed fetch settles; a
@@ -326,36 +325,6 @@ export const createDocumentsSlice: StateCreator<AppState, [], [], DocumentsSlice
       }
     },
 
-    setDocumentSummary: (id, summary, contentHash) => {
-      // Deliberately does NOT bump updatedAt: a summary refresh is derived
-      // metadata, not a user edit — bumping would churn server sync status
-      // and re-mark the summary's own source content as newer than it.
-      set((state) => {
-        const updatedDocs = state.documents.map((d) =>
-          d.id === id ? { ...d, summary, summaryContentHash: contentHash } : d
-        )
-        saveDocumentsToIndexedDB(updatedDocs, false)
-        return { documents: updatedDocs }
-      })
-
-      // Fire-and-forget server sync (optimistic-UI convention: local state is
-      // already updated; a failure just means the summary regenerates on the
-      // next device instead of syncing).
-      const state = useAppStore.getState()
-      if (state.user && state.activeBookId) {
-        fetch(`/api/books/${state.activeBookId}/documents/${id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-CSRF-Token': state.csrfToken || '',
-            [CLIENT_ID_HEADER]: CLIENT_ID
-          },
-          body: JSON.stringify({ summary, summaryContentHash: contentHash })
-        }).then(res => res.ok ? res.json() : null)
-          .then(body => useAppStore.getState().adoptServerUpdatedAt(body?.updatedAt))
-          .catch(e => console.error('Failed to sync document summary to server', e))
-      }
-    },
 
   }
 }

@@ -5,7 +5,6 @@ import type { AppState, ServerDocumentMeta, ServerVersionMeta } from '../types'
 import { localStorage, safeIndexedDBSet, saveDocumentsToIndexedDB } from '../persistence'
 import { loadSavedConfigs, mergeProviderConfigs, saveConfigsToCookie, saveSystemPromptsToCookie } from '../settingsPersistence'
 import { clearPendingSave, getIsInitialized, setIsInitialized } from '../syncRuntime'
-import { carryOverLocalSummaries } from '../serverSync'
 import { normalizeBrParagraphs } from '../../utils/convert'
 
 // What each chapter looked like when the server last confirmed it now lives
@@ -234,8 +233,7 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
 
           // Build document list from server metadata (content not loaded yet)
           if (server.documents) {
-            const stubs: CanvasDocument[] = carryOverLocalSummaries(
-              server.documents.map((d: ServerDocumentMeta) => ({
+            const stubs: CanvasDocument[] =               server.documents.map((d: ServerDocumentMeta) => ({
                 id: d.id,
                 title: d.title,
                 content: '', // Content will be lazy-loaded
@@ -246,9 +244,7 @@ export const createBooksSlice: StateCreator<AppState, [], [], BooksSlice> = (set
                 summaryContentHash: d.summaryContentHash ?? undefined,
                 ...(typeof d.revision === 'number' ? { revision: d.revision } : {}),
                 ...(d.pinned ? { pinned: true } : {}),
-              })),
-              state.documents
-            )
+              }))
             // Another book's chapters are not this one's to keep.
             const docs = sameBook ? mergeServerChapters(stubs, state.documents) : stubs
             updates.documents = docs

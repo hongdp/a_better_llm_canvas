@@ -1,7 +1,6 @@
 /**
  * Server bootstrap and sync helpers: local IndexedDB bootstrap, background
- * session/book sync (initializeStoreFromServer), and the summary carry-over
- * rule shared with the books slice.
+ * session/book sync (initializeStoreFromServer).
  *
  * NOTE on the import cycle: this module imports useAppStore from
  * './useAppStore' while useAppStore.ts (indirectly, via the slices)
@@ -19,25 +18,6 @@ import { normalizeBrParagraphs } from '../utils/convert'
 import { useAppStore } from './useAppStore'
 import { mergeVersions, versionsMissingOnServer, backfillVersions } from './versionMerge'
 import { mergeServerChapters, recordServerCopy, saveOtherBookEdits } from './documentSync'
-
-/**
- * Rebuilding the document list from server metadata would wipe client-side
- * fields the server doesn't round-trip. Summaries ARE server-synced now, so
- * a server value wins; the local one only fills gaps (e.g. generated while
- * logged out and not yet pushed). Staleness is re-checked lazily against
- * content once it loads.
- */
-export const carryOverLocalSummaries = (serverDocs: CanvasDocument[], prevDocs: CanvasDocument[]): CanvasDocument[] => {
-  const prevById = new Map(prevDocs.map(d => [d.id, d]))
-  return serverDocs.map(doc => {
-    const prev = prevById.get(doc.id)
-    if (!prev) return doc
-    return {
-      ...doc,
-      ...(!doc.summary && prev.summary ? { summary: prev.summary, summaryContentHash: prev.summaryContentHash } : {})
-    }
-  })
-}
 
 export const initializeStoreFromServer = async (forceRemoteSync = false) => {
   if (getIsInitialized() && !forceRemoteSync) return
@@ -161,7 +141,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
           if (serverData.documents) {
             // Unsynced chapters survive only into their own book.
             const local = cacheIsThisBook ? useAppStore.getState().documents : []
-            const docs: CanvasDocument[] = mergeServerChapters(carryOverLocalSummaries(
+            const docs: CanvasDocument[] = mergeServerChapters(
               serverData.documents.map((d: ServerDocumentMeta) => ({
                 id: d.id,
                 title: d.title,
@@ -174,8 +154,7 @@ export const initializeStoreFromServer = async (forceRemoteSync = false) => {
                 ...(typeof d.revision === 'number' ? { revision: d.revision } : {}),
                 ...(d.pinned ? { pinned: true } : {}),
               })),
-              local
-            ), local)
+              local)
             updates.documents = docs
             saveDocumentsToIndexedDB(docs, true)
           }

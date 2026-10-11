@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { clampSize, loadPersistedSize, savePersistedSize, CHAT_WIDTH, SIDEBAR_WIDTH, OVERVIEW_HEIGHT } from '../layoutPrefs'
+import { clampSize, loadPersistedSize, savePersistedSize, CHAT_WIDTH, SIDEBAR_WIDTH } from '../layoutPrefs'
 
 beforeEach(() => window.localStorage.clear())
 
@@ -25,7 +25,7 @@ describe('layoutPrefs', () => {
   })
 
   it('keeps the shipped bounds sane', () => {
-    for (const { fallback, bounds } of [CHAT_WIDTH, SIDEBAR_WIDTH, OVERVIEW_HEIGHT]) {
+    for (const { fallback, bounds } of [CHAT_WIDTH, SIDEBAR_WIDTH]) {
       expect(clampSize(fallback, bounds)).toBe(fallback) // default is within bounds
       expect(bounds.min).toBeLessThan(bounds.max)
     }

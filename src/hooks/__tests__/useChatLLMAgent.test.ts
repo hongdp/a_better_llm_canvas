@@ -201,10 +201,10 @@ describe('finding and reading a chapter (D6)', () => {
     const h = renderChatHook()
     await send(h, '根据小说大纲写序章')
 
-    // The index the model chose from: the outline is listed by number, with
-    // its summary, though nothing called it 大纲.
+    // The index the model chose from: the outline is listed by number and
+    // title, though nothing called it 大纲 (no summaries since 2026-10-11).
     expect(calls[0].at(-1)?.content).toContain('3. "故事线"')
-    expect(calls[0].at(-1)?.content).toContain('全书分章计划')
+    expect(calls[0].at(-1)?.content).not.toContain('全书分章计划')
     // Step 2 carries the read result under the call's id.
     expect(calls[1].at(-1)).toMatchObject({ role: 'tool', toolCallId: 'r1', content: expect.stringContaining('主角离开村子') })
     expect(stripDiffMarkup(content('doc-1'))).toBe('<p>主角离开了村子。</p>')

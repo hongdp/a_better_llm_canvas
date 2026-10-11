@@ -208,7 +208,7 @@ export const readTool = defineTool<ReadArgs>({
     'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. ' +
     `To look at several places at once, pass parts (up to ${MAX_READ_PARTS}), e.g. [{"chapter":"3","paragraphs":"10-16"},{"chapter":"8","paragraphs":"30-36"}]: one call, one step. ` +
     `A long chapter comes back in parts of at most ${READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. ` +
-    'If no title or summary tells you where something is, use grep. ' +
+    'If no title tells you where something is, use grep. ' +
     'Attachments (A1, A2… in ATTACHMENTS) are read the same way: chapters=["A1"] with a paragraph range (¶ numbers, which grep reports; in a novel .txt a ¶ is a line), or with section (a heading such as "第三十章" — 第30章 is the same chapter — or a run, "第62–87章"). ' +
     'A turn reads at most 100,000 characters of attachments. ' +
     'More than fits in one read (a long part, or many chapters): you get the first part, where to continue, and what reading the rest would cost. Pass task="what you need from it" to have all of it read in batches outside the conversation and get notes back — with no chapters named, the whole book. ' +
@@ -673,7 +673,7 @@ export const listTool = defineTool<ListArgs>({
     // Problem: "call this only after creating chapters" read, once creating
     //   became writing, as a step of creating one. grok announced a new
     //   chapter and called this 13 times instead of writing it (2026-10-06).
-    'What can be read, and where. With no arguments: every chapter with its number, size and summary, then each attachment (A1…) with its size and number of sections. ' +
+    'What can be read, and where. With no arguments: every chapter with its number and size, then each attachment (A1…) with its size and number of sections. ' +
     'The CHAPTER INDEX and ATTACHMENTS in the request already have this as of the start of the turn; call it when chapters were added, removed or renamed during the turn, or when you need sizes. ' +
     `source="A1": that attachment's sections, each with its ¶ span (${LIST_SECTION_LINES} per call, continue with from=), to read one by those numbers next; narrow it with section="第60–90章" or paragraphs. ` +
     'source="3": a chapter\'s headings with their ¶ numbers. ' +
@@ -744,8 +744,7 @@ export const listTool = defineTool<ListArgs>({
         ctx.run.created.has(c.id) ? 'created this turn' : '',
         ctx.run.touched.has(c.id) ? 'changed this turn' : ''
       ].filter(Boolean)
-      const summary = c.summary?.trim() ? ` — ${c.summary.trim().replace(/\s+/g, ' ').slice(0, 200)}` : ''
-      return `${i + 1}. "${c.title}" (${paras} paragraphs, ${chars} chars${marks.length ? `; ${marks.join('; ')}` : ''})${summary}`
+      return `${i + 1}. "${c.title}" (${paras} paragraphs, ${chars} chars${marks.length ? `; ${marks.join('; ')}` : ''})`
     })
     const list = lines.join('\n')
     /*

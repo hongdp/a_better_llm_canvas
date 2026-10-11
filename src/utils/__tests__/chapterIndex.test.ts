@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import {  getChapterDigest,
+import {
   buildChapterIndex,
   packChaptersIntoBatches,
   type IndexableDoc
@@ -14,44 +14,12 @@ const makeDoc = (overrides: Partial<IndexableDoc> = {}): IndexableDoc => ({
 
 
 
-// ── getChapterDigest ──────────────────────────────────────────────────────────
-describe('getChapterDigest', () => {
-  it('uses the generated summary when present', () => {
-    const doc = makeDoc({ summary: 'The generated summary.' })
-    expect(getChapterDigest(doc)).toBe('The generated summary.')
-  })
-
-  it('falls back to plain text of the content when no summary exists', () => {
-    const digest = getChapterDigest(makeDoc())
-    expect(digest).toContain('Origins')
-    expect(digest).toContain('Riva discovers the buried archive.')
-    expect(digest).not.toContain('<h1>')
-  })
-
-  it('flattens newlines into single-line output', () => {
-    const doc = makeDoc({ summary: 'Line one.\nLine two.\n- bullet' })
-    expect(getChapterDigest(doc)).toBe('Line one. Line two. - bullet')
-  })
-
-  it('truncates to maxChars with an ellipsis', () => {
-    const doc = makeDoc({ summary: 'x'.repeat(500) })
-    const digest = getChapterDigest(doc, 100)
-    expect(digest.length).toBe(101) // 100 chars + ellipsis
-    expect(digest.endsWith('…')).toBe(true)
-  })
-
-  it('uses a stale summary rather than falling back (staleness is tolerated)', () => {
-    const doc = makeDoc({ summary: 'Old but useful summary.', summaryContentHash: 'stale' })
-    expect(getChapterDigest(doc)).toBe('Old but useful summary.')
-  })
-})
-
 // ── buildChapterIndex ─────────────────────────────────────────────────────────
 describe('buildChapterIndex', () => {
   const docs: IndexableDoc[] = [
-    makeDoc({ id: 'a', title: 'Chapter 1: Origins', summary: 'Riva finds the archive.' }),
+    makeDoc({ id: 'a', title: 'Chapter 1: Origins' }),
     makeDoc({ id: 'b', title: 'Chapter 2: The Crossing', content: '<p>They cross the river.</p>' }),
-    makeDoc({ id: 'c', title: 'Chapter 3: Ashfall', summary: 'The siege begins.' })
+    makeDoc({ id: 'c', title: 'Chapter 3: Ashfall' })
   ]
 
   it('returns empty string for single-document books', () => {
@@ -59,33 +27,21 @@ describe('buildChapterIndex', () => {
     expect(buildChapterIndex([], null)).toBe('')
   })
 
-  it('lists every chapter with numbering and titles', () => {
-    const index = buildChapterIndex(docs, 'b')
+  it('lists every chapter by number and title, and nothing of its text', () => {
+    const index = buildChapterIndex(docs, 'a')
     expect(index).toContain('CHAPTER INDEX')
-    expect(index).toContain('1. "Chapter 1: Origins" — Riva finds the archive.')
-    expect(index).toContain('3. "Chapter 3: Ashfall" — The siege begins.')
-  })
-
-  it('marks the active chapter and omits its digest', () => {
-    const index = buildChapterIndex(docs, 'b')
-    expect(index).toContain('2. "Chapter 2: The Crossing" [ACTIVE — this is the document you can edit]')
+    expect(index.split('\n').slice(1)).toEqual([
+      '1. "Chapter 1: Origins" [ACTIVE — this is the document you can edit]',
+      '2. "Chapter 2: The Crossing"',
+      '3. "Chapter 3: Ashfall"'
+    ])
     expect(index).not.toContain('They cross the river.')
   })
 
-  it('uses the plain-text fallback for chapters without summaries', () => {
-    const index = buildChapterIndex(docs, 'a')
-    expect(index).toContain('They cross the river.')
-  })
-
-  it('clamps digests harder for very large books', () => {
-    const longSummary = 'y'.repeat(400)
-    const many = Array.from({ length: 45 }, (_, i) =>
-      makeDoc({ id: `d${i}`, title: `Chapter ${i + 1}`, summary: longSummary })
-    )
-    const index = buildChapterIndex(many, 'd0')
-    const line = index.split('\n').find(l => l.startsWith('2. '))
-    expect(line).toBeDefined()
-    expect(line!.length).toBeLessThan(200)
+  it('carries the freshness markers and the agent wording of the active line', () => {
+    const index = buildChapterIndex(docs, 'b', { agentTools: true, markers: { c: 'read earlier, not in context' } })
+    expect(index).toContain('2. "Chapter 2: The Crossing" [ACTIVE — open in the editor; writes go here unless you name another chapter]')
+    expect(index).toContain('3. "Chapter 3: Ashfall" [read earlier, not in context]')
   })
 })
 

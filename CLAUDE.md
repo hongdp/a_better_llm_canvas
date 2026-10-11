@@ -88,7 +88,6 @@ src/
     llm.ts                # streamLLM: every generation is a backend job (no in-browser transport)
     serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
     attachments.ts        # Attachment + web API client; an attachment's text fetched once per tab
-    chapterSummaries.ts   # Background chapter summarizer (lazy queue)
     imageGen.ts  imageGenModels.ts
     import/               # Import pipeline: parser, contentBuilder, imageProcessor,
                           #   scraper, prompts, responseParsers, visionFilter, errors
@@ -370,6 +369,13 @@ and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
 (`utils/paragraphs` `paragraphSpans`/`applyParagraphEdits`); writes take
 `plan_done` (an attribute on tags); eight look-up-only steps in a row get one
 reminder.
+
+**The CHAPTER INDEX lists chapters by number and title only** (with the
+open-chapter and freshness markers). Chapter summaries are not used anywhere —
+not in the index, `list`, the sidebar or the keyword scorer (2026-10-11): their
+generation was removed on 2026-08-29, the stored ones went stale, and switching
+books had copied three onto another book's chapter of the same id. The
+`summary` columns stay in the database, unread.
 
 **Context with the agent tools on is pinned, not chosen**
 (`docs/features/pinned_context.md`): a turn carries the CHAPTER INDEX, the
