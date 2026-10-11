@@ -39,7 +39,7 @@ import server_runs
 import server_attachments
 import server_web
 from server_config import sanitize_id
-from server_db import get_db, init_db, GLOBAL_SETTINGS_BOOK_ID, record_last_active_book, clear_last_active_book
+from server_db import get_db, init_db, record_last_active_book, clear_last_active_book, upsert_user_settings
 from server_auth import get_authenticated_username
 from server_content import (
     _get_content_dir,
@@ -190,32 +190,8 @@ async def create_book(request: Request):
 
         record_last_active_book(conn, username, book_id, now)
 
-        # Save settings to global (upsert — settings are user-level)
-        settings_fields = ["activeProvider", "providerConfigs", "customSystemPrompts",
-                          "activeSystemPromptId", "theme", "debugMode"]
-        if any(k in body for k in settings_fields):
-            conn.execute(
-                """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
-                   custom_system_prompts, active_system_prompt_id, theme, debug_mode)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(username, book_id) DO UPDATE SET
-                   active_provider = COALESCE(excluded.active_provider, book_settings.active_provider),
-                   provider_configs = COALESCE(excluded.provider_configs, book_settings.provider_configs),
-                   custom_system_prompts = COALESCE(excluded.custom_system_prompts, book_settings.custom_system_prompts),
-                   active_system_prompt_id = COALESCE(excluded.active_system_prompt_id, book_settings.active_system_prompt_id),
-                   theme = COALESCE(excluded.theme, book_settings.theme),
-                   debug_mode = COALESCE(excluded.debug_mode, book_settings.debug_mode)
-                """,
-                (
-                    username, GLOBAL_SETTINGS_BOOK_ID,
-                    body.get("activeProvider"),
-                    json.dumps(body.get("providerConfigs")) if body.get("providerConfigs") else None,
-                    json.dumps(body.get("customSystemPrompts")) if body.get("customSystemPrompts") else None,
-                    body.get("activeSystemPromptId"),
-                    body.get("theme"),
-                    (1 if body.get("debugMode") else 0) if "debugMode" in body else None
-                )
-            )
+        # Settings are the user's, shared by every book (user_settings).
+        upsert_user_settings(conn, username, body)
 
         # Save initial messages
         messages = body.get("messages", [])
@@ -274,11 +250,8 @@ async def get_book(request: Request, book_id: str):
             (username, safe_book_id)
         ).fetchall()
 
-        # Get global user settings (shared across all books)
-        settings = conn.execute(
-            "SELECT * FROM book_settings WHERE username = ? AND book_id = ?",
-            (username, GLOBAL_SETTINGS_BOOK_ID)
-        ).fetchone()
+        # The user's settings (shared by every book)
+        settings = conn.execute("SELECT * FROM user_settings WHERE username = ?", (username,)).fetchone()
 
         # Get versions
         versions = conn.execute(
@@ -405,33 +378,8 @@ async def update_book(request: Request, book_id: str):
         # it is the natural place to remember which book the user is in.
         record_last_active_book(conn, username, safe_book_id, now)
 
-        # Update global settings (upsert) — settings are user-level, shared across all books
-        settings_fields = ["activeProvider", "providerConfigs", "customSystemPrompts",
-                          "activeSystemPromptId", "theme", "debugMode"]
-        has_settings = any(k in body for k in settings_fields)
-        if has_settings:
-            conn.execute(
-                """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
-                   custom_system_prompts, active_system_prompt_id, theme, debug_mode)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(username, book_id) DO UPDATE SET
-                   active_provider = COALESCE(excluded.active_provider, book_settings.active_provider),
-                   provider_configs = COALESCE(excluded.provider_configs, book_settings.provider_configs),
-                   custom_system_prompts = COALESCE(excluded.custom_system_prompts, book_settings.custom_system_prompts),
-                   active_system_prompt_id = COALESCE(excluded.active_system_prompt_id, book_settings.active_system_prompt_id),
-                   theme = COALESCE(excluded.theme, book_settings.theme),
-                   debug_mode = COALESCE(excluded.debug_mode, book_settings.debug_mode)
-                """,
-                (
-                    username, GLOBAL_SETTINGS_BOOK_ID,
-                    body.get("activeProvider"),
-                    json.dumps(body["providerConfigs"]) if "providerConfigs" in body else None,
-                    json.dumps(body["customSystemPrompts"]) if "customSystemPrompts" in body else None,
-                    body.get("activeSystemPromptId"),
-                    body.get("theme"),
-                    (1 if body["debugMode"] else 0) if "debugMode" in body else None
-                )
-            )
+        # Settings are the user's, shared by every book (user_settings).
+        upsert_user_settings(conn, username, body)
 
         # Update messages if provided (full replace)
         if "messages" in body:
@@ -490,7 +438,6 @@ async def delete_book_endpoint(request: Request, book_id: str):
     conn = get_db()
     try:
         conn.execute("DELETE FROM books WHERE username = ? AND id = ?", (username, safe_book_id))
-        conn.execute("DELETE FROM book_settings WHERE username = ? AND book_id = ?", (username, safe_book_id))
         conn.execute("DELETE FROM messages WHERE username = ? AND book_id = ?", (username, safe_book_id))
         clear_last_active_book(conn, username, safe_book_id)
         # documents and versions cascade-deleted via FK

@@ -5,6 +5,7 @@ Tests that need an isolated database should patch `server_db.DB_PATH`
 here, which reads this module's global).
 """
 
+import json
 import os
 import sqlite3
 from typing import Optional
@@ -18,9 +19,6 @@ _LOCAL_DB_DIR = os.path.join(_PROJECT_DIR, ".local_db")
 if not os.path.exists(_LOCAL_DB_DIR):
     os.makedirs(_LOCAL_DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(_LOCAL_DB_DIR, "metadata.db")
-
-# Global settings are stored with this special book_id
-GLOBAL_SETTINGS_BOOK_ID = "__global__"
 
 # ── SQLite Database Layer ──────────────────────────────────────────────────────
 def get_db() -> sqlite3.Connection:
@@ -73,16 +71,16 @@ def init_db():
                 PRIMARY KEY (username, book_id, id)
             );
 
-            CREATE TABLE IF NOT EXISTS book_settings (
-                username TEXT NOT NULL,
-                book_id TEXT NOT NULL,
+            -- A user's settings (API keys, provider configs, system prompts, theme):
+            -- one row per user, shared by every book.
+            CREATE TABLE IF NOT EXISTS user_settings (
+                username TEXT PRIMARY KEY,
                 active_provider TEXT,
                 provider_configs TEXT,
                 custom_system_prompts TEXT,
                 active_system_prompt_id TEXT,
                 theme TEXT,
-                debug_mode INTEGER DEFAULT 0,
-                PRIMARY KEY (username, book_id)
+                debug_mode INTEGER DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -110,33 +108,7 @@ def init_db():
             );
         """)
 
-        # Migrate per-book settings to global settings if not done yet
-        # Settings (API keys, system prompts, theme) are user-level, not per-book
-        existing_global = conn.execute(
-            "SELECT 1 FROM book_settings WHERE book_id = '__global__'"
-        ).fetchone()
-        if not existing_global:
-            # Copy settings from 'default' book (where migration put them) to __global__
-            default_settings = conn.execute(
-                "SELECT * FROM book_settings WHERE book_id = 'default'"
-            ).fetchone()
-            if default_settings:
-                conn.execute(
-                    """INSERT OR IGNORE INTO book_settings
-                       (username, book_id, active_provider, provider_configs,
-                        custom_system_prompts, active_system_prompt_id, theme, debug_mode)
-                       VALUES (?, '__global__', ?, ?, ?, ?, ?, ?)""",
-                    (
-                        default_settings["username"],
-                        default_settings["active_provider"],
-                        default_settings["provider_configs"],
-                        default_settings["custom_system_prompts"],
-                        default_settings["active_system_prompt_id"],
-                        default_settings["theme"],
-                        default_settings["debug_mode"],
-                    )
-                )
-                print("[Init] Migrated settings from 'default' book to global settings.")
+        migrate_user_settings(conn)
 
         # Schema migration: chapter summary metadata (smart context selection).
         # SQLite has no IF NOT EXISTS for columns, so probe table_info first.
@@ -237,3 +209,45 @@ def lookup_last_active_book_id(username: str) -> Optional[str]:
     except Exception as e:
         print(f"[user_state] last-active-book lookup failed for {username!r}: {e}")
         return None
+
+
+_USER_SETTINGS_COLUMNS = ("active_provider", "provider_configs", "custom_system_prompts",
+                          "active_system_prompt_id", "theme", "debug_mode")
+
+
+def migrate_user_settings(conn) -> None:
+    """Fold the old per-book `book_settings` table into `user_settings`, then drop it.
+
+    Settings have been user-level since 2026-06-29, kept in the row with book_id
+    "__global__"; the other rows were copies from the JSON-to-SQLite migration
+    that nothing read. A user who never got a "__global__" row keeps the
+    "default" book's settings, as the old migration would have copied them.
+    """
+    if not conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'book_settings'").fetchone():
+        return
+    cols = ", ".join(_USER_SETTINGS_COLUMNS)
+    for book_id in ("__global__", "default"):
+        conn.execute(f"INSERT OR IGNORE INTO user_settings (username, {cols}) "
+                     f"SELECT username, {cols} FROM book_settings WHERE book_id = ?", (book_id,))
+    dropped = conn.execute("SELECT COUNT(*) FROM book_settings").fetchone()[0]
+    conn.execute("DROP TABLE book_settings")
+    print(f"[Init] Moved settings to user_settings; dropped book_settings ({dropped} rows).")
+
+
+def upsert_user_settings(conn, username: str, body: dict) -> None:
+    """Save the settings fields a book save carries (absent or null ones keep their stored value)."""
+    values = {
+        "active_provider": body.get("activeProvider"),
+        "provider_configs": json.dumps(body["providerConfigs"]) if body.get("providerConfigs") is not None else None,
+        "custom_system_prompts": json.dumps(body["customSystemPrompts"]) if body.get("customSystemPrompts") is not None else None,
+        "active_system_prompt_id": body.get("activeSystemPromptId"),
+        "theme": body.get("theme"),
+        "debug_mode": (1 if body["debugMode"] else 0) if body.get("debugMode") is not None else None,
+    }
+    if all(v is None for v in values.values()):
+        return
+    cols = ", ".join(_USER_SETTINGS_COLUMNS)
+    updates = ", ".join(f"{c} = COALESCE(excluded.{c}, user_settings.{c})" for c in _USER_SETTINGS_COLUMNS)
+    conn.execute(f"INSERT INTO user_settings (username, {cols}) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                 f"ON CONFLICT(username) DO UPDATE SET {updates}",
+                 (username, *(values[c] for c in _USER_SETTINGS_COLUMNS)))

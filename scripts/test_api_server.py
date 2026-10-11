@@ -1945,3 +1945,43 @@ def test_models_endpoint_lists_gemini_text_models_without_closed_or_media_ones(_
             _FakeRequest({"provider": "gemini", "apiKey": "AIza-k", "baseUrl": "https://generativelanguage.googleapis.com/v1beta"})))
     assert result == {"models": ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"]}
     assert seen["headers"] == {"x-goog-api-key": "AIza-k"} and "key=" not in seen["url"]
+
+
+def test_init_db_folds_per_book_settings_into_user_settings(tmp_path):
+    """The per-book settings table goes: each user keeps the "__global__" row (the one read since
+    2026-06-29), or the "default" book's when there was none; the per-book copies are dropped."""
+    import sqlite3
+    db_file = tmp_path / "metadata.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE book_settings (
+            username TEXT NOT NULL, book_id TEXT NOT NULL, active_provider TEXT, provider_configs TEXT,
+            custom_system_prompts TEXT, active_system_prompt_id TEXT, theme TEXT, debug_mode INTEGER DEFAULT 0,
+            PRIMARY KEY (username, book_id));
+        INSERT INTO book_settings VALUES ('alice', '__global__', 'openai', '{"openai":{"apiKey":"k"}}', NULL, NULL, 'dark', 1);
+        INSERT INTO book_settings VALUES ('alice', 'book-1', 'grok', '{"openai":{"apiKey":""}}', NULL, NULL, 'light', 0);
+        INSERT INTO book_settings VALUES ('alice', 'default', 'gemini', NULL, NULL, NULL, NULL, 0);
+        INSERT INTO book_settings VALUES ('bob', 'default', 'anthropic', '{"anthropic":{}}', NULL, NULL, 'light', 0);
+        INSERT INTO book_settings VALUES ('bob', 'book-9', 'grok', NULL, NULL, NULL, NULL, 0);
+    """)
+    conn.commit()
+    conn.close()
+
+    with patch.object(server_db, "DB_PATH", str(db_file)):
+        server_db.init_db()
+        server_db.init_db()  # idempotent
+        conn = server_db.get_db()
+        try:
+            rows = {r["username"]: dict(r) for r in conn.execute("SELECT * FROM user_settings")}
+            assert set(rows) == {"alice", "bob"}
+            assert rows["alice"]["active_provider"] == "openai" and rows["alice"]["theme"] == "dark" and rows["alice"]["debug_mode"] == 1
+            assert rows["bob"]["active_provider"] == "anthropic"
+            assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'book_settings'").fetchone()
+            # Saving updates the user's row; absent fields keep their values.
+            server_db.upsert_user_settings(conn, "alice", {"activeProvider": "anthropic"})
+            server_db.upsert_user_settings(conn, "carol", {"theme": "light"})
+            row = conn.execute("SELECT * FROM user_settings WHERE username = 'alice'").fetchone()
+            assert row["active_provider"] == "anthropic" and row["provider_configs"] == '{"openai":{"apiKey":"k"}}'
+            assert conn.execute("SELECT theme FROM user_settings WHERE username = 'carol'").fetchone()[0] == "light"
+        finally:
+            conn.close()

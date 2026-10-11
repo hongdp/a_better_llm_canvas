@@ -443,6 +443,10 @@ turns other tabs' saves into conflicts. `serverCopies` decides what is
 unchanged, so record it wherever content loads. Writes send `X-Client-Id`.
 `/api/books/{id}/events` streams every change to the book's open tabs
 (`src/store/bookEvents.ts`).
+Settings (provider configs with their keys, system prompts, theme) are the
+user's, not a book's: one `user_settings` row per user, written by every
+book save (`upsert_user_settings`). The old per-book `book_settings` table
+is folded into it and dropped at startup (`migrate_user_settings`).
 A `user_state` table holds each account's **last active book**: every
 book write records it, `/api/auth/session` returns it as
 `lastActiveBookId`, and the client's init opens that book ahead of the
