@@ -41,8 +41,8 @@ long-form work — multi-chapter novels, documentation, anything with structure:
 A release archive contains the built app, so it needs **Python 3.10+** only.
 
 ```bash
-curl -LO https://github.com/hongdp/a_better_llm_canvas/releases/download/v1.0.0/web_canvas-1.0.0.tar.gz
-tar xzf web_canvas-1.0.0.tar.gz && cd web_canvas-1.0.0
+curl -LO https://github.com/hongdp/a_better_llm_canvas/releases/download/v1.1.0/web_canvas-1.1.0.tar.gz
+tar xzf web_canvas-1.1.0.tar.gz && cd web_canvas-1.1.0
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 python3 scripts/api_server.py --serve-dist --port 8080 --storage-dir ./storage
 ```
@@ -108,8 +108,8 @@ Generation always runs on the server, never from the browser.
 1. Download `web_canvas-<version>.tar.gz` and its `.sha256` from
    [Releases](https://github.com/hongdp/a_better_llm_canvas/releases):
    ```bash
-   sha256sum -c web_canvas-1.0.0.tar.gz.sha256
-   tar xzf web_canvas-1.0.0.tar.gz && cd web_canvas-1.0.0
+   sha256sum -c web_canvas-1.1.0.tar.gz.sha256
+   tar xzf web_canvas-1.1.0.tar.gz && cd web_canvas-1.1.0
    ```
 2. Install the server's dependencies (a virtual environment is recommended):
    ```bash
