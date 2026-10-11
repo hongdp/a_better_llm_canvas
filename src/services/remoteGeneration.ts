@@ -141,11 +141,12 @@ export const streamReconnect = { delayMs: 500 }
 function parseThinkingBlock(raw: unknown): ThinkingBlock | null {
   if (!raw || typeof raw !== 'object') return null
   const block = raw as Record<string, unknown>
+  const after = block.afterText === true ? { afterText: true as const } : {}
   if (block.type === 'thinking' && typeof block.thinking === 'string' && typeof block.signature === 'string') {
-    return { type: 'thinking', thinking: block.thinking, signature: block.signature }
+    return { type: 'thinking', thinking: block.thinking, signature: block.signature, ...after }
   }
   if (block.type === 'redacted_thinking' && typeof block.data === 'string') {
-    return { type: 'redacted_thinking', data: block.data }
+    return { type: 'redacted_thinking', data: block.data, ...after }
   }
   return null
 }

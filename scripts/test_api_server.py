@@ -1983,3 +1983,35 @@ def test_each_book_keeps_its_provider_model_effort_and_preset_by_reference(tmp_p
         assert not conn.execute("SELECT 1 FROM book_preferences WHERE book_id = 'book-2'").fetchone()
     finally:
         conn.close()
+
+
+def test_anthropic_thinking_after_the_text_is_replayed_after_the_text():
+    """Claude 5.x thinks again mid-reply. Replaying every block ahead of the text moves the second one,
+    which Anthropic rejects as modified (seen 2026-10-11: "messages.25.content.1")."""
+    job = _anthropic_job([
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"First."}}',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"S1"}}',
+        'data: {"type":"content_block_stop","index":0}',
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Draft."}}',
+        'data: {"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+        'data: {"type":"content_block_delta","index":2,"delta":{"type":"thinking_delta","thinking":"Again."}}',
+        'data: {"type":"content_block_delta","index":2,"delta":{"type":"signature_delta","signature":"S2"}}',
+        'data: {"type":"content_block_stop","index":2}',
+        'data: {"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_1","name":"plan"}}',
+        'data: {"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{}"}}',
+        'data: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":9}}'])
+    assert job.thinking_blocks == [{"type": "thinking", "thinking": "First.", "signature": "S1"},
+                                   {"type": "thinking", "thinking": "Again.", "signature": "S2", "afterText": True}]
+    body = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-sonnet-5-5", "baseUrl": "https://a"},
+        [{"role": "user", "content": "go"},
+         {"role": "assistant", "content": "Draft.", "thinking": job.thinking_blocks,
+          "toolCalls": [{"id": "toolu_1", "name": "plan", "argumentsText": "{}"}]},
+         {"role": "tool", "toolCallId": "toolu_1", "name": "plan", "content": "ok"}])[2]
+    assert body["messages"][1]["content"] == [
+        {"type": "thinking", "thinking": "First.", "signature": "S1"},
+        {"type": "text", "text": "Draft."},
+        {"type": "thinking", "thinking": "Again.", "signature": "S2"},
+        {"type": "tool_use", "id": "toolu_1", "name": "plan", "input": {}},
+    ]
