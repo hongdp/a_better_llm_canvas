@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
-# restart.sh — restart both web-canvas services via systemd
-echo "[restart] Restarting services..."
-systemctl --user restart web-canvas-api web-canvas-vite
+# restart.sh — restart the web-canvas systemd user services (docs/deployment.md)
+set -e
+services="${*:-web-canvas-api web-canvas-vite}"
+echo "[restart] Restarting: $services"
+# shellcheck disable=SC2086
+systemctl --user restart $services
 sleep 4
-echo ""
-systemctl --user status web-canvas-api web-canvas-vite --no-pager | grep -E "Active|Main PID"
-echo ""
-echo "URLs:"
-echo "  https://192.168.0.110:5173/"
-echo "  https://100.124.63.62:5173/"
+# shellcheck disable=SC2086
+systemctl --user status $services --no-pager | grep -E "Active|Main PID"

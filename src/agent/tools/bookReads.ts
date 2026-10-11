@@ -14,7 +14,7 @@ import { chapterOutline, type ToolContext, type ToolResult } from '../types'
 import { stripDiffMarkup } from '../../utils/diff'
 import { htmlToPlainText } from '../../utils/llmContext'
 import { hashContent } from '../../utils/contextLedger'
-import { chapterParagraphs, isPlainChapterHtml, numberedLine } from '../../utils/paragraphs'
+import { chapterParagraphs, isPlainChapterHtml, numberedLine, searchableText } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
 import { ATTACHMENT_RUN_READ_CAP, LIST_SECTION_LINES, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, renderSectionList, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
@@ -203,7 +203,7 @@ export const readTool = defineTool<ReadArgs>({
   aliases: ['read_chapter', 'analyze_book'],
   description:
     'Read chapters of the book, or attachments. Find chapters in the CHAPTER INDEX and pass their numbers. ' +
-    'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency; ' +
+    'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency — an image is "[image]", on its own line or at the end of the paragraph that carries it (grep finds it by that word, and a replaced paragraph keeps its image); ' +
     '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. ' +
     'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. ' +
     `To look at several places at once, pass parts (up to ${MAX_READ_PARTS}), e.g. [{"chapter":"3","paragraphs":"10-16"},{"chapter":"8","paragraphs":"30-36"}]: one call, one step. ` +
@@ -512,7 +512,7 @@ function searchPattern(pattern: string, scope: ScopedChapter[], ctx: ToolContext
     // Paragraph by paragraph, so every hit carries the ¶ number that
     // read_chapter takes as a range — grep, then read around the hit.
     for (const para of chapterParagraphs(acceptedHtml(ctx, chapter.id))) {
-      const text = para.text
+      const text = searchableText(para)
       re.lastIndex = 0
       let m: RegExpExecArray | null
       while ((m = re.exec(text)) !== null) {

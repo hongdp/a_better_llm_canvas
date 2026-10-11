@@ -20,6 +20,13 @@ export interface ChapterParagraph {
   text: string
   /** `item`: one entry of a list — numbered on its own (see paragraphBlocks). */
   kind: 'paragraph' | 'heading' | 'image' | 'item' | 'other'
+  /**
+   * A text paragraph that also carries an image (inline, at its end). Shown
+   * as a trailing "[image]" in the text read and searchable by that word: an
+   * image inside a paragraph used to vanish from the text view, so a model
+   * that grepped for it reported the image lost (2026-10-11).
+   */
+  image?: boolean
 }
 
 const decodeEntities = (s: string) => s
@@ -86,7 +93,7 @@ export function chapterParagraphs(html: string): ChapterParagraph[] {
       : /^<p\b/i.test(block) ? 'paragraph'
       : /^<li\b/i.test(block) ? 'item'
       : 'other'
-    return [{ number, html: block, text, kind }]
+    return [{ number, html: block, text, kind, ...(image && text ? { image: true } : {}) }]
   })
 }
 
@@ -101,7 +108,18 @@ export const chapterChars = (html: string) =>
 /** One numbered line of a text-format read: "¶12 …", headings marked "#", list entries "•". */
 export function numberedLine(p: ChapterParagraph): string {
   if (p.kind === 'image') return `¶${p.number} [image]`
-  return `¶${p.number} ${p.kind === 'heading' ? '# ' : p.kind === 'item' ? '• ' : ''}${p.text.replace(/\n+/g, ' / ')}`
+  return `¶${p.number} ${p.kind === 'heading' ? '# ' : p.kind === 'item' ? '• ' : ''}${searchableText(p).replace(/\n+/g, ' / ')}`
+}
+
+/** A paragraph's text as grep searches it and the read shows it: with "[image]" when it carries one. */
+export function searchableText(p: Pick<ChapterParagraph, 'text' | 'kind' | 'image'>): string {
+  if (p.kind === 'image') return '[image]'
+  return p.image ? `${p.text} [image]` : p.text
+}
+
+/** The image tags of a block, to keep when its text is replaced. */
+export function blockImages(html: string): string[] {
+  return html.match(/<img\b[^>]*>|\{\{IMAGE_PLACEHOLDER_\d+\}\}/gi) ?? []
 }
 
 // ── Paragraphs by position (agentic_chat_loop.md §0.11) ─────────────────────
@@ -350,7 +368,14 @@ export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): Parag
     const span = spans[e.paragraph - 1]
     const at = e.action === 'insert_after' ? span.end : span.start
     const to = e.action === 'replace' || e.action === 'delete' ? span.end : at
-    const text = e.action === 'delete' ? '' : span.kind === 'item' ? asItems(e.html ?? '') : asBlocks(e.html ?? '')
+    let text = e.action === 'delete' ? '' : span.kind === 'item' ? asItems(e.html ?? '') : asBlocks(e.html ?? '')
+    // A replaced paragraph's inline image stays with the new text: the model
+    // rewrites words, and the picture was never in the words it saw.
+    const images = e.action === 'replace' ? blockImages(html.slice(span.start, span.end)) : []
+    if (images.length > 0 && blockImages(text).length === 0) {
+      const closing = /(<\/(?:p|h[1-6]|li|blockquote|div)>)\s*$/i
+      text = closing.test(text) ? text.replace(closing, `${images.join('')}$1`) : `${text}<p>${images.join('')}</p>`
+    }
     return { at, to, text, paragraph: e.paragraph, rank: rank[e.action], order }
   }).sort((a, b) => b.at - a.at || b.paragraph - a.paragraph || a.rank - b.rank || b.order - a.order)
   let out = html

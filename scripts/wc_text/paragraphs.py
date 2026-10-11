@@ -77,7 +77,10 @@ def chapter_paragraphs(html: str) -> List[Dict]:
             kind = "item"
         else:
             kind = "other"
-        out.append({"number": number, "html": block, "text": text, "kind": kind})
+        entry = {"number": number, "html": block, "text": text, "kind": kind}
+        if image and text:
+            entry["image"] = True  # a text paragraph carrying an image (see ChapterParagraph.image)
+        out.append(entry)
     return out
 
 
@@ -89,7 +92,22 @@ def numbered_line(p: Dict) -> str:
     if p["kind"] == "image":
         return f"¶{p['number']} [image]"
     mark = "# " if p["kind"] == "heading" else "• " if p["kind"] == "item" else ""
-    return f"¶{p['number']} {mark}{re.sub(r'\n+', ' / ', p['text'])}"
+    return f"¶{p['number']} {mark}{re.sub(r'\n+', ' / ', searchable_text(p))}"
+
+
+def searchable_text(p: Dict) -> str:
+    """Port of searchableText: the text as grep searches it and the read shows it, with "[image]" when it carries one."""
+    if p["kind"] == "image":
+        return "[image]"
+    return f"{p['text']} [image]" if p.get("image") else p["text"]
+
+
+_BLOCK_IMAGE_RE = re.compile(r"<img\b[^>]*>|\{\{IMAGE_PLACEHOLDER_[0-9]+\}\}", re.I)
+
+
+def block_images(html: str) -> List[str]:
+    """Port of blockImages: the image tags of a block, to keep when its text is replaced."""
+    return _BLOCK_IMAGE_RE.findall(html)
 
 
 # ── Paragraphs by position (agentic_chat_loop.md §0.11) ─────────────────────
@@ -300,6 +318,10 @@ def apply_paragraph_edits(html: str, edits: List[Dict]) -> Dict:
         at = span["end"] if e["action"] == "insert_after" else span["start"]
         to = span["end"] if e["action"] in ("replace", "delete") else at
         text = "" if e["action"] == "delete" else as_items(e.get("html") or "") if span["kind"] == "item" else as_blocks(e.get("html") or "")
+        images = block_images(html[span["start"]:span["end"]]) if e["action"] == "replace" else []
+        if images and not block_images(text):
+            closing = re.compile(r"(</(?:p|h[1-6]|li|blockquote|div)>)\s*$", re.I)
+            text = closing.sub(lambda m: "".join(images) + m.group(1), text, count=1) if closing.search(text) else f"{text}<p>{''.join(images)}</p>"
         splices.append({"at": at, "to": to, "text": text, "paragraph": e["paragraph"], "rank": rank[e["action"]], "order": order})
     splices.sort(key=lambda s: (-s["at"], -s["paragraph"], s["rank"], -s["order"]))
     out = html

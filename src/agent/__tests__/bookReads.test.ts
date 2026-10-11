@@ -184,6 +184,12 @@ describe('grep', () => {
     expect(r.content).toContain('#3 "故事线" — 1 match')
   })
 
+  it('finds an image inside a text paragraph by the word image', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '相册', content: '<p>她对着镜头笑。<img src="pic"></p><p>后面。</p>' }] })
+    const r = await run(grepTool.invoke(call('grep', { pattern: 'image', chapters: [2] }), f.ctx))
+    expect(r.content).toContain('#2 "相册" ¶1: 她对着镜头笑。 [image]')
+  })
+
   it('searches only the chapters named', async () => {
     const r = await run(grepTool.invoke(call('grep', { pattern: '阿青', chapters: [3] }), book().ctx))
     expect(r.content).toContain('#3 "故事线"')

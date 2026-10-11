@@ -472,6 +472,102 @@
      }
     ],
     "output": "¶5 • y"
+   },
+   {
+    "input": [
+     {
+      "number": 6,
+      "html": "<p>words then a picture <img src=\"y\"></p>",
+      "text": "words then a picture",
+      "kind": "paragraph",
+      "image": true
+     }
+    ],
+    "output": "¶6 words then a picture [image]"
+   },
+   {
+    "input": [
+     {
+      "number": 7,
+      "html": "<p>{{IMAGE_PLACEHOLDER_0}}</p>",
+      "text": "",
+      "kind": "image"
+     }
+    ],
+    "output": "¶7 [image]"
+   },
+   {
+    "input": [
+     {
+      "number": 8,
+      "html": "<p>tail {{IMAGE_PLACEHOLDER_1}}</p>",
+      "text": "tail",
+      "kind": "paragraph",
+      "image": true
+     }
+    ],
+    "output": "¶8 tail [image]"
+   }
+  ],
+  "searchable_text": [
+   {
+    "input": [
+     {
+      "number": 1,
+      "html": "<p>t</p>",
+      "text": "t",
+      "kind": "paragraph"
+     }
+    ],
+    "output": "t"
+   },
+   {
+    "input": [
+     {
+      "number": 2,
+      "html": "<p><img src=\"x\"></p>",
+      "text": "",
+      "kind": "image"
+     }
+    ],
+    "output": "[image]"
+   },
+   {
+    "input": [
+     {
+      "number": 3,
+      "html": "<p>t <img src=\"y\"></p>",
+      "text": "t",
+      "kind": "paragraph",
+      "image": true
+     }
+    ],
+    "output": "t [image]"
+   }
+  ],
+  "block_images": [
+   {
+    "input": [
+     "<p>a <img src=\"x\" alt=\"1\"> b <img src=\"y\"></p>"
+    ],
+    "output": [
+     "<img src=\"x\" alt=\"1\">",
+     "<img src=\"y\">"
+    ]
+   },
+   {
+    "input": [
+     "<p>{{IMAGE_PLACEHOLDER_3}} x</p>"
+    ],
+    "output": [
+     "{{IMAGE_PLACEHOLDER_3}}"
+    ]
+   },
+   {
+    "input": [
+     "<p>none</p>"
+    ],
+    "output": []
    }
   ],
   "paragraph_spans_card": [
@@ -1215,6 +1311,75 @@
        "text": "Two b"
       }
      ]
+    }
+   },
+   {
+    "input": [
+     "<p>Intro.</p><p>She smiled. <img src=\"pic\"></p><p>End.</p>",
+     [
+      {
+       "paragraph": 2,
+       "action": "replace",
+       "html": "<p>She grinned.</p>",
+       "startsWith": "She smiled"
+      }
+     ]
+    ],
+    "output": {
+     "ok": true,
+     "html": "<p>Intro.</p><p>She grinned.<img src=\"pic\"></p><p>End.</p>",
+     "paragraphsBefore": 3,
+     "paragraphsAfter": 3,
+     "firstChanged": 2,
+     "applied": 1,
+     "skipped": [],
+     "stale": []
+    }
+   },
+   {
+    "input": [
+     "<p>Intro.</p><p>She smiled. <img src=\"pic\"></p>",
+     [
+      {
+       "paragraph": 2,
+       "action": "replace",
+       "html": "Plain words",
+       "startsWith": "She smiled"
+      }
+     ]
+    ],
+    "output": {
+     "ok": true,
+     "html": "<p>Intro.</p><p>Plain words<img src=\"pic\"></p>",
+     "paragraphsBefore": 2,
+     "paragraphsAfter": 2,
+     "firstChanged": 2,
+     "applied": 1,
+     "skipped": [],
+     "stale": []
+    }
+   },
+   {
+    "input": [
+     "<p>Intro.</p><p>She smiled. <img src=\"pic\"></p>",
+     [
+      {
+       "paragraph": 2,
+       "action": "replace",
+       "html": "<p>Own <img src=\"other\"></p>",
+       "startsWith": "She smiled"
+      }
+     ]
+    ],
+    "output": {
+     "ok": true,
+     "html": "<p>Intro.</p><p>Own <img src=\"other\"></p>",
+     "paragraphsBefore": 2,
+     "paragraphsAfter": 2,
+     "firstChanged": 2,
+     "applied": 1,
+     "skipped": [],
+     "stale": []
     }
    },
    {

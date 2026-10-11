@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { chapterParagraphs, numberedLine } from '../paragraphs'
+import { chapterParagraphs, numberedLine, searchableText, applyParagraphEdits } from '../paragraphs'
 
 describe('chapterParagraphs', () => {
   it('numbers every non-empty top-level block, headings and images included', () => {
@@ -22,5 +22,35 @@ describe('chapterParagraphs', () => {
   it('renders one line per paragraph for a text read', () => {
     const [h, p, img, x, y] = chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>')
     expect([h, p, img, x, y].map(numberedLine)).toEqual(['¶1 # T', '¶2 a & b', '¶3 [image]', '¶4 • x', '¶5 • y'])
+  })
+
+  // An image at the end of a text paragraph used to vanish from the text
+  // view, so a model that grepped for it reported it lost (2026-10-11).
+  it('marks a text paragraph that carries an image, and grep finds it by that word', () => {
+    const [p, mixed] = chapterParagraphs('<p>Plain.</p><p>She smiled at the camera. <img src="pic"></p>')
+    expect(p.image).toBeUndefined()
+    expect(mixed).toMatchObject({ kind: 'paragraph', text: 'She smiled at the camera.', image: true })
+    expect(numberedLine(mixed)).toBe('¶2 She smiled at the camera. [image]')
+    expect(searchableText(mixed)).toBe('She smiled at the camera. [image]')
+    expect(searchableText(p)).toBe('Plain.')
+  })
+})
+
+describe('applyParagraphEdits keeps an inline image', () => {
+  const html = '<p>Intro.</p><p>She smiled. <img src="pic"></p><p>End.</p>'
+
+  it('carries the image into the replacement when the model rewrote only the words', () => {
+    const out = applyParagraphEdits(html, [{ paragraph: 2, action: 'replace', html: '<p>She grinned.</p>', startsWith: 'She smiled' }])
+    expect(out.ok && out.html).toBe('<p>Intro.</p><p>She grinned.<img src="pic"></p><p>End.</p>')
+  })
+
+  it('leaves a replacement that brings its own image alone', () => {
+    const out = applyParagraphEdits(html, [{ paragraph: 2, action: 'replace', html: '<p>Own <img src="other"></p>', startsWith: 'She smiled' }])
+    expect(out.ok && out.html).toBe('<p>Intro.</p><p>Own <img src="other"></p><p>End.</p>')
+  })
+
+  it('still deletes the paragraph, image and all, on delete', () => {
+    const out = applyParagraphEdits(html, [{ paragraph: 2, action: 'delete', startsWith: 'She smiled' }])
+    expect(out.ok && out.html).toBe('<p>Intro.</p><p>End.</p>')
   })
 })

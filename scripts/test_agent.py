@@ -256,6 +256,13 @@ def test_grep_finds_across_chapters_with_paragraph_numbers():
     assert "plain text" in out["content"]
 
 
+def test_grep_and_read_show_an_image_inside_a_text_paragraph():
+    fake = FakeBook("<p>start</p>", chapters=[{"id": "doc-2", "title": "相册", "content": "<p>她对着镜头笑。<img src=\"pic\"></p><p>后面。</p>"}])
+    out = run_tool(BOOK_TOOLS[1], {"pattern": "image", "chapters": ["2"]}, fake.ctx)
+    assert '#2 "相册" ¶1: 她对着镜头笑。 [image]' in out["content"]
+    assert "¶1 她对着镜头笑。 [image]" in run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)["content"]
+
+
 def test_list_chapters_says_when_nothing_changed():
     fake = FakeBook("<p>alpha</p>")
     from wc_agent.types import chapter_outline
