@@ -26,7 +26,7 @@ import {
 } from '../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
-import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
+import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings, collectTextSpans, findTextRangeInSpans, selectionNeedleFromHtml } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, diffTailParts, ledgerBlock, pinnedUpdates, type DynamicContextOptions, type SentTail } from './chat/dynamicContext'
 import { stripDiffMarkup, diffHtml } from '../utils/diff'
 import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
@@ -1644,11 +1644,32 @@ export function useChatLLM({
     if (stepIndex > 0) {
       // keep the range captured at step 0
     } else if (activeEditor && selectedText) {
-      selectionRangeRef.current = {
-        from: activeEditor.state.selection.from,
-        to: activeEditor.state.selection.to
+      // The request is about `selectedText` (the store's copy, what the chat
+      // showed). The editor's live selection is used only when it IS that
+      // text; otherwise the text is found in the document.
+      // Problem: the selection had collapsed to a cursor in paragraph 2 by
+      //   the time the user sent (a stopped turn, a click), while the store
+      //   still held the passage selected earlier. The range captured here
+      //   was [cursor, cursor], and the rewrite of the chapter's last scene
+      //   was inserted into paragraph 2 after "扶", the old ending left in
+      //   place (2026-10-11).
+      // Fix: compare the live selection's text with the needle; on any
+      //   mismatch relocate by text (as a rejoined turn does), and when the
+      //   text is not found leave the range pending — the write then reports
+      //   "the selection is gone" instead of landing at the cursor.
+      const { from, to } = activeEditor.state.selection
+      const needle = selectionNeedleFromHtml(selectedText)
+      const live = from < to ? activeEditor.state.doc.textBetween(from, to, '', '').trim() : ''
+      if (live && live === needle) {
+        selectionRangeRef.current = { from, to }
+        selectionEndRef.current = to
+        pendingSelectionTextRef.current = null
+      } else {
+        const relocated = findTextRangeInSpans(collectTextSpans(activeEditor.state.doc), selectedText)
+        selectionRangeRef.current = relocated
+        selectionEndRef.current = relocated?.to ?? null
+        pendingSelectionTextRef.current = relocated ? null : selectedText
       }
-      selectionEndRef.current = activeEditor.state.selection.to
       originalSelectedTextRef.current = selectedText
     } else {
       selectionRangeRef.current = null

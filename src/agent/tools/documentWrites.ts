@@ -753,9 +753,13 @@ export const replaceSelectionTool = defineTool<{ html: string }>({
     // longer fits means the document changed under the reply — reported, not
     // forced in from the turn's original over whatever is there now.
     if (ctx.document.openId() === target.id) {
-      if (!editor || !range) {
+      if (!editor) {
         return { ok: false, retryable: false, content: 'The selection could not be found in the editor.', trace: '⚠️ selection rewrite: no selection' }
       }
+      // No range after relocating by text: the selected text is not in the
+      // document any more. Reported as gone — the bubble then says so and
+      // offers the rewrite — rather than as a bare "no selection".
+      if (!range) return gone
       if (ctx.editor.replaceRange(range.from, ctx.selection.end() ?? range.to, diffHtml(ctx.selection.originalText(), restored)) === null) return gone
       commitHtml(ctx, target.id, editor.getHTML())
       return done()

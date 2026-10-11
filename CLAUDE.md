@@ -237,7 +237,11 @@ During a chat turn only the chapters the run is writing into are read-only
 polished); the user may edit the rest, and a write to a chapter they changed
 meanwhile is refused and redone (`RunState.known`, agentic_chat_loop.md §0.4).
 A streamed selection rewrite touches the editor only through
-`replaceSelectionWithHtml` (`hooks/chat/selectionReplace.ts`). Never derive an
+`replaceSelectionWithHtml` (`hooks/chat/selectionReplace.ts`). The range it
+rewrites is captured at the run's first step from the editor's live selection
+ONLY when that selection's text is the store's `selectedText` (what the chat
+showed); otherwise the text is located in the document, and a text that is not
+there ends as "the selection is gone" — never an insert at the cursor. Never derive an
 inserted range's end from `slice.size`: ProseMirror wraps an open slice
 inserted at document level (Ctrl+A selects from position 0), so the real
 insert is longer — read the end from `tr.mapping.map(to, 1)`. Its
