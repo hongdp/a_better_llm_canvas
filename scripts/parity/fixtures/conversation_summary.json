@@ -1385,6 +1385,230 @@
      }
     ]
    }
+  ],
+  "build_summary_instruction": [
+   {
+    "input": [
+     null,
+     false
+    ],
+    "output": "STOP — this is not a request to continue the work. This conversation is about to be compacted: the earlier part of it will be replaced by a summary. Summarize the part being replaced, so that you can continue once it is dropped. You will still see the book's current text, the summary and the turns kept verbatim; what the summary leaves out is lost.\n\nWrite the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is \"None\":\n\n1. The user's requests and intent: every explicit request, with its constraints, scope and stated preferences, and what the user turned down.\n2. Decisions about the book: setting, characters (names, relationships, traits), plot points and their order, the chapter plan, what is established as fact in the story.\n3. Voice and style: language, tense, point of view, tone, length targets, and any example the user held up or rejected.\n4. What was done: which chapters were written or changed, what each change was, and how each chapter stands now (finished, draft, awaiting the user's review).\n5. Problems and how they were resolved, including corrections the user made and why.\n6. All user messages, in order, each in one line.\n7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.\n\nPrefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag."
+   },
+   {
+    "input": [
+     "  写 \n 第三章  ",
+     true
+    ],
+    "output": "STOP — this is not a request to continue the work. This conversation is about to be compacted: everything before the turn in which the user wrote \"写 第三章\" will be replaced by a summary; that turn and everything after it stay verbatim. Summarize the part being replaced, so that you can continue once it is dropped. You will still see the book's current text, the summary and the turns kept verbatim; what the summary leaves out is lost. The summary earlier in this conversation is authoritative for the history it covers: carry its still-relevant content forward.\n\nWrite the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is \"None\":\n\n1. The user's requests and intent: every explicit request, with its constraints, scope and stated preferences, and what the user turned down.\n2. Decisions about the book: setting, characters (names, relationships, traits), plot points and their order, the chapter plan, what is established as fact in the story.\n3. Voice and style: language, tense, point of view, tone, length targets, and any example the user held up or rejected.\n4. What was done: which chapters were written or changed, what each change was, and how each chapter stands now (finished, draft, awaiting the user's review).\n5. Problems and how they were resolved, including corrections the user made and why.\n6. All user messages, in order, each in one line.\n7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.\n\nPrefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag."
+   },
+   {
+    "input": [
+     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     false
+    ],
+    "output": "STOP — this is not a request to continue the work. This conversation is about to be compacted: everything before the turn in which the user wrote \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…\" will be replaced by a summary; that turn and everything after it stay verbatim. Summarize the part being replaced, so that you can continue once it is dropped. You will still see the book's current text, the summary and the turns kept verbatim; what the summary leaves out is lost.\n\nWrite the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is \"None\":\n\n1. The user's requests and intent: every explicit request, with its constraints, scope and stated preferences, and what the user turned down.\n2. Decisions about the book: setting, characters (names, relationships, traits), plot points and their order, the chapter plan, what is established as fact in the story.\n3. Voice and style: language, tense, point of view, tone, length targets, and any example the user held up or rejected.\n4. What was done: which chapters were written or changed, what each change was, and how each chapter stands now (finished, draft, awaiting the user's review).\n5. Problems and how they were resolved, including corrections the user made and why.\n6. All user messages, in order, each in one line.\n7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.\n\nPrefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag."
+   },
+   {
+    "input": [
+     "",
+     true
+    ],
+    "output": "STOP — this is not a request to continue the work. This conversation is about to be compacted: the earlier part of it will be replaced by a summary. Summarize the part being replaced, so that you can continue once it is dropped. You will still see the book's current text, the summary and the turns kept verbatim; what the summary leaves out is lost. The summary earlier in this conversation is authoritative for the history it covers: carry its still-relevant content forward.\n\nWrite the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is \"None\":\n\n1. The user's requests and intent: every explicit request, with its constraints, scope and stated preferences, and what the user turned down.\n2. Decisions about the book: setting, characters (names, relationships, traits), plot points and their order, the chapter plan, what is established as fact in the story.\n3. Voice and style: language, tense, point of view, tone, length targets, and any example the user held up or rejected.\n4. What was done: which chapters were written or changed, what each change was, and how each chapter stands now (finished, draft, awaiting the user's review).\n5. Problems and how they were resolved, including corrections the user made and why.\n6. All user messages, in order, each in one line.\n7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.\n\nPrefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag."
+   }
+  ],
+  "plan_conversation_summary_weighted": [
+   {
+    "input": [
+     [
+      {
+       "id": "u0",
+       "role": "user",
+       "content": "u0:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+       "id": "a0",
+       "role": "assistant",
+       "content": "a0:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+       "id": "u1",
+       "role": "user",
+       "content": "u1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+       "weight": 20000
+      },
+      {
+       "id": "a1",
+       "role": "assistant",
+       "content": "a1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+       "id": "u2",
+       "role": "user",
+       "content": "u2:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+       "id": "a2",
+       "role": "assistant",
+       "content": "a2:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+       "id": "u3",
+       "role": "user",
+       "content": "u3:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      {
+       "id": "a3",
+       "role": "assistant",
+       "content": "a3:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      }
+     ],
+     10000,
+     null
+    ],
+    "output": {
+     "cutIndex": 4,
+     "summary": null,
+     "needs": {
+      "previousSummary": null,
+      "messages": [
+       {
+        "id": "u0",
+        "role": "user",
+        "content": "u0:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+       },
+       {
+        "id": "a0",
+        "role": "assistant",
+        "content": "a0:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+       },
+       {
+        "id": "u1",
+        "role": "user",
+        "content": "u1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "weight": 20000
+       },
+       {
+        "id": "a1",
+        "role": "assistant",
+        "content": "a1:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+       }
+      ]
+     },
+     "upToId": "u2"
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "u0",
+       "role": "user",
+       "content": "hi",
+       "weight": 246
+      },
+      {
+       "id": "a0",
+       "role": "assistant",
+       "content": "reply0",
+       "weight": 11
+      },
+      {
+       "id": "u1",
+       "role": "user",
+       "content": "two"
+      },
+      {
+       "id": "a1",
+       "role": "assistant",
+       "content": "reply1"
+      },
+      {
+       "id": "u2",
+       "role": "user",
+       "content": "three",
+       "images": [
+        "data:image/png;base64,AAAA"
+       ],
+       "weight": 31
+      },
+      {
+       "id": "a2",
+       "role": "assistant",
+       "content": "r2",
+       "weight": 7
+      },
+      {
+       "id": "a3",
+       "role": "assistant",
+       "content": "extra"
+      },
+      {
+       "id": "u4",
+       "role": "user",
+       "content": "four"
+      },
+      {
+       "id": "a4",
+       "role": "assistant",
+       "content": "reply4 zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+      }
+     ],
+     400,
+     null
+    ],
+    "output": {
+     "cutIndex": 7,
+     "summary": null,
+     "needs": {
+      "previousSummary": null,
+      "messages": [
+       {
+        "id": "u0",
+        "role": "user",
+        "content": "hi",
+        "weight": 246
+       },
+       {
+        "id": "a0",
+        "role": "assistant",
+        "content": "reply0",
+        "weight": 11
+       },
+       {
+        "id": "u1",
+        "role": "user",
+        "content": "two"
+       },
+       {
+        "id": "a1",
+        "role": "assistant",
+        "content": "reply1"
+       },
+       {
+        "id": "u2",
+        "role": "user",
+        "content": "three",
+        "images": [
+         "data:image/png;base64,AAAA"
+        ],
+        "weight": 31
+       },
+       {
+        "id": "a2",
+        "role": "assistant",
+        "content": "r2",
+        "weight": 7
+       },
+       {
+        "id": "a3",
+        "role": "assistant",
+        "content": "extra"
+       }
+      ]
+     },
+     "upToId": "u4"
+    }
+   }
   ]
  }
 }

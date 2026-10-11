@@ -578,6 +578,13 @@ transport's):
   `run_context` table (scope `chat-summary`). They are caches of the same
   thing and may each call the model once; sharing them was not worth an
   endpoint. A failed summary call falls back to the plain cut for that turn.
+- **Since cache_continuity.md (2026-10-10)**, an agent turn asks for the
+  summary at the end of the live conversation instead — the same request
+  as the turn plus an instruction with these sections, the same tools
+  (none to be called) — so the summarizer reads the conversation from the
+  cache; the separate summarizer above remains the fallback. Earlier turns
+  are replayed from their transcripts, so the history it covers holds the
+  tool calls and results too.
 - **Not built**: Grok Build's two-pass pre-summarization in the background,
   its memory flush before compaction, and a compact system prompt after it —
   the system prompt here is the protocol and stays.

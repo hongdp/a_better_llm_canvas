@@ -583,6 +583,717 @@
      }
     ],
     "output": "Here is the current state of my document.\nCHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n1. \"大纲\" — The outline: main arc, villains.\n2. \"第一章 启程\" [ACTIVE — this is the document you can edit]\n3. \"Chapter 3: The Cat\" — Title The cat sat on the mat. It was warm, and <quiet> \"outside\" 'then'.\n4. \"空章节\" — \n5. \"Long\" — yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy…\n\n\nCURRENT ACTIVE DOCUMENT CONTENT (This is the ONLY document you can update):\n\"\"\"\n<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p>{{IMAGE_PLACEHOLDER_0}}</p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>\n\"\"\""
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "d1",
+       "title": "大纲",
+       "content": "<h1>大纲</h1><p>全书 outline 简述。</p>",
+       "summary": "The outline:\n  main arc,\n villains.  "
+      },
+      {
+       "id": "d2",
+       "title": "第一章 启程",
+       "content": "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>",
+       "summary": ""
+      },
+      {
+       "id": "d3",
+       "title": "Chapter 3: The Cat",
+       "content": "<h2>Title</h2><p>The cat sat on the mat.</p><p>It was <em>warm</em>, and &lt;quiet&gt; &quot;outside&quot; &#39;then&#39;.</p>"
+      },
+      {
+       "id": "d4",
+       "title": "空章节",
+       "content": "",
+       "contentLoaded": false
+      },
+      {
+       "id": "d5",
+       "title": "Long",
+       "content": "<p>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</p>",
+       "summary": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+      }
+     ],
+     "d2",
+     "",
+     {
+      "agentTools": true,
+      "indexOverride": "CHAPTER INDEX: unchanged",
+      "activeOverride": "ACTIVE LINE",
+      "pinnedBlock": "PINS"
+     }
+    ],
+    "output": "Here is the current state of my document.\nCHAPTER INDEX: unchanged\n\nPINS\n\n\nACTIVE LINE"
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "d1",
+       "title": "大纲",
+       "content": "<h1>大纲</h1><p>全书 outline 简述。</p>",
+       "summary": "The outline:\n  main arc,\n villains.  "
+      },
+      {
+       "id": "d2",
+       "title": "第一章 启程",
+       "content": "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>",
+       "summary": ""
+      },
+      {
+       "id": "d3",
+       "title": "Chapter 3: The Cat",
+       "content": "<h2>Title</h2><p>The cat sat on the mat.</p><p>It was <em>warm</em>, and &lt;quiet&gt; &quot;outside&quot; &#39;then&#39;.</p>"
+      },
+      {
+       "id": "d4",
+       "title": "空章节",
+       "content": "",
+       "contentLoaded": false
+      },
+      {
+       "id": "d5",
+       "title": "Long",
+       "content": "<p>xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx</p>",
+       "summary": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+      }
+     ],
+     "d2",
+     "sel",
+     {
+      "agentTools": true,
+      "indexOverride": "",
+      "activeOverride": "ignored",
+      "pinnedBlock": "PINS"
+     }
+    ],
+    "output": "I have selected the following text in the document. I want you to focus your action on this specific text.\nPINS\n\n\nCURRENT SELECTED TEXT:\n\"\"\"\nsel\n\"\"\"\n\nCURRENT ACTIVE DOCUMENT CONTENT (For context):\n\"\"\"\n<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p>{{IMAGE_PLACEHOLDER_0}}</p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>\n\"\"\""
+   }
+  ],
+  "diff_tail_parts": [
+   {
+    "input": [
+     {
+      "index": "CHAPTER INDEX:\n#1 A",
+      "attachments": "ATTACHMENTS:\nA1 x.txt",
+      "active": {
+       "id": "d2",
+       "number": 2,
+       "title": "第二章",
+       "hash": "h2"
+      }
+     },
+     null,
+     [],
+     "t2"
+    ],
+    "output": {
+     "index": "CHAPTER INDEX:\n#1 A",
+     "attachments": "ATTACHMENTS:\nA1 x.txt",
+     "active": null,
+     "sent": {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t2"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t2"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     {
+      "index": "CHAPTER INDEX:\n#1 A",
+      "attachments": "ATTACHMENTS:\nA1 x.txt",
+      "active": {
+       "id": "d2",
+       "number": 2,
+       "title": "第二章",
+       "hash": "h2"
+      }
+     },
+     {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2"
+    ],
+    "output": {
+     "index": "CHAPTER INDEX: unchanged since your last turn (the copy earlier in this conversation is current).",
+     "attachments": "ATTACHMENTS: unchanged since your last turn (the list earlier in this conversation is current).",
+     "active": "CURRENT ACTIVE DOCUMENT: #2 \"第二章\" — unchanged since your last turn; its text is earlier in this conversation. Your writes change this chapter unless you name another.",
+     "sent": {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     {
+      "index": "CHAPTER INDEX:\n#1 A",
+      "attachments": "ATTACHMENTS:\nA1 x.txt",
+      "active": {
+       "id": "d2",
+       "number": 2,
+       "title": "第二章",
+       "hash": "h2"
+      }
+     },
+     {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     },
+     [],
+     "t2"
+    ],
+    "output": {
+     "index": "CHAPTER INDEX:\n#1 A",
+     "attachments": "ATTACHMENTS:\nA1 x.txt",
+     "active": null,
+     "sent": {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t2"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t2"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     {
+      "index": "CHAPTER INDEX:\n#1 B",
+      "attachments": "ATTACHMENTS:\nA1 x.txt",
+      "active": {
+       "id": "d2",
+       "number": 2,
+       "title": "第二章",
+       "hash": "h2"
+      }
+     },
+     {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2"
+    ],
+    "output": {
+     "index": "CHAPTER INDEX:\n#1 B",
+     "attachments": "ATTACHMENTS: unchanged since your last turn (the list earlier in this conversation is current).",
+     "active": "CURRENT ACTIVE DOCUMENT: #2 \"第二章\" — unchanged since your last turn; its text is earlier in this conversation. Your writes change this chapter unless you name another.",
+     "sent": {
+      "index": {
+       "hash": "15ve1sc-19",
+       "turn": "t2"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     {
+      "index": "CHAPTER INDEX:\n#1 A",
+      "attachments": "ATTACHMENTS:\nA1 x.txt",
+      "active": {
+       "id": "d2",
+       "number": 2,
+       "title": "第二章",
+       "hash": "h2b"
+      }
+     },
+     {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2"
+    ],
+    "output": {
+     "index": "CHAPTER INDEX: unchanged since your last turn (the copy earlier in this conversation is current).",
+     "attachments": "ATTACHMENTS: unchanged since your last turn (the list earlier in this conversation is current).",
+     "active": null,
+     "sent": {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2b",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     {
+      "index": "CHAPTER INDEX:\n#1 A",
+      "attachments": "ATTACHMENTS:\nA1 x.txt",
+      "active": {
+       "id": "d3",
+       "number": 2,
+       "title": "第二章",
+       "hash": "h2"
+      }
+     },
+     {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2"
+    ],
+    "output": {
+     "index": "CHAPTER INDEX: unchanged since your last turn (the copy earlier in this conversation is current).",
+     "attachments": "ATTACHMENTS: unchanged since your last turn (the list earlier in this conversation is current).",
+     "active": null,
+     "sent": {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d3",
+       "hash": "h2",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     {
+      "index": "",
+      "attachments": "",
+      "active": null
+     },
+     {
+      "index": {
+       "hash": "16pcuv9-19",
+       "turn": "t1"
+      },
+      "attachments": {
+       "hash": "14l9jz9-21",
+       "turn": "t1"
+      },
+      "active": {
+       "id": "d2",
+       "hash": "h2",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2"
+    ],
+    "output": {
+     "index": "",
+     "attachments": "",
+     "active": null,
+     "sent": {}
+    }
+   }
+  ],
+  "pinned_updates": [
+   {
+    "input": [
+     [
+      {
+       "id": "p1",
+       "number": 1,
+       "title": "Ch1",
+       "content": "<p>one</p>",
+       "hash": "13am6jk-10"
+      }
+     ],
+     [
+      {
+       "id": "p1",
+       "hash": "13am6jk-10"
+      }
+     ],
+     null,
+     [],
+     "t2",
+     {},
+     []
+    ],
+    "output": {
+     "block": "",
+     "sent": {}
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "p1",
+       "number": 1,
+       "title": "Ch1",
+       "content": "<p>one, edited</p>",
+       "hash": "1h6oo71-18"
+      }
+     ],
+     [
+      {
+       "id": "p1",
+       "hash": "13am6jk-10"
+      }
+     ],
+     null,
+     [],
+     "t2",
+     {},
+     []
+    ],
+    "output": {
+     "block": "PINNED CHAPTERS — changed or pinned since the copy you have (each replaces any earlier copy):\n\n--- DOCUMENT: #1 Ch1 (UPDATED — this version replaces the earlier copy of this chapter above; disregard that one) ---\none, edited\n",
+     "sent": {
+      "p1": {
+       "hash": "1h6oo71-18",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "p1",
+       "number": 1,
+       "title": "Ch1",
+       "content": "<p>one, edited</p>",
+       "hash": "1h6oo71-18"
+      }
+     ],
+     [
+      {
+       "id": "p1",
+       "hash": "13am6jk-10"
+      }
+     ],
+     {
+      "p1": {
+       "hash": "1h6oo71-18",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2",
+     {},
+     []
+    ],
+    "output": {
+     "block": "",
+     "sent": {
+      "p1": {
+       "hash": "1h6oo71-18",
+       "turn": "t1"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "p1",
+       "number": 1,
+       "title": "Ch1",
+       "content": "<p>one, edited</p>",
+       "hash": "1h6oo71-18"
+      }
+     ],
+     [
+      {
+       "id": "p1",
+       "hash": "13am6jk-10"
+      }
+     ],
+     {
+      "p1": {
+       "hash": "1h6oo71-18",
+       "turn": "t1"
+      }
+     },
+     [],
+     "t2",
+     {},
+     []
+    ],
+    "output": {
+     "block": "PINNED CHAPTERS — changed or pinned since the copy you have (each replaces any earlier copy):\n\n--- DOCUMENT: #1 Ch1 (UPDATED — this version replaces the earlier copy of this chapter above; disregard that one) ---\none, edited\n",
+     "sent": {
+      "p1": {
+       "hash": "1h6oo71-18",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "p3",
+       "number": 3,
+       "title": "Ch3",
+       "content": "<p>new pin</p>",
+       "hash": "12h3ycp-14"
+      }
+     ],
+     [
+      {
+       "id": "p1",
+       "hash": "h"
+      },
+      {
+       "id": "p2",
+       "hash": "h"
+      }
+     ],
+     null,
+     [],
+     "t2",
+     {
+      "p1": "#1 \"Ch1\""
+     },
+     [
+      "p2"
+     ]
+    ],
+    "output": {
+     "block": "PINNED CHAPTERS — changed or pinned since the copy you have (each replaces any earlier copy):\n\n--- DOCUMENT: #3 Ch3 ---\nnew pin\n\n\nNo longer pinned — disregard the earlier copies of: #1 \"Ch1\" (read them again if you need them).",
+     "sent": {
+      "p3": {
+       "hash": "12h3ycp-14",
+       "turn": "t2"
+      },
+      "p1": {
+       "hash": "unpinned",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     [],
+     [
+      {
+       "id": "p1",
+       "hash": "h"
+      }
+     ],
+     {
+      "p1": {
+       "hash": "unpinned",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2",
+     {
+      "p1": "#1 \"Ch1\""
+     },
+     []
+    ],
+    "output": {
+     "block": "",
+     "sent": {
+      "p1": {
+       "hash": "unpinned",
+       "turn": "t1"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "p1",
+       "number": 1,
+       "title": "Ch1",
+       "content": "<p>one</p>",
+       "hash": "13am6jk-10"
+      }
+     ],
+     [
+      {
+       "id": "p1",
+       "hash": "13am6jk-10"
+      }
+     ],
+     {
+      "p1": {
+       "hash": "unpinned",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2",
+     {},
+     []
+    ],
+    "output": {
+     "block": "PINNED CHAPTERS — changed or pinned since the copy you have (each replaces any earlier copy):\n\n--- DOCUMENT: #1 Ch1 (UPDATED — this version replaces the earlier copy of this chapter above; disregard that one) ---\none\n",
+     "sent": {
+      "p1": {
+       "hash": "13am6jk-10",
+       "turn": "t2"
+      }
+     }
+    }
+   },
+   {
+    "input": [
+     [],
+     [],
+     {
+      "p5": {
+       "hash": "x",
+       "turn": "t1"
+      }
+     },
+     [
+      "t1"
+     ],
+     "t2",
+     {},
+     []
+    ],
+    "output": {
+     "block": "No longer pinned — disregard the earlier copies of: p5 (read them again if you need them).",
+     "sent": {
+      "p5": {
+       "hash": "unpinned",
+       "turn": "t2"
+      }
+     }
+    }
    }
   ]
  }

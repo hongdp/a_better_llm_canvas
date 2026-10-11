@@ -2,7 +2,7 @@
 import re
 from typing import Any, Dict, List, Optional
 
-from .jsstr import js_trim
+from .jsstr import JS_WS, js_trim
 from .llm_context import IMAGE_PLACEHOLDER_TEXT
 
 KEEP_FRACTION = 0.4
@@ -11,9 +11,7 @@ SUMMARY_INPUT_CHARS = 60_000
 SUMMARY_MESSAGE_CHARS = 4_000
 SUMMARY_MIN_KEEP = 2
 
-SUMMARY_SYSTEM_PROMPT = """You summarize the earlier part of a conversation between a writer and an assistant that edits the writer's book, so that the assistant can continue after those earlier turns are dropped from its context. The assistant will see the book's current text, this summary and the most recent turns verbatim; what you leave out is lost.
-
-Write the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is "None":
+_SUMMARY_FORMAT = """Write the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is "None":
 
 1. The user's requests and intent: every explicit request, with its constraints, scope and stated preferences, and what the user turned down.
 2. Decisions about the book: setting, characters (names, relationships, traits), plot points and their order, the chapter plan, what is established as fact in the story.
@@ -21,9 +19,32 @@ Write the summary inside a single <summary>...</summary> block with exactly thes
 4. What was done: which chapters were written or changed, what each change was, and how each chapter stands now (finished, draft, awaiting the user's review).
 5. Problems and how they were resolved, including corrections the user made and why.
 6. All user messages, in order, each in one line.
-7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.
+7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user."""
 
-A prior summary, when given, is authoritative for the history it covers: carry its still-relevant content forward. Prefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag."""
+_SUMMARY_RULES = ("Prefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. "
+                  "Do not call tools, do not add an analysis before the block, and write nothing after the closing tag.")
+
+SUMMARY_SYSTEM_PROMPT = ("You summarize the earlier part of a conversation between a writer and an assistant that edits the writer's book, "
+                         "so that the assistant can continue after those earlier turns are dropped from its context. The assistant will see "
+                         "the book's current text, this summary and the most recent turns verbatim; what you leave out is lost.\n\n"
+                         f"{_SUMMARY_FORMAT}\n\nA prior summary, when given, is authoritative for the history it covers: carry its "
+                         f"still-relevant content forward. {_SUMMARY_RULES}")
+
+_JS_WS_RUN = re.compile(f"[{re.escape(JS_WS)}\u2028\u2029]+")
+
+
+def build_summary_instruction(kept_from: Optional[str], has_prior: bool) -> str:
+    """The summary asked for at the end of the live conversation (cache_continuity.md §3.4)."""
+    words = js_trim(_JS_WS_RUN.sub(" ", kept_from or ""))
+    preview = f"{words[:80]}…" if len(words) > 80 else words
+    scope = (f'everything before the turn in which the user wrote "{preview}" will be replaced by a summary; '
+             "that turn and everything after it stay verbatim") if preview else "the earlier part of it will be replaced by a summary"
+    prior = (" The summary earlier in this conversation is authoritative for the history it covers: carry its still-relevant content forward."
+             if has_prior else "")
+    return (f"STOP — this is not a request to continue the work. This conversation is about to be compacted: {scope}. "
+            "Summarize the part being replaced, so that you can continue once it is dropped. You will still see the book's current text, "
+            f"the summary and the turns kept verbatim; what the summary leaves out is lost.{prior}\n\n{_SUMMARY_FORMAT}\n\n{_SUMMARY_RULES}")
+
 
 _SUMMARY_OPEN = "<conversation_summary>"
 _SUMMARY_CLOSE = "</conversation_summary>"
@@ -32,6 +53,8 @@ _SUMMARY_TAG_RE = re.compile(r"</?summary>", re.I)
 
 
 def _weight(m: Dict[str, Any]) -> int:
+    if m.get("weight") is not None:
+        return int(m["weight"])
     if js_trim(m.get("content") or ""):
         return len(m["content"])
     return len(IMAGE_PLACEHOLDER_TEXT) if m.get("images") else 0

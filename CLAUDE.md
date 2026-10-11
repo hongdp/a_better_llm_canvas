@@ -98,6 +98,7 @@ src/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
     llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
     conversationSummary.ts  # History past the window as a fixed-section note (§0.9)
+    turnTranscripts.ts    # Earlier turns replayed as sent (cache_continuity.md §3.1)
     attachments.ts  webText.ts  # Attachment paragraphs/sections/index/parts; web result text (parity)
   i18n/                   # en.ts / zh.ts translation bundles + index.ts hook
   parity/__tests__/       # TS↔Python parity cases; checks fixtures are current, or writes them
@@ -326,7 +327,19 @@ escapes its own tag in quoted text. Both loops (`src/agent`, `wc_agent`)
 carry every one of these. History past the budget is **summarized**, not
 cut (`utils/conversationSummary`, agentic_chat_loop.md §0.9): the dropped
 prefix becomes a fixed-section note placed after the ledger, refreshed only
-when the cut moves past it; each transport keeps its own copy. Within a run,
+when the cut moves past it; each transport keeps its own copy.
+**Across turns the request only grows** (docs/features/cache_continuity.md,
+agent turns): a finished turn's **transcript** (`AgentRun.transcript()`:
+its final user message as sent, every step, the step that ended it) is
+stored — `turn_transcripts` on the server, tab memory otherwise — and the
+next turn replays it in place of the collapsed pair
+(`utils/turnTranscripts`). The tail sends the chapter index, active
+chapter and attachments list in full only when the copy the model has is
+stale or not replayed (`diffTailParts`); the ledger is **frozen** between
+summaries and pin changes go into the tail (`pinnedUpdates`); a summary is
+asked for at the end of the live conversation with the turn's tools.
+Never put anything per-turn ahead of the history, and never rebuild a
+replayed message. Within a run,
 old read results are elided in place before a step that would not fit the
 window (`agent/runCompaction`, `promptTokenLimit`; the latest step's results
 are never touched), sized by the last step's measured prompt tokens.

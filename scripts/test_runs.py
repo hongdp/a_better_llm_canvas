@@ -165,6 +165,33 @@ def test_a_second_request_queues_and_sees_the_first_turn_in_its_history(book, mo
     assert any("第一轮写完了" in m["content"] for m in assistant_turns), [m["content"][:40] for m in history]
 
 
+def test_the_next_turn_replays_the_finished_turn_and_extends_its_last_request(book, monkeypatch):
+    # cache_continuity.md §3.1: the transcript is stored when the run ends and replayed verbatim.
+    provider = Scripted([{"text": "", "calls": [("c1", "read", '{"chapters":["2"]}')]}, "读完了。<doc_status>unchanged</doc_status>",
+                         "好的。<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        first = book.submit("alice", "book-1", request("A"))
+        await settle(first)
+        second = book.submit("alice", "book-1", request("B", history=[
+            {"id": "u-A", "role": "user", "content": "A"}, {"id": "a-A", "role": "assistant", "content": "读完了。"}]))
+        await settle(second)
+        return first, second
+    first, second = asyncio.run(main())
+    assert first.status == "done" and second.status == "done", (first.error, second.error)
+    stored = server_context.load_transcripts("alice", "book-1", ["a-A"])["a-A"]
+    assert stored["userMessageId"] == "u-A"
+    assert [m["role"] for m in stored["messages"]] == ["user", "assistant", "tool", "assistant"]
+    last_of_first = provider.requests[1]["messages"]
+    turn_two = provider.requests[2]["messages"]
+    assert turn_two[: len(last_of_first)] == last_of_first
+    assert turn_two[len(last_of_first)]["content"] == "读完了。<doc_status>unchanged</doc_status>"
+    # The active chapter's text is in the replayed turn; the index changed (chapter 2 was read) and goes in full.
+    assert 'CURRENT ACTIVE DOCUMENT: #1 "Chapter 1" — unchanged since your last turn' in turn_two[-1]["content"]
+    assert "read earlier, not in context" in turn_two[-1]["content"]
+
+
 def test_stop_aborts_the_step_and_holds_the_queue(book, monkeypatch):
     provider = Scripted(["<canvas><p>never</p></canvas>"])
     provider.gate = asyncio.Event()

@@ -28,7 +28,8 @@ import {
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
 import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
-import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, type RenderableDoc, type DynamicContextOptions } from '../../hooks/chat/dynamicContext'
+import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, diffTailParts, pinnedUpdates, type RenderableDoc, type DynamicContextOptions, type TailParts, type SentTail } from '../../hooks/chat/dynamicContext'
+import { planHistoryUnits, summarizableHistory, historyWindow, transcriptWeight, type HistoryEntry, type TurnTranscript } from '../../utils/turnTranscripts'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
 import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
 import { buildChatSystemPrompt, promptTexts } from '../../utils/systemPrompt'
@@ -49,7 +50,7 @@ import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } fr
 import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type PlanItem } from '../../utils/plan'
 import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
-import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
+import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
 import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
 import { renderSearchResults, renderWebPage, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
 import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
@@ -115,6 +116,29 @@ const SUMMARY_TURNS = (n: number, chars = 1000): SummarizableMessage[] =>
     const id = `${i % 2 === 0 ? 'u' : 'a'}${Math.floor(i / 2)}`
     return { id, role: i % 2 === 0 ? 'user' : 'assistant', content: `${id}:` + 'x'.repeat(Math.max(0, chars - id.length - 1)) }
   })
+
+/** A history with transcripts for three of its turns: one matching, one naming another user message, one with images. */
+const TT_ENTRIES: HistoryEntry[] = [
+  { id: 'u0', role: 'user', content: 'hi' }, { id: 'a0', role: 'assistant', content: 'reply0', responseItems: [{ type: 'reasoning', id: 'r0' }] },
+  { id: 'u1', role: 'user', content: 'two' }, { id: 'a1', role: 'assistant', content: 'reply1' },
+  { id: 'u2', role: 'user', content: 'three', images: ['data:image/png;base64,AAAA'] }, { id: 'a2', role: 'assistant', content: 'r2' },
+  { id: 'a3', role: 'assistant', content: 'extra' }, { id: 'u4', role: 'user', content: 'four' }, { id: 'a4', role: 'assistant', content: 'reply4 ' + 'z'.repeat(300) }
+]
+const TT: Record<string, TurnTranscript> = {
+  a0: { userMessageId: 'u0', messages: [
+    { role: 'user', content: 'TAIL0\n\nUSER REQUEST:\nhi', cacheHint: true },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read', argumentsText: '{"chapters":["1"]}' }], responseItems: [{ type: 'reasoning', id: 'r0' }] },
+    { role: 'tool', toolCallId: 'c1', name: 'read', content: 'TEXT ' + 'w'.repeat(200) },
+    { role: 'assistant', content: 'reply0 full' }
+  ] },
+  a1: { userMessageId: 'zz', messages: [{ role: 'user', content: 'other' }, { role: 'assistant', content: 'x' }] },
+  a2: { userMessageId: 'u2', messages: [{ role: 'user', content: 'TAIL2\n\nUSER REQUEST:\nthree', images: ['data:image/png;base64,AAAA'] }, { role: 'user', content: 'steer' }, { role: 'assistant', content: 'r2 done' }] },
+  a4: { userMessageId: 'u4', messages: [] }
+}
+const TT_UNITS = planHistoryUnits(TT_ENTRIES, TT)
+const TAIL_FULL: TailParts = { index: 'CHAPTER INDEX:\n#1 A', attachments: 'ATTACHMENTS:\nA1 x.txt', active: { id: 'd2', number: 2, title: '第二章', hash: 'h2' } }
+const SENT_T1: SentTail = { index: { hash: hashContent('CHAPTER INDEX:\n#1 A'), turn: 't1' }, attachments: { hash: hashContent('ATTACHMENTS:\nA1 x.txt'), turn: 't1' }, active: { id: 'd2', hash: 'h2', turn: 't1' } }
+const PIN = (id: string, n: number, content: string) => ({ id, number: n, title: `Ch${n}`, content, hash: hashContent(content) })
 
 const run = <A extends unknown[]>(fn: (...a: A) => unknown, inputs: A[], post: (out: unknown) => unknown = o => o): Case[] =>
   // `undefined` would vanish from the JSON; Python's None is JSON null.
@@ -469,7 +493,24 @@ const MODULES: Module[] = [
       build_volatile_tail: run(volatileTail, [
         [BOOK, 'd2', ''], [BOOK, 'd2', '<p>选中 <img src="s"> 文本</p>', { agentTools: true, markers: { d1: 'in context' } }], [[BOOK[1]], 'd2', ''], [BOOK, 'zz', ''],
         [[{ ...BOOK[1], content: DIFFED }, BOOK[0]], 'd2', '', { agentTools: true }], [BOOK, 'd3', 'sel only'],
-        [BOOK, 'd2', '', { agentTools: true, activeCopyOlder: true }], [BOOK, 'd2', '', { activeCopyOlder: true }]
+        [BOOK, 'd2', '', { agentTools: true, activeCopyOlder: true }], [BOOK, 'd2', '', { activeCopyOlder: true }],
+        [BOOK, 'd2', '', { agentTools: true, indexOverride: 'CHAPTER INDEX: unchanged', activeOverride: 'ACTIVE LINE', pinnedBlock: 'PINS' }],
+        [BOOK, 'd2', 'sel', { agentTools: true, indexOverride: '', activeOverride: 'ignored', pinnedBlock: 'PINS' }]
+      ]),
+      diff_tail_parts: run(diffTailParts, [
+        [TAIL_FULL, null, [], 't2'], [TAIL_FULL, SENT_T1, ['t1'], 't2'], [TAIL_FULL, SENT_T1, [], 't2'],
+        [{ ...TAIL_FULL, index: 'CHAPTER INDEX:\n#1 B' }, SENT_T1, ['t1'], 't2'], [{ ...TAIL_FULL, active: { ...TAIL_FULL.active!, hash: 'h2b' } }, SENT_T1, ['t1'], 't2'],
+        [{ ...TAIL_FULL, active: { ...TAIL_FULL.active!, id: 'd3' } }, SENT_T1, ['t1'], 't2'], [{ index: '', attachments: '', active: null }, SENT_T1, ['t1'], 't2']
+      ]),
+      pinned_updates: run(pinnedUpdates, [
+        [[PIN('p1', 1, '<p>one</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], null, [], 't2', {}, []],
+        [[PIN('p1', 1, '<p>one, edited</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], null, [], 't2', {}, []],
+        [[PIN('p1', 1, '<p>one, edited</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], { p1: { hash: hashContent('<p>one, edited</p>'), turn: 't1' } }, ['t1'], 't2', {}, []],
+        [[PIN('p1', 1, '<p>one, edited</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], { p1: { hash: hashContent('<p>one, edited</p>'), turn: 't1' } }, [], 't2', {}, []],
+        [[PIN('p3', 3, '<p>new pin</p>')], [{ id: 'p1', hash: 'h' }, { id: 'p2', hash: 'h' }], null, [], 't2', { p1: '#1 "Ch1"' }, ['p2']],
+        [[], [{ id: 'p1', hash: 'h' }], { p1: { hash: 'unpinned', turn: 't1' } }, ['t1'], 't2', { p1: '#1 "Ch1"' }, []],
+        [[PIN('p1', 1, '<p>one</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], { p1: { hash: 'unpinned', turn: 't1' } }, ['t1'], 't2', {}, []],
+        [[], [], { p5: { hash: 'x', turn: 't1' } }, ['t1'], 't2', {}, []]
       ])
     }
   },
@@ -725,7 +766,24 @@ const MODULES: Module[] = [
         ['P', Array.from({ length: 40 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? 'assistant' : 'user', content: `m${i}:` + 'y'.repeat(4_600) }) as SummarizableMessage)]
       ]),
       parse_summary_reply: run(parseSummaryReply, [['Here.\n<summary>\n1. x\n</summary>\ndone'], ['plain'], ['<summary>  </summary>'], [''], ['<SUMMARY>a</SUMMARY>']]),
-      summary_messages: run(summaryMessages, [['NOTE'], ['two\nlines']])
+      summary_messages: run(summaryMessages, [['NOTE'], ['two\nlines']]),
+      build_summary_instruction: run(buildSummaryInstruction, [[null, false], ['  写 \n 第三章  ', true], ['x'.repeat(100), false], ['', true]]),
+      plan_conversation_summary_weighted: run(planConversationSummary, [
+        [SUMMARY_TURNS(4, 100).map((m, i) => (i === 2 ? { ...m, weight: 20_000 } : m)), 10_000, null],
+        [summarizableHistory(TT_ENTRIES, TT_UNITS, TT), 400, null]
+      ])
+    }
+  },
+  {
+    module: 'turn_transcripts',
+    cases: {
+      plan_history_units: run(planHistoryUnits, [[TT_ENTRIES, TT], [TT_ENTRIES, {}], [[], TT]]),
+      transcript_weight: run(transcriptWeight, [[TT.a0.messages], [[]]]),
+      summarizable_history: run(summarizableHistory, [[TT_ENTRIES, TT_UNITS, TT], [TT_ENTRIES, planHistoryUnits(TT_ENTRIES, {}), {}]]),
+      history_window: run(historyWindow, [
+        [TT_ENTRIES, TT_UNITS, TT, 0, null], [TT_ENTRIES, TT_UNITS, TT, 2, null], [TT_ENTRIES, TT_UNITS, TT, 0, 400],
+        [TT_ENTRIES, TT_UNITS, TT, 0, 10], [TT_ENTRIES, planHistoryUnits(TT_ENTRIES, {}), {}, 0, 30], [TT_ENTRIES, TT_UNITS, TT, 6, null]
+      ])
     }
   },
   {

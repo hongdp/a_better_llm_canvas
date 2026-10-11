@@ -225,7 +225,7 @@ describe('finding and reading a chapter (D6)', () => {
     h.unmount()
   })
 
-  it('carries what the turn read into the next turn as a trace line, not as text (pinned_context.md)', async () => {
+  it('replays what the turn read into the next turn as it was sent, and adds nothing to the ledger (cache_continuity.md)', async () => {
     responses.push({ text: '', toolCalls: [{ index: 0, id: 'r1', name: 'read_chapter', argumentsText: '{"chapters":[3]}' }] })
     responses.push('大纲讲了两章。\n<doc_status>unchanged</doc_status>')
     responses.push('好。\n<doc_status>unchanged</doc_status>')
@@ -234,9 +234,11 @@ describe('finding and reading a chapter (D6)', () => {
     await send(h, '继续')
 
     const turn2 = calls[2]
-    expect(turn2.some(m => m.role === 'assistant' && m.content.includes('[Tools used in this turn:'))).toBe(true)
-    // A read is not carried into the next turn's context: only pins are. The
-    // model reads it again when it needs it, and the index says it is not here (D8).
+    // The previous turn as it was sent: its call and its result, not a trace line.
+    expect(turn2.slice(0, calls[1].length)).toEqual(calls[1])
+    expect(turn2.some(m => m.role === 'tool' && m.toolCallId === 'r1')).toBe(true)
+    expect(turn2.some(m => m.content.includes('[Tools used in this turn:'))).toBe(false)
+    // A read does not join the ledger: only pins do (pinned_context.md).
     expect(turn2.some(m => m.content.includes('REFERENCED CHAPTERS'))).toBe(false)
     expect(turn2.at(-1)?.content).toContain('3. "故事线" [read earlier, not in context]')
     h.unmount()
@@ -261,15 +263,18 @@ describe('a chapter the user revised between turns (D8)', () => {
     useAppStore.getState().updateDocument('doc-2', { content: revised })
     await send(h, '写第一章')
 
+    // The ledger is frozen between summaries: the new text goes in the turn's tail (cache_continuity.md §3.3).
     const turn3 = calls[3]
-    expect(turn3.some(m => m.content.includes('REFERENCED CHAPTERS') && m.content.includes('阿青被迫离开村子'))).toBe(true)
+    expect(turn3.some(m => m.content.includes('REFERENCED CHAPTERS') && m.content.includes('阿青被迫离开村子'))).toBe(false)
+    expect(turn3.at(-1)?.content).toContain('PINNED CHAPTERS — changed or pinned since the copy you have')
+    expect(turn3.at(-1)?.content).toContain('阿青被迫离开村子')
     expect(turn3.at(-1)?.content).toContain('3. "故事线" [in context — CHANGED since you last saw it')
     h.unmount()
   })
 })
 
-describe('the ledger when a chapter in it is edited (append-update)', () => {
-  it('keeps every earlier byte and appends the new version, instead of re-sending what followed it', async () => {
+describe('the ledger when a chapter in it is edited (frozen, cache_continuity.md §3.3)', () => {
+  it('keeps every byte and sends the new version in the turn\'s tail', async () => {
     const body = (tag: string) => `<p>${tag}${'。'.repeat(400)}</p>`
     useAppStore.setState({
       documents: [
@@ -293,9 +298,9 @@ describe('the ledger when a chapter in it is edited (append-update)', () => {
     await send(h, '再看看')
 
     const ledger2 = calls[1].find(m => m.content.startsWith('REFERENCED CHAPTERS'))?.content ?? ''
-    expect(ledger2.startsWith(ledger1)).toBe(true)
-    expect(ledger2.slice(ledger1.length)).toContain(`${first} (UPDATED — this version replaces the earlier copy`)
-    expect(ledger2.slice(ledger1.length)).toContain('改过了')
+    expect(ledger2).toBe(ledger1)
+    expect(calls[1].at(-1)?.content).toMatch(new RegExp(`#\\d+ ${first} \\(UPDATED — this version replaces the earlier copy`))
+    expect(calls[1].at(-1)?.content).toContain('改过了')
     // …and the index says so too (D8).
     expect(calls[1].at(-1)?.content).toContain(`"${first}" [in context — CHANGED`)
     h.unmount()
@@ -673,9 +678,10 @@ describe('grok keeps its reasoning from turn to turn', () => {
 
     responses.push('是的。\n<doc_status>unchanged</doc_status>')
     await send(h, '秘密是什么？')
-    // Not the ledger's "Understood…" prefix message: the previous turn's reply.
+    // Not the ledger's "Understood…" prefix message: the previous turn's reply,
+    // replayed from its transcript with its items as returned (cache_continuity.md §3.1).
     const previous = calls[1].find(m => m.role === 'assistant' && m.content.includes('好的，记下了。'))
-    expect(previous?.responseItems).toEqual([R(1)])
+    expect(previous?.responseItems).toEqual([R(1), { type: 'message', id: 'msg_1' }])
     h.unmount()
   })
 

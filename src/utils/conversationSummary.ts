@@ -16,6 +16,11 @@ export interface SummarizableMessage {
   role: 'user' | 'assistant'
   content: string
   images?: string[]
+  /**
+   * What the message costs in the window when that is not its text: a turn
+   * replayed from its transcript (turnTranscripts, cache_continuity.md §3.1).
+   */
+  weight?: number
 }
 
 /** What a transport keeps between turns: the note and the first message kept verbatim after it. */
@@ -49,9 +54,8 @@ export const SUMMARY_MESSAGE_CHARS = 4_000
 /** Messages kept verbatim whatever the budget (trimHistoryForContext's minKeepMessages). */
 export const SUMMARY_MIN_KEEP = 2
 
-export const SUMMARY_SYSTEM_PROMPT = `You summarize the earlier part of a conversation between a writer and an assistant that edits the writer's book, so that the assistant can continue after those earlier turns are dropped from its context. The assistant will see the book's current text, this summary and the most recent turns verbatim; what you leave out is lost.
-
-Write the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is "None":
+/** The note's fixed sections: the same for the summarizer and the in-conversation instruction. */
+const SUMMARY_FORMAT = `Write the summary inside a single <summary>...</summary> block with exactly these numbered sections, each heading present even when its content is "None":
 
 1. The user's requests and intent: every explicit request, with its constraints, scope and stated preferences, and what the user turned down.
 2. Decisions about the book: setting, characters (names, relationships, traits), plot points and their order, the chapter plan, what is established as fact in the story.
@@ -59,15 +63,42 @@ Write the summary inside a single <summary>...</summary> block with exactly thes
 4. What was done: which chapters were written or changed, what each change was, and how each chapter stands now (finished, draft, awaiting the user's review).
 5. Problems and how they were resolved, including corrections the user made and why.
 6. All user messages, in order, each in one line.
-7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.
+7. Unfinished work and open questions: what the user asked for that is not done, and what is waiting on the user.`
 
-A prior summary, when given, is authoritative for the history it covers: carry its still-relevant content forward. Prefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag.`
+const SUMMARY_RULES = 'Prefer tight prose and short references over verbatim quotes; names, titles and numbers verbatim. Do not call tools, do not add an analysis before the block, and write nothing after the closing tag.'
+
+export const SUMMARY_SYSTEM_PROMPT = `You summarize the earlier part of a conversation between a writer and an assistant that edits the writer's book, so that the assistant can continue after those earlier turns are dropped from its context. The assistant will see the book's current text, this summary and the most recent turns verbatim; what you leave out is lost.
+
+${SUMMARY_FORMAT}
+
+A prior summary, when given, is authoritative for the history it covers: carry its still-relevant content forward. ${SUMMARY_RULES}`
+
+/**
+ * The summary asked for at the end of the live conversation
+ * (cache_continuity.md §3.4): the same request as the turn, plus this
+ * message, so the summarizer reads the conversation from the cache.
+ * `keptFrom` is the user's words in the first turn kept verbatim.
+ */
+export function buildSummaryInstruction(keptFrom: string | null, hasPrior: boolean): string {
+  const words = (keptFrom ?? '').replace(/\s+/g, ' ').trim()
+  const preview = words.length > 80 ? `${words.slice(0, 80)}…` : words
+  const scope = preview
+    ? `everything before the turn in which the user wrote "${preview}" will be replaced by a summary; that turn and everything after it stay verbatim`
+    : 'the earlier part of it will be replaced by a summary'
+  const prior = hasPrior ? ' The summary earlier in this conversation is authoritative for the history it covers: carry its still-relevant content forward.' : ''
+  return `STOP — this is not a request to continue the work. This conversation is about to be compacted: ${scope}. Summarize the part being replaced, so that you can continue once it is dropped. You will still see the book's current text, the summary and the turns kept verbatim; what the summary leaves out is lost.${prior}
+
+${SUMMARY_FORMAT}
+
+${SUMMARY_RULES}`
+}
 
 const SUMMARY_OPEN = '<conversation_summary>'
 const SUMMARY_CLOSE = '</conversation_summary>'
 
 /** The chars a message costs in the window (trimHistoryForContext's accounting). */
 function weight(m: SummarizableMessage): number {
+  if (m.weight !== undefined) return m.weight
   if (m.content.trim()) return m.content.length
   return m.images && m.images.length > 0 ? IMAGE_PLACEHOLDER_TEXT.length : 0
 }
