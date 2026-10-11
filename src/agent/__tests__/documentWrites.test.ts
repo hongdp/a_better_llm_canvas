@@ -502,13 +502,28 @@ describe('rename_chapter', () => {
   const rename = (f: ReturnType<typeof fakeContext>, args: Record<string, unknown>) =>
     Promise.resolve(renameChapterTool.invoke(call('rename_chapter', args), f.ctx))
 
-  it('renames, and says when the first heading still reads the old title', async () => {
+  it('renames, and carries a first heading that read the old title along', async () => {
     const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第二章 入城', content: '<h1>第二章 入城</h1><p>x</p>' }] })
     const r = await rename(f, { chapter: 2, title: '第二章 进城' })
     expect(r).toMatchObject({ ok: true, trace: '🏷 renamed #2 "第二章 入城" → "第二章 进城"' })
-    expect(r.content).toContain('Its first heading still reads "第二章 入城"')
-    expect(f.book()[1].title).toBe('第二章 进城')
+    expect(r.content).toContain('now reads the new one')
+    expect(f.book()[1]).toMatchObject({ title: '第二章 进城', content: '<h1>第二章 进城</h1><p>x</p>' })
     expect(f.ctx.run.touched.get('doc-2')?.kind).toBe('renamed')
+  })
+
+  it('leaves a heading that is not the old title, and says what it reads', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第九章', content: '<h1>序幕</h1><p>y</p>' }] })
+    const r = await rename(f, { chapter: 2, title: '第八章' })
+    expect(r.content).toContain('Its first heading still reads "序幕"')
+    expect(f.book()[1].content).toBe('<h1>序幕</h1><p>y</p>')
+  })
+
+  it('gives the run\'s working copy the new heading too, so its next write keeps it', async () => {
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: '第八章 酒', content: '<h1>第八章 酒</h1><p>旧。</p>' }] })
+    await readChapterTool.invoke(call('read_chapter', { chapters: ['2'], format: 'html' }), f.ctx)
+    await rename(f, { chapter: 2, title: '第七章 酒' })
+    await editDocumentTool.invoke(call('edit_document', { chapter: '2', edits: [{ search: '<p>旧。</p>', replace: '<p>新。</p>' }] }), f.ctx)
+    expect(stripDiffMarkup(f.book()[1].content)).toBe('<h1>第七章 酒</h1><p>新。</p>')
   })
 
   it('refuses a title another chapter has, and offers the replacement only for a chapter it created', async () => {

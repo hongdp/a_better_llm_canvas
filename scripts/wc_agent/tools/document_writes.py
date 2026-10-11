@@ -638,6 +638,27 @@ def _rename_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
     return {"chapter": raw["chapter"], "title": title, "replace": raw.get("replace") is True or raw.get("replace") == "true"}
 
 
+def _rename_heading(ctx: ToolContext, target: Target, title: str) -> bool:
+    """A leading <h1> that read the old title follows the rename (renameHeading in documentWrites.ts)."""
+    if user_edited(ctx, target["id"]):
+        return False
+    stored = _stored_content(ctx, target["id"])
+    if leading_h1_text(stored) != js_trim(target["title"]):
+        return False
+    renamed = content_with_renamed_heading(stored, title)
+    if renamed is None:
+        return False
+    st = ctx.run.docs.get(target["id"])
+    if st:
+        def follow(html: str) -> str:
+            return content_with_renamed_heading(html, title) or html
+        st.original, st.base, st.review_base, st.html = follow(st.original), follow(st.base), follow(st.review_base), follow(st.html)
+        commit_html(ctx, target["id"], diff_html(st.review_base, st.html) if st.dirty else st.original)
+    else:
+        commit_html(ctx, target["id"], renamed)
+    return True
+
+
 async def _rename_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     title, replace = args["title"], args["replace"]
     source = resolve_target(args["chapter"], ctx)
@@ -651,10 +672,14 @@ async def _rename_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str
     if holder_index == -1:
         if source["title"] == title:
             return result(True, f"{cite_chapter(source)} already has that title.", f"✏️ {cite_chapter(source)} already so titled")
+        if not source["isStart"]:
+            await ctx.document.ensure_loaded([source["id"]])
         ctx.document.rename(source["id"], title)
         touch(ctx, {**source, "title": title}, "renamed", 0, 0)
+        heading_moved = _rename_heading(ctx, source, title)
         heading = leading_h1_text(_stored_content(ctx, source["id"]))
-        note = f' Its first heading still reads "{heading}"; change it with an edit if it should match.' if heading and heading != title else ""
+        note = (" Its first heading, which read the old title, now reads the new one." if heading_moved
+                else f' Its first heading still reads "{heading}"; change it with an edit if it should match.' if heading and heading != title else "")
         return result(True, f'Renamed #{source["number"]} from "{source["title"]}" to "{title}".{note}',
                       f'🏷 renamed #{source["number"]} "{source["title"]}" → "{title}"')
 

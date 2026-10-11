@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
-import type { AgentTurnRecord } from '../types/chat'
+import type { AgentTurnRecord, ChapterDeletionConfirm } from '../types/chat'
 import type { ServerRunAction } from '../services/serverRuns'
 
 /**
@@ -10,11 +10,14 @@ import type { ServerRunAction } from '../services/serverRuns'
  * put to the user with `ask_user` — as choices and a free answer. A paused
  * server run continues with the answer; a tab-run that ended asking gets the
  * answer as the next message.
+ *
+ * A question delete_chapter asked carries `confirm`: it shows Delete / Keep
+ * and no free answer, because only the Delete button may delete.
  */
 export function RunControls({ record, onAction, onAnswer, disabled }: {
   record: AgentTurnRecord
   onAction: (runId: string, action: ServerRunAction) => void
-  onAnswer: (record: AgentTurnRecord, answer: string) => void
+  onAnswer: (record: AgentTurnRecord, answer: string, confirm?: ChapterDeletionConfirm) => void
   disabled?: boolean
 }) {
   const { t } = useTranslation()
@@ -22,9 +25,22 @@ export function RunControls({ record, onAction, onAnswer, disabled }: {
   const [free, setFree] = useState('')
   const run = record.run
   const serverQuestion = run?.status === 'paused' && run.pause?.reason === 'question'
-    ? { question: run.pause.question ?? run.pause.message, options: run.pause.options ?? [] }
+    ? { question: run.pause.question ?? run.pause.message, options: run.pause.options ?? [], confirm: run.pause.confirm }
     : null
   const question = serverQuestion ?? (record.question && !run ? record.question : null)
+
+  if (question?.confirm) {
+    const c = question.confirm
+    return (
+      <div className="run-controls">
+        <div className="run-controls-text">❓ {t.agent.confirmDelete(c.number, c.title, c.chars)}</div>
+        <div className="run-controls-actions">
+          <button type="button" className="agent-touched-view" disabled={disabled} onClick={() => onAnswer(record, t.agent.deletedAnswer(c.number, c.title), c)}>{t.agent.deleteChapter}</button>
+          <button type="button" className="agent-touched-view" disabled={disabled} onClick={() => onAnswer(record, t.agent.keptAnswer(c.number, c.title))}>{t.agent.keepChapter}</button>
+        </div>
+      </div>
+    )
+  }
 
   if (question) {
     return (

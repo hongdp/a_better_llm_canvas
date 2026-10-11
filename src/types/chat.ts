@@ -22,6 +22,23 @@ export type AgentTimelineItem =
   | { type: 'tool'; line: string; ok: boolean }
 
 /**
+ * A deletion waiting for the user's confirmation (delete_chapter on a chapter
+ * with text). Shown as Delete / Keep buttons; only the Delete button deletes —
+ * a typed answer never does — and only while the chapter still has the text
+ * the question was asked about (`contentHash`, the stored HTML's hash).
+ */
+export interface ChapterDeletionConfirm {
+  action: 'delete_chapter'
+  documentId: string
+  title: string
+  /** Its position in the book when asked (#n). */
+  number: number
+  /** Characters of its text, for the question. */
+  chars: number
+  contentHash: string
+}
+
+/**
  * Why a server-side run is suspended (backend_authority.md "Runaway runs"):
  * it repeated itself, nobody was watching, or it passed its token budget.
  */
@@ -33,6 +50,8 @@ export interface AgentRunPause {
   /** `question`: what the model asked (ask_user) and the choices it offered. */
   question?: string
   options?: string[]
+  /** `question` asked by delete_chapter: the deletion the Delete button confirms. */
+  confirm?: ChapterDeletionConfirm
 }
 
 /** One item of the model's checklist for a turn (utils/plan). */
@@ -80,7 +99,7 @@ export interface AgentTurnRecord {
   /** The model's checklist for the turn (the `plan` tool), shown under the bubble. */
   plan?: AgentPlanItem[]
   /** A tab-run ended asking the user this (`ask_user`); the next message answers it. */
-  question?: { question: string; options: string[] }
+  question?: { question: string; options: string[]; confirm?: ChapterDeletionConfirm }
 }
 
 export interface ChatMessage {

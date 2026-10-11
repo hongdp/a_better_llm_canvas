@@ -279,12 +279,71 @@ def test_list_chapters_says_when_nothing_changed():
     assert "identical to your previous" in run_tool(BOOK_TOOLS[2], {}, fake.ctx)["content"]
 
 
-def test_delete_only_what_nothing_would_be_lost_from():
+def test_delete_removes_an_empty_chapter_and_asks_about_one_with_text():
     fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "Two", "content": "<p>two</p>"}, {"id": "doc-3", "title": "Empty", "content": "<p></p>"}])
     delete = BOOK_TOOLS[4]
-    assert run_tool(delete, {"chapter": "2"}, fake.ctx)["ok"] is False
+    asked = run_tool(delete, {"chapter": "2"}, fake.ctx)
+    assert asked["ok"] and "Delete / Keep" in asked["content"] and fake.removed == []
+    assert fake.ctx.run.question["confirm"] == {"action": "delete_chapter", "documentId": "doc-2", "title": "Two", "number": 2,
+                                                "chars": 3, "contentHash": hash_content("<p>two</p>")}
     out = run_tool(delete, {"chapter": "3"}, fake.ctx)
     assert out["ok"] and fake.removed == ["doc-3"]
+    # One question at a time.
+    fake.book.append({"id": "doc-4", "title": "Four", "content": "<p>four</p>"})
+    again = run_tool(delete, {"chapter": "Four"}, fake.ctx)
+    assert again["ok"] is False and "one question is asked at a time" in again["content"]
+
+
+DELETE_TWO = [{"id": "doc-2", "title": "第7章　门外", "content": "<h1>第7章　门外</h1><p>seven</p>"},
+              {"id": "doc-3", "title": "第8章　酒", "content": "<h1>第8章　酒</h1><p>eight</p>"}]
+
+
+def test_only_the_delete_button_deletes_a_chapter_with_text():
+    def harness():
+        h = Harness([calls("", ("d", "delete_chapter", '{"chapter":"2"}')), DONE], extra=[BOOK_TOOLS[4]], chapters=[dict(c) for c in DELETE_TWO])
+        asyncio.run(h.run.start())
+        assert h.summary is None and h.run.paused["confirm"]["documentId"] == "doc-2" and h.fake.removed == []
+        return h
+
+    pressed = harness()
+    asyncio.run(pressed.run.resume_with_answer("删除 #2「第7章　门外」。", confirmed=True))
+    assert pressed.fake.removed == ["doc-2"]
+    told = pressed.requests[1][-1]["content"]
+    assert told.startswith("The user answered: 删除") and '#2 "第7章　门外" was deleted, as the user confirmed.' in told and "#3 is now #2" in told
+
+    # A typed "yes" is not the button.
+    typed = harness()
+    asyncio.run(typed.run.resume_with_answer("yes, delete it"))
+    assert typed.fake.removed == [] and '#2 "第7章　门外" was not deleted.' in typed.requests[1][-1]["content"]
+
+    # Changed after the question: kept, and the model is told why.
+    changed = harness()
+    changed.fake.book[1]["content"] = "<h1>第7章　门外</h1><p>seven, revised</p>"
+    asyncio.run(changed.run.resume_with_answer("删除", confirmed=True))
+    assert changed.fake.removed == [] and "was NOT deleted: it changed after the question was asked" in changed.requests[1][-1]["content"]
+
+
+def test_a_deletion_runs_after_the_renames_of_its_reply():
+    # The model numbers every call from the index it sees: delete #2 (empty, so at once), rename #3.
+    # Deleting first would make #3 the end of a two-chapter book: "There is no chapter #3".
+    reply = calls("", ("d", "delete_chapter", '{"chapter":"2"}'), ("r", "rename_chapter", '{"chapter":"3","title":"第7章　酒"}'))
+    chapters = [{"id": "doc-2", "title": "第7章　门外", "content": "<p></p>"}, dict(DELETE_TWO[1])]
+    h = Harness([reply, DONE], extra=[BOOK_TOOLS[4], BOOK_TOOLS[-1]], chapters=chapters)
+    asyncio.run(h.run.start())
+    eight = next(c for c in h.fake.book if c["id"] == "doc-3")
+    assert h.fake.removed == ["doc-2"]
+    assert eight["title"] == "第7章　酒" and eight["content"] == "<h1>第7章　酒</h1><p>eight</p>"
+
+
+def test_rename_carries_a_heading_that_read_the_old_title():
+    fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "第8章　酒", "content": "<h1>第8章　酒</h1><p>x</p>"},
+                                            {"id": "doc-3", "title": "第9章", "content": "<h1>序幕</h1><p>y</p>"}])
+    rename = BOOK_TOOLS[-1]
+    out = run_tool(rename, {"chapter": "2", "title": "第7章　酒"}, fake.ctx)
+    assert out["ok"] and "now reads the new one" in out["content"]
+    assert fake.book[1]["content"] == "<h1>第7章　酒</h1><p>x</p>" and fake.book[1]["title"] == "第7章　酒"
+    kept = run_tool(rename, {"chapter": "3", "title": "第8章"}, fake.ctx)
+    assert 'still reads "序幕"' in kept["content"] and fake.book[2]["content"] == "<h1>序幕</h1><p>y</p>"
 
 
 # ── the run ───────────────────────────────────────────────────────────────────

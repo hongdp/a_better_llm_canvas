@@ -281,9 +281,12 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         record={msg.agent}
                         onAction={chatLLM.handleRunAction}
                         disabled={isStreaming && !msg.agent.run}
-                        onAnswer={(record, answer) => {
-                          if (record.run && record.run.status === 'paused') void chatLLM.handleRunAnswer(record.run.id, answer)
-                          else handleSendMessage(undefined, answer)
+                        onAnswer={(record, answer, confirm) => {
+                          if (record.run && record.run.status === 'paused') void chatLLM.handleRunAnswer(record.run.id, answer, !!confirm)
+                          else if (confirm) {
+                            // The Delete button of a tab-run's question: delete first, then answer.
+                            void chatLLM.confirmChapterDeletion(confirm).then(deleted => { if (deleted) handleSendMessage(undefined, answer) })
+                          } else handleSendMessage(undefined, answer)
                         }}
                       />
                     )}

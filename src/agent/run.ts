@@ -303,14 +303,18 @@ export class AgentRun {
 
     this.o.ctx.run.step = this.stepsTaken - 1
     // Reads and navigation first, then the writes in reply order, then what
-    // must run last (a deletion, which renumbers the chapters after it).
+    // must run last (a rename, a deletion), deletions after everything:
+    // they renumber the chapters after them, and every other call of the
+    // reply was numbered from the index as it was.
     const last = (inv: ToolInvocation) => !!this.o.registry.get(inv.name)?.runLast
+    const renumbers = (inv: ToolInvocation) => !!this.o.registry.get(inv.name)?.renumbers
     const writes = collected.invocations.filter(inv => this.kindOf(inv) === 'write' && !last(inv))
     const { run: plannedWrites, dropped } = planWrites(writes)
     const toRun = [
       ...collected.invocations.filter(inv => this.kindOf(inv) !== 'write' && !last(inv)),
       ...plannedWrites,
-      ...collected.invocations.filter(last)
+      ...collected.invocations.filter(inv => last(inv) && !renumbers(inv)),
+      ...collected.invocations.filter(inv => last(inv) && renumbers(inv))
     ]
     this.stray += collected.strayMarkup + dropped
     this.stepDropped = collected.strayMarkup + dropped

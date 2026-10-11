@@ -11,6 +11,10 @@ const dictionaries: Record<Language, TranslationDictionary> = {
   zh,
 }
 
+/** The dictionary for the current language, outside React (a hook's callbacks). */
+export const currentTranslation = (): TranslationDictionary =>
+  dictionaries[useAppStore.getState().language] || dictionaries.en
+
 export const useTranslation = () => {
   const language = useAppStore((state) => state.language)
   const t = dictionaries[language] || dictionaries.en

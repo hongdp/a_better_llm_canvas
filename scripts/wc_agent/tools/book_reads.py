@@ -661,6 +661,57 @@ open_chapter_tool = Tool(
 
 # ── delete_chapter ───────────────────────────────────────────────────────────
 
+def _ask_to_delete(ctx: ToolContext, target: Dict[str, Any], content: str) -> Dict[str, Any]:
+    """A chapter with text goes only on the user's confirmation (see deleteChapterTool in bookReads.ts)."""
+    if ctx.run.question:
+        return result(False, f"{cite_chapter(target)} was not deleted: the user is already being asked something this turn, and one question is asked at a time. Ask about this deletion after their answer.",
+                      f"🗑 delete {cite_chapter(target)} not asked — a question is already pending", retryable=False)
+    chars = len(html_to_plain_text(content))
+    ctx.run.question = {
+        "question": f"Delete {cite_chapter(target)} ({chars:,} characters)?",
+        "options": [],
+        "confirm": {"action": "delete_chapter", "documentId": target["id"], "title": target["title"], "number": target["number"],
+                    "chars": chars, "contentHash": hash_content(content)},
+    }
+    return result(True, f"{cite_chapter(target)} has text, so the user is asked to confirm: they see Delete / Keep buttons, and this turn ends here. "
+                  "If they press Delete, the chapter is deleted before their answer reaches you and the chapters after it move up by one; otherwise it stays.",
+                  f"🗑 asked to delete {cite_chapter(target)}")
+
+
+def _remove_chapter(ctx: ToolContext, doc_id: str) -> None:
+    ctx.document.remove(doc_id)
+    forget_chapter(ctx, doc_id)
+    ctx.run.created.discard(doc_id)
+    ctx.run.in_context.discard(doc_id)
+    ctx.run.touched.pop(doc_id, None)
+
+
+def _moved_up_note(number: int, total_before: int) -> str:
+    after = total_before - number
+    return (f" The {after} chapter(s) after it moved up by one: #{number + 1} is now #{number}, and so on. The CHAPTER INDEX in your request still shows the old numbers."
+            if after > 0 else "")
+
+
+async def settle_deletion(ctx: ToolContext, confirm: Dict[str, Any], confirmed: bool) -> str:
+    """The answer to a deletion question, for the model: deleted (Delete pressed, text unchanged since asked) or why not."""
+    chapters = ctx.document.chapters()
+    index = next((i for i, c in enumerate(chapters) if c["id"] == confirm["documentId"]), -1)
+    cited = f'"{confirm["title"]}"'
+    if index == -1:
+        return f"{cited} is no longer in the book."
+    current = {**chapters[index], "number": index + 1}
+    if not confirmed:
+        return f"{cite_chapter(current)} was not deleted."
+    await ctx.document.ensure_loaded([current["id"]])
+    now = next((c for c in ctx.document.chapters() if c["id"] == current["id"]), None)
+    if not now or now.get("loaded") is False or hash_content(now["content"]) != confirm["contentHash"]:
+        return f"{cite_chapter(current)} was NOT deleted: it changed after the question was asked. Ask again if it should still go."
+    if current["id"] == ctx.document.start_id or len(chapters) <= 1:
+        return f"{cite_chapter(current)} was not deleted."
+    _remove_chapter(ctx, current["id"])
+    return f"{cite_chapter(current)} was deleted, as the user confirmed." + _moved_up_note(current["number"], len(chapters))
+
+
 async def _delete_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     chapters = ctx.document.chapters()
     target = resolve_chapter(args["chapter"], chapters)
@@ -680,23 +731,17 @@ async def _delete_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str
         if not now or now.get("loaded") is False:
             return refuse(f"{cite_chapter(target)} could not be loaded, so it is not known to be empty. It was not deleted.", "not loaded")
         if not is_blank_content(now["content"]):
-            return refuse(f"{cite_chapter(target)} has text. Only the user can delete a chapter with text: ask them with ask_user whether to, and tell them it is #{target['number']} in the chapter list.", "it has text")
-    ctx.document.remove(target["id"])
-    forget_chapter(ctx, target["id"])
-    ctx.run.created.discard(target["id"])
-    ctx.run.in_context.discard(target["id"])
-    ctx.run.touched.pop(target["id"], None)
-    after = len(chapters) - target["number"]
-    return result(True, f"Deleted {cite_chapter(target)}." + (f" The {after} chapter(s) after it moved up by one: #{target['number'] + 1} is now #{target['number']}, and so on. The CHAPTER INDEX in your request still shows the old numbers." if after > 0 else ""),
-                  f"🗑 deleted {cite_chapter(target)}")
+            return _ask_to_delete(ctx, target, now["content"])
+    _remove_chapter(ctx, target["id"])
+    return result(True, f"Deleted {cite_chapter(target)}." + _moved_up_note(target["number"], len(chapters)), f"🗑 deleted {cite_chapter(target)}")
 
 
 delete_chapter_tool = Tool(
     name="delete_chapter",
-    description=("Delete a chapter you created by mistake, or an empty chapter. A chapter that has text can only be deleted by the user — ask them with ask_user; never empty a chapter to get around this. "
-                 "Deleting renumbers the chapters after it."),
+    description=("Delete a chapter. One you created in this turn, or an empty one, is deleted at once. A chapter with text is deleted only if the user confirms: the call shows them Delete / Keep buttons and ends this turn, and their answer tells you what happened — do not also ask with ask_user, and never empty a chapter to get around this. "
+                 "Deleting renumbers the chapters after it. It runs after every other call of the same reply, so number those calls from the CHAPTER INDEX as you see it."),
     parameters={"type": "object", "properties": {"chapter": {"type": "string", "description": "Its number in the CHAPTER INDEX, or its exact title."}}, "required": ["chapter"]},
-    kind="write", run_last=True, parse=lambda raw: {"chapter": raw["chapter"]} if raw and raw.get("chapter") is not None else "no chapter was named",
+    kind="write", run_last=True, renumbers=True, parse=lambda raw: {"chapter": raw["chapter"]} if raw and raw.get("chapter") is not None else "no chapter was named",
     execute=_delete_execute,
 )
 

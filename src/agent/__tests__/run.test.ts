@@ -8,7 +8,7 @@ import type { LLMMessage } from '../../types/llm'
 import { AgentRun, type RunSummary, type StepOutput } from '../run'
 import { ToolRegistry, defineTool, type RegisteredTool } from '../registry'
 import { deleteChapterTool } from '../tools/bookReads'
-import { DOCUMENT_WRITE_TOOLS } from '../tools/documentWrites'
+import { DOCUMENT_WRITE_TOOLS, renameChapterTool } from '../tools/documentWrites'
 import { planTool } from '../tools/plan'
 import { askUserTool } from '../tools/askUser'
 import { DEFAULT_BUDGETS, DEFAULT_POLICY, type RunBudgets, type StepPolicy } from '../policy'
@@ -130,6 +130,25 @@ describe('a deletion runs after the other calls of its reply', () => {
     expect(h.fake.removed).toEqual(['doc-2'])
     expect(stripDiffMarkup(h.fake.lastWrite('doc-3') ?? '')).toBe('<p>第一章正文</p>')
     expect(h.summary()?.trace).toEqual(['✏️ rewrote #3 "第一章" (5 chars)', '🗑 deleted #2 "skip"'])
+  })
+
+  it('runs after a rename in the same reply too — renumbering is delete #n, then rename the ones after it', async () => {
+    // Both are runLast; in reply order the deletion came first and "#3"
+    // pointed past the end of a two-chapter book.
+    const h = harness({
+      extra: [deleteChapterTool, renameChapterTool],
+      chapters: [{ id: 'doc-2', title: '第7章　门外', content: '<p></p>' }, { id: 'doc-3', title: '第8章　酒', content: '<h1>第8章　酒</h1><p>eight</p>' }],
+      policy: { continueAfterWrites: true },
+      replies: [
+        calls('', ['d1', 'delete_chapter', '{"chapter":"2"}'], ['r1', 'rename_chapter', '{"chapter":"3","title":"第7章　酒"}']),
+        text('好了。')
+      ]
+    })
+    await h.run.start()
+    await new Promise(r => setTimeout(r, 0))
+
+    expect(h.fake.removed).toEqual(['doc-2'])
+    expect(h.fake.book().find(c => c.id === 'doc-3')).toMatchObject({ title: '第7章　酒', content: '<h1>第7章　酒</h1><p>eight</p>' })
   })
 })
 

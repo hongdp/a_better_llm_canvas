@@ -122,7 +122,13 @@ export const en = {
     resume: 'Resume',
     abandon: 'Stop',
     answer: 'Answer',
-    answerPlaceholder: 'Or type your own answer…'
+    answerPlaceholder: 'Or type your own answer…',
+    confirmDelete: (number: number, title: string, chars: number) => `Delete #${number} "${title}" (${chars.toLocaleString('en-US')} characters)?`,
+    deleteChapter: 'Delete',
+    keepChapter: 'Keep',
+    deletedAnswer: (number: number, title: string) => `Delete #${number} "${title}".`,
+    keptAnswer: (number: number, title: string) => `Keep #${number} "${title}".`,
+    deleteChanged: 'That chapter changed after the question was asked, so it was not deleted. Ask again if it should go.'
   },
   sidebar: {
     collapse: 'Collapse Sidebar',

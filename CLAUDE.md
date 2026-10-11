@@ -323,7 +323,11 @@ say "act, don't think" (one step late on purpose, measured on grok-4.7);
 the `plan` tool's checklist comes back after each step and an early
 no-action reply is nudged twice (a write item may be marked done only once
 something was written since it started); a no-action ending after an HTML
-read that no edit followed is nudged once; `ask_user` ends a tab-run with
+read that no edit followed is nudged once; `delete_chapter` on a chapter
+with text asks with Delete / Keep buttons and only the button deletes (the
+tab before sending the answer, a server run on `/answer` with `confirm`);
+`rename_chapter` carries a leading `<h1>` that read the old title along;
+`ask_user` ends a tab-run with
 choices and pauses a server run until `/answer`; a message sent while a turn
 runs **steers** it (`AgentRun.steer`, `POST …/runs/{id}/steer`): it lands as
 a user message after the step in flight, and a reply that would have ended

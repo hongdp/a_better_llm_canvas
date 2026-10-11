@@ -963,10 +963,13 @@ class RunEngine:
 
     def on_asked(self, run: Run, question: Dict[str, Any], progress: Dict[str, Any]) -> None:
         """The model asked the user (ask_user): the run waits as a pause with the question."""
-        self.on_paused(run, {"reason": "question", "message": question["question"], "question": question["question"],
-                             "options": question.get("options") or []}, progress)
+        reason = {"reason": "question", "message": question["question"], "question": question["question"], "options": question.get("options") or []}
+        if question.get("confirm"):
+            reason["confirm"] = question["confirm"]
+        self.on_paused(run, reason, progress)
 
-    def answer(self, run: Run, answer: str) -> bool:
+    def answer(self, run: Run, answer: str, confirm: bool = False) -> bool:
+        """Continue a run paused on a question. `confirm` is the Delete button of a delete_chapter question."""
         if run.status != "paused" or not run.pause or run.pause.get("reason") != "question" or run.agent is None:
             return False
         if self.running(run.username, run.book_id) is not None:
@@ -975,13 +978,13 @@ class RunEngine:
         run.pause = None
         run.unattended_steps = 0
         run.persist()
-        run.task = asyncio.create_task(self._execute_answer(run, answer))
+        run.task = asyncio.create_task(self._execute_answer(run, answer, confirm))
         return True
 
-    async def _execute_answer(self, run: Run, answer: str) -> None:
+    async def _execute_answer(self, run: Run, answer: str, confirm: bool = False) -> None:
         try:
             self.publish(run, "started", {"run": run.summary(), "resumed": True})
-            await run.agent.resume_with_answer(answer)
+            await run.agent.resume_with_answer(answer, confirmed=confirm)
         except RunStopped:
             self._finalize(run, "stopped")
         except asyncio.CancelledError:
@@ -1373,7 +1376,7 @@ async def answer_run(request: Request, book_id: str, run_id: str):
     answer = body.get("answer") if isinstance(body, dict) else None
     if not isinstance(answer, str) or not js_trim(answer):
         raise HTTPException(status_code=400, detail="answer must be a non-empty string.")
-    if not engine.answer(run, js_trim(answer)):
+    if not engine.answer(run, js_trim(answer), confirm=body.get("confirm") is True):
         raise HTTPException(status_code=409, detail="This run is not waiting for an answer, or another run is active.")
     return {"success": True, "run": run.summary()}
 
