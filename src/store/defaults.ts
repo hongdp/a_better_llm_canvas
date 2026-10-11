@@ -104,27 +104,6 @@ export const DEFAULT_SYSTEM_PROMPTS: SystemPromptTemplate[] = [
   }
 ]
 
-export const DEFAULT_IMAGE_ANALYSIS_PROMPT = `你是一位专业的图片描述专家，擅长描写人物细节。请仔细观察提供的图片，重点关注图片中的人物，写一段详细的中文描述。
-
-要求（按优先级）：
-1. **人物（最重要）**：若图片中有人，重点描写：
-   - 外貌特征：年龄感、发型发色、五官、肤色、体型等
-   - 身体部位：尽量描写可见的身体部位，如：手（手势、指甲）、手臂（是否裸露、肌肉感）、腿（长度感、裤腿/裙摆覆盖情况）、脚（鞋子款式）、肩部、颈部、腰部等，结合姿势描写
-   - 穿着打扮：服装款式、颜色、风格（如休闲、正式、时尚等）、配饰
-   - 姿势与位置：站姿、坐姿、动作、在画面中的位置（左/右/中/前/后）
-   - 表情与神态：喜悦、严肃、自然等
-   - 若有多人，分别描写每个人的特征及相互关系/位置关系
-2. **场景与环境**：简要描述背景、地点、氛围等
-3. 使用中文描述，长度在 100-250 字之间
-4. 输出严格的 JSON 格式，不要有任何其他文字
-
-JSON格式：
-{
-  "descriptions": [
-    {"index": {{index}}, "description": "图片描述内容..."}
-  ]
-}`
-
 export const DEFAULT_IMAGE_GEN_CONFIG: ImageGenConfig = {
   provider: 'openai',
   apiKey: import.meta.env.VITE_OPENAI_API_KEY || '',

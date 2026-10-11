@@ -20,15 +20,19 @@ refused when its host resolves to a private, loopback, link-local or reserved
 address: the server sits on a LAN beside its own API.
 """
 import asyncio
+import base64
+import io
 import ipaddress
 import logging
 import os
 import re
+import shutil
 import socket
+import subprocess
 import time
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import parse_qs, quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -45,6 +49,14 @@ PAGE_CACHE_ENTRIES = 64
 MAX_PAGES_PER_USER = 2
 MAX_SEARCH_RESULTS = 10
 BLOCKED_RESOURCES = {"image", "media", "font"}
+#: web_images: per call, per image on the wire, and the longest side kept (the editor shows ~800 px).
+MAX_IMAGES_PER_CALL = 20
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+IMAGE_MAX_SIDE = 1200
+#: Without a resizer (Pillow or ffmpeg) an image is embedded as it came, up to this size.
+MAX_RAW_IMAGE_BYTES = 1_500_000
+#: The src attributes a page's images use, lazy-loading forums included.
+_IMAGE_SRC_ATTRS = ("src", "data-src", "data-original", "data-lazy-src", "data-lazy", "data-url", "ess-data", "data-echo")
 # DuckDuckGo's lite page: the html.duckduckgo.com page, Bing, Brave, Mojeek
 # and Startpage all answered the headless browser with a challenge page
 # (measured 2026-10-10); this one returned results. A challenge is never
@@ -71,8 +83,38 @@ def chromium_user_agent(version: str) -> str:
     return f"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36"
 
 
-def readable_paragraphs(html: str) -> Tuple[str, List[str]]:
-    """A page's title and readable text as paragraphs: headings marked "#", navigation, scripts and forms dropped."""
+def _image_source(el, base_url: str) -> str:
+    """An <img>'s address (lazy-loading attributes included), absolute, or '' when it has none worth fetching."""
+    for attr in _IMAGE_SRC_ATTRS:
+        raw = el.get(attr)
+        if isinstance(raw, list):
+            raw = raw[0] if raw else ""
+        raw = (raw or "").strip()
+        if not raw or raw.startswith(("data:", "blob:", "javascript:")):
+            continue
+        url = urljoin(base_url, raw) if base_url else raw
+        if urlparse(url).scheme not in ("http", "https") or urlparse(url).path.lower().endswith(".svg"):
+            continue
+        return url
+    return ""
+
+
+def _is_tiny(el) -> bool:
+    """An icon-sized image by its own attributes (a page's images with no size attributes are kept)."""
+    try:
+        w, h = int(str(el.get("width") or "").rstrip("px") or 0), int(str(el.get("height") or "").rstrip("px") or 0)
+    except ValueError:
+        return False
+    return (0 < w <= 48) or (0 < h <= 48)
+
+
+def readable_paragraphs(html: str, base_url: str = "") -> Tuple[str, List[str], List[Dict[str, Any]]]:
+    """A page's title, readable text as paragraphs, and its images.
+
+    Headings marked "#"; navigation, scripts and forms dropped. An image is a
+    paragraph of its own where it sits — "[image 3]" or "[image 3: alt]" — and
+    an entry {n, url, alt} in the image list, which web_images fetches by number.
+    """
     from bs4 import BeautifulSoup
     soup = BeautifulSoup(html or "", "html.parser")
     title = re.sub(r"\s+", " ", soup.title.get_text()).strip() if soup.title else ""
@@ -80,17 +122,71 @@ def readable_paragraphs(html: str) -> Tuple[str, List[str]]:
         tag.decompose()
     body = soup.body or soup
     out: List[str] = []
-    for el in body.find_all(_BLOCKS):
+    images: List[Dict[str, Any]] = []
+    seen_urls: Dict[str, int] = {}
+    markers = 0
+    for el in body.find_all(_BLOCKS + ["img"]):
+        if el.name == "img":
+            url = _image_source(el, base_url)
+            if not url or _is_tiny(el) or url in seen_urls:
+                continue
+            alt = re.sub(r"\s+", " ", str(el.get("alt") or el.get("title") or "")).strip()[:120]
+            images.append({"n": len(images) + 1, "url": url, "alt": alt})
+            seen_urls[url] = len(images)
+            out.append(f"[image {len(images)}: {alt}]" if alt else f"[image {len(images)}]")
+            markers += 1
+            continue
         if el.find(_BLOCKS):  # a container of other blocks: its children speak for it
             continue
         text = re.sub(r"\s+", " ", el.get_text(" ", strip=True)).strip()
         if len(text) < 2 or (out and out[-1].lstrip("# ") == text):
             continue
         out.append(f"# {text}" if re.fullmatch(r"h[1-6]", el.name or "") else text)
-    if len(out) < 3:
+    if len(out) - markers < 3:
         lines = [re.sub(r"\s+", " ", line).strip() for line in body.get_text("\n").split("\n")]
-        out = [line for line in lines if len(line) >= 2]
-    return title, out
+        out = [line for line in lines if len(line) >= 2] + [p for p in out if p.startswith("[image ")]
+    return title, out, images
+
+
+def shrink_image(data: bytes, content_type: str) -> Tuple[bytes, str]:
+    """An image small enough to live inline in a chapter: at most IMAGE_MAX_SIDE on its longest side, as JPEG.
+
+    Pillow when installed; else ffmpeg when present; else the bytes as they came,
+    under MAX_RAW_IMAGE_BYTES. Returns (bytes, mime type).
+    """
+    try:
+        from PIL import Image, ImageOps
+        with Image.open(io.BytesIO(data)) as im:
+            im = ImageOps.exif_transpose(im)
+            if getattr(im, "n_frames", 1) > 1:
+                im.seek(0)
+            im.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
+            if im.mode in ("RGBA", "LA", "P"):
+                flat = Image.new("RGB", im.size, (255, 255, 255))
+                flat.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1])
+                im = flat
+            elif im.mode != "RGB":
+                im = im.convert("RGB")
+            buf = io.BytesIO()
+            im.save(buf, "JPEG", quality=85, optimize=True)
+            return buf.getvalue(), "image/jpeg"
+    except ImportError:
+        pass
+    except Exception as exc:  # noqa: BLE001 — not an image Pillow reads; the fallbacks may still
+        logger.info("Pillow could not read an image (%s); trying ffmpeg", exc)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        try:
+            proc = subprocess.run([ffmpeg, "-loglevel", "error", "-i", "pipe:0", "-vf", f"scale='min({IMAGE_MAX_SIDE},iw)':-2",
+                                   "-vframes", "1", "-f", "image2", "-c:v", "mjpeg", "-q:v", "4", "-y", "pipe:1"],
+                                  input=data, capture_output=True, timeout=20)
+            if proc.returncode == 0 and proc.stdout:
+                return proc.stdout, "image/jpeg"
+        except Exception as exc:  # noqa: BLE001
+            logger.info("ffmpeg could not convert an image: %s", exc)
+    if len(data) > MAX_RAW_IMAGE_BYTES:
+        raise WebError(f"the image is {len(data) // 1024} KB and the server has no image resizer (install Pillow)")
+    return data, content_type if content_type.startswith("image/") else "image/jpeg"
 
 
 def _unwrap_redirect(href: str) -> str:
@@ -265,14 +361,67 @@ async def web_read(username: str, url: str) -> Dict[str, Any]:
         return hit[1]
     async with _slot(username):
         final_url, html = await _browser.page_html(url)
-    title, paragraphs = readable_paragraphs(html)
-    page = {"url": final_url, "title": title, "paragraphs": paragraphs}
+    title, paragraphs, images = readable_paragraphs(html, final_url)
+    page = {"url": final_url, "title": title, "paragraphs": paragraphs, "images": images}
     _page_cache[url] = (now, page)
     _page_cache.move_to_end(url)
     while len(_page_cache) > PAGE_CACHE_ENTRIES:
         _page_cache.popitem(last=False)
     logger.info("Web read %s: %s paragraphs", final_url, len(paragraphs))
     return page
+
+
+async def _fetch_image(context, url: str, referer: str) -> Tuple[bytes, str]:
+    """The bytes of one image through the browser's own request channel (its headers, its proxy; no cookies),
+    following at most 5 redirects, each hop checked like a page's requests."""
+    for _ in range(6):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or await _browser.host_blocked(parsed.hostname or ""):
+            raise WebError("the image's address is not on the public internet")
+        resp = await context.request.get(url, headers={"Referer": referer, "Accept": "image/avif,image/webp,image/*,*/*;q=0.8"},
+                                         max_redirects=0, timeout=NAV_TIMEOUT_MS)
+        if resp.status in (301, 302, 303, 307, 308) and resp.headers.get("location"):
+            url = urljoin(url, resp.headers["location"])
+            continue
+        if resp.status >= 400:
+            raise WebError(f"the image could not be fetched (HTTP {resp.status})")
+        ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        data = await resp.body()
+        if len(data) > MAX_IMAGE_BYTES:
+            raise WebError(f"the image is larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB")
+        if not ctype.startswith("image/") and data[:4] not in (b"\xff\xd8\xff\xe0", b"\xff\xd8\xff\xe1", b"\x89PNG", b"GIF8", b"RIFF"):
+            raise WebError(f"the address did not return an image ({ctype or 'no content type'})")
+        return data, ctype
+    raise WebError("the image's address redirects too many times")
+
+
+async def web_images(username: str, url: str, numbers: List[int]) -> List[Dict[str, Any]]:
+    """Images of a page by their number in its web_read, fetched and shrunk, as data URLs: one entry per number asked."""
+    page = await web_read(username, url)
+    by_n = {img["n"]: img for img in page.get("images") or []}
+    out: List[Dict[str, Any]] = []
+    async with _slot(username):
+        browser = await _browser.get()
+        context = await browser.new_context(user_agent=_browser.user_agent, locale="en-US", accept_downloads=False)
+        try:
+            for n in numbers[:MAX_IMAGES_PER_CALL]:
+                img = by_n.get(n)
+                if img is None:
+                    out.append({"n": n, "error": f"the page has no image {n} (it has {len(by_n)})"})
+                    continue
+                try:
+                    data, ctype = await _fetch_image(context, img["url"], page["url"])
+                    small, mime = await asyncio.to_thread(shrink_image, data, ctype)
+                    out.append({"n": n, "alt": img.get("alt") or "", "dataUrl": f"data:{mime};base64,{base64.b64encode(small).decode()}",
+                                "bytes": len(small)})
+                except WebError as exc:
+                    out.append({"n": n, "error": str(exc)})
+                except Exception as exc:  # noqa: BLE001 — a network failure on one image is that image's to report
+                    out.append({"n": n, "error": f"the image could not be fetched ({str(exc).splitlines()[0][:120]})"})
+        finally:
+            await context.close()
+    logger.info("Web images %s: %d of %d fetched", page["url"], sum(1 for o in out if "dataUrl" in o), len(out))
+    return out
 
 
 async def web_search(username: str, query: str, max_results: int = 8) -> List[Dict[str, str]]:
@@ -304,6 +453,19 @@ async def search_endpoint(request: Request):
         raise HTTPException(status_code=503, detail="The server has no browser for web access.")
     try:
         return {"results": await web_search(username, str(body.get("query") or ""), int(body.get("max_results") or 8))}
+    except WebError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@router.post("/api/web/images")
+async def images_endpoint(request: Request):
+    username = get_authenticated_username(request)
+    body = await request.json()
+    if not available():
+        raise HTTPException(status_code=503, detail="The server has no browser for web access.")
+    numbers = [int(n) for n in (body.get("images") or []) if isinstance(n, (int, float)) and not isinstance(n, bool)]
+    try:
+        return {"images": await web_images(username, str(body.get("url") or ""), numbers)}
     except WebError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 

@@ -164,6 +164,26 @@ class FakeWeb:
             raise server_web.WebError(self.fail)
         return {"url": url, "title": "页面", "paragraphs": [f"第{i}段" for i in range(1, 31)]}
 
+    async def images(self, url, numbers):
+        self.calls.append(("images", url, numbers))
+        if self.fail:
+            raise server_web.WebError(self.fail)
+        return [{"n": n, "alt": "封面" if n == 1 else "", "dataUrl": f"data:image/jpeg;base64,IMG{n}", "bytes": 40_000 * n} if n <= 2
+                else {"n": n, "error": f"the page has no image {n} (it has 2)"} for n in numbers]
+
+
+def test_web_images_register_placeholders_for_the_write():
+    from wc_agent.tools.web import web_images_tool
+    fake = book_with_novel()
+    web = FakeWeb()
+    fake.ctx.web = web
+    out = run_tool(web_images_tool, {"url": "https://example.org/post", "images": [1, 2, 2, 7]}, fake.ctx)
+    assert out["ok"] and web.calls[0] == ("images", "https://example.org/post", [1, 2, 7])
+    assert fake.ctx.images.registered == [{"dataUrl": "data:image/jpeg;base64,IMG1", "alt": "封面"}, {"dataUrl": "data:image/jpeg;base64,IMG2", "alt": ""}]
+    assert "image 1 → {{IMAGE_PLACEHOLDER_0}} (封面), 39 KB" in out["content"] and "image 7: not fetched" in out["content"]
+    assert out["trace"] == "🖼️ fetched 2/3 images from example.org"
+    assert not run_tool(web_images_tool, {"url": "https://example.org/post", "images": []}, fake.ctx)["ok"]
+
 
 def test_web_tools_are_offered_only_with_a_browser():
     fake = book_with_novel()
@@ -210,9 +230,35 @@ def test_readable_paragraphs_drop_navigation_and_scripts():
       <nav><a href="/">首页</a><a href="/a">分类</a></nav>
       <h1>第一章</h1><p>林动睁开眼。</p><p>天亮了。</p><div><p>他起身。</p></div>
       <footer>版权所有</footer></body></html>"""
-    title, paras = server_web.readable_paragraphs(html)
+    title, paras, images = server_web.readable_paragraphs(html)
     assert title == "万倍返还"
     assert paras == ["# 第一章", "林动睁开眼。", "天亮了。", "他起身。"]
+    assert images == []
+
+
+def test_readable_paragraphs_number_the_images_where_they_sit():
+    pytest.importorskip("bs4")
+    html = """<html><body><h1>帖子</h1><p>第一段。</p>
+      <img src="/img/a.jpg" alt=" 封面 "><p>第二段。<img data-src="//cdn.x.org/b.webp"></p>
+      <img ess-data="https://x.org/c.png"><img src="/icons/like.png" width="16" height="16"><img src="/logo.svg">
+      <img src="data:image/gif;base64,R0lG"><img src="/img/a.jpg"></body></html>"""
+    _, paras, images = server_web.readable_paragraphs(html, "https://x.org/forum/view/1")
+    assert paras == ["# 帖子", "第一段。", "[image 1: 封面]", "第二段。", "[image 2]", "[image 3]"]
+    assert images == [{"n": 1, "url": "https://x.org/img/a.jpg", "alt": "封面"}, {"n": 2, "url": "https://cdn.x.org/b.webp", "alt": ""},
+                      {"n": 3, "url": "https://x.org/c.png", "alt": ""}]
+
+
+def test_shrink_image_bounds_the_longest_side_and_flattens_alpha():
+    Image = pytest.importorskip("PIL.Image")
+    import io
+    buf = io.BytesIO()
+    Image.new("RGBA", (3000, 1500), (255, 0, 0, 128)).save(buf, "PNG")
+    small, mime = server_web.shrink_image(buf.getvalue(), "image/png")
+    assert mime == "image/jpeg" and len(small) < len(buf.getvalue())
+    with Image.open(io.BytesIO(small)) as im:
+        assert im.size == (1200, 600) and im.mode == "RGB"
+    with pytest.raises(server_web.WebError):
+        server_web.shrink_image(b"not an image" * 200_000, "application/octet-stream")
 
 
 LITE_HTML = """<html><body><table>

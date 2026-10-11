@@ -61,6 +61,79 @@
     }
    }
   ],
+  "register_image": [
+   {
+    "input": [
+     [
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+       "tag": "<img src=\"data:image/jpeg;base64,AAAA\" alt=\"封面 &quot;A&quot; &lt;b&gt;&amp;\">"
+      }
+     ],
+     "data:image/jpeg;base64,AAAA",
+     "封面 \"A\" <b>&"
+    ],
+    "output": {
+     "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+     "registry": [
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+       "tag": "<img src=\"data:image/jpeg;base64,AAAA\" alt=\"封面 &quot;A&quot; &lt;b&gt;&amp;\">"
+      }
+     ]
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+       "tag": "<img src=\"x\">"
+      },
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_1}}",
+       "tag": "<img src=\"data:image/jpeg;base64,BBBB\">"
+      }
+     ],
+     "data:image/jpeg;base64,BBBB",
+     ""
+    ],
+    "output": {
+     "placeholder": "{{IMAGE_PLACEHOLDER_1}}",
+     "registry": [
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+       "tag": "<img src=\"x\">"
+      },
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_1}}",
+       "tag": "<img src=\"data:image/jpeg;base64,BBBB\">"
+      }
+     ]
+    }
+   },
+   {
+    "input": [
+     [
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+       "tag": "<img src=\"data:image/jpeg;base64,BBBB\">"
+      }
+     ],
+     "data:image/jpeg;base64,BBBB",
+     ""
+    ],
+    "output": {
+     "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+     "registry": [
+      {
+       "placeholder": "{{IMAGE_PLACEHOLDER_0}}",
+       "tag": "<img src=\"data:image/jpeg;base64,BBBB\">"
+      }
+     ]
+    }
+   }
+  ],
   "restore_image_placeholders": [
    {
     "input": [

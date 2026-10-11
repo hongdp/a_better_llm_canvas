@@ -49,7 +49,7 @@ from wc_text.policy import resolve_run_settings
 from wc_text.protocol_choice import resolve_document_protocol
 from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
 from wc_text.document_tools import to_openai_tools
-from wc_text.image_preservation import replace_images_with_placeholders, restore_image_placeholders
+from wc_text.image_preservation import register_image, replace_images_with_placeholders, restore_image_placeholders
 from wc_text.jsstr import js_trim
 from wc_text.stream_handlers import ASSISTANT_PLACEHOLDER, build_completion_warnings, split_streaming_response
 from wc_text.text import strip_incomplete_end_tag, trim_incomplete_html_tail
@@ -407,6 +407,9 @@ class ServerPorts:
 
     def restore(self, html: str) -> str:
         return restore_image_placeholders(html, self.image_registry)
+
+    def register(self, data_url: str, alt: str = "") -> str:
+        return register_image(self.image_registry, data_url, alt)
 
     # UiPort
     def progress(self, line: Optional[str]) -> None:
@@ -1258,6 +1261,9 @@ class _WebPort:
 
     async def read(self, url: str):
         return await server_web.web_read(self.username, url)
+
+    async def images(self, url: str, numbers):
+        return await server_web.web_images(self.username, url, numbers)
 
 
 engine = RunEngine()

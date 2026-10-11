@@ -103,12 +103,13 @@ class ToolContext:
               commit(id, html), open(id), create(title) -> id, rename(id, title), remove(id), snapshot(id, label)
     editor:   preview_document(html), preview_selection(html), discard_preview()
     selection: range() -> bool-ish (a selection exists), original_text() -> str
-    images:   preserve(html), restore(html)
+    images:   preserve(html), restore(html), register(data_url, alt) -> placeholder
     ui:       progress(line|None), writing(id|None)
     polish:   optional, run(html, on_progress) -> outcome dict [async]
     analyze:  optional, run(task, chapters, on_progress) -> outcome dict [async]
     attachments: optional, list() -> [meta with ref A1…], paragraphs(id) -> [str] [async]
-    web:      optional, search(query, max) -> [{title, url, snippet}] [async], read(url) -> {url, title, paragraphs} [async]
+    web:      optional, search(query, max) -> [{title, url, snippet}] [async], read(url) -> {url, title, paragraphs, images} [async],
+              images(url, numbers) -> [{n, alt, dataUrl, bytes} | {n, error}] [async]
     """
 
     def __init__(self, document, editor, selection, images, ui, run: RunState, polish=None, analyze=None, attachments=None, web=None) -> None:

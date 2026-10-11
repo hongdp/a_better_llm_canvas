@@ -1,11 +1,11 @@
 """web_search and web_read: the agent's view of the internet, through the
 host's web port (docs/features/attachments_and_web.md §2). Port of
 src/agent/tools/web.ts."""
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 from wc_text.jsstr import js_trim
-from wc_text.web_text import WEB_READ_CAP, render_search_results, render_web_page
+from wc_text.web_text import WEB_READ_CAP, render_search_results, render_web_images, render_web_page
 
 from ..registry import Tool
 from ..types import ToolContext, result
@@ -51,6 +51,41 @@ async def _read_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
     return result(out["last"] > 0 or not page["paragraphs"], out["content"], f"🌐 read {host}{span} ({out['used'] / 1000:.1f}k)")
 
 
+def _images_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
+    url = js_trim(raw.get("url") or "") if raw and isinstance(raw.get("url"), str) else ""
+    if not url:
+        return "no url was given"
+    numbers = raw.get("images") if raw else None
+    if not isinstance(numbers, list) or not numbers:
+        return "images is empty — give the numbers of the images as web_read marked them, e.g. [1, 2, 5]"
+    out: List[int] = []
+    for n in numbers:
+        if isinstance(n, bool) or not isinstance(n, (int, float)) or int(n) < 1:
+            return f"images must be image numbers from web_read, not {n!r}"
+        if int(n) not in out:
+            out.append(int(n))
+    if len(out) > 20:
+        return "at most 20 images per call"
+    return {"url": url, "numbers": out}
+
+
+async def _images_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    try:
+        fetched = await ctx.web.images(args["url"], args["numbers"])
+    except Exception as e:  # noqa: BLE001
+        return result(False, f"web_images failed: {e}", f"⚠️ web_images: {str(e).splitlines()[0][:120]}", retryable=False)
+    results = []
+    for r in fetched:
+        entry = dict(r)
+        if r.get("dataUrl"):
+            entry["placeholder"] = ctx.images.register(r["dataUrl"], r.get("alt") or "")
+            entry.pop("dataUrl", None)
+        results.append(entry)
+    got = sum(1 for r in results if r.get("placeholder"))
+    host = urlparse(args["url"]).hostname or args["url"]
+    return result(got > 0, render_web_images(args["url"], results), f"🖼️ fetched {got}/{len(results)} images from {host}", retryable=False)
+
+
 web_search_tool = Tool(
     name="web_search",
     description=("Search the internet (anonymously) and get back the top results: title, address and a snippet each. "
@@ -75,4 +110,16 @@ web_read_tool = Tool(
     kind="read", is_available=lambda ctx: ctx.web is not None, parse=_read_parse, execute=_read_execute,
 )
 
-WEB_TOOLS = [web_search_tool, web_read_tool]
+web_images_tool = Tool(
+    name="web_images",
+    description=("Fetch images from a page you read with web_read, by the numbers its \"[image N]\" markers carry, to put them in the book. "
+                 "Each comes back as a placeholder token to place in your write where the image belongs (its own paragraph, or the end of the one it illustrates); "
+                 "the write turns it into the image. Fetch only the images the user wants in the book, at most 20 per call."),
+    parameters={"type": "object", "properties": {
+        "url": {"type": "string", "description": "The page's address, as given to web_read."},
+        "images": {"type": "array", "items": {"type": "integer"}, "description": "The image numbers from web_read's markers, e.g. [1, 2, 5]."},
+    }, "required": ["url", "images"]},
+    kind="read", is_available=lambda ctx: ctx.web is not None, parse=_images_parse, execute=_images_execute,
+)
+
+WEB_TOOLS = [web_search_tool, web_read_tool, web_images_tool]

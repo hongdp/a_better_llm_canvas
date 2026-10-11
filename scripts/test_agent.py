@@ -104,11 +104,18 @@ class FakeBook:
                 return book.selected_text
 
         class Images:
+            def __init__(self):
+                self.registered = []
+
             def preserve(self, h):
                 return h
 
             def restore(self, h):
                 return h
+
+            def register(self, data_url, alt=""):
+                self.registered.append({"dataUrl": data_url, "alt": alt})
+                return f"{{{{IMAGE_PLACEHOLDER_{len(self.registered) - 1}}}}}"
 
         class Ui:
             def progress(self, line):

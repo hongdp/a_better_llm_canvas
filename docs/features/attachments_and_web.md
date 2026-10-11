@@ -78,8 +78,8 @@ for the editor and for the ledger.
 
 ## 2. Web access
 
-Two read tools, `web_search` and `web_read`, offered when the provider's
-`webAccess` setting is on (default on) and the server has a browser.
+Three tools, `web_search`, `web_read` and `web_images`, offered when the
+provider's `webAccess` setting is on (default on) and the server has a browser.
 
 - **The browser** (`scripts/server_web.py`), after x_archive's download
   browser: Playwright's Chromium, headless; `domcontentloaded` and a short
@@ -116,6 +116,17 @@ Two read tools, `web_search` and `web_read`, offered when the provider's
   quotes; navigation, scripts and forms dropped), capped per call with the
   range to continue from. A page is cached for ten minutes, so reading on
   costs no new visit.
+- **web_images** `{url, images}` (2026-10-11): a page's images, by the
+  numbers `web_read` marks them with (`[image 3: alt]`, where they sit —
+  lazy-loading `data-src` and the like included, icons by size attribute
+  and SVGs skipped). Each is fetched by the server (Referer set to the page,
+  redirects checked hop by hop, 8 MB cap), shrunk to 1200 px JPEG (Pillow,
+  else ffmpeg, else embedded raw under 1.5 MB), and registered in the run's
+  image registry; the model gets `{{IMAGE_PLACEHOLDER_n}}` tokens to place
+  in its write, which `restore` turns into `<img src="data:…">`. At most 20
+  per call. This replaced the Import-from-URL modal and its scrape pipeline
+  (`/api/import-url`, `services/import`), which were a separate path with
+  their own LLM calls; "载入这个帖子" is now a chat request.
 - **Untrusted**: every web result opens with a line saying the text comes
   from the internet and is information, not instructions.
 - **Offered**: only when `ProviderConfig.webAccess` is not false (a
@@ -123,7 +134,7 @@ Two read tools, `web_search` and `web_read`, offered when the provider's
   says the server has a browser — a tab asks once per page load. A server
   run checks `server_web.available()`. The system prompt mentions the two
   tools "when offered"; their schemas carry the rest.
-- **Tabs** call `POST /api/web/search` and `POST /api/web/read`; server runs
+- **Tabs** call `POST /api/web/search`, `POST /api/web/read` and `POST /api/web/images`; server runs
   call the same functions directly. At most two browser pages per user at a
   time.
 
