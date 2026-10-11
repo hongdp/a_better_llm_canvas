@@ -83,6 +83,19 @@ def init_db():
                 debug_mode INTEGER DEFAULT 0
             );
 
+            -- What a book uses, by reference to the user's settings: the provider,
+            -- its model and reasoning effort, the system prompt preset's id. Keys
+            -- and preset texts stay in user_settings.
+            CREATE TABLE IF NOT EXISTS book_preferences (
+                username TEXT NOT NULL,
+                book_id TEXT NOT NULL,
+                active_provider TEXT,
+                model TEXT,
+                reasoning_effort TEXT,
+                active_system_prompt_id TEXT,
+                PRIMARY KEY (username, book_id)
+            );
+
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT NOT NULL,
                 username TEXT NOT NULL,
@@ -251,3 +264,48 @@ def upsert_user_settings(conn, username: str, body: dict) -> None:
     conn.execute(f"INSERT INTO user_settings (username, {cols}) VALUES (?, ?, ?, ?, ?, ?, ?) "
                  f"ON CONFLICT(username) DO UPDATE SET {updates}",
                  (username, *(values[c] for c in _USER_SETTINGS_COLUMNS)))
+
+
+def upsert_book_preferences(conn, username: str, book_id: str, body: dict) -> None:
+    """Remember what this book uses (a book save carries the settings on screen): the active
+    provider, that provider's model and reasoning effort, the preset id. Absent fields keep theirs."""
+    provider = body.get("activeProvider")
+    configs = body.get("providerConfigs") if isinstance(body.get("providerConfigs"), dict) else {}
+    config = configs.get(provider) if provider and isinstance(configs.get(provider), dict) else {}
+    values = {
+        "active_provider": provider,
+        "model": config.get("model") or None,
+        "reasoning_effort": config.get("reasoningEffort") or None,
+        "active_system_prompt_id": body.get("activeSystemPromptId"),
+    }
+    if all(v is None for v in values.values()):
+        return
+    cols = ", ".join(values)
+    updates = ", ".join(f"{c} = COALESCE(excluded.{c}, book_preferences.{c})" for c in values)
+    conn.execute(f"INSERT INTO book_preferences (username, book_id, {cols}) VALUES (?, ?, ?, ?, ?, ?) "
+                 f"ON CONFLICT(username, book_id) DO UPDATE SET {updates}",
+                 (username, book_id, *values.values()))
+
+
+def apply_book_preferences(conn, username: str, book_id: str, result: dict) -> None:
+    """Lay a book's own choices over the user's settings in a book response. A preset id the user
+    has since deleted is ignored (the user's current one stands); keys and preset texts are never per book."""
+    row = conn.execute("SELECT * FROM book_preferences WHERE username = ? AND book_id = ?", (username, book_id)).fetchone()
+    if not row:
+        return
+    provider = row["active_provider"]
+    if provider:
+        result["activeProvider"] = provider
+        configs = result.get("providerConfigs")
+        if isinstance(configs, dict):
+            config = dict(configs.get(provider) or {})
+            if row["model"]:
+                config["model"] = row["model"]
+            if row["reasoning_effort"]:
+                config["reasoningEffort"] = row["reasoning_effort"]
+            configs[provider] = config
+    preset = row["active_system_prompt_id"]
+    presets = result.get("customSystemPrompts")
+    known = {p.get("id") for p in presets if isinstance(p, dict)} if isinstance(presets, list) else set()
+    if preset and (preset in known or preset == "prompt-none"):
+        result["activeSystemPromptId"] = preset

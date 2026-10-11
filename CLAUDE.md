@@ -447,6 +447,11 @@ Settings (provider configs with their keys, system prompts, theme) are the
 user's, not a book's: one `user_settings` row per user, written by every
 book save (`upsert_user_settings`). The old per-book `book_settings` table
 is folded into it and dropped at startup (`migrate_user_settings`).
+A book still remembers what it uses — the provider, that provider's model
+and reasoning effort, the preset's id — in `book_preferences`, by reference:
+every book save records them (`upsert_book_preferences`) and the book's GET
+lays them over the user's settings (`apply_book_preferences`; a deleted
+preset id falls back to the user's). Keys and preset texts are never per book.
 A `user_state` table holds each account's **last active book**: every
 book write records it, `/api/auth/session` returns it as
 `lastActiveBookId`, and the client's init opens that book ahead of the

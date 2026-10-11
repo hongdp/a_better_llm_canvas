@@ -1985,3 +1985,60 @@ def test_init_db_folds_per_book_settings_into_user_settings(tmp_path):
             assert conn.execute("SELECT theme FROM user_settings WHERE username = 'carol'").fetchone()[0] == "light"
         finally:
             conn.close()
+
+
+def test_each_book_keeps_its_provider_model_effort_and_preset_by_reference(tmp_path, monkeypatch):
+    """A book remembers what it uses; keys and preset texts stay the user's (one copy)."""
+    from fastapi.testclient import TestClient
+
+    _seed_book(tmp_path, monkeypatch)
+    conn = server_db.get_db()
+    try:
+        now = "2026-10-10T00:00:00Z"
+        conn.execute("INSERT INTO books (id, username, title, active_document_id, created_at, updated_at) VALUES ('book-2', 'alice', 'Two', NULL, ?, ?)", (now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    client = TestClient(api_server.app)
+    client.cookies.update({"web_canvas_session": "sess-1", "csrf_token": "tok-1"})
+    presets = [{"id": "p-1", "name": "One", "content": "text one"}, {"id": "p-2", "name": "Two", "content": "text two"}]
+
+    def save(book, provider, model, effort, preset):
+        configs = {"anthropic": {"apiKey": "sk-ant", "model": "claude-sonnet-5-5"}, "openai": {"apiKey": "sk-oa", "model": "gpt-5.5"}}
+        configs[provider] = {**configs[provider], "model": model, "reasoningEffort": effort}
+        res = client.put(f"/api/books/{book}", headers={"x-csrf-token": "tok-1"}, json={
+            "activeProvider": provider, "providerConfigs": configs, "customSystemPrompts": presets, "activeSystemPromptId": preset})
+        assert res.status_code == 200, res.text
+
+    save("book-1", "anthropic", "claude-opus-5-5", "high", "p-1")
+    save("book-2", "openai", "gpt-6.1-sol", "xhigh", "p-2")  # the user's settings now say openai / p-2
+    one = client.get("/api/books/book-1").json()
+    assert one["activeProvider"] == "anthropic" and one["activeSystemPromptId"] == "p-1"
+    assert one["providerConfigs"]["anthropic"]["model"] == "claude-opus-5-5"
+    assert one["providerConfigs"]["anthropic"]["reasoningEffort"] == "high"
+    assert one["providerConfigs"]["anthropic"]["apiKey"] == "sk-ant"  # the user's key, not a per-book copy
+    two = client.get("/api/books/book-2").json()
+    assert two["activeProvider"] == "openai" and two["providerConfigs"]["openai"]["model"] == "gpt-6.1-sol" and two["activeSystemPromptId"] == "p-2"
+
+    # A preset deleted since: the user's current choice stands. Preset texts are only the user's.
+    res = client.put("/api/books/book-2", headers={"x-csrf-token": "tok-1"},
+                     json={"customSystemPrompts": [presets[1]], "activeSystemPromptId": "p-2"})
+    assert res.status_code == 200
+    assert client.get("/api/books/book-1").json()["activeSystemPromptId"] == "p-2"
+    conn = server_db.get_db()
+    try:
+        assert [c[1] for c in conn.execute("PRAGMA table_info(book_preferences)")] == [
+            "username", "book_id", "active_provider", "model", "reasoning_effort", "active_system_prompt_id"]
+    finally:
+        conn.close()
+
+    # Deleting the book takes its preferences with it.
+    monkeypatch.setattr(api_server, "delete_book_content_dir", lambda *a: None)
+    monkeypatch.setattr(api_server.server_attachments, "delete_book_attachments", lambda *a: None)
+    monkeypatch.setattr(api_server.server_runs.server_context, "delete_book_context", lambda *a: None)
+    assert client.delete("/api/books/book-2", headers={"x-csrf-token": "tok-1"}).status_code == 200
+    conn = server_db.get_db()
+    try:
+        assert not conn.execute("SELECT 1 FROM book_preferences WHERE book_id = 'book-2'").fetchone()
+    finally:
+        conn.close()

@@ -39,7 +39,8 @@ import server_runs
 import server_attachments
 import server_web
 from server_config import sanitize_id
-from server_db import get_db, init_db, record_last_active_book, clear_last_active_book, upsert_user_settings
+from server_db import (get_db, init_db, record_last_active_book, clear_last_active_book, upsert_user_settings, upsert_book_preferences,
+                       apply_book_preferences)
 from server_auth import get_authenticated_username
 from server_content import (
     _get_content_dir,
@@ -190,8 +191,10 @@ async def create_book(request: Request):
 
         record_last_active_book(conn, username, book_id, now)
 
-        # Settings are the user's, shared by every book (user_settings).
+        # Settings are the user's, shared by every book (user_settings); the book keeps
+        # which provider, model, effort and preset it uses (book_preferences).
         upsert_user_settings(conn, username, body)
+        upsert_book_preferences(conn, username, book_id, body)
 
         # Save initial messages
         messages = body.get("messages", [])
@@ -329,6 +332,8 @@ async def get_book(request: Request, book_id: str):
             if settings["theme"]:
                 result["theme"] = settings["theme"]
             result["debugMode"] = bool(settings["debug_mode"])
+        # …with this book's own provider, model, effort and preset over them.
+        apply_book_preferences(conn, username, safe_book_id, result)
 
         return result
     finally:
@@ -378,8 +383,10 @@ async def update_book(request: Request, book_id: str):
         # it is the natural place to remember which book the user is in.
         record_last_active_book(conn, username, safe_book_id, now)
 
-        # Settings are the user's, shared by every book (user_settings).
+        # Settings are the user's, shared by every book (user_settings); the book keeps
+        # which provider, model, effort and preset it uses (book_preferences).
         upsert_user_settings(conn, username, body)
+        upsert_book_preferences(conn, username, safe_book_id, body)
 
         # Update messages if provided (full replace)
         if "messages" in body:
@@ -439,6 +446,7 @@ async def delete_book_endpoint(request: Request, book_id: str):
     try:
         conn.execute("DELETE FROM books WHERE username = ? AND id = ?", (username, safe_book_id))
         conn.execute("DELETE FROM messages WHERE username = ? AND book_id = ?", (username, safe_book_id))
+        conn.execute("DELETE FROM book_preferences WHERE username = ? AND book_id = ?", (username, safe_book_id))
         clear_last_active_book(conn, username, safe_book_id)
         # documents and versions cascade-deleted via FK
         conn.commit()
