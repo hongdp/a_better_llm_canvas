@@ -21,11 +21,13 @@ type ScriptedResponse =
   | { text: string; toolCalls: ScriptedToolDelta[] }
 const responses: ScriptedResponse[] = []
 const calls: LLMMessage[][] = []
+/** Each call's config, beside `calls`. */
+const configs: Array<{ tools?: unknown; toolChoice?: string; conversationId?: string | null }> = []
 
 vi.mock('../../services/llm', () => ({
   streamLLM: async (
     messages: LLMMessage[],
-    _config: unknown,
+    config: { tools?: unknown; toolChoice?: string; conversationId?: string | null },
     callbacks: {
       onChunk: (c: string) => void
       onDone: (t: string, u?: { promptTokens: number; completionTokens: number }) => void
@@ -34,6 +36,7 @@ vi.mock('../../services/llm', () => ({
     }
   ) => {
     calls.push(messages)
+    configs.push(config)
     // Past the script, the model closes the turn with no action — writes
     // hand their result back now, so every write is followed by this reply.
     const scripted = responses.shift() ?? '<doc_status>unchanged</doc_status>'
@@ -185,6 +188,7 @@ beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['Date'] })
   responses.length = 0
   calls.length = 0
+  configs.length = 0
   // jsdom has no IndexedDB; the store's debounced save logs and moves on.
   vi.spyOn(console, 'error').mockImplementation(() => {})
   useAppStore.setState({
@@ -231,6 +235,35 @@ describe('useChatLLM — history past the window', () => {
     expect(turn.some(m => m.content.startsWith('turn 0 '))).toBe(false)
     expect(turn.some(m => m.content.startsWith('turn 14 '))).toBe(true)
     expect(finalUserContent(1)).toContain('USER REQUEST:\n继续')
+    harness.unmount()
+  })
+})
+
+describe('useChatLLM — a summary from the live conversation (cache_continuity.md §3.4)', () => {
+  it('appends the instruction to the conversation and offers the turn\'s tools, none to be called', async () => {
+    const s = useAppStore.getState()
+    const model = s.providerConfigs[s.activeProvider].model
+    useAppStore.setState({ discoveredContextWindows: { ...s.discoveredContextWindows, [model]: 40_000 } })
+    responses.push(`好。\n${CLOSE}`)
+    const harness = renderChatHook()
+    await send(harness, '第一轮')
+    // The conversation grows past its budget.
+    useAppStore.setState(st => ({
+      messages: [...st.messages, ...Array.from({ length: 14 }, (_, i) => ({
+        id: `g${i}`, role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant', content: `more ${i} ` + 'word '.repeat(1_000), timestamp: 't'
+      }))]
+    }))
+    responses.push('<summary>\n1. All of it.\n</summary>', CLOSE)
+    await send(harness, '继续')
+
+    const ask = calls[1]
+    expect(ask[0]).toEqual(calls[0][0])
+    expect(ask.at(-1)!.content).toMatch(/^STOP — this is not a request to continue the work\./)
+    // The first turn, replayed as it was sent, opens the conversation it summarizes.
+    expect(ask[1]).toEqual(calls[0][1])
+    expect(configs[1]).toMatchObject({ toolChoice: 'none', conversationId: 'book-test' })
+    expect(configs[1].tools).toEqual(configs[0].tools)
+    expect(calls[2].some(m => m.content.includes('<conversation_summary>\n1. All of it.\n</conversation_summary>'))).toBe(true)
     harness.unmount()
   })
 })
@@ -398,25 +431,27 @@ describe('useChatLLM — cache-first prompt layout', () => {
     harness.unmount()
   })
 
-  it('appends a newly pinned chapter without disturbing the first one', async () => {
+  // cache_continuity.md §3.3: between summaries the ledger stays put; a
+  // change to the pins goes into the turn's tail.
+  it('sends a newly pinned chapter in the tail and leaves the ledger as it was', async () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     pin('doc-2')
     const harness = renderChatHook()
 
     await send(harness, '先看 Chapter 2')
-    // A second chapter joins: it must be APPENDED, never inserted or re-sorted.
     pin('doc-3')
     const second = calls.length
     await send(harness, '再看 Chapter 3')
 
     const before = calls[0].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
     const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
-    expect(after.startsWith(before.replace(/\n$/, ''))).toBe(true)
-    expect(after).toContain('the return')
+    expect(after).toBe(before)
+    expect(finalUserContent(second)).toContain('PINNED CHAPTERS — changed or pinned since the copy you have')
+    expect(finalUserContent(second)).toContain('the return')
     harness.unmount()
   })
 
-  it('drops an unpinned chapter at the next turn', async () => {
+  it('names an unpinned chapter in the tail, to be disregarded, and leaves the ledger as it was', async () => {
     responses.push('<canvas><p>a</p></canvas>', CLOSE, '<canvas><p>b</p></canvas>')
     pin('doc-2', 'doc-3')
     const harness = renderChatHook()
@@ -428,7 +463,27 @@ describe('useChatLLM — cache-first prompt layout', () => {
 
     const after = calls[second].find(m => m.content.includes('REFERENCED CHAPTERS'))!.content
     expect(after).toContain('the betrayal')
-    expect(after).not.toContain('the return')
+    expect(after).toContain('the return')
+    expect(finalUserContent(second)).toContain('No longer pinned — disregard the earlier copies of: #3 "Chapter 3"')
+    harness.unmount()
+  })
+
+  // cache_continuity.md §3.1–3.2: the next turn replays the finished one as
+  // it was sent, so its first request extends the previous turn's last one.
+  it('extends the previous turn\'s last request byte for byte and abbreviates the unchanged index', async () => {
+    responses.push(`读完了。\n${CLOSE}`, `好的。\n${CLOSE}`)
+    pin('doc-2')
+    const harness = renderChatHook()
+
+    await send(harness, '第一轮')
+    const last = calls[calls.length - 1]
+    await send(harness, '第二轮')
+    const next = calls[calls.length - 1]
+
+    expect(next.slice(0, last.length)).toEqual(last)
+    expect(next[last.length]).toMatchObject({ role: 'assistant', content: `读完了。\n${CLOSE}`, cacheHint: true })
+    expect(finalUserContent(calls.length - 1)).toContain('CHAPTER INDEX: unchanged since your last turn')
+    expect(finalUserContent(calls.length - 1)).toContain('CURRENT ACTIVE DOCUMENT: #1 "Chapter 1" — unchanged since your last turn')
     harness.unmount()
   })
 

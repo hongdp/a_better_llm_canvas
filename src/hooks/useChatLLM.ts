@@ -6,9 +6,11 @@ import { findResumableJob, findJobsForBubbles, resumeRemoteGeneration, abortRemo
 import type { StreamCallbacks } from '../types/llm'
 import type { AppState } from '../store/types'
 import { getTimestampId, stripIncompleteEndTag, trimIncompleteHtmlTail, isBlankContent } from '../utils/text'
-import { trimHistoryForContext, stripChatDisplayArtifacts, buildAttachmentsLabel, wasTurnInterrupted, htmlToPlainText } from '../utils/llmContext'
+import { stripChatDisplayArtifacts, buildAttachmentsLabel, wasTurnInterrupted, htmlToPlainText } from '../utils/llmContext'
 import { interruptedTurnReminder, wrapReminder } from '../agent/reminders'
-import { planConversationSummary, buildSummaryRequest, parseSummaryReply, summaryMessages, type SummarizableMessage } from '../utils/conversationSummary'
+import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, parseSummaryReply, summaryMessages, type SummarizableMessage } from '../utils/conversationSummary'
+import { planHistoryUnits, summarizableHistory, historyWindow, type HistoryEntry, type TurnTranscript } from '../utils/turnTranscripts'
+import { buildChapterIndex } from '../utils/chapterIndex'
 import { loadChatSummary, saveChatSummary } from '../store/chatSummaryStore'
 import { replaceImagesWithPlaceholders, restoreImagePlaceholders, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters, pinnedContextIds } from '../utils/contextSelection'
@@ -25,7 +27,7 @@ import {
 import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
-import { buildLedgerMessages, buildVolatileTail, ledgerBlock, type DynamicContextOptions } from './chat/dynamicContext'
+import { buildLedgerMessages, buildVolatileTail, diffTailParts, ledgerBlock, pinnedUpdates, type DynamicContextOptions, type SentTail } from './chat/dynamicContext'
 import { stripDiffMarkup, diffHtml } from '../utils/diff'
 import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
@@ -75,6 +77,8 @@ const REJOIN_FIRST_EVENT_TIMEOUT_MS = 20_000
 /** What a run reports into: the bubble, the chapter it started on, the cost estimate. */
 interface RunInfo {
   assistantMsgId: string
+  /** The user message this turn answers: its transcript is replayed only right after it (cache_continuity.md §3.1). */
+  userMsgId?: string
   /** The chapter that was active when the turn was sent. */
   startId: string
   originalDocContent: string
@@ -101,6 +105,10 @@ interface StreamRenderContext extends RunInfo {
  */
 /** Assistant turns whose grok reasoning items go back in the next request (the most recent ones). */
 export const REASONING_HISTORY_TURNS = 8
+/** Turn transcripts a tab keeps in memory (cache_continuity.md §3.1); older turns go back to their collapsed pair. */
+const MAX_KEPT_TRANSCRIPTS = 60
+/** The output a summary at the end of the conversation may use (server_context.SUMMARY_MAX_OUTPUT_TOKENS). */
+const SUMMARY_MAX_OUTPUT_TOKENS = 8_192
 
 const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, editParagraphsTool, ...BOOK_TOOLS, polishChapterTool, planTool, askUserTool, ...WEB_TOOLS])
 
@@ -346,6 +354,15 @@ export function useChatLLM({
   // text, and a different model is a different cache entirely — in both cases
   // the prefix we think is hot does not exist, so the ledger starts over.
   const ledgerScopeRef = useRef<string>('')
+  // Cache continuity (docs/features/cache_continuity.md), in this tab's
+  // memory: each finished turn as sent, by reply id (§3.1); what each part
+  // of the tail last went out as (§3.2); the summary the ledger was frozen
+  // with — null until this tab has built one (§3.3); and the tools the last
+  // step offered, which a summary at the end of the conversation repeats (§3.4).
+  const transcriptsRef = useRef(new Map<string, TurnTranscript>())
+  const sentTailRef = useRef<SentTail>({})
+  const epochSummaryRef = useRef<string | null>(null)
+  const lastToolsRef = useRef<{ scope: string; tools: ReturnType<typeof toOpenAITools> | undefined } | null>(null)
   // Time-to-first-token for the turn in flight. On a local endpoint this is
   // the ONLY cache signal — llama.cpp reports no cached-token count, and a
   // lost prefix shows up purely as prefill time.
@@ -646,6 +663,33 @@ export function useChatLLM({
       console.warn('[chat] Conversation summary failed; the oldest history is cut instead', e)
       return null
     }
+  }, [])
+
+  /**
+   * The summary asked for at the end of the live conversation
+   * (cache_continuity.md §3.4): the turn's model, reasoning effort,
+   * conversation id and tools (none to be called), so it reads the
+   * conversation from the cache. Throws on failure.
+   */
+  const summarizeLive = useCallback(async (messages: LLMMessage[], tools: ReturnType<typeof toOpenAITools> | undefined): Promise<string | null> => {
+    const s = useAppStore.getState()
+    const cfg = s.providerConfigs[s.activeProvider]
+    const reply = await new Promise<string>((resolve, reject) => {
+      void streamLLM(messages, {
+        ...cfg, provider: s.activeProvider, debug: s.debugMode,
+        maxOutputTokens: Math.min(cfg.maxOutputTokens ?? 16_384, SUMMARY_MAX_OUTPUT_TOKENS),
+        conversationId: s.activeBookId, tools, toolChoice: tools ? 'none' as const : undefined,
+        remoteMeta: { bookId: s.activeBookId ?? undefined, kind: 'batch' }
+      }, {
+        onChunk: () => {},
+        onDone: (text, usage) => {
+          if (usage) useAppStore.getState().addSessionTokens(usage.promptTokens, usage.completionTokens, usage.cachedPromptTokens || 0)
+          resolve(text)
+        },
+        onError: reject
+      })
+    })
+    return parseSummaryReply(reply)
   }, [])
 
   /** One analyze_book batch: the chat model, no tools, its own cache key. */
@@ -1140,6 +1184,13 @@ export function useChatLLM({
       // the continuity signal admits them into next turn's cached ledger,
       // instead of the model paying a read step for them again (D4, D7).
       modelReadIdsRef.current = summary.readIds
+      // The turn as sent, for the next one to replay (cache_continuity.md §3.1).
+      // A rejoined run never saw the request it continues: nothing to keep.
+      if (info.userMsgId && !info.rejoined && summary.transcript.length > 0) {
+        const kept = transcriptsRef.current
+        kept.set(info.assistantMsgId, { userMessageId: info.userMsgId, messages: summary.transcript })
+        while (kept.size > MAX_KEPT_TRANSCRIPTS) kept.delete(kept.keys().next().value as string)
+      }
       // …and the model has seen their current bytes (D8).
       const turn = turnCounterRef.current
       for (const id of [...summary.readIds, ...summary.touched.map(t => t.documentId)]) {
@@ -1589,6 +1640,8 @@ export function useChatLLM({
     // offering both invites the model to mix them, and the tag parser then
     // sees a reply with no tags.
     const offered = rc.run.offeredTools()
+    const tools = offered.length > 0 ? toOpenAITools(toToolSpecs(offered)) : undefined
+    lastToolsRef.current = { scope: ledgerScopeRef.current, tools }
 
     try {
       await streamLLM(
@@ -1599,7 +1652,7 @@ export function useChatLLM({
           debug: s.debugMode,
           signal,
           conversationId: s.activeBookId,
-          tools: offered.length > 0 ? toOpenAITools(toToolSpecs(offered)) : undefined,
+          tools,
           // The last step the budget allows: tools stay in the request (earlier
           // calls reference them), but no new call is allowed (D5).
           toolChoice: final && offered.length > 0 ? 'none' as const : undefined,
@@ -1884,6 +1937,9 @@ export function useChatLLM({
       ledgerRef.current = EMPTY_LEDGER
       ledgerScopeRef.current = ledgerScope
       seenRef.current = new Map()
+      transcriptsRef.current = new Map()
+      sentTailRef.current = {}
+      epochSummaryRef.current = null
     }
 
     /*
@@ -1920,30 +1976,38 @@ export function useChatLLM({
     // Few, because each is ciphertext the size of the reasoning it encodes.
     const withReasoning = new Set(
       historySource.filter(m => m.role === 'assistant' && m.reasoningItems?.length).slice(-REASONING_HISTORY_TURNS).map(m => m.id))
-    const historyTexts = historySource
+    const entries: HistoryEntry[] = historySource
       .filter(m => m.id !== 'welcome')
       .map(m => ({
+        id: m.id,
         role: m.role,
         content: stripChatDisplayArtifacts(m.content) + agentHistoryNote(m),
         images: m.images,
         ...(s.activeProvider === 'grok' && withReasoning.has(m.id) ? { responseItems: m.reasoningItems } : {})
       }))
+    // With the agent tools on, the request extends the previous turn's
+    // (cache_continuity.md): earlier turns replay as they were sent, the
+    // ledger stays frozen until the summary changes, and the tail sends only
+    // what changed since the copy the model has.
+    const runSettings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider])
+    const continuity = runSettings.agentTools
+    const replay: Record<string, TurnTranscript> = continuity ? Object.fromEntries(transcriptsRef.current) : {}
+    const units = planHistoryUnits(entries, replay)
     const activeDocContent = s.documents.find(d => d.id === s.activeDocumentId)?.content ?? ''
     // Budget against the provider's price cliff where it has one, not just its
     // window: xAI's long-context tier counts CACHED tokens toward the
     // threshold and doubles every rate above it, so a well-cached conversation
     // can cross the line with nothing looking wrong.
     const cacheProfile = getCacheProfile(s.activeProvider)
+    const maxOutputTokens = s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384
+    const windowTokens = resolveContextWindowTokens(
+      s.activeProvider,
+      s.providerConfigs[s.activeProvider]?.model ?? '',
+      s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? '']
+    )
     const historyBudget = historyBudgetChars({
-      contextTokens: targetPromptTokens(
-        cacheProfile,
-        resolveContextWindowTokens(
-          s.activeProvider,
-          s.providerConfigs[s.activeProvider]?.model ?? '',
-          s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? '']
-        )
-      ),
-      maxOutputTokens: s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384,
+      contextTokens: targetPromptTokens(cacheProfile, windowTokens),
+      maxOutputTokens,
       // Everything else this turn sends: system prompt, the ledger block and
       // the volatile tail. The ledger is not built yet, so its members are
       // priced from the documents they will render.
@@ -1951,16 +2015,42 @@ export function useChatLLM({
         estimateTokens(systemPrompt.content) +
         estimateTokens(activeDocContent) +
         ledgerRef.current.entries.reduce((sum, e) => sum + Math.ceil(e.chars * 0.9), 0),
-      cjkRatio: cjkRatioOf(historyTexts.map(m => m.content).join('') || activeDocContent)
+      cjkRatio: cjkRatioOf(entries.map(m => m.content).join('') || activeDocContent)
     })
     // History past the budget is summarized, not cut (agentic_chat_loop.md
     // §0.9): the stored note serves while its cut still fits, a call refreshes
     // it when it does not, and a failed call leaves the plain cut for this turn.
-    const historyIds = historySource.filter(m => m.id !== 'welcome').map(m => m.id)
-    const summarizable: SummarizableMessage[] = historyTexts.map((m, i) => ({ id: historyIds[i], role: m.role as 'user' | 'assistant', content: m.content, images: m.images }))
-    let summaryPlan = planConversationSummary(summarizable, historyBudget, s.activeBookId ? loadChatSummary(s.activeBookId) : null)
+    const stored = s.activeBookId ? loadChatSummary(s.activeBookId) : null
+    let summaryPlan = planConversationSummary(summarizableHistory(entries, units, replay), historyBudget, stored)
     if (summaryPlan.needs) {
-      const made = await summarizeConversation(summaryPlan.needs)
+      let made: string | null = null
+      // The conversation as the last request carried it, then the instruction
+      // (cache_continuity.md §3.4) — when this tab sent that request (its
+      // ledger and tools are known here) and it fits the window.
+      const tools = lastToolsRef.current?.scope === ledgerScopeRef.current ? lastToolsRef.current : null
+      if (continuity && tools && epochSummaryRef.current !== null) {
+        const prior = summaryPlan.needs.previousSummary
+        const priorAt = prior && stored ? Math.max(0, entries.findIndex(m => m.id === stored.upToId)) : 0
+        const live: LLMMessage[] = [
+          systemPrompt,
+          ...buildLedgerMessages(s.documents, ledgerRef.current.entries, undefined, { agentTools: true }),
+          ...(prior ? summaryMessages(prior) : []),
+          ...historyWindow(entries, units, replay, priorAt, null).messages,
+          { role: 'user', content: buildSummaryInstruction(entries[summaryPlan.cutIndex]?.content ?? null, Boolean(prior)) }
+        ]
+        const size = live.reduce((sum, m) => sum + estimateTokens(m.content) + (m.toolCalls ?? []).reduce((t, c) => t + estimateTokens(c.argumentsText), 0), 0)
+        if (size <= Math.floor(windowTokens * 0.95) - Math.min(maxOutputTokens, SUMMARY_MAX_OUTPUT_TOKENS)) {
+          try {
+            made = await summarizeLive(live, tools.tools)
+          } catch (e) {
+            console.warn('[chat] Conversation summary failed; the oldest history is cut instead', e)
+          }
+        } else {
+          made = await summarizeConversation(summaryPlan.needs)
+        }
+      } else {
+        made = await summarizeConversation(summaryPlan.needs)
+      }
       if (made && summaryPlan.upToId && s.activeBookId) {
         saveChatSummary(s.activeBookId, { upToId: summaryPlan.upToId, text: made })
         summaryPlan = { ...summaryPlan, summary: made, needs: null }
@@ -1969,21 +2059,15 @@ export function useChatLLM({
       }
     }
     const summaryPrefix = summaryPlan.summary ? summaryMessages(summaryPlan.summary) : []
-    const historyMessages: LLMMessage[] = trimHistoryForContext(
-      summaryPlan.summary ? historyTexts.slice(summaryPlan.cutIndex) : historyTexts,
-      { maxChars: summaryPlan.summary ? Number.MAX_SAFE_INTEGER : historyBudget }
-    )
+    const window = historyWindow(entries, units, replay, summaryPlan.summary ? summaryPlan.cutIndex : 0, summaryPlan.summary ? null : historyBudget)
+    const historyMessages: LLMMessage[] = window.messages
     if (historyMessages.length > 0) {
       historyMessages[historyMessages.length - 1].cacheHint = true
     }
 
     // The agentic loop's view of the index (D8): which chapters this request
     // carries in full, which the model saw before and whether they changed.
-    const runSettings = resolveRunSettings(s.activeProvider, s.providerConfigs[s.activeProvider])
     turnCounterRef.current += 1
-    const agentTail = (inContext: string[]): DynamicContextOptions => runSettings.agentTools
-      ? { agentTools: true, markers: freshnessMarkers(s.documents, s.activeDocumentId, inContext, seenRef.current, turnCounterRef.current) }
-      : {}
 
     const autoIds = selection?.autoIds ?? []
     // Cache-first assembly: chapters go into an append-only block ahead of
@@ -2000,6 +2084,7 @@ export function useChatLLM({
       const accepted = stripDiffMarkup(d.content)
       return { id: d.id, chars: Math.min(accepted.length, MAX_LEDGER_DOC_CHARS), hash: hashContent(accepted) }
     })
+    const hashOf = new Map(docsForPlan.map(d => [d.id, d.hash]))
     const wanted = selection
       ? selection.attachedIds
       // Budgeted on the text the ledger renders, not the HTML: a formatted
@@ -2019,38 +2104,98 @@ export function useChatLLM({
       bookOrder,
       s.activeDocumentId
     )
-
-    // Removing a chapter used to raise a consent card here (the drop costs
-    // a re-prefill of everything after it in the cached prefix). Removed by
-    // request: the user's removal is honored silently and the cache pays
-    // the one-turn re-prefill. The planner still reports the cost in
-    // `resendChars` if a UI ever wants to show it non-blockingly.
     // With a renderer the planner appends a newer version of an edited
     // chapter instead of cutting the ledger at its old copy, and every
     // entry keeps the exact bytes it was sent with (contextLedger).
-    const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId, {
-      render: (id, kind) => {
+    const planOptions = {
+      render: (id: string, kind: 'fresh' | 'update') => {
         const doc = s.documents.find(d => d.id === id)
         return doc ? ledgerBlock(doc, kind) : ''
       },
       keepIds
-    })
-
-    const attachedIds = ledgerChapterIds(plan.ledger)
-    const bookPrefixMessages = buildLedgerMessages(s.documents, plan.ledger.entries, undefined, { agentTools: runSettings.agentTools })
-    ledgerRef.current = plan.ledger
+    }
+    const turn = opts.assistantMsgId
+    let attachedIds: string[]
+    let activeCopyOlder: boolean
+    let pinnedBlock = ''
+    let pinnedSent: SentTail['pinned'] = {}
+    if (continuity) {
+      // The ledger is frozen between summaries (§3.3): rebuilt when the
+      // summary changed, when no history follows it, or when this tab has not
+      // built one yet (a reload: the request it would extend is not known).
+      const summaryKey = summaryPlan.summary ? summaryPlan.upToId ?? '' : ''
+      let sent = sentTailRef.current
+      if (epochSummaryRef.current !== summaryKey || historyMessages.length === 0) {
+        ledgerRef.current = planLedgerTurn(EMPTY_LEDGER, desiredIds, docsForPlan, s.activeDocumentId, planOptions).ledger
+        epochSummaryRef.current = summaryKey
+        sent = { ...sent, pinned: {} }
+      }
+      const ledgerEntries = ledgerRef.current.entries
+      const pins = desiredIds.flatMap(id => {
+        const doc = s.documents.find(d => d.id === id)
+        return doc ? [{ id, number: bookOrder.indexOf(id) + 1, title: doc.title, content: doc.content, hash: hashOf.get(id) ?? '' }] : []
+      })
+      const previousPins = sent.pinned ?? {}
+      const names: Record<string, string> = {}
+      for (const id of [...ledgerEntries.map(e => e.id), ...Object.keys(previousPins)]) {
+        const at = bookOrder.indexOf(id)
+        names[id] = at >= 0 ? `#${at + 1} "${s.documents[at].title}"` : 'a deleted chapter'
+      }
+      const pinned = pinnedUpdates(pins, ledgerEntries, previousPins, window.present, turn, names, keepIds)
+      pinnedBlock = pinned.block
+      pinnedSent = pinned.sent
+      const ledgerIds = ledgerChapterIds(ledgerRef.current)
+      attachedIds = [...pins.map(p => p.id), ...keepIds.filter(id => ledgerIds.includes(id))]
+      // The open pinned chapter's latest copy (ledger or tail) may be older than its text now: say which is current.
+      let latest: string | undefined
+      if (keepIds.length > 0) {
+        const copy = previousPins[keepIds[0]]
+        latest = copy && window.present.includes(copy.turn) && copy.hash !== 'unpinned'
+          ? copy.hash
+          : [...ledgerEntries].reverse().find(e => e.id === keepIds[0])?.hash
+      }
+      activeCopyOlder = Boolean(latest && latest !== hashOf.get(keepIds[0]))
+    } else {
+      const plan: LedgerPlan = planLedgerTurn(ledgerRef.current, desiredIds, docsForPlan, s.activeDocumentId, planOptions)
+      attachedIds = ledgerChapterIds(plan.ledger)
+      ledgerRef.current = plan.ledger
+      // The open pinned chapter's copy above may be older than its text now: say which is current.
+      const activeCopy = keepIds.length > 0 ? [...plan.ledger.entries].reverse().find(e => e.id === keepIds[0]) : undefined
+      activeCopyOlder = Boolean(activeCopy && activeCopy.hash !== hashOf.get(keepIds[0]))
+    }
+    const bookPrefixMessages = buildLedgerMessages(s.documents, ledgerRef.current.entries, undefined, { agentTools: runSettings.agentTools })
     previousAttachedIdsRef.current = attachedIds
-    // The open pinned chapter's copy above may be older than its text now: say which is current.
-    const activeCopy = keepIds.length > 0 ? [...plan.ledger.entries].reverse().find(e => e.id === keepIds[0]) : undefined
-    const activeCopyOlder = Boolean(activeCopy && activeCopy.hash !== docsForPlan.find(d => d.id === keepIds[0])?.hash)
-    const dynamicContext = buildTail({ ...agentTail(attachedIds), ...(activeCopyOlder ? { activeCopyOlder: true } : {}) })
+    const markers = runSettings.agentTools
+      ? freshnessMarkers(s.documents, s.activeDocumentId, attachedIds, seenRef.current, turnCounterRef.current)
+      : undefined
+    const tailOpts: DynamicContextOptions = {
+      ...(runSettings.agentTools ? { agentTools: true, markers } : {}),
+      ...(activeCopyOlder ? { activeCopyOlder: true } : {})
+    }
+    // The book's reference files, by reference only (attachments_and_web.md §1).
+    let index = runSettings.agentTools && s.user ? renderAttachmentIndex(bookAttachments(s.activeBookId)) : ''
+    if (continuity) {
+      // Each part in full only when the copy the model has is gone or stale (§3.2).
+      const diff = diffTailParts({
+        index: buildChapterIndex(s.documents, s.activeDocumentId, { agentTools: true, markers }),
+        attachments: index,
+        active: selectedText || !activeDoc ? null : {
+          id: activeDoc.id, number: bookOrder.indexOf(activeDoc.id) + 1, title: activeDoc.title,
+          hash: `${hashOf.get(activeDoc.id) ?? ''}${activeCopyOlder ? '|older' : ''}`
+        }
+      }, sentTailRef.current, window.present, turn)
+      tailOpts.indexOverride = diff.index
+      if (pinnedBlock) tailOpts.pinnedBlock = pinnedBlock
+      if (diff.active !== null) tailOpts.activeOverride = diff.active
+      index = diff.attachments
+      sentTailRef.current = { ...diff.sent, pinned: pinnedSent }
+    }
+    const dynamicContext = buildTail(tailOpts)
     // Agent turns carry no label: the pins in the sidebar are what rides along.
     const attachmentsText = agentContext ? '' : buildAttachmentsLabel(attachedIds, s.documents, autoIds)
 
     // The turn after a Stop says so (agentic_chat_loop.md §0.8).
     const interrupted = wasTurnInterrupted(historySource) ? `\n\n${wrapReminder(interruptedTurnReminder())}` : ''
-    // The book's reference files, by reference only (attachments_and_web.md §1).
-    const index = runSettings.agentTools && s.user ? renderAttachmentIndex(bookAttachments(s.activeBookId)) : ''
     const files = index ? `\n\n${index}` : ''
     const finalUserMessage: LLMMessage = {
       role: 'user',
@@ -2066,7 +2211,7 @@ export function useChatLLM({
       estimatedInputTokens: Math.ceil(JSON.stringify(apiMessages).length / 4),
       inContextIds: [...attachedIds, s.activeDocumentId]
     }
-  }, [buildSystemPrompt, buildTail, summarizeConversation])
+  }, [buildSystemPrompt, buildTail, summarizeConversation, summarizeLive, selectedText])
 
   /**
    * Hand a message to the turn in flight. True when a run took it (the
@@ -2189,6 +2334,7 @@ export function useChatLLM({
 
     await startTurn(request.apiMessages, {
       assistantMsgId,
+      userMsgId: userMsg.id,
       startId: s.activeDocumentId,
       originalDocContent,
       attachmentsText: request.attachmentsText,
@@ -2256,6 +2402,7 @@ export function useChatLLM({
 
     await startTurn(request.apiMessages, {
       assistantMsgId,
+      userMsgId: editedMsg?.id,
       startId: s.activeDocumentId,
       originalDocContent,
       attachmentsText: request.attachmentsText,

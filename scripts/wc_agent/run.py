@@ -57,6 +57,13 @@ async def _maybe_await(value):
     return value
 
 
+def offered_tools_for(registry: ToolRegistry, ctx: ToolContext, write_protocol: str, agent_tools: bool) -> List[Tool]:
+    """The tools a run offers natively — known before the run exists, for a call that must offer the same (a summary)."""
+    return registry.available(ctx, lambda t:
+                              (write_protocol == "tools" or not t.markup_form or (t.native_on_markup and agent_tools))
+                              and (agent_tools or t.markup_form))
+
+
 class AgentRun:
     def __init__(self, *, registry: ToolRegistry, ctx: ToolContext, write_protocol: str,
                  driver: Callable[[List[Dict[str, Any]], int, bool], Awaitable[StepOutput]], observer: Any,
@@ -96,6 +103,10 @@ class AgentRun:
         #: Messages the user sent while the run was working; the next step carries them (steer).
         self.pending_steers: List[str] = []
         self.messages: List[Dict[str, Any]] = list(initial_messages)
+        #: Where this turn's own messages start (its final user message): the transcript is from here (cache_continuity.md §3.1).
+        self.initial_count = len(initial_messages)
+        #: The step that ended the run, not appended to the messages: the transcript's last messages.
+        self._final_messages: List[Dict[str, Any]] = []
         self.steps_taken = 0
         self.corrective_used = 0
         self.cancelled = False
@@ -185,9 +196,7 @@ class AgentRun:
 
     def offered_tools(self) -> List[Tool]:
         if self._offered is None:
-            self._offered = self.registry.available(self.ctx, lambda t:
-                (self.write_protocol == "tools" or not t.markup_form or (t.native_on_markup and self.agent_tools))
-                and (self.agent_tools or t.markup_form))
+            self._offered = offered_tools_for(self.registry, self.ctx, self.write_protocol, self.agent_tools)
         return self._offered
 
     # ── a step finished ──────────────────────────────────────────────────────
@@ -258,6 +267,7 @@ class AgentRun:
             self.chat_texts.append(js_trim(collected["chatText"]))
             self.timeline.append({"type": "text", "text": js_trim(collected["chatText"])})
         self.stray += collected["strayMarkup"]
+        self._final_messages = [self._reply_of(out)]
         await self.finish({
             "failedUpdate": failure,
             "exhaustedCorrective": self.can_continue,
@@ -363,6 +373,8 @@ class AgentRun:
             await _maybe_await(self.observer.on_step_executed(self.progress()))
             return
 
+        # A last step that called tools ends with its calls answered, or the replay would leave them dangling.
+        self._final_messages = self._result_messages(out, ran, results) if ran else [self._reply_of(out)]
         await self.finish({
             "failedUpdate": None, "exhaustedCorrective": False, "unretriableFailedUpdate": False,
             "endReason": "cancelled" if self.cancelled else (decision["reason"] if decision["action"] == "end" else "step_limit"),
@@ -466,8 +478,24 @@ class AgentRun:
         self._next = None
         if end["endReason"] != "cancelled":
             self._drop_empty_created()
-        summary = {"strayMarkup": self.stray, "effects": dict(self.effects), **self.progress(), "question": None, **end}
+        summary = {"strayMarkup": self.stray, "effects": dict(self.effects), **self.progress(), "question": None, **end,
+                   "transcript": self.transcript()}
         await _maybe_await(self.observer.on_finish(summary))
+
+    def transcript(self) -> List[Dict[str, Any]]:
+        """What this turn added after the prefix it shared with the conversation — its final user message as
+        sent, every step's messages as last sent, and the step that ended it — for the next turn to replay
+        verbatim (cache_continuity.md §3.1)."""
+        return [dict(m) for m in [*self.messages[max(0, self.initial_count - 1):], *self._final_messages]]
+
+    @staticmethod
+    def _reply_of(out: StepOutput) -> Dict[str, Any]:
+        reply: Dict[str, Any] = {"role": "assistant", "content": out.text}
+        if out.thinking:
+            reply["thinking"] = out.thinking
+        if out.response_items:
+            reply["responseItems"] = out.response_items
+        return reply
 
     def _drop_empty_created(self) -> None:
         run, document = self.ctx.run, self.ctx.document
@@ -482,7 +510,7 @@ class AgentRun:
         """Everything a restart needs to continue from the last completed step."""
         run = self.ctx.run
         return {
-            "messages": self.messages, "stepsTaken": self.steps_taken, "correctiveUsed": self.corrective_used,
+            "messages": self.messages, "initialCount": self.initial_count, "stepsTaken": self.steps_taken, "correctiveUsed": self.corrective_used,
             "chatTexts": self.chat_texts, "timeline": self.timeline, "trace": self.trace, "stray": self.stray, "wrote": self.wrote,
             "effects": self.effects, "usage": self.usage, "stepLog": self.step_log[-6:], "guardFloor": max(0, self.guard_floor - (len(self.step_log) - len(self.step_log[-6:]))),
             "next": self._next is not None,
@@ -504,6 +532,7 @@ class AgentRun:
     def restore(self, snap: Dict[str, Any], stored: Callable[[str], Optional[str]]) -> None:
         from .types import restore_seen
         self.messages = list(snap["messages"])
+        self.initial_count = int(snap.get("initialCount") or self.initial_count)
         self.steps_taken = snap["stepsTaken"]
         self.corrective_used = snap["correctiveUsed"]
         self.chat_texts = list(snap["chatTexts"])

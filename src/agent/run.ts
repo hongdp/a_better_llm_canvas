@@ -82,6 +82,13 @@ export interface RunSummary {
   readIds: string[]
   /** The model's checklist for the turn, as it ended. */
   plan: PlanItem[]
+  /**
+   * What this turn added after the prefix it shared with the conversation —
+   * its final user message as sent, every step's messages as last sent, and
+   * the step that ended it — for the next turn to replay verbatim
+   * (cache_continuity.md §3.1).
+   */
+  transcript: LLMMessage[]
 }
 
 /** What the bubble shows while a run is still going. */
@@ -157,6 +164,22 @@ function runSequential<T, R>(items: T[], fn: (item: T) => R | Promise<R>): R[] |
   return out
 }
 
+/** The tools a run offers natively — known before the run exists, for a call that must offer the same (a summary). */
+export function offeredToolsFor(registry: ToolRegistry, ctx: ToolContext, writeProtocol: 'tools' | 'markup', agentTools: boolean): RegisteredTool[] {
+  return registry.available(ctx, t =>
+    (writeProtocol === 'tools' || !t.markupForm || (!!t.nativeOnMarkup && agentTools)) && (agentTools || !!t.markupForm))
+}
+
+/** A step's reply on its own, as the conversation carries it. */
+function replyOf(out: StepOutput): LLMMessage {
+  return {
+    role: 'assistant',
+    content: out.text,
+    ...(out.thinking?.length ? { thinking: out.thinking } : {}),
+    ...(out.responseItems?.length ? { responseItems: out.responseItems } : {})
+  }
+}
+
 export class AgentRun {
   private messages: LLMMessage[]
   private stepsTaken = 0
@@ -197,9 +220,15 @@ export class AgentRun {
 
   private readonly o: AgentRunOptions
 
+  /** Where this turn's own messages start (its final user message): the transcript is from here. */
+  private readonly initialCount: number
+  /** The step that ended the run, not appended to the messages: the transcript's last messages. */
+  private finalMessages: LLMMessage[] = []
+
   constructor(options: AgentRunOptions) {
     this.o = options
     this.messages = options.initialMessages
+    this.initialCount = options.initialMessages.length
     options.ctx.run.writeProtocol = options.writeProtocol
     options.ctx.run.continuesAfterWrites = options.policy.continueAfterWrites
   }
@@ -244,9 +273,7 @@ export class AgentRun {
     // On markup, tools with a tag form are written as tags (D1); everything
     // else is offered natively. With the agent tools off, only the tag-form
     // writes remain — the pre-loop turn.
-    this.offered ??= this.o.registry.available(this.o.ctx, t =>
-      (this.o.writeProtocol === 'tools' || !t.markupForm || (!!t.nativeOnMarkup && this.o.agentTools !== false)) &&
-      (this.o.agentTools !== false || !!t.markupForm))
+    this.offered ??= offeredToolsFor(this.o.registry, this.o.ctx, this.o.writeProtocol, this.o.agentTools !== false)
     return this.offered
   }
 
@@ -353,6 +380,7 @@ export class AgentRun {
       this.timeline.push({ type: 'text', text: collected.chatText.trim() })
     }
     this.stray += collected.strayMarkup
+    this.finalMessages = [replyOf(out)]
     this.finish({
       failedUpdate: failure,
       exhaustedCorrective: this.o.canContinue,
@@ -459,6 +487,8 @@ export class AgentRun {
       return
     }
 
+    // A last step that called tools ends with its calls answered, or the replay would leave them dangling.
+    this.finalMessages = ran.length > 0 ? this.resultMessages(out, ran, results) : [replyOf(out)]
     this.finish({
       failedUpdate: null,
       exhaustedCorrective: false,
@@ -609,8 +639,14 @@ export class AgentRun {
       ...this.progress(),
       readIds: [...this.o.ctx.run.readIds],
       question: end.endReason === 'asked' ? this.o.ctx.run.question : null,
+      transcript: this.transcript(),
       ...end
     })
+  }
+
+  /** See RunSummary.transcript. */
+  transcript(): LLMMessage[] {
+    return [...this.messages.slice(Math.max(0, this.initialCount - 1)), ...this.finalMessages].map(m => ({ ...m }))
   }
 
   /**

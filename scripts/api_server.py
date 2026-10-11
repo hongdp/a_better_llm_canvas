@@ -500,6 +500,7 @@ async def delete_book_endpoint(request: Request, book_id: str):
 
     # Delete content files
     server_attachments.delete_book_attachments(username, safe_book_id)
+    server_runs.server_context.delete_book_context(username, safe_book_id)
     delete_book_content_dir(username, safe_book_id)
     return {"success": True}
 

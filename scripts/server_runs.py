@@ -35,7 +35,7 @@ from server_content import load_document_content
 from server_db import get_db
 from wc_agent.polish import analyze_in_batches, default_polish_model, plan_analysis, polish_html
 from wc_agent.registry import ToolRegistry, to_tool_specs
-from wc_agent.run import AgentRun, StepOutput, StepUnavailable
+from wc_agent.run import AgentRun, StepOutput, StepUnavailable, offered_tools_for
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
 from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite
@@ -45,6 +45,8 @@ from wc_agent.tools.web import WEB_TOOLS
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
 from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder, wrap_reminder
 from wc_text.context_window import resolve_context_window_tokens
+from wc_text.policy import resolve_run_settings
+from wc_text.protocol_choice import resolve_document_protocol
 from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
 from wc_text.document_tools import to_openai_tools
 from wc_text.image_preservation import replace_images_with_placeholders, restore_image_placeholders
@@ -646,26 +648,35 @@ class RunEngine:
         config = req.get("config") or {}
         scope = f"{provider}|{config.get('model') or ''}"
         state = server_context.load_state(run.username, run.book_id, scope)
+        ctx = ToolContext(ports, ports, ports, ports, _Ui(ports), create_run_state(ports.start_id),
+                          polish=_PolishPort(self, run), analyze=_AnalyzePort(self, run),
+                          attachments=_AttachmentsPort(run.username, run.book_id),
+                          web=_WebPort(run.username) if config.get("webAccess") is not False and server_web.available() else None)
+        history = self._history_for(run)
+        # A summary asked for at the end of the live conversation offers the turn's tools, as the turn's steps
+        # do: the tools are part of the cached prefix (cache_continuity.md §3.4).
+        offered = offered_tools_for(CHAT_TOOLS, ctx, resolve_document_protocol(provider, config.get("documentProtocol")),
+                                    resolve_run_settings(provider, config)["agentTools"])
         assembled = await server_context.assemble_request(
             provider=provider, config=config, prompt_text=req["prompt"], images=req.get("images"),
-            history=self._history_for(run), documents=chapters, active_document_id=ports.start_id,
+            history=history, documents=chapters, active_document_id=ports.start_id,
             selected_text=ports.selected_text, custom_instructions=req.get("customInstructions"),
             context_window_tokens=req.get("contextWindowTokens"), state=state, image_registry=ports.image_registry,
             attachments=server_attachments.list_attachments(run.username, run.book_id),
             stored_summary=server_context.load_chat_summary(run.username, run.book_id),
-            summarize=_ModelCall(self, run, None, "low", f"{run.book_id}:summary"))
+            summarize=_ModelCall(self, run, None, "low", f"{run.book_id}:summary"),
+            transcripts=server_context.load_transcripts(run.username, run.book_id,
+                                                        [str(m.get("id")) for m in history if m.get("role") == "assistant" and m.get("id")]),
+            turn=str(req.get("assistantMessageId") or ""),
+            summarize_live=_ConversationCall(self, run, to_tool_specs(offered)))
         server_context.save_state(run.username, run.book_id, scope, state, _now_iso())
         if assembled.get("chatSummary"):
             server_context.save_chat_summary(run.username, run.book_id, assembled["chatSummary"], _now_iso())
         run.request["attachmentsText"] = assembled["attachmentsText"]
         run.record["prefix"] = assembled["attachmentsText"] or None
         settings = assembled["settings"]
-        ctx = ToolContext(ports, ports, ports, ports, _Ui(ports),
-                          create_run_state(ports.start_id, assembled["inContextIds"], ports.original, chapter_outline(chapters),
-                                           text_seen=server_context.text_seen_in_context(chapters, assembled["inContextIds"])),
-                          polish=_PolishPort(self, run), analyze=_AnalyzePort(self, run),
-                          attachments=_AttachmentsPort(run.username, run.book_id),
-                          web=_WebPort(run.username) if config.get("webAccess") is not False and server_web.available() else None)
+        ctx.run = create_run_state(ports.start_id, assembled["inContextIds"], ports.original, chapter_outline(chapters),
+                                   text_seen=server_context.text_seen_in_context(chapters, assembled["inContextIds"]))
         ports.last_outline = chapter_outline(chapters)
         for doc_id in ctx.run.known:
             ports.watched[doc_id] = next((c["revision"] for c in chapters if c["id"] == doc_id), 0)
@@ -1019,6 +1030,10 @@ class RunEngine:
                       "usage": summary.get("usage"), "snapshots": run.snapshots}
         run.snapshot = None
         self._remember_reads(run, summary)
+        # The turn as sent, for the next one to replay verbatim (cache_continuity.md §3.1).
+        if summary.get("transcript") and run.request.get("assistantMessageId"):
+            server_context.save_transcript(run.username, run.book_id, run.request["assistantMessageId"], run.request.get("userMessageId"),
+                                           summary["transcript"], _now_iso())
         self._finalize(run, status)
 
     def _remember_reads(self, run: Run, summary: Dict[str, Any]) -> None:
@@ -1156,6 +1171,30 @@ class _ModelCall:
         job.conversation = self.conversation
         job.model = config.get("model")
         await server_generation.run_job(job, req["provider"], config, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+        job.result_delivered = True
+        if job.status != "done":
+            raise RunFailed(job.error or "stopped")
+        return job.buffer
+
+
+class _ConversationCall:
+    """The summary asked for at the end of the conversation as the turn would send it (cache_continuity.md §3.4):
+    the turn's model, reasoning effort, tools (none to be called) and conversation id, so it reads from the cache."""
+
+    def __init__(self, engine: RunEngine, run: Run, tool_specs: List[Dict[str, Any]]) -> None:
+        self.engine, self.run, self.tool_specs = engine, run, tool_specs
+
+    async def __call__(self, messages: List[Dict[str, Any]]) -> str:
+        req = self.run.request
+        config = {**(req.get("config") or {}), "conversationId": self.run.book_id,
+                  "tools": to_openai_tools(self.tool_specs) if self.tool_specs else None,
+                  "toolChoice": "none" if self.tool_specs else None}
+        config["maxOutputTokens"] = min(int(config.get("maxOutputTokens") or 16_384), server_context.SUMMARY_MAX_OUTPUT_TOKENS)
+        config = {k: v for k, v in config.items() if v is not None}
+        job = server_generation.registry.create(self.run.username, {"kind": "batch", "runId": self.run.id, "bookId": self.run.book_id})
+        job.conversation = self.run.book_id
+        job.model = str(config.get("model") or "") or None
+        await server_generation.run_job(job, req["provider"], config, messages)
         job.result_delivered = True
         if job.status != "done":
             raise RunFailed(job.error or "stopped")

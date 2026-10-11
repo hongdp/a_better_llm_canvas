@@ -128,15 +128,15 @@ export interface LLMMessage {
   name?: string
   /**
    * Assistant only, Anthropic: the reasoning blocks this reply streamed, in
-   * order. Replayed BEFORE the text and tool_use blocks (providerMessages).
+   * order. Replayed BEFORE the text and tool_use blocks (server_generation.build_anthropic_request).
    */
   thinking?: ThinkingBlock[]
   /**
    * Assistant only, grok (xAI Responses API): this reply's output items
    * exactly as returned — reasoning (with its encrypted_content), message,
    * function_call — in order. The next step of the same turn sends them back
-   * unchanged, so the model keeps its reasoning (providerMessages
-   * toGrokResponsesInput). Opaque: never inspect or rebuild them. A history
+   * unchanged, so the model keeps its reasoning (server_generation
+   * build_grok_responses_request). Opaque: never inspect or rebuild them. A history
    * message carries only the reasoning items of its turn; the converter then
    * adds the message's text after them.
    */

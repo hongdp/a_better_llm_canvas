@@ -13,7 +13,7 @@ import pytest
 from wc_text import (attachments, web_text, chapter_index, chapters, context_ledger, context_selection, context_window, conversation_summary, diff, diff_resolution,
                      document_tools, dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes,
                      plan, policy, polish, protocol_choice, provider_profile, reminders, retry_policy, run_compaction, stream_handlers, system_prompt, text,
-                     title_sync, tool_call_stream)
+                     title_sync, tool_call_stream, turn_transcripts)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -167,6 +167,8 @@ FUNCTIONS = {
     ("dynamic_context", "ledger_block"): dynamic_context.ledger_block,
     ("dynamic_context", "build_ledger_messages"): dynamic_context.build_ledger_messages,
     ("dynamic_context", "build_volatile_tail"): _volatile_tail,
+    ("dynamic_context", "diff_tail_parts"): dynamic_context.diff_tail_parts,
+    ("dynamic_context", "pinned_updates"): dynamic_context.pinned_updates,
     ("context_ledger", "hash_content"): context_ledger.hash_content,
     ("context_ledger", "plan_ledger_turn"): _plan_ledger,
     ("context_ledger", "ledger_chapter_ids"): context_ledger.ledger_chapter_ids,
@@ -194,6 +196,12 @@ FUNCTIONS = {
     ("conversation_summary", "build_summary_request"): conversation_summary.build_summary_request,
     ("conversation_summary", "parse_summary_reply"): conversation_summary.parse_summary_reply,
     ("conversation_summary", "summary_messages"): conversation_summary.summary_messages,
+    ("conversation_summary", "build_summary_instruction"): conversation_summary.build_summary_instruction,
+    ("conversation_summary", "plan_conversation_summary_weighted"): conversation_summary.plan_conversation_summary,
+    ("turn_transcripts", "plan_history_units"): turn_transcripts.plan_history_units,
+    ("turn_transcripts", "transcript_weight"): turn_transcripts.transcript_weight,
+    ("turn_transcripts", "summarizable_history"): turn_transcripts.summarizable_history,
+    ("turn_transcripts", "history_window"): turn_transcripts.history_window,
     ("run_compaction", "constants"): lambda: {"ELIDE_ABOVE": run_compaction.ELIDE_ABOVE, "ELIDE_TO": run_compaction.ELIDE_TO},
     ("run_compaction", "elided_result_note"): run_compaction.elided_result_note,
     ("run_compaction", "elision_trace"): run_compaction.elision_trace,

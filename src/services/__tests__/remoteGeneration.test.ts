@@ -3,8 +3,8 @@
  *
  * The contract under test is docs/features/resumable_generation.md §3/§5: SSE
  * events map onto the existing StreamCallbacks, the persisted offset is what
- * makes a reconnect duplicate- and gap-free, a start failure degrades to the
- * direct provider path, and stopping reaches the backend. fetch is mocked at
+ * makes a reconnect duplicate- and gap-free, a start failure is the call's
+ * error (there is no in-browser transport), and stopping reaches the backend. fetch is mocked at
  * the boundary; nothing else is stubbed.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -662,11 +662,6 @@ describe('abortRemoteGeneration', () => {
 })
 
 describe('streamLLM transport selection', () => {
-  const openAIStream = () => streamingResponse([
-    'data: {"choices":[{"delta":{"content":"direct "}}]}\n\n',
-    'data: {"choices":[{"delta":{"content":"answer"}}]}\n\ndata: [DONE]\n\n'
-  ])
-
   it('uses the remote transport when logged in', async () => {
     routes = [
       url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-9' }) : undefined,
@@ -684,19 +679,15 @@ describe('streamLLM transport selection', () => {
     expect(calls().some(u => u.includes('provider.test'))).toBe(false)
   })
 
-  it('falls back to the direct path when the remote start fails', async () => {
-    routes = [
-      url => url.endsWith('/api/generate') ? jsonResponse({ detail: 'down' }, false, 500) : undefined,
-      url => url.startsWith('https://provider.test') ? openAIStream() : undefined
-    ]
-    vi.spyOn(console, 'warn').mockImplementation(() => {})
+  it('reports a failed start as an error and never calls the provider from the browser', async () => {
+    routes = [url => url.endsWith('/api/generate') ? jsonResponse({ detail: 'down' }, false, 500) : undefined]
     const { done, errors, callbacks } = recorder()
 
     await streamLLM(messages, config, callbacks)
 
-    expect(errors).toEqual([])
-    expect(done[0].text).toBe('direct answer')
-    expect(calls()).toEqual(['/api/generate', 'https://provider.test/v1/chat/completions'])
+    expect(done).toEqual([])
+    expect(errors[0]).toMatch(/Failed to start remote generation/)
+    expect(calls()).toEqual(['/api/generate'])
   })
 
   it('does not fall back once the job is running (no double generation)', async () => {
@@ -712,21 +703,13 @@ describe('streamLLM transport selection', () => {
     expect(calls().some(u => u.includes('provider.test'))).toBe(false)
   })
 
-  it('stays direct when logged out or when forceDirect is set', async () => {
-    routes = [url => url.startsWith('https://provider.test') ? openAIStream() : undefined]
-
+  it('refuses to generate when logged out (there is no in-browser transport)', async () => {
     useAppStore.setState({ user: null })
-    const loggedOut = recorder()
-    await streamLLM(messages, config, loggedOut.callbacks)
-    expect(loggedOut.done[0].text).toBe('direct answer')
-
-    useAppStore.setState({ user: { username: 'alice' } })
-    routes = [url => url.startsWith('https://provider.test') ? openAIStream() : undefined]
-    const forced = recorder()
-    await streamLLM(messages, { ...config, forceDirect: true }, forced.callbacks)
-    expect(forced.done[0].text).toBe('direct answer')
-
-    expect(calls().every(u => u.startsWith('https://provider.test'))).toBe(true)
+    const { done, errors, callbacks } = recorder()
+    await streamLLM(messages, config, callbacks)
+    expect(done).toEqual([])
+    expect(errors[0]).toMatch(/Not signed in/)
+    expect(calls()).toEqual([])
   })
 })
 
