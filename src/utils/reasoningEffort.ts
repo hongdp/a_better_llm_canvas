@@ -68,8 +68,11 @@ const SUPPORT_TABLE: Record<string, ModelReasoningSupport[]> = {
     { match: /claude-(?:opus|sonnet)-4-6/i, levels: ['default', 'low', 'medium', 'high'] },
     { match: /claude-(?:3-7|opus-4|sonnet-4|haiku-4)/i, levels: ['default', 'low', 'medium', 'high'] }
   ],
+  // Probed on 2026-10-10: Gemini 3.x takes thinkingLevel low/medium/high
+  // (minimal only on some, so it is not offered); 2.5 takes a budget.
   gemini: [
-    { match: /gemini-2\.5|gemini-3/i, levels: ['default', 'minimal', 'low', 'medium', 'high'] }
+    { match: /gemini-(?:[3-9]|\d\d)|gemini-(?:flash|flash-lite|pro)-latest/i, levels: ['default', 'low', 'medium', 'high'] },
+    { match: /gemini-2\.5/i, levels: ['default', 'minimal', 'low', 'medium', 'high'] }
   ],
   ollama: [],
   // llama.cpp takes --reasoning as a server flag, not a per-request field.
@@ -162,4 +165,19 @@ export function anthropicThinking(model: string, effort: Exclude<ReasoningEffort
   }
   const budget = Math.min(THINKING_BUDGET_TOKENS[effort], Math.floor(maxTokens / 2))
   return budget >= 1024 ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}
+}
+
+/**
+ * Gemini's thinkingConfig at a resolved level (server_generation.build_gemini_request).
+ * Gemini 3.x and the -latest aliases take a level; 2.5 a token budget. A
+ * thinking model always gets includeThoughts, so its thinking streams to the
+ * chat as reasoning (never as document text). Null for a model that does not think.
+ */
+export function geminiThinking(model: string, effort: Exclude<ReasoningEffort, 'default'> | null): Record<string, unknown> | null {
+  const levels = supportedReasoningEfforts('gemini', model)
+  if (levels.length <= 1) return null
+  if (!effort) return { includeThoughts: true }
+  return /gemini-2\.5/i.test(model || '')
+    ? { thinkingBudget: THINKING_BUDGET_TOKENS[effort], includeThoughts: true }
+    : { thinkingLevel: effort, includeThoughts: true }
 }

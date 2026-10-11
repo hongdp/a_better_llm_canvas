@@ -477,13 +477,12 @@ def test_gemini_stream_reports_function_call_like_streamGemini():
         }],
         "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 7},
     }
-    raw = "[" + json.dumps(chunk, ensure_ascii=False) + "]"
-    # Split mid-object to exercise the brace-matching buffer.
+    # Server-sent events (alt=sse): one chunk per data line.
     job, _ = _run_job(
         "gemini",
         {"model": "gemini-2.5-pro", "baseUrl": "https://g/v1beta", "apiKey": "k", "tools": [UPDATE_TOOL]},
         [{"role": "user", "content": "go"}],
-        _FakeStreamResponse(text_chunks=[raw[:40], raw[40:]]),
+        _FakeStreamResponse(lines=["data: " + json.dumps(chunk, ensure_ascii=False)]),
     )
 
     assert job.status == "done", job.error
@@ -705,11 +704,10 @@ def _gemini_parallel_calls_chunk():
 
 
 def test_gemini_stream_carries_thought_signature_on_its_tool_call_event():
-    raw = "[" + json.dumps(_gemini_parallel_calls_chunk(), ensure_ascii=False) + "]"
     job, events = _run_job_watching(
         "gemini",
         {"model": "gemini-3-pro", "baseUrl": "https://g/v1beta", "apiKey": "k", "tools": [READ_TOOL]},
-        _FakeStreamResponse(text_chunks=[raw[:50], raw[50:]]),
+        _FakeStreamResponse(lines=["data: " + json.dumps(_gemini_parallel_calls_chunk(), ensure_ascii=False)]),
     )
     assert job.status == "done", job.error
     calls = [e for e in events if e["type"] == "tool_call"]

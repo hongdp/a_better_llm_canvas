@@ -942,7 +942,13 @@ def test_generation_applies_reasoning_effort_per_provider():
         {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g", "reasoningEffort": "medium"},
         [{"role": "user", "content": "hi"}],
     )[2]
-    assert gemini_body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 4096}
+    assert gemini_body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 4096, "includeThoughts": True}
+    # Gemini 3.x takes a level (measured 2026-10-10).
+    gemini3 = server_generation.build_gemini_request(
+        {"apiKey": "k", "model": "gemini-3.8-flash", "baseUrl": "https://g", "reasoningEffort": "high"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert gemini3["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high", "includeThoughts": True}
 
     # Claude 4.6+ and 5.x: adaptive thinking with an effort (a budget is a 400 there, measured).
     anthropic_body = server_generation.build_anthropic_request(
@@ -1051,11 +1057,12 @@ def test_generation_omits_reasoning_effort_when_not_chosen():
         body = server_generation.build_openai_request(config, [{"role": "user", "content": "hi"}], "grok")[2]
         assert "reasoning_effort" not in body
 
+    # Gemini: 'default' sends no level, only the request to stream the thoughts as reasoning.
     gemini = server_generation.build_gemini_request(
-        {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g"},
+        {"apiKey": "k", "model": "gemini-3.8-flash", "baseUrl": "https://g", "reasoningEffort": "default"},
         [{"role": "user", "content": "hi"}],
     )[2]
-    assert "generationConfig" not in gemini or "thinkingConfig" not in gemini.get("generationConfig", {})
+    assert gemini["generationConfig"]["thinkingConfig"] == {"includeThoughts": True}
 
 
 def test_generation_tolerates_a_trailing_slash_in_the_base_url():
@@ -1129,17 +1136,18 @@ def test_generation_grok_request_sets_conversation_cache_header():
 def test_generation_gemini_request_and_chunked_json_parsing():
     job = _new_job()
     captured = []
-    # Objects arrive split across network chunks, exactly like the real stream.
-    text_chunks = [
-        '[{"candidates":[{"content":{"parts":[{"text":"Hel',
-        'lo"}]}}]},{"candidates":[{"content":{"parts":[{"text":" there"}]},'
+    # Server-sent events (alt=sse); a thought part is reasoning, never text.
+    lines = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"Weighing it.","thought":true},{"text":"Hel"},{"text":"lo"}]}}]}',
+        "",
+        'data: {"candidates":[{"content":{"parts":[{"text":" there"}]},'
         '"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,'
-        '"candidatesTokenCount":3,"cachedContentTokenCount":2}}]',
+        '"candidatesTokenCount":3,"cachedContentTokenCount":2,"thoughtsTokenCount":4}}',
     ]
     _run_job(
         job, "gemini",
         {
-            "apiKey": "gem-secret", "model": "models/gemini-2.5-flash",
+            "apiKey": "gem-secret", "model": "models/gemini-3.8-flash",
             "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
             "maxOutputTokens": 8192,
             "geminiSafetySettings": [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}],
@@ -1147,22 +1155,25 @@ def test_generation_gemini_request_and_chunked_json_parsing():
         [
             {"role": "system", "content": "Be brief"},
             {"role": "assistant", "content": "prior"},
+            {"role": "assistant", "content": ""},
             {"role": "user", "content": "Look", "images": ["data:image/jpeg;base64,ZZZ"]},
         ],
-        _FakeStreamResponse(text_chunks=text_chunks), captured,
+        _FakeStreamResponse(lines=lines), captured,
     )
 
     request = captured[0]
-    # The 'models/' prefix is stripped so the path is not doubled.
+    # The 'models/' prefix is stripped so the path is not doubled; the key is a header, not in the URL.
     assert request["url"] == (
         "https://generativelanguage.googleapis.com/v1beta"
-        "/models/gemini-2.5-flash:streamGenerateContent?key=gem-secret"
+        "/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
     )
+    assert request["headers"]["x-goog-api-key"] == "gem-secret"
     body = request["body"]
     assert body["systemInstruction"] == {"parts": [{"text": "Be brief"}]}
     assert body["safetySettings"][0]["threshold"] == "BLOCK_NONE"
-    assert body["generationConfig"] == {"maxOutputTokens": 8192}
-    assert body["contents"][0]["role"] == "model"
+    assert body["generationConfig"] == {"maxOutputTokens": 8192, "thinkingConfig": {"thinkingLevel": "low", "includeThoughts": True}}
+    # The empty reply is left out: Gemini refuses an empty text part.
+    assert [c["role"] for c in body["contents"]] == ["model", "user"]
     assert body["contents"][1]["parts"] == [
         {"text": "Look"},
         {"text": "\n[Image 1]:"},
@@ -1170,8 +1181,8 @@ def test_generation_gemini_request_and_chunked_json_parsing():
     ]
 
     assert job.status == "done"
-    assert job.buffer == "Hello there"
-    assert job.usage == {"promptTokens": 7, "completionTokens": 3, "cachedPromptTokens": 2}
+    assert job.buffer == "Hello there" and "Weighing it." in job.reasoning_text
+    assert job.usage == {"promptTokens": 7, "completionTokens": 7, "cachedPromptTokens": 2, "reasoningTokens": 4}
 
 
 def test_generation_gemini_prompt_safety_block_becomes_error():
@@ -1181,7 +1192,7 @@ def test_generation_gemini_prompt_safety_block_becomes_error():
         job, "gemini",
         {"apiKey": "k", "model": "gemini-2.5-flash", "baseUrl": "https://g/v1beta"},
         [{"role": "user", "content": "bad"}],
-        _FakeStreamResponse(text_chunks=['[{"promptFeedback":{"blockReason":"SAFETY"}}]']),
+        _FakeStreamResponse(lines=['data: {"promptFeedback":{"blockReason":"SAFETY"}}']),
         captured,
     )
     assert job.status == "error"
@@ -1195,8 +1206,8 @@ def test_generation_gemini_abnormal_finish_reason_becomes_error():
         job, "gemini",
         {"apiKey": "k", "model": "gemini-2.5-flash", "baseUrl": "https://g/v1beta"},
         [{"role": "user", "content": "hi"}],
-        _FakeStreamResponse(text_chunks=[
-            '[{"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"RECITATION"}]}]'
+        _FakeStreamResponse(lines=[
+            'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"RECITATION"}]}'
         ]),
         captured,
     )
@@ -1901,3 +1912,133 @@ def test_openai_responses_job_streams_text_reasoning_and_calls():
     assert job.status == "done" and job.buffer == "Ok" and "Plan." in job.reasoning_text
     assert job.response_items == [{"type": "reasoning", "id": "rs_1", "encrypted_content": "C=="}]
     assert job.usage == {"promptTokens": 20, "completionTokens": 4, "cachedPromptTokens": 16, "reasoningTokens": 2}
+
+
+def test_models_endpoint_lists_gemini_text_models_without_closed_or_media_ones(_stub_models_auth):
+    seen = {}
+
+    class _Client:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            seen.update(url=url, headers=headers, params=params)
+
+            class _R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    gen = ["generateContent"]
+                    return {"models": [{"name": f"models/{n}", "supportedGenerationMethods": gen} for n in (
+                        "gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.8-flash-tts",
+                        "gemini-3.1-flash-image", "lyria-3.5", "gemini-3.1-pro-preview")] + [{"name": "models/text-embedding-9", "supportedGenerationMethods": ["embedContent"]}]}
+            return _R()
+    with patch.object(server_generation.httpx, "AsyncClient", _Client):
+        result = asyncio.run(server_generation.list_provider_models(
+            _FakeRequest({"provider": "gemini", "apiKey": "AIza-k", "baseUrl": "https://generativelanguage.googleapis.com/v1beta"})))
+    assert result == {"models": ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"]}
+    assert seen["headers"] == {"x-goog-api-key": "AIza-k"} and "key=" not in seen["url"]
+
+
+def test_init_db_folds_per_book_settings_into_user_settings(tmp_path):
+    """The per-book settings table goes: each user keeps the "__global__" row (the one read since
+    2026-06-29), or the "default" book's when there was none; the per-book copies are dropped."""
+    import sqlite3
+    db_file = tmp_path / "metadata.db"
+    conn = sqlite3.connect(str(db_file))
+    conn.executescript("""
+        CREATE TABLE book_settings (
+            username TEXT NOT NULL, book_id TEXT NOT NULL, active_provider TEXT, provider_configs TEXT,
+            custom_system_prompts TEXT, active_system_prompt_id TEXT, theme TEXT, debug_mode INTEGER DEFAULT 0,
+            PRIMARY KEY (username, book_id));
+        INSERT INTO book_settings VALUES ('alice', '__global__', 'openai', '{"openai":{"apiKey":"k"}}', NULL, NULL, 'dark', 1);
+        INSERT INTO book_settings VALUES ('alice', 'book-1', 'grok', '{"openai":{"apiKey":""}}', NULL, NULL, 'light', 0);
+        INSERT INTO book_settings VALUES ('alice', 'default', 'gemini', NULL, NULL, NULL, NULL, 0);
+        INSERT INTO book_settings VALUES ('bob', 'default', 'anthropic', '{"anthropic":{}}', NULL, NULL, 'light', 0);
+        INSERT INTO book_settings VALUES ('bob', 'book-9', 'grok', NULL, NULL, NULL, NULL, 0);
+    """)
+    conn.commit()
+    conn.close()
+
+    with patch.object(server_db, "DB_PATH", str(db_file)):
+        server_db.init_db()
+        server_db.init_db()  # idempotent
+        conn = server_db.get_db()
+        try:
+            rows = {r["username"]: dict(r) for r in conn.execute("SELECT * FROM user_settings")}
+            assert set(rows) == {"alice", "bob"}
+            assert rows["alice"]["active_provider"] == "openai" and rows["alice"]["theme"] == "dark" and rows["alice"]["debug_mode"] == 1
+            assert rows["bob"]["active_provider"] == "anthropic"
+            assert not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'book_settings'").fetchone()
+            # Saving updates the user's row; absent fields keep their values.
+            server_db.upsert_user_settings(conn, "alice", {"activeProvider": "anthropic"})
+            server_db.upsert_user_settings(conn, "carol", {"theme": "light"})
+            row = conn.execute("SELECT * FROM user_settings WHERE username = 'alice'").fetchone()
+            assert row["active_provider"] == "anthropic" and row["provider_configs"] == '{"openai":{"apiKey":"k"}}'
+            assert conn.execute("SELECT theme FROM user_settings WHERE username = 'carol'").fetchone()[0] == "light"
+        finally:
+            conn.close()
+
+
+def test_each_book_keeps_its_provider_model_effort_and_preset_by_reference(tmp_path, monkeypatch):
+    """A book remembers what it uses; keys and preset texts stay the user's (one copy)."""
+    from fastapi.testclient import TestClient
+
+    _seed_book(tmp_path, monkeypatch)
+    conn = server_db.get_db()
+    try:
+        now = "2026-10-10T00:00:00Z"
+        conn.execute("INSERT INTO books (id, username, title, active_document_id, created_at, updated_at) VALUES ('book-2', 'alice', 'Two', NULL, ?, ?)", (now, now))
+        conn.commit()
+    finally:
+        conn.close()
+    client = TestClient(api_server.app)
+    client.cookies.update({"web_canvas_session": "sess-1", "csrf_token": "tok-1"})
+    presets = [{"id": "p-1", "name": "One", "content": "text one"}, {"id": "p-2", "name": "Two", "content": "text two"}]
+
+    def save(book, provider, model, effort, preset):
+        configs = {"anthropic": {"apiKey": "sk-ant", "model": "claude-sonnet-5-5"}, "openai": {"apiKey": "sk-oa", "model": "gpt-5.5"}}
+        configs[provider] = {**configs[provider], "model": model, "reasoningEffort": effort}
+        res = client.put(f"/api/books/{book}", headers={"x-csrf-token": "tok-1"}, json={
+            "activeProvider": provider, "providerConfigs": configs, "customSystemPrompts": presets, "activeSystemPromptId": preset})
+        assert res.status_code == 200, res.text
+
+    save("book-1", "anthropic", "claude-opus-5-5", "high", "p-1")
+    save("book-2", "openai", "gpt-6.1-sol", "xhigh", "p-2")  # the user's settings now say openai / p-2
+    one = client.get("/api/books/book-1").json()
+    assert one["activeProvider"] == "anthropic" and one["activeSystemPromptId"] == "p-1"
+    assert one["providerConfigs"]["anthropic"]["model"] == "claude-opus-5-5"
+    assert one["providerConfigs"]["anthropic"]["reasoningEffort"] == "high"
+    assert one["providerConfigs"]["anthropic"]["apiKey"] == "sk-ant"  # the user's key, not a per-book copy
+    two = client.get("/api/books/book-2").json()
+    assert two["activeProvider"] == "openai" and two["providerConfigs"]["openai"]["model"] == "gpt-6.1-sol" and two["activeSystemPromptId"] == "p-2"
+
+    # A preset deleted since: the user's current choice stands. Preset texts are only the user's.
+    res = client.put("/api/books/book-2", headers={"x-csrf-token": "tok-1"},
+                     json={"customSystemPrompts": [presets[1]], "activeSystemPromptId": "p-2"})
+    assert res.status_code == 200
+    assert client.get("/api/books/book-1").json()["activeSystemPromptId"] == "p-2"
+    conn = server_db.get_db()
+    try:
+        assert [c[1] for c in conn.execute("PRAGMA table_info(book_preferences)")] == [
+            "username", "book_id", "active_provider", "model", "reasoning_effort", "active_system_prompt_id"]
+    finally:
+        conn.close()
+
+    # Deleting the book takes its preferences with it.
+    monkeypatch.setattr(api_server, "delete_book_content_dir", lambda *a: None)
+    monkeypatch.setattr(api_server.server_attachments, "delete_book_attachments", lambda *a: None)
+    monkeypatch.setattr(api_server.server_runs.server_context, "delete_book_context", lambda *a: None)
+    assert client.delete("/api/books/book-2", headers={"x-csrf-token": "tok-1"}).status_code == 200
+    conn = server_db.get_db()
+    try:
+        assert not conn.execute("SELECT 1 FROM book_preferences WHERE book_id = 'book-2'").fetchone()
+    finally:
+        conn.close()

@@ -483,8 +483,8 @@ stores none; the stored request is rewritten on every persist. Rows written
 before this are scrubbed once at startup and the database is vacuumed, so
 the old text does not survive in free pages. If the key file is lost, a
 live run resumes without a key and its next call fails and pauses it.
-Not covered: the per-book settings sync (`book_settings.provider_configs`)
-keeps provider keys on purpose, so a new device gets them, and older
+Not covered: the settings sync (`user_settings.provider_configs`, one row
+per user since 2026-10-10) keeps provider keys on purpose, so a new device gets them, and older
 `metadata.db.bak-*` copies still hold what they held.
 
 **Not in phase 3**, by choice: event resume by id (a reconnect lists the

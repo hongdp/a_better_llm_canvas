@@ -30,7 +30,8 @@ _SUPPORT_TABLE: Dict[str, List[Dict[str, Any]]] = {
         {"match": re.compile(r"claude-(?:3-7|opus-4|sonnet-4|haiku-4)", re.I), "levels": ["default", "low", "medium", "high"]},
     ],
     "gemini": [
-        {"match": re.compile(r"gemini-2\.5|gemini-3", re.I), "levels": ["default", "minimal", "low", "medium", "high"]},
+        {"match": re.compile(r"gemini-(?:[3-9]|\d\d)|gemini-(?:flash|flash-lite|pro)-latest", re.I), "levels": ["default", "low", "medium", "high"]},
+        {"match": re.compile(r"gemini-2\.5", re.I), "levels": ["default", "minimal", "low", "medium", "high"]},
     ],
     "ollama": [],
     "runpod": [],
@@ -68,3 +69,14 @@ def anthropic_thinking(model: str, effort: Optional[str], max_tokens: int) -> Di
         return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "low" if effort == "minimal" else effort}}
     budget = min(_THINKING_BUDGET_TOKENS[effort], math.floor(max_tokens / 2))
     return {"thinking": {"type": "enabled", "budget_tokens": budget}} if budget >= 1024 else {}
+
+
+def gemini_thinking(model: str, effort: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Port of geminiThinking: a level on Gemini 3.x, a budget on 2.5, thoughts included; None when it does not think."""
+    if len(supported_reasoning_efforts("gemini", model)) <= 1:
+        return None
+    if not effort:
+        return {"includeThoughts": True}
+    if re.search(r"gemini-2\.5", model or "", re.I):
+        return {"thinkingBudget": _THINKING_BUDGET_TOKENS[effort], "includeThoughts": True}
+    return {"thinkingLevel": effort, "includeThoughts": True}

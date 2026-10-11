@@ -1,13 +1,10 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../store/useAppStore'
+import { PROVIDER_MODELS } from '../types/llm'
 
-const FALLBACK_GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-2.5-pro',
-  'gemini-1.5-flash',
-  'gemini-1.5-pro',
-  'gemini-1.5-flash-8b'
-]
+const FALLBACK_GEMINI_MODELS = PROVIDER_MODELS.gemini
+/** What a stale Gemini model setting is replaced with (2.5 and earlier are closed to new keys). */
+const RECOMMENDED_GEMINI_MODEL = 'gemini-3.8-flash'
 
 /** What a stale Claude model setting is replaced with (fast, and strong at long-form prose). */
 const RECOMMENDED_CLAUDE_MODEL = 'claude-sonnet-5-5'
@@ -15,7 +12,7 @@ const RECOMMENDED_CLAUDE_MODEL = 'claude-sonnet-5-5'
 const RECOMMENDED_OPENAI_MODEL = 'gpt-5.5'
 
 /** An official provider's model list for this key, through the backend (/api/models); [] on any failure. */
-async function listOfficialModels(provider: 'anthropic' | 'openai', apiKey: string, baseUrl: string): Promise<string[]> {
+async function listOfficialModels(provider: 'anthropic' | 'openai' | 'gemini', apiKey: string, baseUrl: string): Promise<string[]> {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
@@ -157,67 +154,33 @@ export function useModelFetcher(
   const grokApiKey = grokConfig.apiKey
   const grokBaseUrl = grokConfig.baseUrl
 
-  // Fetch official Gemini models dynamically when API Key or Base URL changes
+  // Gemini's text models for this key, through the backend (/api/models): the
+  // key stays out of URLs, and the list leaves out speech/image/music models
+  // and 2.5, which Google still lists but refuses to new keys. A model the
+  // list does not have is replaced by the recommended one.
   useEffect(() => {
     if (!enabled) return
-
-    const fetchOfficialModels = async () => {
-      if (!geminiApiKey || geminiApiKey === 'ollama-no-key') {
+    if (!geminiApiKey) {
+      setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
+      return
+    }
+    let cancelled = false
+    setIsLoadingModels(true)
+    void listOfficialModels('gemini', geminiApiKey, geminiBaseUrl).then(list => {
+      if (cancelled) return
+      setIsLoadingModels(false)
+      if (list.length === 0) {
         setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
+        setErrorMsg('Could not load the Gemini models for this key (check the key and base URL). Using the built-in list.')
         return
       }
-
-      setIsLoadingModels(true)
-      try {
-        let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`
-        if (geminiBaseUrl && geminiBaseUrl !== 'https://generativelanguage.googleapis.com/v1beta') {
-          url = `${geminiBaseUrl.replace(/\/$/, '')}/models?key=${geminiApiKey}`
-        }
-
-        const res = await fetch(url)
-        if (res.ok) {
-          const data = await res.json()
-          if (data.models && Array.isArray(data.models)) {
-            const filtered = data.models
-              .filter((m: { name: string; supportedGenerationMethods?: string[] }) => 
-                (m.supportedGenerationMethods?.includes('generateContent') || 
-                 m.supportedGenerationMethods?.includes('streamGenerateContent')) &&
-                !m.name.includes('embedding') &&
-                !m.name.includes('aqa')
-              )
-              .map((m: { name: string }) => {
-                return m.name.startsWith('models/') ? m.name.slice(7) : m.name
-              })
-
-            if (filtered.length > 0) {
-              setAvailableGeminiModels(filtered)
-              if (!filtered.includes(geminiConfig.model)) {
-                updateProviderConfig('gemini', { model: filtered[0] })
-              }
-              setErrorMsg(null)
-            } else {
-              setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-              setErrorMsg('No compatible generation models returned from Gemini API.')
-            }
-          } else {
-            setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-            setErrorMsg('Invalid model list response format from Gemini API.')
-          }
-        } else {
-          setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-          setErrorMsg(`Failed to load official Gemini models: ${res.status} ${res.statusText}. Using fallback models.`)
-        }
-      } catch (e) {
-        const err = e instanceof Error ? e : new Error(String(e))
-        console.error('Failed to fetch official Gemini models, using fallbacks', err)
-        setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-        setErrorMsg(`Failed to connect to Gemini API: ${err.message}. Using fallback models.`)
-      } finally {
-        setIsLoadingModels(false)
+      setAvailableGeminiModels(list)
+      setErrorMsg(null)
+      if (!list.includes(geminiConfig.model)) {
+        updateProviderConfig('gemini', { model: list.includes(RECOMMENDED_GEMINI_MODEL) ? RECOMMENDED_GEMINI_MODEL : list[0] })
       }
-    }
-
-    fetchOfficialModels()
+    })
+    return () => { cancelled = true }
   }, [enabled, geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model, setErrorMsg, setIsLoadingModels])
 
   // Fetch official Grok models dynamically when API Key or Base URL changes

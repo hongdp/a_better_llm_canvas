@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand'
 import type { PolishPrompt } from '../../utils/polish'
-import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../../types/llm'
+import { PROVIDER_MODELS, type LLMProvider, type ImageGenConfig, type ProviderConfig, type SystemPromptTemplate } from '../../types/llm'
 import type { AppState } from '../types'
 import { localStorage } from '../persistence'
 import {
@@ -115,7 +115,7 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     // LLM configurations
     activeProvider: loadSavedProvider(),
     providerConfigs: loadSavedConfigs(),
-    availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
+    availableGeminiModels: [...PROVIDER_MODELS.gemini],
     availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
     availableAnthropicModels: [],
     availableOpenAIModels: [],

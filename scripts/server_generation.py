@@ -62,7 +62,7 @@ from server_auth import get_authenticated_username
 # The parity-checked ports of src/utils/documentTools.ts: this module used to keep
 # its own copies, which no parity case covered (test audit, 2026-10-10).
 from wc_text.provider_profile import uses_responses_api
-from wc_text.reasoning_effort import anthropic_thinking, resolve_reasoning_effort
+from wc_text.reasoning_effort import anthropic_thinking, gemini_thinking, resolve_reasoning_effort
 from wc_text.document_tools import from_openai_tools, to_anthropic_tools, to_gemini_tools
 from wc_text.retry_policy import (MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, parse_retry_after,
                                   retry_delay_ms, with_jitter)
@@ -186,8 +186,10 @@ REMOTE_MODEL_HOST_SUFFIXES = (".proxy.runpod.net",)
 
 
 #: The non-local hosts /api/models will query, with the user's key (the official model lists).
-OFFICIAL_MODEL_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com"}
+OFFICIAL_MODEL_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com", "gemini": "generativelanguage.googleapis.com"}
 _OPENAI_CHAT_MODEL_RE = re.compile(r"^(?:gpt-\d|o\d)")
+_GEMINI_TEXT_MODEL_RE = re.compile(r"^gemini-(?:[3-9]|\d\d|flash-latest|flash-lite-latest|pro-latest)")
+_GEMINI_NON_TEXT_RE = re.compile(r"tts|image|transcribe|robotics|computer-use|omni|customtools|banana")
 _OPENAI_NON_CHAT_RE = re.compile(r"audio|realtime|image|transcribe|tts|search|instruct|live|embedding|diarize|whisper|translate")
 
 
@@ -898,12 +900,16 @@ def build_gemini_request(
             contents.append({"role": "model", "parts": model_parts})
             continue
 
-        parts: List[Dict[str, Any]] = [{"text": content}]
+        # Gemini refuses an empty text part ("contents.parts must not be empty"),
+        # so an empty message (an image-only one keeps its images) is left out.
+        parts: List[Dict[str, Any]] = [{"text": content}] if content else []
         for idx, img in enumerate(message.get("images") or []):
             split = _split_data_url(img)
             if split:
                 parts.append({"text": f"\n[Image {idx + 1}]:"})
                 parts.append({"inlineData": {"mimeType": split[0], "data": split[1]}})
+        if not parts:
+            continue
         contents.append({
             "role": "model" if message.get("role") == "assistant" else "user",
             "parts": parts,
@@ -917,10 +923,12 @@ def build_gemini_request(
     generation_config: Dict[str, Any] = {}
     if config.get("maxOutputTokens"):
         generation_config["maxOutputTokens"] = config["maxOutputTokens"]
-    gemini_effort = _reasoning_effort(config)
-    if gemini_effort:
-        # Gemini spends effort as a token budget rather than a word.
-        generation_config["thinkingConfig"] = {"thinkingBudget": THINKING_BUDGET_TOKENS[gemini_effort]}
+    # A level on Gemini 3.x, a budget on 2.5 (wc_text.reasoning_effort.gemini_thinking), resolved
+    # here against the model; thoughts included so they stream as reasoning, never as text.
+    thinking = gemini_thinking(config.get("model") or "",
+                               resolve_reasoning_effort("gemini", config.get("model") or "", config.get("reasoningEffort")))
+    if thinking:
+        generation_config["thinkingConfig"] = thinking
     if generation_config:
         body["generationConfig"] = generation_config
     gemini_tools = _gemini_tools(config.get("tools"))
@@ -932,11 +940,10 @@ def build_gemini_request(
     # Support model names with or without the 'models/' prefix.
     model = config.get("model") or ""
     model_name = model[7:] if model.startswith("models/") else model
-    url = (
-        f"{(config.get('baseUrl') or '').rstrip('/')}/models/{model_name}"
-        f":streamGenerateContent?key={config.get('apiKey') or ''}"
-    )
-    return url, {"Content-Type": "application/json"}, body
+    # SSE (one JSON chunk per data line), and the key in a header, not the URL,
+    # so it never lands in a log line.
+    url = f"{(config.get('baseUrl') or '').rstrip('/')}/models/{model_name}:streamGenerateContent?alt=sse"
+    return url, {"Content-Type": "application/json", "x-goog-api-key": str(config.get("apiKey") or "")}, body
 
 
 def build_anthropic_request(
@@ -1529,47 +1536,6 @@ async def _stream_anthropic(
     return None
 
 
-def _extract_json_objects(buffer: str) -> Tuple[List[str], str]:
-    """Split off every complete top-level {...} object from a Gemini stream.
-
-    streamGenerateContent emits a JSON array whose elements arrive piecewise,
-    so the client brace-matches complete objects out of a growing buffer
-    instead of waiting for valid JSON. Ported from llm.ts with proper
-    backslash-escape tracking.
-    """
-    objects: List[str] = []
-    depth = 0
-    in_string = False
-    escaped = False
-    start = -1
-    consumed = 0
-
-    for i, char in enumerate(buffer):
-        if in_string:
-            if escaped:
-                escaped = False
-            elif char == "\\":
-                escaped = True
-            elif char == '"':
-                in_string = False
-            continue
-        if char == '"':
-            in_string = True
-        elif char == "{":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif char == "}":
-            if depth > 0:
-                depth -= 1
-                if depth == 0 and start != -1:
-                    objects.append(buffer[start:i + 1])
-                    consumed = i + 1
-                    start = -1
-
-    return objects, buffer[consumed:]
-
-
 def _handle_gemini_chunk(
     job: GenerationJob,
     chunk: Dict[str, Any],
@@ -1584,8 +1550,9 @@ def _handle_gemini_chunk(
         meta = chunk["usageMetadata"]
         usage = {
             "promptTokens": meta.get("promptTokenCount") or 0,
-            "completionTokens": meta.get("candidatesTokenCount") or 0,
+            "completionTokens": (meta.get("candidatesTokenCount") or 0) + (meta.get("thoughtsTokenCount") or 0),
             "cachedPromptTokens": meta.get("cachedContentTokenCount") or 0,
+            "reasoningTokens": meta.get("thoughtsTokenCount") or 0,
         }
 
     candidates = chunk.get("candidates") or []
@@ -1599,10 +1566,14 @@ def _handle_gemini_chunk(
                 f"Content generation blocked or terminated abnormally: {finish_reason}"
             )
         parts = (candidate.get("content") or {}).get("parts") or []
-        if parts:
-            text = parts[0].get("text")
-            if text:
-                job.append(text)
+        for part in parts:
+            # Every text part, not just the first; a thought part is reasoning,
+            # shown live and never written into the document.
+            if isinstance(part, dict) and part.get("text"):
+                if part.get("thought"):
+                    job.note_reasoning(part["text"])
+                else:
+                    job.append(part["text"])
         for part in parts:
             function_call = part.get("functionCall") if isinstance(part, dict) else None
             if isinstance(function_call, dict):
@@ -1639,22 +1610,22 @@ async def _stream_gemini(
     _debug_log("Gemini", url, headers, body, config)
 
     usage: Optional[Dict[str, Any]] = None
-    buffer = ""
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
             err = await _read_error_text(response)
             raise _http_error("Gemini", response, err)
 
-        async for text in response.aiter_text():
+        async for line in response.aiter_lines():
             _check_abort(job)
-            buffer += text or ""
-            objects, buffer = _extract_json_objects(buffer)
-            for raw in objects:
-                try:
-                    chunk = json.loads(raw)
-                except ValueError:
-                    continue  # a fragment that is not a standalone object
-                usage = _handle_gemini_chunk(job, chunk, usage)
+            trimmed = (line or "").strip()
+            if not trimmed.startswith("data:"):
+                continue
+            try:
+                chunk = json.loads(trimmed[5:].strip())
+            except ValueError:
+                logger.warning("Failed to parse Gemini SSE chunk for job %s", job.job_id)
+                continue
+            usage = _handle_gemini_chunk(job, chunk, usage)
     return usage
 
 
@@ -1987,15 +1958,25 @@ async def list_provider_models(request: Request):
             raise HTTPException(status_code=400, detail=f"Only {host} can be queried for {provider} models.")
         api_key = str(body.get("apiKey") or "")
         headers = ({"x-api-key": api_key, "anthropic-version": "2023-06-01"} if provider == "anthropic"
+                   else {"x-goog-api-key": api_key} if provider == "gemini"
                    else {"Authorization": f"Bearer {api_key}"})
+        params = {"limit": 1000} if provider == "anthropic" else {"pageSize": 1000} if provider == "gemini" else None
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                response = await client.get(f"{base_url}/models", params={"limit": 1000} if provider == "anthropic" else None, headers=headers)
+                response = await client.get(f"{base_url}/models", params=params, headers=headers)
                 response.raise_for_status()
                 data = response.json()
         except Exception as exc:  # noqa: BLE001 — a bad key or an outage: the UI keeps its fallback list
             logger.info("%s model listing failed: %s", provider, exc)
             return {"models": []}
+        if provider == "gemini":
+            # Text models of Gemini 3 and later, newest first, the -latest aliases after them. The
+            # list also has speech, image, music and agent models, and 2.5, which it still names but
+            # refuses to new keys ("no longer available to new users", measured 2026-10-10).
+            names = [str(m.get("name") or "").removeprefix("models/") for m in data.get("models") or []
+                     if isinstance(m, dict) and "generateContent" in (m.get("supportedGenerationMethods") or [])]
+            text = [n for n in names if _GEMINI_TEXT_MODEL_RE.match(n) and not _GEMINI_NON_TEXT_RE.search(n)]
+            return {"models": sorted((n for n in text if not n.endswith("-latest")), reverse=True) + [n for n in text if n.endswith("-latest")]}
         ids = [m["id"] for m in data.get("data") or [] if isinstance(m, dict) and isinstance(m.get("id"), str)]
         if provider == "openai":
             # Text models only, the gpt line newest first, then the o-series: the
