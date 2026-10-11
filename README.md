@@ -7,6 +7,7 @@
 **A self-hosted writing workspace where an AI agent works on your whole book — and every change is a diff you review.**
 
 [![Latest release](https://img.shields.io/github/v/release/hongdp/a_better_llm_canvas?label=release)](https://github.com/hongdp/a_better_llm_canvas/releases)
+[![CI](https://github.com/hongdp/a_better_llm_canvas/actions/workflows/ci.yml/badge.svg)](https://github.com/hongdp/a_better_llm_canvas/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](#install-from-a-release)
 [![Claude · OpenAI · Gemini · Grok · local](https://img.shields.io/badge/models-Claude%20%7C%20OpenAI%20%7C%20Gemini%20%7C%20Grok%20%7C%20local-6c47ff.svg)](#supported-models)
