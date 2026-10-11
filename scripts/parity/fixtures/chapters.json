@@ -316,7 +316,7 @@
       }
      ]
     ],
-    "output": "\"第二章\" matches 2 chapters — pass a number instead:\n4. \"第二章 进城\"\n5. \"第二章 入城\""
+    "output": "\"第二章\" matches 2 chapters — pass a number instead:\n#4 \"第二章 进城\"\n#5 \"第二章 入城\""
    },
    {
     "input": [
@@ -344,7 +344,7 @@
       }
      ]
     ],
-    "output": "No chapter is titled \"nothing\". The chapters are:\n1. \"第一章 启程\"\n2. \"Chapter 2: The Road\"\n3. \"大纲\"\n4. \"第二章 进城\"\n5. \"第二章 入城\""
+    "output": "No chapter is titled \"nothing\". The chapters are:\n#1 \"第一章 启程\"\n#2 \"Chapter 2: The Road\"\n#3 \"大纲\"\n#4 \"第二章 进城\"\n#5 \"第二章 入城\""
    },
    {
     "input": [
@@ -526,7 +526,7 @@
       }
      ]
     ],
-    "output": "No chapter is titled \"missing\". The chapters are:\n1. \"Part 1\"\n2. \"Part 2\"\n3. \"Part 3\"\n4. \"Part 4\"\n5. \"Part 5\"\n6. \"Part 6\"\n7. \"Part 7\"\n8. \"Part 8\"\n9. \"Part 9\"\n10. \"Part 10\"\n11. \"Part 11\"\n12. \"Part 12\"\n… 3 more (see the CHAPTER INDEX)"
+    "output": "No chapter is titled \"missing\". The chapters are:\n#1 \"Part 1\"\n#2 \"Part 2\"\n#3 \"Part 3\"\n#4 \"Part 4\"\n#5 \"Part 5\"\n#6 \"Part 6\"\n#7 \"Part 7\"\n#8 \"Part 8\"\n#9 \"Part 9\"\n#10 \"Part 10\"\n#11 \"Part 11\"\n#12 \"Part 12\"\n… 3 more (see the CHAPTER INDEX)"
    },
    {
     "input": [
@@ -594,7 +594,7 @@
       }
      ]
     ],
-    "output": "\"Part\" matches 15 chapters — pass a number instead:\n1. \"Part 1\"\n2. \"Part 2\"\n3. \"Part 3\"\n4. \"Part 4\"\n5. \"Part 5\"\n6. \"Part 6\"\n7. \"Part 7\"\n8. \"Part 8\"\n9. \"Part 9\"\n10. \"Part 10\"\n11. \"Part 11\"\n12. \"Part 12\""
+    "output": "\"Part\" matches 15 chapters — pass a number instead:\n#1 \"Part 1\"\n#2 \"Part 2\"\n#3 \"Part 3\"\n#4 \"Part 4\"\n#5 \"Part 5\"\n#6 \"Part 6\"\n#7 \"Part 7\"\n#8 \"Part 8\"\n#9 \"Part 9\"\n#10 \"Part 10\"\n#11 \"Part 11\"\n#12 \"Part 12\""
    },
    {
     "input": [

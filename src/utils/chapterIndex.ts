@@ -10,6 +10,17 @@ import { tokensToChars } from './contextWindow'
  * chapters changed, and three had been copied onto another book's chapter of
  * the same id. The model reads or greps a chapter when it needs its text, and
  * `list` gives each chapter's size.
+ *
+ * Lines are `#n "title"`, n being the chapter's position in the book.
+ * Problem: they were `n. "title"`, and a model writing to "第4章" passed
+ *   chapter 4 — the fourth line, which was "第2章" (an outline and the
+ *   source text came first); it did so twice in one session (2026-10-11),
+ *   and once more in the aborted turn the user stopped. The number in a
+ *   title is the one a model reaches for.
+ * Fix: the line carries the position the way tool results cite chapters
+ *   (`#4 "第2章"`, chapters.ts citeChapter), the header says what it is,
+ *   and the prompt says it twice. No resolver heuristic: a number means the
+ *   position, always.
  */
 
 /** Minimal document shape the index helpers need. */
@@ -46,10 +57,10 @@ export function buildChapterIndex(
         : ' [ACTIVE — this is the document you can edit]'
       : ''
     const freshness = options.markers?.[doc.id] ? ` [${options.markers[doc.id]}]` : ''
-    return `${idx + 1}. "${doc.title}"${marker}${freshness}`
+    return `#${idx + 1} "${doc.title}"${marker}${freshness}`
   })
 
-  return `CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):
+  return `CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):
 ${lines.join('\n')}`
 }
 

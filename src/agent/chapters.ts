@@ -3,9 +3,11 @@
  * its title (spec D2, D6).
  *
  * Numbers are what the index shows first and what a model copies most
- * reliably; titles are what a user says. Both resolve to a document id here,
- * and anything that does not resolve to exactly one chapter comes back as an
- * error the model can read and correct.
+ * reliably; titles are what a user says. A number is the chapter's POSITION
+ * in the book (`#4` is the fourth chapter), never a number from its title:
+ * the index, the prompt and every listing here say so, and nothing guesses.
+ * Both resolve to a document id here, and anything that does not resolve to
+ * exactly one chapter comes back as an error the model can read and correct.
  */
 
 export interface NamedChapter {
@@ -26,7 +28,7 @@ export function citeChapter(c: ResolvedChapter): string {
 }
 
 function listChapters(chapters: NamedChapter[]): string {
-  const lines = chapters.slice(0, MAX_LISTED).map((c, i) => `${i + 1}. "${c.title}"`)
+  const lines = chapters.slice(0, MAX_LISTED).map((c, i) => `#${i + 1} "${c.title}"`)
   if (chapters.length > MAX_LISTED) lines.push(`… ${chapters.length - MAX_LISTED} more (see the CHAPTER INDEX)`)
   return lines.join('\n')
 }
@@ -61,7 +63,7 @@ export function resolveChapter(ref: unknown, chapters: NamedChapter[]): Resolved
   if (partial.length === 1) return at(partial[0].i)
   if (partial.length > 1) {
     return `"${ref}" matches ${partial.length} chapters — pass a number instead:\n` +
-      partial.slice(0, MAX_LISTED).map(({ c, i }) => `${i + 1}. "${c.title}"`).join('\n')
+      partial.slice(0, MAX_LISTED).map(({ c, i }) => `#${i + 1} "${c.title}"`).join('\n')
   }
   return `No chapter is titled "${ref}". The chapters are:\n${listChapters(chapters)}`
 }

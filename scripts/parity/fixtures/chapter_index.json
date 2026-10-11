@@ -34,7 +34,7 @@
      ],
      "d2"
     ],
-    "output": "CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n1. \"大纲\"\n2. \"第一章 启程\" [ACTIVE — this is the document you can edit]\n3. \"Chapter 3: The Cat\"\n4. \"空章节\"\n5. \"Long\""
+    "output": "CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n#1 \"大纲\"\n#2 \"第一章 启程\" [ACTIVE — this is the document you can edit]\n#3 \"Chapter 3: The Cat\"\n#4 \"空章节\"\n#5 \"Long\""
    },
    {
     "input": [
@@ -75,7 +75,7 @@
       }
      }
     ],
-    "output": "CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n1. \"大纲\" [in context]\n2. \"第一章 启程\" [ACTIVE — open in the editor; writes go here unless you name another chapter]\n3. \"Chapter 3: The Cat\" [read this turn]\n4. \"空章节\"\n5. \"Long\""
+    "output": "CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n#1 \"大纲\" [in context]\n#2 \"第一章 启程\" [ACTIVE — open in the editor; writes go here unless you name another chapter]\n#3 \"Chapter 3: The Cat\" [read this turn]\n#4 \"空章节\"\n#5 \"Long\""
    },
    {
     "input": [
@@ -109,7 +109,7 @@
      ],
      null
     ],
-    "output": "CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n1. \"大纲\"\n2. \"第一章 启程\"\n3. \"Chapter 3: The Cat\"\n4. \"空章节\"\n5. \"Long\""
+    "output": "CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n#1 \"大纲\"\n#2 \"第一章 启程\"\n#3 \"Chapter 3: The Cat\"\n#4 \"空章节\"\n#5 \"Long\""
    },
    {
     "input": [
@@ -338,7 +338,7 @@
       "agentTools": true
      }
     ],
-    "output": "CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n1. \"Ch 0\" [ACTIVE — open in the editor; writes go here unless you name another chapter]\n2. \"Ch 1\"\n3. \"Ch 2\"\n4. \"Ch 3\"\n5. \"Ch 4\"\n6. \"Ch 5\"\n7. \"Ch 6\"\n8. \"Ch 7\"\n9. \"Ch 8\"\n10. \"Ch 9\"\n11. \"Ch 10\"\n12. \"Ch 11\"\n13. \"Ch 12\"\n14. \"Ch 13\"\n15. \"Ch 14\"\n16. \"Ch 15\"\n17. \"Ch 16\"\n18. \"Ch 17\"\n19. \"Ch 18\"\n20. \"Ch 19\"\n21. \"Ch 20\"\n22. \"Ch 21\"\n23. \"Ch 22\"\n24. \"Ch 23\"\n25. \"Ch 24\"\n26. \"Ch 25\"\n27. \"Ch 26\"\n28. \"Ch 27\"\n29. \"Ch 28\"\n30. \"Ch 29\"\n31. \"Ch 30\"\n32. \"Ch 31\"\n33. \"Ch 32\"\n34. \"Ch 33\"\n35. \"Ch 34\"\n36. \"Ch 35\"\n37. \"Ch 36\"\n38. \"Ch 37\"\n39. \"Ch 38\"\n40. \"Ch 39\"\n41. \"Ch 40\""
+    "output": "CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n#1 \"Ch 0\" [ACTIVE — open in the editor; writes go here unless you name another chapter]\n#2 \"Ch 1\"\n#3 \"Ch 2\"\n#4 \"Ch 3\"\n#5 \"Ch 4\"\n#6 \"Ch 5\"\n#7 \"Ch 6\"\n#8 \"Ch 7\"\n#9 \"Ch 8\"\n#10 \"Ch 9\"\n#11 \"Ch 10\"\n#12 \"Ch 11\"\n#13 \"Ch 12\"\n#14 \"Ch 13\"\n#15 \"Ch 14\"\n#16 \"Ch 15\"\n#17 \"Ch 16\"\n#18 \"Ch 17\"\n#19 \"Ch 18\"\n#20 \"Ch 19\"\n#21 \"Ch 20\"\n#22 \"Ch 21\"\n#23 \"Ch 22\"\n#24 \"Ch 23\"\n#25 \"Ch 24\"\n#26 \"Ch 25\"\n#27 \"Ch 26\"\n#28 \"Ch 27\"\n#29 \"Ch 28\"\n#30 \"Ch 29\"\n#31 \"Ch 30\"\n#32 \"Ch 31\"\n#33 \"Ch 32\"\n#34 \"Ch 33\"\n#35 \"Ch 34\"\n#36 \"Ch 35\"\n#37 \"Ch 36\"\n#38 \"Ch 37\"\n#39 \"Ch 38\"\n#40 \"Ch 39\"\n#41 \"Ch 40\""
    },
    {
     "input": [
@@ -551,7 +551,7 @@
      ],
      "b40"
     ],
-    "output": "CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n1. \"Ch 0\"\n2. \"Ch 1\"\n3. \"Ch 2\"\n4. \"Ch 3\"\n5. \"Ch 4\"\n6. \"Ch 5\"\n7. \"Ch 6\"\n8. \"Ch 7\"\n9. \"Ch 8\"\n10. \"Ch 9\"\n11. \"Ch 10\"\n12. \"Ch 11\"\n13. \"Ch 12\"\n14. \"Ch 13\"\n15. \"Ch 14\"\n16. \"Ch 15\"\n17. \"Ch 16\"\n18. \"Ch 17\"\n19. \"Ch 18\"\n20. \"Ch 19\"\n21. \"Ch 20\"\n22. \"Ch 21\"\n23. \"Ch 22\"\n24. \"Ch 23\"\n25. \"Ch 24\"\n26. \"Ch 25\"\n27. \"Ch 26\"\n28. \"Ch 27\"\n29. \"Ch 28\"\n30. \"Ch 29\"\n31. \"Ch 30\"\n32. \"Ch 31\"\n33. \"Ch 32\"\n34. \"Ch 33\"\n35. \"Ch 34\"\n36. \"Ch 35\"\n37. \"Ch 36\"\n38. \"Ch 37\"\n39. \"Ch 38\"\n40. \"Ch 39\"\n41. \"Ch 40\" [ACTIVE — this is the document you can edit]"
+    "output": "CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n#1 \"Ch 0\"\n#2 \"Ch 1\"\n#3 \"Ch 2\"\n#4 \"Ch 3\"\n#5 \"Ch 4\"\n#6 \"Ch 5\"\n#7 \"Ch 6\"\n#8 \"Ch 7\"\n#9 \"Ch 8\"\n#10 \"Ch 9\"\n#11 \"Ch 10\"\n#12 \"Ch 11\"\n#13 \"Ch 12\"\n#14 \"Ch 13\"\n#15 \"Ch 14\"\n#16 \"Ch 15\"\n#17 \"Ch 16\"\n#18 \"Ch 17\"\n#19 \"Ch 18\"\n#20 \"Ch 19\"\n#21 \"Ch 20\"\n#22 \"Ch 21\"\n#23 \"Ch 22\"\n#24 \"Ch 23\"\n#25 \"Ch 24\"\n#26 \"Ch 25\"\n#27 \"Ch 26\"\n#28 \"Ch 27\"\n#29 \"Ch 28\"\n#30 \"Ch 29\"\n#31 \"Ch 30\"\n#32 \"Ch 31\"\n#33 \"Ch 32\"\n#34 \"Ch 33\"\n#35 \"Ch 34\"\n#36 \"Ch 35\"\n#37 \"Ch 36\"\n#38 \"Ch 37\"\n#39 \"Ch 38\"\n#40 \"Ch 39\"\n#41 \"Ch 40\" [ACTIVE — this is the document you can edit]"
    }
   ],
   "pack_chapters_into_batches": [

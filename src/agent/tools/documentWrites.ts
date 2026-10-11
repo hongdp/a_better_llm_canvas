@@ -807,7 +807,7 @@ export const editParagraphsTool = defineTool<{ chapter: unknown; edits: Paragrap
   parameters: {
     type: 'object',
     properties: {
-      chapter: { type: 'string', description: 'The chapter number from the CHAPTER INDEX (default: the active chapter).' },
+      chapter: { type: 'string', description: 'The chapter\'s position in the CHAPTER INDEX (#n — never a number from its title), or its exact title (default: the active chapter).' },
       edits: {
         type: 'array',
         description: 'The changes, in any order.',

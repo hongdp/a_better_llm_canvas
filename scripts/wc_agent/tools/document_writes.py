@@ -615,7 +615,7 @@ edit_paragraphs_tool = Tool(
         "An edit whose starts_with no longer matches (the paragraph moved or changed) is not applied — the others are — and you get that paragraph's current text. A list entry is a paragraph of its own and stays a list entry. "
         "For changes to most of a chapter, rewrite it instead."),
     parameters={"type": "object", "properties": {
-        "chapter": {"type": "string", "description": "The chapter number from the CHAPTER INDEX (default: the active chapter)."},
+        "chapter": {"type": "string", "description": "The chapter's position in the CHAPTER INDEX (#n — never a number from its title), or its exact title (default: the active chapter)."},
         "edits": {"type": "array", "description": "The changes, in any order.", "items": {"type": "object", "properties": {
             "paragraph": {"type": "integer", "description": "The ¶ number, as grep or read showed it."},
             "action": {"type": "string", "description": '"replace", "insert_before", "insert_after" or "delete".'},

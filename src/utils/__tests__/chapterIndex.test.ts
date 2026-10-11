@@ -31,17 +31,17 @@ describe('buildChapterIndex', () => {
     const index = buildChapterIndex(docs, 'a')
     expect(index).toContain('CHAPTER INDEX')
     expect(index.split('\n').slice(1)).toEqual([
-      '1. "Chapter 1: Origins" [ACTIVE — this is the document you can edit]',
-      '2. "Chapter 2: The Crossing"',
-      '3. "Chapter 3: Ashfall"'
+      '#1 "Chapter 1: Origins" [ACTIVE — this is the document you can edit]',
+      '#2 "Chapter 2: The Crossing"',
+      '#3 "Chapter 3: Ashfall"'
     ])
     expect(index).not.toContain('They cross the river.')
   })
 
   it('carries the freshness markers and the agent wording of the active line', () => {
     const index = buildChapterIndex(docs, 'b', { agentTools: true, markers: { c: 'read earlier, not in context' } })
-    expect(index).toContain('2. "Chapter 2: The Crossing" [ACTIVE — open in the editor; writes go here unless you name another chapter]')
-    expect(index).toContain('3. "Chapter 3: Ashfall" [read earlier, not in context]')
+    expect(index).toContain('#2 "Chapter 2: The Crossing" [ACTIVE — open in the editor; writes go here unless you name another chapter]')
+    expect(index).toContain('#3 "Chapter 3: Ashfall" [read earlier, not in context]')
   })
 })
 

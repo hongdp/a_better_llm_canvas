@@ -18,8 +18,8 @@ def build_chapter_index(documents: List[Dict], active_document_id: Optional[str]
         else:
             marker = ""
         freshness = f" [{markers[doc['id']]}]" if markers.get(doc["id"]) else ""
-        lines.append(f'{idx + 1}. "{doc["title"]}"{marker}{freshness}')
-    return ("CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n"
+        lines.append(f'#{idx + 1} "{doc["title"]}"{marker}{freshness}')
+    return ("CHAPTER INDEX (all chapters in this book, by position — #4 is the fourth chapter whatever its title says; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):\n"
             + "\n".join(lines))
 
 
