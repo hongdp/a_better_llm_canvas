@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from wc_text.reasoning_effort import anthropic_thinking, resolve_reasoning_effort
@@ -12,6 +13,14 @@ from .common import (ProviderError, _anthropic_tools, _assistant_tool_calls, _ch
 
 if TYPE_CHECKING:
     from server_generation import GenerationJob
+
+logger = logging.getLogger("web_canvas.generation")
+
+#: Tokens added to max_tokens for an adaptive-thinking model's reasoning (see build_anthropic_request).
+ADAPTIVE_THINKING_HEADROOM = 32768
+#: The smallest output ceiling among the adaptive-thinking models (Sonnet 4.6+ / 5.x: 64k).
+MAX_ADAPTIVE_OUTPUT_TOKENS = 65536
+
 
 def build_anthropic_request(
     config: Dict[str, Any],
@@ -115,6 +124,17 @@ def build_anthropic_request(
         resolve_reasoning_effort("anthropic", config.get("model") or "", config.get("reasoningEffort")),
         body.get("max_tokens") or 8192,
     ))
+    # Anthropic counts thinking tokens against max_tokens. With adaptive
+    # thinking there is no budget to subtract, so the configured limit is the
+    # VISIBLE output and the thinking gets room on top.
+    # Problem: a whole-chapter rewrite on claude-sonnet-5-5 stopped at
+    #   max_tokens (16384) after 7,924 characters of text plus its thinking,
+    #   and the step was discarded as truncated (2026-10-11).
+    # Fix: adaptive models (Opus 4.6+, every 5.x: 64k+ output) get the
+    #   configured limit plus headroom for the thinking, capped at 64k.
+    if (body.get("thinking") or {}).get("type") == "adaptive":
+        configured = int(body["max_tokens"])
+        body["max_tokens"] = max(configured, min(configured + ADAPTIVE_THINKING_HEADROOM, MAX_ADAPTIVE_OUTPUT_TOKENS))
 
     # Structured system prompt with cache_control for Anthropic prompt caching.
     if system_message:
@@ -259,6 +279,9 @@ async def _stream_anthropic(
                 raise ProviderError(f"Anthropic stream error: {err.get('type') or 'error'}: {err.get('message') or ''}",
                                     transient=err.get("type") in ("overloaded_error", "api_error"))
 
+    if stop_reason == "max_tokens":
+        # The run sees an unclosed write and redoes it in parts; the log says why.
+        logger.info("Job %s stopped at max_tokens (%s) after %d output tokens", job.job_id, body.get("max_tokens"), output_tokens)
     # A refusal is a 200 with no answer: say so, or the turn ends in silence.
     if stop_reason == "refusal" and job.length == 0 and not job.tool_calls:
         raise ProviderError("Anthropic declined to answer this request (stop_reason: refusal).")

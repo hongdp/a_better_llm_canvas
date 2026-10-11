@@ -900,6 +900,20 @@ def test_generation_applies_reasoning_effort_per_provider():
     )[2]
     assert anthropic_body["thinking"] == {"type": "adaptive", "display": "summarized"}
     assert anthropic_body["output_config"] == {"effort": "high"}
+    # Thinking counts against max_tokens and adaptive has no budget to subtract: the configured
+    # limit is the visible output, and the thinking gets headroom on top, capped at 64k
+    # (a whole-chapter rewrite on sonnet-5-5 stopped at 16384 after 7,924 characters, 2026-10-11).
+    assert anthropic_body["max_tokens"] == 4096 + 32768
+    big = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-sonnet-5", "baseUrl": "https://a", "maxOutputTokens": 65536, "reasoningEffort": "low"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert big["max_tokens"] == 65536
+    no_thinking = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-sonnet-5", "baseUrl": "https://a", "maxOutputTokens": 4096, "reasoningEffort": "default"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert no_thinking["max_tokens"] == 4096 and "thinking" not in no_thinking
     # Claude 4.5 and earlier: a budget, clamped under max_tokens.
     old_body = server_generation.build_anthropic_request(
         {"apiKey": "k", "model": "claude-haiku-4-5-20251001", "baseUrl": "https://a",
@@ -907,6 +921,7 @@ def test_generation_applies_reasoning_effort_per_provider():
         [{"role": "user", "content": "hi"}],
     )[2]
     assert old_body["thinking"] == {"type": "enabled", "budget_tokens": 2048} and "output_config" not in old_body
+    assert old_body["max_tokens"] == 4096  # the budget sits inside the configured limit; no headroom
 
 
 def test_anthropic_effort_is_resolved_against_the_model():
@@ -1193,7 +1208,8 @@ def test_generation_anthropic_request_caching_and_usage():
     assert "anthropic-beta" not in request["headers"]  # caching is GA
 
     body = request["body"]
-    assert body["max_tokens"] == 16384
+    # 16384 configured, plus the headroom adaptive thinking gets on top (it counts against max_tokens).
+    assert body["max_tokens"] == 16384 + 32768
     # System prompt is a structured block with its own cache breakpoint.
     assert body["system"] == [{
         "type": "text", "text": "System prompt", "cache_control": {"type": "ephemeral"},
