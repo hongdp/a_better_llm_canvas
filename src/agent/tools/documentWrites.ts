@@ -248,7 +248,7 @@ export function docState(ctx: ToolContext, target: Target): DocState {
   return st
 }
 
-const storedContent = (ctx: ToolContext, id: string) =>
+export const storedContent = (ctx: ToolContext, id: string) =>
   ctx.document.chapters().find(c => c.id === id)?.content ?? ''
 
 /** The turn rewrites a selection: its chapter is locked for the whole run. */
