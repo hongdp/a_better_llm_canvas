@@ -51,3 +51,6 @@ certs/dev-key.pem
 
 # Release archives (npm run release)
 release/
+
+# Local TLS material (the dev cert is generated per machine; see docs/deployment.md)
+certs/*.pem

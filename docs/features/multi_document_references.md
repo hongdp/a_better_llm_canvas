@@ -1,5 +1,12 @@
 # Feature Specification — Multi-Document & Reference Context System
 
+> **Superseded (2026-10-06).** Reference context is now the chapters the
+> writer pins ([pinned_context.md](pinned_context.md)), and the model reads
+> the rest with its tools ([agentic_chat_loop.md](agentic_chat_loop.md)).
+> The chapters sidebar, lazy loading and per-chapter editor contexts
+> described here still stand; the attach/auto-attach mechanics do not. Kept
+> as the record the Decision Log links to.
+
 This document describes the design and behavior of the **Multi-Document (Chapters) and Reference Context System** in Web Canvas, which allows authors to work on multi-chapter projects while sharing context across documents.
 
 ---
