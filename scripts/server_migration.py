@@ -136,13 +136,13 @@ def _migrate_single_legacy_file(conn: sqlite3.Connection, file_path: str, userna
         )
         save_version_content(username, book_id, ver_id, ver_content)
 
-    # Insert settings
+    # Settings are the user's: the first migrated book's become theirs, later ones never overwrite them.
     conn.execute(
-        """INSERT INTO book_settings (username, book_id, active_provider, provider_configs,
+        """INSERT OR IGNORE INTO user_settings (username, active_provider, provider_configs,
            custom_system_prompts, active_system_prompt_id, theme, debug_mode)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
-            username, book_id,
+            username,
             data.get("activeProvider"),
             json.dumps(data.get("providerConfigs")) if data.get("providerConfigs") else None,
             json.dumps(data.get("customSystemPrompts")) if data.get("customSystemPrompts") else None,
