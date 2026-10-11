@@ -60,7 +60,10 @@ describe('resolveReasoningEffort', () => {
 
   it('passes a level the model accepts', () => {
     expect(resolveReasoningEffort('grok', 'grok-4.6', 'xhigh')).toBe('xhigh')
-    expect(resolveReasoningEffort('openai', 'o3', 'minimal')).toBe('minimal')
+    expect(resolveReasoningEffort('openai', 'gpt-5', 'minimal')).toBe('minimal')
+    // Measured 2026-10-10: o3 refuses minimal, gpt-5.1 too; 5.2+ takes xhigh.
+    expect(resolveReasoningEffort('openai', 'o3', 'minimal')).toBeNull()
+    expect(resolveReasoningEffort('openai', 'gpt-6.1-sol', 'xhigh')).toBe('xhigh')
   })
 
   it('drops a level the model does not accept rather than risk a 400', () => {

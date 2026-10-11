@@ -9,6 +9,26 @@ const FALLBACK_GEMINI_MODELS = [
   'gemini-1.5-flash-8b'
 ]
 
+/** What a stale Claude model setting is replaced with (fast, and strong at long-form prose). */
+const RECOMMENDED_CLAUDE_MODEL = 'claude-sonnet-5-5'
+/** …and a stale OpenAI one (gpt-4o is not the default any more; it cannot reason). */
+const RECOMMENDED_OPENAI_MODEL = 'gpt-5.5'
+
+/** An official provider's model list for this key, through the backend (/api/models); [] on any failure. */
+async function listOfficialModels(provider: 'anthropic' | 'openai', apiKey: string, baseUrl: string): Promise<string[]> {
+  try {
+    const res = await fetch('/api/models', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': useAppStore.getState().csrfToken || '' },
+      body: JSON.stringify({ provider, apiKey, baseUrl })
+    })
+    return res.ok ? normalizeModelList(await res.json()) : []
+  } catch (err) {
+    console.error(`Failed to fetch ${provider} models`, err)
+    return []
+  }
+}
+
 const FALLBACK_GROK_MODELS = [
   'grok-4.3',
   'grok-build-0.1',
@@ -108,6 +128,8 @@ export function useModelFetcher(
     providerConfigs,
     setAvailableGeminiModels,
     setAvailableGrokModels,
+    setAvailableAnthropicModels,
+    setAvailableOpenAIModels,
     setAvailableOllamaModels,
     setAvailableRunpodModels,
     updateProviderConfig
@@ -122,6 +144,14 @@ export function useModelFetcher(
 
   const runpodConfig = providerConfigs.runpod
   const runpodBaseUrl = runpodConfig.baseUrl
+
+  const openaiConfig = providerConfigs.openai
+  const openaiApiKey = openaiConfig.apiKey
+  const openaiBaseUrl = openaiConfig.baseUrl
+
+  const anthropicConfig = providerConfigs.anthropic
+  const anthropicApiKey = anthropicConfig.apiKey
+  const anthropicBaseUrl = anthropicConfig.baseUrl
 
   const grokConfig = providerConfigs.grok
   const grokApiKey = grokConfig.apiKey
@@ -230,6 +260,38 @@ export function useModelFetcher(
     }
     fetchGrokModels()
   }, [enabled, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
+
+  // The Claude models this key can use. Anthropic's API refuses calls from a
+  // page (CORS), so the backend lists them. A model the list does not have
+  // (an old default such as claude-3-5-sonnet, which is not a valid id) is
+  // replaced by the recommended one, as the grok list does.
+  useEffect(() => {
+    if (!enabled || !anthropicApiKey) return
+    let cancelled = false
+    void listOfficialModels('anthropic', anthropicApiKey, anthropicBaseUrl).then(list => {
+      if (cancelled || list.length === 0) return
+      setAvailableAnthropicModels(list)
+      if (!list.includes(anthropicConfig.model)) {
+        updateProviderConfig('anthropic', { model: list.includes(RECOMMENDED_CLAUDE_MODEL) ? RECOMMENDED_CLAUDE_MODEL : list[0] })
+      }
+    })
+    return () => { cancelled = true }
+  }, [enabled, anthropicApiKey, anthropicBaseUrl, anthropicConfig.model, setAvailableAnthropicModels, updateProviderConfig])
+
+  // OpenAI's text models for this key, the same way. Only for OpenAI's own
+  // host: a compatible server under this provider keeps the shipped list.
+  useEffect(() => {
+    if (!enabled || !openaiApiKey || !/^https:\/\/api\.openai\.com\//.test(`${openaiBaseUrl}/`)) return
+    let cancelled = false
+    void listOfficialModels('openai', openaiApiKey, openaiBaseUrl).then(list => {
+      if (cancelled || list.length === 0) return
+      setAvailableOpenAIModels(list)
+      if (!list.includes(openaiConfig.model)) {
+        updateProviderConfig('openai', { model: list.includes(RECOMMENDED_OPENAI_MODEL) ? RECOMMENDED_OPENAI_MODEL : list[0] })
+      }
+    })
+    return () => { cancelled = true }
+  }, [enabled, openaiApiKey, openaiBaseUrl, openaiConfig.model, setAvailableOpenAIModels, updateProviderConfig])
 
   // Discover the models the local endpoint actually serves.
   //

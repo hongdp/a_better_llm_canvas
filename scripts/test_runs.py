@@ -180,7 +180,7 @@ def test_the_next_turn_replays_the_finished_turn_and_extends_its_last_request(bo
         return first, second
     first, second = asyncio.run(main())
     assert first.status == "done" and second.status == "done", (first.error, second.error)
-    stored = server_context.load_transcripts("alice", "book-1", ["a-A"])["a-A"]
+    stored = server_context.load_transcripts("alice", "book-1", ["a-A"], "grok|grok-4.6")["a-A"]
     assert stored["userMessageId"] == "u-A"
     assert [m["role"] for m in stored["messages"]] == ["user", "assistant", "tool", "assistant"]
     last_of_first = provider.requests[1]["messages"]

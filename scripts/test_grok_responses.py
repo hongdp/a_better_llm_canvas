@@ -1,4 +1,4 @@
-"""grok over the xAI Responses API (server_generation._stream_grok_responses).
+"""grok over the xAI Responses API (server_generation._stream_responses).
 
 Each step's reasoning comes back as an encrypted output item; the next step
 sends it back unchanged, so the model keeps its plan from step to step.
@@ -66,7 +66,7 @@ def test_a_failed_response_fails_the_job():
 
 
 def test_the_previous_steps_items_go_back_unchanged_and_results_answer_their_calls():
-    _, _, body = gen.build_grok_responses_request({**CONFIG, "maxOutputTokens": 4096, "reasoningEffort": "medium", "toolChoice": "none",
+    _, _, body = gen.build_responses_request({**CONFIG, "maxOutputTokens": 4096, "reasoningEffort": "medium", "toolChoice": "none",
                                                    "tools": [{"type": "function", "function": {"name": "read_chapter", "description": "Read.", "parameters": {"type": "object"}}}]}, [
         {"role": "system", "content": "sys"},
         {"role": "user", "content": "q"},
@@ -89,7 +89,7 @@ def test_the_previous_steps_items_go_back_unchanged_and_results_answer_their_cal
 
 def test_an_assistant_turn_without_items_is_rebuilt_from_its_text_and_calls():
     # History from earlier turns, or a step that streamed before this API.
-    _, _, body = gen.build_grok_responses_request(CONFIG, [
+    _, _, body = gen.build_responses_request(CONFIG, [
         {"role": "assistant", "content": "好的。"},
         {"role": "assistant", "content": "", "toolCalls": [{"id": "c", "name": "grep", "argumentsText": '{"pattern":"x"}'}]},
     ])
@@ -100,7 +100,7 @@ def test_an_assistant_turn_without_items_is_rebuilt_from_its_text_and_calls():
 
 
 def test_images_become_input_image_parts():
-    _, _, body = gen.build_grok_responses_request(CONFIG, [{"role": "user", "content": "看图", "images": ["data:image/png;base64,AAA"]}])
+    _, _, body = gen.build_responses_request(CONFIG, [{"role": "user", "content": "看图", "images": ["data:image/png;base64,AAA"]}])
     assert body["input"][0]["content"] == [
         {"type": "input_text", "text": "看图"},
         {"type": "input_text", "text": "\n[Image 1]:"},
@@ -126,7 +126,7 @@ def test_a_reconnecting_reader_is_given_the_items_again():
 
 
 def test_a_history_message_replays_its_reasoning_then_its_text():
-    _, _, body = gen.build_grok_responses_request(CONFIG, [
+    _, _, body = gen.build_responses_request(CONFIG, [
         {"role": "user", "content": "pick a fruit"},
         {"role": "assistant", "content": "Ready.", "responseItems": [REASONING]},
         {"role": "user", "content": "which?"},

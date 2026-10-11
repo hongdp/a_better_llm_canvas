@@ -158,6 +158,64 @@
     ],
     "output": 262144
    }
+  ],
+  "uses_responses_api": [
+   {
+    "input": [
+     "grok",
+     ""
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "openai",
+     "https://api.openai.com/v1"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "openai",
+     "https://API.openai.com"
+    ],
+    "output": true
+   },
+   {
+    "input": [
+     "openai",
+     "https://api.openai.com.evil.example/v1"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "openai",
+     "http://127.0.0.1:8090/v1"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "openai",
+     ""
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "ollama",
+     "https://api.openai.com/v1"
+    ],
+    "output": false
+   },
+   {
+    "input": [
+     "anthropic",
+     "https://api.anthropic.com/v1"
+    ],
+    "output": false
+   }
   ]
  }
 }

@@ -617,7 +617,8 @@ def test_generation_abort_stops_stream_and_keeps_partial_text():
 
     _run_job(
         job, "openai",
-        {"apiKey": "sk-test", "model": "gpt-4o", "baseUrl": "https://api.openai.com/v1"},
+        # An OpenAI-compatible server: Chat Completions (api.openai.com itself is on Responses).
+        {"apiKey": "sk-test", "model": "gpt-4o", "baseUrl": "https://llm.example.com/v1"},
         [{"role": "user", "content": "hi"}],
         _AbortingResponse(lines=lines), captured,
     )
@@ -860,7 +861,8 @@ def test_generation_openai_request_and_usage():
         job, "openai",
         {
             "apiKey": "sk-secret", "model": "gpt-4o",
-            "baseUrl": "https://api.openai.com/v1", "maxOutputTokens": 4096,
+            # An OpenAI-compatible server: Chat Completions (api.openai.com itself is on Responses).
+            "baseUrl": "https://llm.example.com/v1", "maxOutputTokens": 4096,
         },
         [
             {"role": "system", "content": "You are helpful"},
@@ -870,7 +872,7 @@ def test_generation_openai_request_and_usage():
     )
 
     request = captured[0]
-    assert request["url"] == "https://api.openai.com/v1/chat/completions"
+    assert request["url"] == "https://llm.example.com/v1/chat/completions"
     assert request["headers"]["Authorization"] == "Bearer sk-secret"
     body = request["body"]
     assert body["model"] == "gpt-4o"
@@ -909,7 +911,7 @@ def test_generation_streams_reasoning_without_disturbing_the_document_text():
     ]
     _run_job(
         job, "openai",
-        {"apiKey": "sk", "model": "o-reasoner", "baseUrl": "https://api.openai.com/v1"},
+        {"apiKey": "sk", "model": "o-reasoner", "baseUrl": "https://llm.example.com/v1"},
         [{"role": "user", "content": "hi"}],
         _FakeStreamResponse(lines=lines), [],
     )
@@ -942,13 +944,45 @@ def test_generation_applies_reasoning_effort_per_provider():
     )[2]
     assert gemini_body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 4096}
 
-    # Anthropic's budget must stay under max_tokens, so it is clamped.
+    # Claude 4.6+ and 5.x: adaptive thinking with an effort (a budget is a 400 there, measured).
     anthropic_body = server_generation.build_anthropic_request(
         {"apiKey": "k", "model": "claude-sonnet-5", "baseUrl": "https://a",
          "maxOutputTokens": 4096, "reasoningEffort": "high"},
         [{"role": "user", "content": "hi"}],
     )[2]
-    assert anthropic_body["thinking"] == {"type": "enabled", "budget_tokens": 2048}
+    assert anthropic_body["thinking"] == {"type": "adaptive", "display": "summarized"}
+    assert anthropic_body["output_config"] == {"effort": "high"}
+    # Claude 4.5 and earlier: a budget, clamped under max_tokens.
+    old_body = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-haiku-4-5-20251001", "baseUrl": "https://a",
+         "maxOutputTokens": 4096, "reasoningEffort": "high"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert old_body["thinking"] == {"type": "enabled", "budget_tokens": 2048} and "output_config" not in old_body
+
+
+def test_anthropic_effort_is_resolved_against_the_model():
+    """The client forwards the raw setting: unset gets the app's default, 'default' sends nothing,
+    and a level the model does not take is not sent (xhigh on 4.6 is a 400)."""
+    build = lambda model, effort: server_generation.build_anthropic_request(  # noqa: E731
+        {"apiKey": "k", "model": model, "baseUrl": "https://a", "maxOutputTokens": 16384,
+         **({} if effort is None else {"reasoningEffort": effort})}, [{"role": "user", "content": "hi"}])[2]
+    assert build("claude-sonnet-5-5", None)["output_config"] == {"effort": "low"}
+    assert "thinking" not in build("claude-sonnet-5-5", "default") and "output_config" not in build("claude-sonnet-5-5", "default")
+    assert "thinking" not in build("claude-opus-4-6", "xhigh")
+    assert build("claude-opus-4-7", "xhigh")["output_config"] == {"effort": "xhigh"}
+    headers = server_generation.build_anthropic_request({"apiKey": "k", "model": "claude-sonnet-5-5", "baseUrl": "https://a"},
+                                                         [{"role": "user", "content": "hi"}])[1]
+    assert "anthropic-beta" not in headers
+
+
+def test_anthropic_image_only_message_has_no_empty_text_block():
+    body = server_generation.build_anthropic_request(
+        {"apiKey": "k", "model": "claude-sonnet-5-5", "baseUrl": "https://a"},
+        [{"role": "user", "content": "", "images": ["data:image/png;base64,AAAA"]}])[2]
+    blocks = body["messages"][0]["content"]
+    assert all(b.get("text") != "" for b in blocks if b["type"] == "text")
+    assert [b["type"] for b in blocks] == ["text", "image"]
 
 
 def test_generation_retries_without_effort_when_the_provider_rejects_it():
@@ -1203,7 +1237,7 @@ def test_generation_anthropic_request_caching_and_usage():
     assert request["url"] == "https://api.anthropic.com/v1/messages"
     assert request["headers"]["x-api-key"] == "sk-ant-secret"
     assert request["headers"]["anthropic-version"] == "2023-06-01"
-    assert request["headers"]["anthropic-beta"] == "prompt-caching-2024-07-31"
+    assert "anthropic-beta" not in request["headers"]  # caching is GA
 
     body = request["body"]
     assert body["max_tokens"] == 16384
@@ -1732,3 +1766,138 @@ def test_init_db_adds_the_agent_column_to_an_existing_messages_table(tmp_path, m
     assert "agent" in columns
     assert conn.execute("SELECT content, agent FROM messages WHERE id = 'm1'").fetchone() == ("hi", None)
     conn.close()
+
+
+def test_models_endpoint_lists_claude_models_only_from_anthropic(_stub_models_auth):
+    """Claude's list comes through the backend (no CORS), with the user's key, and only from api.anthropic.com."""
+    for base in ("http://127.0.0.1:9/v1", "https://api.anthropic.com.evil.example/v1", "https://evil.example/v1", "https://api.openai.com/v1"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(server_generation.list_provider_models(_FakeRequest({"provider": "anthropic", "apiKey": "k", "baseUrl": base})))
+        assert exc.value.status_code == 400
+    seen = {}
+
+    class _Client:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            seen.update(url=url, headers=headers)
+
+            class _R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"data": [{"id": "claude-sonnet-5-5"}, {"id": "claude-opus-5-5"}]}
+            return _R()
+    with patch.object(server_generation.httpx, "AsyncClient", _Client):
+        result = asyncio.run(server_generation.list_provider_models(
+            _FakeRequest({"provider": "anthropic", "apiKey": "sk-ant", "baseUrl": "https://api.anthropic.com/v1"})))
+    assert result == {"models": ["claude-sonnet-5-5", "claude-opus-5-5"]}
+    assert seen["url"] == "https://api.anthropic.com/v1/models" and seen["headers"]["x-api-key"] == "sk-ant"
+
+
+def _anthropic_job(lines):
+    job = _new_job()
+    _run_job(job, "anthropic", {"apiKey": "k", "model": "claude-sonnet-5-5", "baseUrl": "https://api.anthropic.com/v1"},
+             [{"role": "user", "content": "hi"}], _FakeStreamResponse(lines=lines), [])
+    return job
+
+
+def test_anthropic_refusal_is_an_error_not_a_silent_turn():
+    job = _anthropic_job(['data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":1}}}',
+                          'data: {"type":"message_delta","delta":{"stop_reason":"refusal"},"usage":{"output_tokens":1}}'])
+    assert job.status == "error" and "refusal" in (job.error or "")
+
+
+def test_anthropic_error_inside_the_stream_fails_the_job():
+    job = _anthropic_job(['data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Hi"}}',
+                          'data: {"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}'])
+    assert job.status == "error" and "overloaded_error" in (job.error or "")
+
+
+def test_anthropic_thinking_streams_live_and_is_kept_whole():
+    job = _anthropic_job([
+        'data: {"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Count the sheep."}}',
+        'data: {"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"SIG"}}',
+        'data: {"type":"content_block_stop","index":0}',
+        'data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"9"}}',
+        'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":5}}'])
+    assert job.status == "done" and job.buffer == "9"
+    assert job.thinking_blocks == [{"type": "thinking", "thinking": "Count the sheep.", "signature": "SIG"}]
+    assert "Count the sheep." in job.reasoning_text
+
+
+def test_models_endpoint_lists_openai_text_models_newest_first(_stub_models_auth):
+    with pytest.raises(HTTPException):
+        asyncio.run(server_generation.list_provider_models(_FakeRequest({"provider": "openai", "apiKey": "k", "baseUrl": "https://api.anthropic.com/v1"})))
+
+    class _Client:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            assert headers == {"Authorization": "Bearer sk"}
+
+            class _R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"data": [{"id": i} for i in ("gpt-4o", "gpt-realtime", "gpt-6.1-sol", "o3", "gpt-image-1", "dall-e-3", "gpt-4o-mini-tts")]}
+            return _R()
+    with patch.object(server_generation.httpx, "AsyncClient", _Client):
+        result = asyncio.run(server_generation.list_provider_models(_FakeRequest({"provider": "openai", "apiKey": "sk", "baseUrl": "https://api.openai.com/v1"})))
+    assert result == {"models": ["gpt-6.1-sol", "gpt-4o", "o3"]}
+
+
+def test_openai_runs_on_the_responses_api_with_its_own_reasoning_spelling():
+    """gpt-5.4+ refuse tools with reasoning on Chat Completions (measured): OpenAI's own host uses Responses."""
+    assert server_generation.uses_responses_api("openai", "https://api.openai.com/v1")
+    assert not server_generation.uses_responses_api("openai", "https://llm.example.com/v1")
+    url, headers, body = server_generation.build_responses_request(
+        {"apiKey": "sk", "model": "gpt-6.1-sol", "baseUrl": "https://api.openai.com/v1", "maxOutputTokens": 4096,
+         "reasoningEffort": "xhigh", "conversationId": "book-1",
+         "tools": [{"type": "function", "function": {"name": "read", "description": "", "parameters": {"type": "object"}}}]},
+        [{"role": "user", "content": "hi"}], "openai")
+    assert url == "https://api.openai.com/v1/responses" and "x-grok-conv-id" not in headers
+    assert body["reasoning"] == {"effort": "xhigh", "summary": "auto"}
+    assert body["include"] == ["reasoning.encrypted_content"] and body["store"] is False
+    assert body["prompt_cache_key"] == "book-1" and body["max_output_tokens"] == 4096
+    assert body["tools"][0]["name"] == "read" and body["tools"][0]["strict"] is False
+    # Unset: the app's default; a model without reasoning gets neither the field nor the ciphertext.
+    assert server_generation.build_responses_request({"model": "gpt-5.5", "baseUrl": "https://api.openai.com/v1"},
+                                                     [{"role": "user", "content": "hi"}], "openai")[2]["reasoning"]["effort"] == "low"
+    plain = server_generation.build_responses_request({"model": "gpt-4o", "baseUrl": "https://api.openai.com/v1", "reasoningEffort": "high"},
+                                                      [{"role": "user", "content": "hi"}], "openai")[2]
+    assert "reasoning" not in plain and "include" not in plain
+
+
+def test_openai_responses_job_streams_text_reasoning_and_calls():
+    job = _new_job()
+    captured = []
+    _run_job(job, "openai", {"apiKey": "sk", "model": "gpt-5.5", "baseUrl": "https://api.openai.com/v1"},
+             [{"role": "user", "content": "hi"}], _FakeStreamResponse(lines=[
+                 'data: {"type":"response.reasoning_summary_text.delta","delta":"Plan.","output_index":0}',
+                 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","encrypted_content":"C=="}}',
+                 'data: {"type":"response.output_text.delta","delta":"Ok","output_index":1}',
+                 'data: {"type":"response.completed","response":{"usage":{"input_tokens":20,"output_tokens":4,'
+                 '"input_tokens_details":{"cached_tokens":16},"output_tokens_details":{"reasoning_tokens":2}}}}',
+             ]), captured)
+    assert captured[0]["url"] == "https://api.openai.com/v1/responses"
+    assert job.status == "done" and job.buffer == "Ok" and "Plan." in job.reasoning_text
+    assert job.response_items == [{"type": "reasoning", "id": "rs_1", "encrypted_content": "C=="}]
+    assert job.usage == {"promptTokens": 20, "completionTokens": 4, "cachedPromptTokens": 16, "reasoningTokens": 2}

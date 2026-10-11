@@ -24,7 +24,7 @@ import {
   historyBudgetChars,
   cjkRatioOf
 } from '../utils/contextWindow'
-import { getCacheProfile, targetPromptTokens } from '../utils/providerProfile'
+import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../utils/providerProfile'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, diffTailParts, ledgerBlock, pinnedUpdates, type DynamicContextOptions, type SentTail } from './chat/dynamicContext'
@@ -1983,7 +1983,7 @@ export function useChatLLM({
         role: m.role,
         content: stripChatDisplayArtifacts(m.content) + agentHistoryNote(m),
         images: m.images,
-        ...(s.activeProvider === 'grok' && withReasoning.has(m.id) ? { responseItems: m.reasoningItems } : {})
+        ...(usesResponsesApi(s.activeProvider, s.providerConfigs[s.activeProvider]?.baseUrl ?? '') && withReasoning.has(m.id) ? { responseItems: m.reasoningItems } : {})
       }))
     // With the agent tools on, the request extends the previous turn's
     // (cache_continuity.md): earlier turns replay as they were sent, the

@@ -13,7 +13,7 @@ import pytest
 from wc_text import (attachments, web_text, chapter_index, chapters, context_ledger, context_selection, context_window, conversation_summary, diff, diff_resolution,
                      document_tools, dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes,
                      plan, policy, polish, protocol_choice, provider_profile, reminders, retry_policy, run_compaction, stream_handlers, system_prompt, text,
-                     title_sync, tool_call_stream, turn_transcripts)
+                     title_sync, tool_call_stream, turn_transcripts, reasoning_effort)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -198,6 +198,10 @@ FUNCTIONS = {
     ("conversation_summary", "summary_messages"): conversation_summary.summary_messages,
     ("conversation_summary", "build_summary_instruction"): conversation_summary.build_summary_instruction,
     ("conversation_summary", "plan_conversation_summary_weighted"): conversation_summary.plan_conversation_summary,
+    ("reasoning_effort", "supported_reasoning_efforts"): reasoning_effort.supported_reasoning_efforts,
+    ("reasoning_effort", "resolve_reasoning_effort"): reasoning_effort.resolve_reasoning_effort,
+    ("reasoning_effort", "reasoning_budget_tokens"): reasoning_effort.reasoning_budget_tokens,
+    ("reasoning_effort", "anthropic_thinking"): reasoning_effort.anthropic_thinking,
     ("turn_transcripts", "plan_history_units"): turn_transcripts.plan_history_units,
     ("turn_transcripts", "transcript_weight"): turn_transcripts.transcript_weight,
     ("turn_transcripts", "summarizable_history"): turn_transcripts.summarizable_history,
@@ -261,6 +265,7 @@ FUNCTIONS = {
     ("context_window", "cjk_ratio_of"): context_window.cjk_ratio_of,
     ("provider_profile", "get_cache_profile"): provider_profile.get_cache_profile,
     ("provider_profile", "target_prompt_tokens"): provider_profile.target_prompt_tokens,
+    ("provider_profile", "uses_responses_api"): provider_profile.uses_responses_api,
     ("protocol_choice", "resolve_document_protocol"): protocol_choice.resolve_document_protocol,
     ("title_sync", "leading_h1_text"): title_sync.leading_h1_text,
     ("title_sync", "content_with_renamed_heading"): title_sync.content_with_renamed_heading,

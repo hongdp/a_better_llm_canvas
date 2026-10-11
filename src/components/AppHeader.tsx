@@ -30,6 +30,8 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     updateProviderConfig,
     availableGeminiModels,
     availableGrokModels,
+    availableAnthropicModels,
+    availableOpenAIModels,
     availableOllamaModels,
     availableRunpodModels,
     customSystemPrompts,
@@ -56,6 +58,12 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     }
     if (activeProvider === 'grok') {
       return availableGrokModels
+    }
+    if (activeProvider === 'anthropic' && availableAnthropicModels.length > 0) {
+      return availableAnthropicModels
+    }
+    if (activeProvider === 'openai' && availableOpenAIModels.length > 0) {
+      return availableOpenAIModels
     }
     // Discovered from the configured endpoint. The shipped list can never
     // contain a locally-served model, and this dropdown is the one people

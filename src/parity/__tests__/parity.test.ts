@@ -29,6 +29,7 @@ import {
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
 import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, diffTailParts, pinnedUpdates, type RenderableDoc, type DynamicContextOptions, type TailParts, type SentTail } from '../../hooks/chat/dynamicContext'
+import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking } from '../../utils/reasoningEffort'
 import { planHistoryUnits, summarizableHistory, historyWindow, transcriptWeight, type HistoryEntry, type TurnTranscript } from '../../utils/turnTranscripts'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
 import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
@@ -36,7 +37,7 @@ import { buildChatSystemPrompt, promptTexts } from '../../utils/systemPrompt'
 import { DOCUMENT_TOOLS, toOpenAITools, toAnthropicTools, toGeminiTools, fromOpenAITools, type ToolSpec } from '../../utils/documentTools'
 import { acceptedHash, freshnessMarkers, type SeenRecord, type MarkableDoc } from '../../agent/freshness'
 import { resolveContextWindowTokens, estimateTokens, tokensToChars, historyBudgetChars, cjkRatioOf } from '../../utils/contextWindow'
-import { getCacheProfile, targetPromptTokens } from '../../utils/providerProfile'
+import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../../utils/providerProfile'
 import { resolveDocumentProtocol, type DocumentProtocol } from '../../utils/protocolChoice'
 import { leadingH1Text, contentWithRenamedHeading } from '../../utils/titleSync'
 import { partialStringArgument, applyToolCallDelta, finishToolCalls, type ToolCallAccumulator, type FinishedToolCall } from '../../utils/toolCallStream'
@@ -593,6 +594,8 @@ const MODULES: Module[] = [
     cases: {
       get_cache_profile: run(getCacheProfile, [['grok'], ['ollama'], ['anthropic'], ['openai'], ['gemini'], ['runpod'], ['nope']]),
       target_prompt_tokens: run(targetPromptTokens, [[getCacheProfile('grok'), 256000], [getCacheProfile('grok'), 131072], [getCacheProfile('ollama'), 262144]]),
+      uses_responses_api: run(usesResponsesApi, [['grok', ''], ['openai', 'https://api.openai.com/v1'], ['openai', 'https://API.openai.com'], ['openai', 'https://api.openai.com.evil.example/v1'],
+        ['openai', 'http://127.0.0.1:8090/v1'], ['openai', ''], ['ollama', 'https://api.openai.com/v1'], ['anthropic', 'https://api.anthropic.com/v1']]),
     }
   },
   {
@@ -771,6 +774,27 @@ const MODULES: Module[] = [
       plan_conversation_summary_weighted: run(planConversationSummary, [
         [SUMMARY_TURNS(4, 100).map((m, i) => (i === 2 ? { ...m, weight: 20_000 } : m)), 10_000, null],
         [summarizableHistory(TT_ENTRIES, TT_UNITS, TT), 400, null]
+      ])
+    }
+  },
+  {
+    module: 'reasoning_effort',
+    cases: {
+      supported_reasoning_efforts: run(supportedReasoningEfforts, [
+        ['grok', 'grok-4.20-0309-reasoning'], ['grok', 'grok-4.7'], ['grok', 'grok-4.5'], ['grok', 'grok-3-mini'], ['grok', 'grok-3'],
+        ...['gpt-5', 'gpt-5-mini', 'gpt-5-2025-08-07', 'gpt-5-codex', 'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.10', 'gpt-5.2', 'gpt-5.6-luna', 'gpt-6.1-sol', 'o3', 'o4-mini', 'gpt-4o', 'gpt-4.1'].map(m => ['openai', m] as [string, string]), ['gemini', 'gemini-2.5-flash'], ['gemini', 'gemini-1.5-pro'], ['ollama', 'x'], ['nope', 'y'],
+        ...['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
+          'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet'].map(m => ['anthropic', m] as [string, string])
+      ]),
+      resolve_reasoning_effort: run(resolveReasoningEffort, [
+        ['anthropic', 'claude-sonnet-5-5', undefined], ['anthropic', 'claude-sonnet-5-5', 'default'], ['anthropic', 'claude-sonnet-5-5', 'xhigh'],
+        ['anthropic', 'claude-opus-4-6', 'xhigh'], ['anthropic', 'claude-3-5-sonnet', 'high'], ['grok', 'grok-4.7', 'minimal'], ['openai', 'gpt-5', 'minimal'], ['openai', 'gpt-5.1', 'minimal'], ['openai', 'gpt-6.1-sol', 'xhigh'], ['openai', 'gpt-4o', 'low']
+      ]),
+      reasoning_budget_tokens: run(reasoningBudgetTokens, [['minimal'], ['low'], ['medium'], ['high'], ['xhigh']]),
+      anthropic_thinking: run(anthropicThinking, [
+        ['claude-sonnet-5-5', null, 16384], ['claude-sonnet-5-5', 'low', 16384], ['claude-opus-4-7', 'xhigh', 16384], ['claude-opus-4-6', 'minimal', 16384],
+        ['claude-sonnet-4-6', 'high', 16384], ['claude-haiku-4-5-20251001', 'high', 16384], ['claude-haiku-4-5-20251001', 'high', 3000],
+        ['claude-sonnet-4-5-20250929', 'low', 2000], ['claude-3-7-sonnet-latest', 'medium', 8192]
       ])
     }
   },

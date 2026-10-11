@@ -24,7 +24,7 @@ from wc_text.llm_context import build_attachments_label, html_to_plain_text, str
 from wc_text.reminders import interrupted_turn_reminder, wrap_reminder
 from wc_text.policy import resolve_run_settings
 from wc_text.protocol_choice import resolve_document_protocol
-from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
+from wc_text.provider_profile import get_cache_profile, target_prompt_tokens, uses_responses_api
 from wc_text.system_prompt import build_chat_system_prompt
 from wc_text.turn_transcripts import history_window, plan_history_units, summarizable_history
 
@@ -50,23 +50,28 @@ def ensure_tables() -> None:
         # A finished turn's messages as sent, for the next turn to replay (cache_continuity.md §3.1).
         conn.execute("""CREATE TABLE IF NOT EXISTS turn_transcripts (
             username TEXT NOT NULL, book_id TEXT NOT NULL, message_id TEXT NOT NULL, user_message_id TEXT,
-            transcript TEXT NOT NULL, created_at TEXT NOT NULL,
+            transcript TEXT NOT NULL, created_at TEXT NOT NULL, scope TEXT,
             PRIMARY KEY (username, book_id, message_id))""")
+        # The provider|model a transcript was sent to: replayed only to the same one, since its
+        # reasoning items and thinking blocks are another provider's ciphertext (a 400 there).
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(turn_transcripts)").fetchall()}
+        if "scope" not in columns:
+            conn.execute("ALTER TABLE turn_transcripts ADD COLUMN scope TEXT")
         conn.commit()
     finally:
         conn.close()
 
 
 def save_transcript(username: str, book_id: str, message_id: str, user_message_id: Optional[str],
-                    transcript: List[Dict[str, Any]], now: str) -> None:
+                    transcript: List[Dict[str, Any]], now: str, scope: str = "") -> None:
     """Store a finished turn's transcript under its reply's message id (cache_continuity.md §3.1)."""
     conn = get_db()
     try:
-        conn.execute("""INSERT INTO turn_transcripts (username, book_id, message_id, user_message_id, transcript, created_at)
-                        VALUES (?, ?, ?, ?, ?, ?)
+        conn.execute("""INSERT INTO turn_transcripts (username, book_id, message_id, user_message_id, transcript, created_at, scope)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(username, book_id, message_id) DO UPDATE SET user_message_id = excluded.user_message_id,
-                        transcript = excluded.transcript, created_at = excluded.created_at""",
-                     (username, book_id, message_id, user_message_id, json.dumps(transcript, ensure_ascii=False), now))
+                        transcript = excluded.transcript, created_at = excluded.created_at, scope = excluded.scope""",
+                     (username, book_id, message_id, user_message_id, json.dumps(transcript, ensure_ascii=False), now, scope))
         # Only the turns after the summary's cut are ever replayed: the oldest go.
         conn.execute("""DELETE FROM turn_transcripts WHERE username = ? AND book_id = ? AND message_id NOT IN (
                         SELECT message_id FROM turn_transcripts WHERE username = ? AND book_id = ? ORDER BY created_at DESC LIMIT ?)""",
@@ -76,8 +81,8 @@ def save_transcript(username: str, book_id: str, message_id: str, user_message_i
         conn.close()
 
 
-def load_transcripts(username: str, book_id: str, message_ids: List[str]) -> Dict[str, Dict[str, Any]]:
-    """The stored transcripts of these replies: {message_id: {"userMessageId", "messages"}}."""
+def load_transcripts(username: str, book_id: str, message_ids: List[str], scope: str = "") -> Dict[str, Dict[str, Any]]:
+    """The stored transcripts of these replies sent to `scope` (provider|model): {message_id: {"userMessageId", "messages"}}."""
     ids = [i for i in message_ids if i]
     if not ids:
         return {}
@@ -87,7 +92,7 @@ def load_transcripts(username: str, book_id: str, message_ids: List[str]) -> Dic
         for start in range(0, len(ids), 500):
             chunk = ids[start:start + 500]
             rows = conn.execute(f"SELECT message_id, user_message_id, transcript FROM turn_transcripts WHERE username = ? AND book_id = ? "
-                                f"AND message_id IN ({','.join('?' * len(chunk))})", (username, book_id, *chunk)).fetchall()
+                                f"AND scope = ? AND message_id IN ({','.join('?' * len(chunk))})", (username, book_id, scope, *chunk)).fetchall()
             for r in rows:
                 try:
                     messages = json.loads(r["transcript"])
@@ -256,6 +261,8 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
         "continueAfterWrites": settings["policy"]["continueAfterWrites"], "protocol": protocol,
     })}
 
+    # grok and OpenAI (Responses API) keep a turn's reasoning items on its message and get them back.
+    replays_reasoning = uses_responses_api(provider, config.get("baseUrl") or "")
     with_reasoning = {m["id"] for m in [m for m in history if m.get("role") == "assistant" and m.get("reasoningItems")][-REASONING_HISTORY_TURNS:]}
     entries: List[Dict[str, Any]] = []
     for m in history:
@@ -265,7 +272,7 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
                                  "content": strip_chat_display_artifacts(m.get("content") or "") + agent_history_note(m)}
         if m.get("images"):
             entry["images"] = m["images"]
-        if provider == "grok" and m.get("id") in with_reasoning:
+        if replays_reasoning and m.get("id") in with_reasoning:
             entry["responseItems"] = m["reasoningItems"]
         entries.append(entry)
     replay = (transcripts or {}) if continuity else {}

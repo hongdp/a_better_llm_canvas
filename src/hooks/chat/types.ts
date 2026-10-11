@@ -13,7 +13,7 @@ export interface HistorySourceMessage {
   images?: string[]
   /** What an agentic turn did; summarized into one history line. */
   agent?: AgentTurnRecord
-  /** grok: the turn's final reasoning items, replayed ahead of its text (ChatMessage.reasoningItems). */
+  /** grok / OpenAI (Responses API): the turn's final reasoning items, replayed ahead of its text (ChatMessage.reasoningItems). */
   reasoningItems?: unknown[]
 }
 

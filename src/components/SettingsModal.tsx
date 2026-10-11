@@ -24,6 +24,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     setPolishPrompt,
     availableGeminiModels,
     availableGrokModels,
+    availableAnthropicModels,
+    availableOpenAIModels,
     availableOllamaModels,
     availableRunpodModels,
     customSystemPrompts,
@@ -189,6 +191,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     ? availableGeminiModels
                     : activeTab === 'grok' && availableGrokModels && availableGrokModels.length > 0
                     ? availableGrokModels
+                    : activeTab === 'anthropic' && availableAnthropicModels.length > 0
+                    ? availableAnthropicModels
+                    : activeTab === 'openai' && availableOpenAIModels.length > 0
+                    ? availableOpenAIModels
                     : activeTab === 'ollama' && availableOllamaModels && availableOllamaModels.length > 0
                     ? availableOllamaModels
                     : activeTab === 'runpod' && availableRunpodModels && availableRunpodModels.length > 0
