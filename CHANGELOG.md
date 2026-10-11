@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- The footer's chapter length is the count the assistant's tools report:
+  characters of the text, punctuation included (it used to leave punctuation
+  out, so the two numbers differed by ~15% on Chinese prose).
+
 ## 1.0.0 — 2026-10-11
 
 The first installable release. Download `web_canvas-1.0.0.tar.gz` from the

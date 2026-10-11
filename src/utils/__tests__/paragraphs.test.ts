@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { chapterParagraphs, numberedLine, searchableText, applyParagraphEdits } from '../paragraphs'
+import { chapterParagraphs, numberedLine, searchableText, applyParagraphEdits, chapterChars } from '../paragraphs'
 
 describe('chapterParagraphs', () => {
   it('numbers every non-empty top-level block, headings and images included', () => {
@@ -33,6 +33,13 @@ describe('chapterParagraphs', () => {
     expect(numberedLine(mixed)).toBe('¶2 She smiled at the camera. [image]')
     expect(searchableText(mixed)).toBe('She smiled at the camera. [image]')
     expect(searchableText(p)).toBe('Plain.')
+  })
+})
+
+describe('chapterChars', () => {
+  // The one length the footer and the write tools both state (CanvasFooter).
+  it('counts every character of the paragraphs\' text, punctuation included, not the markup or the gaps between blocks', () => {
+    expect(chapterChars('<h1>第三章</h1>\n<p>“你来了。”她说……</p>\n<p>Hello, world!</p><p><img src="x"></p>')).toBe(3 + 10 + 13)
   })
 })
 
