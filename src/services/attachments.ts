@@ -10,7 +10,7 @@
 import { useAppStore } from '../store/useAppStore'
 import { CLIENT_ID, CLIENT_ID_HEADER } from '../store/documentSync'
 import { attachmentParagraphs, type AttachmentMeta } from '../utils/attachments'
-import type { WebPage, WebSearchResult } from '../utils/webText'
+import type { WebImageResult, WebPage, WebSearchResult } from '../utils/webText'
 
 function headers(json = true): Record<string, string> {
   return {
@@ -78,6 +78,12 @@ export async function webRead(url: string, fetchFn: typeof fetch = fetch): Promi
   const res = await fetchFn('/api/web/read', { method: 'POST', headers: headers(), body: JSON.stringify({ url }) })
   const body = await expectOk(res, 'Reading the page')
   return body.page as WebPage
+}
+
+export async function webImages(url: string, numbers: number[], fetchFn: typeof fetch = fetch): Promise<WebImageResult[]> {
+  const res = await fetchFn('/api/web/images', { method: 'POST', headers: headers(), body: JSON.stringify({ url, images: numbers }) })
+  const body = await expectOk(res, 'Fetching the images')
+  return Array.isArray(body.images) ? body.images as WebImageResult[] : []
 }
 
 /** Whether the server has a browser at all (Playwright installed). */

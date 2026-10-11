@@ -5,6 +5,15 @@
 - The footer's chapter length is the count the assistant's tools report:
   characters of the text, punctuation included (it used to leave punctuation
   out, so the two numbers differed by ~15% on Chinese prose).
+- `web_images`: the assistant fetches a page's pictures (numbered in
+  `web_read`) and places them in a chapter as it writes. The Import-from-URL
+  modal and its scrape pipeline are removed; loading a page into a chapter is
+  a chat request. `Pillow` joins the requirements (image shrinking).
+- An image inside a text paragraph shows as `[image]` in reads and grep and
+  survives a paragraph replace.
+- Chapter summaries are no longer used; the chapter index is titles and
+  markers. Settings are per user; each book remembers its provider, model,
+  effort and preset.
 
 ## 1.0.0 — 2026-10-11
 

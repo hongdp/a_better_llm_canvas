@@ -33,6 +33,7 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
   const snapshots: string[] = []
   const opened: string[] = []
   const removed: string[] = []
+  const registered: Array<{ dataUrl: string; alt: string }> = []
   const progress: Array<string | null> = []
   /** Every ui.writing call: the chapter locked for a slow write, or null. */
   const writing: Array<string | null> = []
@@ -107,12 +108,12 @@ export function fakeContext(original: string, opts: FakeContextOptions = {}) {
         if (openId === id) openId = book[0]?.id ?? ''
       }
     },
-    images: { preserve: h => h, restore: h => h },
+    images: { preserve: h => h, restore: h => h, register: (dataUrl, alt) => { registered.push({ dataUrl, alt: alt ?? '' }); return `{{IMAGE_PLACEHOLDER_${registered.length - 1}}}` } },
     ui: { progress: line => { progress.push(line) }, writing: id => { writing.push(id) } },
     run: createRunState({ startId: 'doc-1', inContext: opts.inContext, startContent: original })
   }
   return {
-    ctx, commits, writes, snapshots, opened, removed, progress, writing, previewDocument, previewSelection, discardPreview, ensureLoaded,
+    ctx, commits, writes, snapshots, opened, removed, progress, writing, previewDocument, previewSelection, discardPreview, ensureLoaded, registered,
     book: () => book,
     /** The user types into a chapter (the stored content changes outside the run). */
     userEdits: (id: string, html: string) => {

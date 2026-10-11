@@ -12,7 +12,7 @@ import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, 
 import { planHistoryUnits, summarizableHistory, historyWindow, type HistoryEntry, type TurnTranscript } from '../utils/turnTranscripts'
 import { buildChapterIndex } from '../utils/chapterIndex'
 import { loadChatSummary, saveChatSummary } from '../store/chatSummaryStore'
-import { replaceImagesWithPlaceholders, restoreImagePlaceholders, type ImagePlaceholderEntry } from '../utils/imagePreservation'
+import { registerImage, replaceImagesWithPlaceholders, restoreImagePlaceholders, type ImagePlaceholderEntry } from '../utils/imagePreservation'
 import { selectReferenceChapters, pinnedContextIds } from '../utils/contextSelection'
 import { buildChatSystemPrompt } from '../utils/systemPrompt'
 import { applyToolCallDelta, finishToolCalls, type ToolCallAccumulator } from '../utils/toolCallStream'
@@ -53,7 +53,7 @@ import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshnes
 import type { AgentTurnRecord } from '../types/chat'
 import type { ThinkingBlock } from '../types/llm'
 import { WEB_TOOLS } from '../agent/tools/web'
-import { attachmentParagraphsOf, webAvailable, webRead, webSearch } from '../services/attachments'
+import { attachmentParagraphsOf, webAvailable, webImages, webRead, webSearch } from '../services/attachments'
 import { renderAttachmentIndex } from '../utils/attachments'
 import {
   EMPTY_LEDGER,
@@ -746,7 +746,8 @@ export function useChatLLM({
     ...(webOn ? {
       web: {
         search: (query: string, maxResults: number) => webSearch(query, maxResults),
-        read: (url: string) => webRead(url)
+        read: (url: string) => webRead(url),
+        images: (url: string, numbers: number[]) => webImages(url, numbers)
       }
     } : {}),
     // analyze_book (D7): the chat model, one call per batch, on a cache key
@@ -911,7 +912,11 @@ export function useChatLLM({
       },
       snapshot: (id: string, label: string) => useAppStore.getState().createVersionSnapshot(label, id)
     },
-    images: { preserve: preserveImagesWithPlaceholders, restore: restoreImagesFromPlaceholders },
+    images: {
+      preserve: preserveImagesWithPlaceholders,
+      restore: restoreImagesFromPlaceholders,
+      register: (dataUrl: string, alt?: string) => registerImage(imagePlaceholdersRef.current, dataUrl, alt ?? '')
+    },
     ui: {
       progress: (line: string | null) => {
         if (progressLineRef.current === line) return

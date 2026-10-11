@@ -1,8 +1,7 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Pin } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Pin } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
-import { ImportUrlModal } from './ImportUrlModal'
 import { AttachmentsSection } from './AttachmentsSection'
 import { useTranslation } from '../i18n'
 import { SIDEBAR_WIDTH, clampSize, loadPersistedSize, savePersistedSize } from '../utils/layoutPrefs'
@@ -60,7 +59,6 @@ export const ChaptersSidebar: React.FC = () => {
   const [isCreating, setIsCreating] = useState(false)
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null)
   const [dragOverIndex, setDragOverIndex] = useState<number | null>(null)
-  const [showImportUrl, setShowImportUrl] = useState(false)
 
   React.useEffect(() => {
     if (showBookManager && user) {
@@ -467,28 +465,6 @@ export const ChaptersSidebar: React.FC = () => {
           <Plus size={16} /> {t.sidebar.newChapter}
         </button>
         <button
-          onClick={() => {
-            if (isStreaming) return
-            setShowImportUrl(true)
-          }}
-          disabled={isStreaming}
-          className="btn-secondary"
-          style={{
-            width: '100%',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            gap: '0.5rem',
-            fontSize: '0.85rem',
-            padding: '0.6rem',
-            opacity: isStreaming ? 0.5 : 1,
-            cursor: isStreaming ? 'not-allowed' : 'pointer'
-          }}
-          type="button"
-        >
-          <Globe size={16} /> {t.sidebar.importUrl}
-        </button>
-        <button
           onClick={handleImportClick}
           disabled={isStreaming}
           className="btn-secondary"
@@ -787,11 +763,6 @@ export const ChaptersSidebar: React.FC = () => {
         </div>
       )}
 
-      {/* URL Import Modal */}
-      <ImportUrlModal
-        isOpen={showImportUrl}
-        onClose={() => setShowImportUrl(false)}
-      />
     </aside>
   )
 }

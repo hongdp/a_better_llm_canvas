@@ -42,6 +42,21 @@ export function replaceImagesWithPlaceholders(
   return replacedHtml
 }
 
+/**
+ * An image the run fetched (web_images) joins the registry as a tag the
+ * model never sees whole; it places the returned placeholder in its write and
+ * `restoreImagePlaceholders` swaps the tag in. Mirrored by register_image.
+ */
+export function registerImage(registry: ImagePlaceholderEntry[], dataUrl: string, alt: string = ''): string {
+  const safeAlt = alt.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  const tag = safeAlt ? `<img src="${dataUrl}" alt="${safeAlt}">` : `<img src="${dataUrl}">`
+  const existing = registry.find(e => e.tag === tag)
+  if (existing) return existing.placeholder
+  const entry = { placeholder: `{{IMAGE_PLACEHOLDER_${registry.length}}}`, tag }
+  registry.push(entry)
+  return entry.placeholder
+}
+
 // The model was shown `{{IMAGE_PLACEHOLDER_N}}` but frequently reformats it:
 // spaces inside braces, fewer/more braces, different separators, lowercase.
 // Match all of those; the numeric index is what identifies the image.

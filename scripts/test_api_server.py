@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 import sys
 import os
 
@@ -9,69 +9,10 @@ import api_server
 import server_auth
 import server_db
 import server_generation
-from server_scrape import _parse_html_to_scraped_data
 
 # NOTE: patches must target the module that OWNS the state the executing code
-# reads (server_scrape.http_requests, server_db.DB_PATH, server_auth.SESSIONS_FILE).
+# reads (server_db.DB_PATH, server_auth.SESSIONS_FILE).
 # Patching a name re-exported on api_server would not affect those code paths.
-
-def test_extract_various_image_attributes():
-    html_content = """
-    <html>
-        <head><title>Test Page</title></head>
-        <body>
-            <p>Some text content to create a paragraph.</p>
-            <!-- forum-style lazy-load attributes -->
-            <img ess-data="https://example.com/image.webp" iyl-data="http://a.d/adblo_ck.jpg" referrerpolicy="no-referrer">
-            <!-- standard src -->
-            <img src="https://example.com/image2.jpg">
-            <!-- lazy load data-src -->
-            <img data-src="https://example.com/image3.png">
-            <!-- empty/invalid img -->
-            <img title="no src">
-        </body>
-    </html>
-    """
-    
-    with patch("server_scrape.http_requests.get") as mock_get:
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.headers = {"Content-Type": "image/jpeg"}
-        mock_resp.iter_content.return_value = [b"fake_image_data_that_is_short"]
-        mock_get.return_value = mock_resp
-        
-        result = _parse_html_to_scraped_data(html_content, "https://example.com/")
-        
-        assert result["title"] == "Test Page"
-        assert result["totalParagraphs"] == 1
-        assert result["totalImages"] == 3
-        
-        # Verify that http_requests.get was called with the correct URLs extracted from different attributes
-        called_urls = [call.args[0] for call in mock_get.call_args_list]
-        assert "https://example.com/image.webp" in called_urls
-        assert "https://example.com/image2.jpg" in called_urls
-        assert "https://example.com/image3.png" in called_urls
-
-def test_extract_inline_base64_image():
-    html_content = """
-    <html>
-        <body>
-            <p>Paragraph</p>
-            <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=">
-        </body>
-    </html>
-    """
-    with patch("server_scrape.http_requests.get") as mock_get:
-        result = _parse_html_to_scraped_data(html_content, "https://example.com/")
-        
-        assert result["totalImages"] == 1
-        # Should not make any network requests for base64 inline images
-        mock_get.assert_not_called()
-        
-        img = result["images"][0]
-        assert img["base64"].startswith("data:image/png;base64,")
-
-
 
 def test_init_db_migrates_summary_columns(tmp_path):
     """A pre-summary database gains the summary columns on init_db, and

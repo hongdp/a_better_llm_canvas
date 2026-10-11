@@ -7,7 +7,7 @@
 import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../types/llm'
 import type { CanvasDocument } from '../types/document'
 import { localStorage } from './persistence'
-import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_ANALYSIS_PROMPT, DEFAULT_IMAGE_GEN_CONFIG, DEFAULT_POLISH_PROMPT } from './defaults'
+import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_GEN_CONFIG, DEFAULT_POLISH_PROMPT } from './defaults'
 import type { PolishPrompt } from '../utils/polish'
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
@@ -345,11 +345,6 @@ export const loadSavedDebugMode = (): boolean => {
     return cookieSaved === 'true'
   }
   return false
-}
-
-export const loadSavedImageAnalysisPrompt = (): string => {
-  const saved = localStorage.getItem('web_canvas_image_analysis_prompt')
-  return saved !== null ? saved : DEFAULT_IMAGE_ANALYSIS_PROMPT
 }
 
 export const loadSavedImageGenConfig = (): ImageGenConfig => {

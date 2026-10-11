@@ -143,7 +143,6 @@ export const en = {
     loadingBooks: 'Loading books...',
     deleteBook: 'Delete Book',
     newChapter: 'New Chapter',
-    importUrl: 'Import from URL',
     importChapter: 'Import Chapter',
     replaceAllChapters: 'Replace All Chapters',
     confirmReplace: 'Confirm Replace',

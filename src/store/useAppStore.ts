@@ -15,7 +15,7 @@ export type { DocumentVersion, CanvasDocument } from '../types/document'
 
 // Re-export constants and the server bootstrap so existing import sites
 // (e.g. main.tsx, SettingsModal) keep working unchanged.
-export { DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_ANALYSIS_PROMPT } from './defaults'
+export { DEFAULT_SYSTEM_PROMPTS } from './defaults'
 export { initializeStoreFromServer } from './serverSync'
 export { isEditLocked } from './slices/chatSlice'
 
