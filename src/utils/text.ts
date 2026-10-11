@@ -978,46 +978,6 @@ export function stripBlankParagraphs(html: string): string {
 }
 
 /**
- * Count words in HTML content.
- * Handles CJK (Chinese/Japanese/Korean) characters as individual words,
- * and uses Unicode-aware word boundaries for Latin text.
- * Strips `<del>` content (deleted diff text) before counting.
- */
-export function countWords(html: string): number {
-  if (!html) return 0
-  
-  // 1. Remove <del>...</del> tags and their contents (deleted text from diffs)
-  let cleanText = html.replace(/<del\b[^>]*>([\s\S]*?)<\/del>/gi, '')
-  
-  // 2. Replace all other HTML tags with spaces
-  cleanText = cleanText.replace(/<[^>]*>/g, ' ')
-  
-  // 3. Replace &nbsp; and other whitespace entities with standard spaces
-  cleanText = cleanText.replace(/&nbsp;/g, ' ')
-  
-  // 4. Decode common HTML entities to avoid counting them as words
-  cleanText = cleanText
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#039;/g, "'")
-
-  // Match CJK characters (Chinese, Japanese, Korean)
-  const cjkRegex = /[\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff\u3040-\u309f\u30a0-\u30ff\uac00-\ud7af]/g
-  const cjkCount = (cleanText.match(cjkRegex) || []).length
-  
-  // Remove CJK characters to count other words (Latin, Cyrillic, Arabic, etc.)
-  const nonCjkText = cleanText.replace(cjkRegex, ' ')
-  
-  // Match words using unicode property escapes: letters and numbers, optionally with internal apostrophe/hyphen
-  const wordRegex = /[\p{L}\p{N}]+(?:[''‑][\p{L}\p{N}]+)*/gu
-  const otherCount = (nonCjkText.match(wordRegex) || []).length
-  
-  return cjkCount + otherCount
-}
-
-/**
  * Convert a blob: URL to a data: URL via fetch + FileReader.
  */
 export const convertBlobUrlToDataUrl = async (blobUrl: string): Promise<string> => {

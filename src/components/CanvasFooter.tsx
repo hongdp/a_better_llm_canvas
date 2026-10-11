@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import type { CanvasDocument } from '../store/useAppStore'
-import { countWords } from '../utils/text'
+import { chapterChars } from '../utils/paragraphs'
+import { stripDiffMarkup } from '../utils/diff'
 
 interface CanvasFooterProps {
   activeDoc: Pick<CanvasDocument, 'title' | 'content'>
@@ -25,7 +26,12 @@ export function CanvasFooter({ activeDoc }: CanvasFooterProps) {
 
   // The footer re-renders on every store change (selection ticks included);
   // recount words only when the document text actually changes.
-  const wordCount = useMemo(() => countWords(activeDoc.content), [activeDoc.content])
+  // The chapter's length as the assistant's tools state it (chapterChars): every
+  // character of its paragraphs' text, punctuation included, on the accepted
+  // reading of a pending diff. One number for the writer and the model: the
+  // footer used to count CJK characters only, and the model said "3430 字" of a
+  // chapter the footer showed as 2950 (2026-10-11).
+  const charCount = useMemo(() => chapterChars(stripDiffMarkup(activeDoc.content)), [activeDoc.content])
 
   return (
     <footer className="canvas-footer">
@@ -34,7 +40,7 @@ export function CanvasFooter({ activeDoc }: CanvasFooterProps) {
           word count on phones); narrow screens scroll instead and
           secondary stats are hidden via CSS. */}
       <div className="footer-stats">
-        <span className="footer-words">Words: {wordCount}</span>
+        <span className="footer-words">Chars: {charCount}</span>
         <span className="footer-sep" style={{ opacity: 0.3 }}>|</span>
         <span className="footer-tokens">
           Session Tokens: In: {sessionInputTokens.toLocaleString()}

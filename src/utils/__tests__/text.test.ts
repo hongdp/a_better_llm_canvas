@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getTimestampId, chapterAttribute, newChapterAttribute, stripIncompleteEndTag, countWords, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, applyEditBlocksLocally, parseAssistantResponse, stripStrayDocumentMarkup, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
+import { getTimestampId, chapterAttribute, newChapterAttribute, stripIncompleteEndTag, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement, parseEditBlocks, applyEditBlocks, applyEditBlocksLocally, parseAssistantResponse, stripStrayDocumentMarkup, detectFailedDocumentUpdate, parseDocStatus, stripDocStatus, trimIncompleteHtmlTail } from '../text'
 import { stripDiffMarkup } from '../diff'
 
 // ── getTimestampId ────────────────────────────────────────────────────────────
@@ -60,57 +60,6 @@ describe('stripIncompleteEndTag', () => {
 
   it('handles a string that is exactly the full tag', () => {
     expect(stripIncompleteEndTag(fullTag)).toBe('')
-  })
-})
-
-// ── countWords ────────────────────────────────────────────────────────────────
-describe('countWords', () => {
-  it('returns 0 for empty string', () => {
-    expect(countWords('')).toBe(0)
-  })
-
-  it('returns 0 for null-ish input', () => {
-    expect(countWords(null as unknown as string)).toBe(0)
-  })
-
-  it('counts plain Latin words', () => {
-    expect(countWords('<p>Hello world foo</p>')).toBe(3)
-  })
-
-  it('counts each CJK character as one word', () => {
-    // 你好世界 = 4 CJK chars
-    expect(countWords('<p>你好世界</p>')).toBe(4)
-  })
-
-  it('counts mixed CJK and Latin', () => {
-    // "Hello 世界" → 1 Latin + 2 CJK = 3
-    expect(countWords('<p>Hello 世界</p>')).toBe(3)
-  })
-
-  it('strips <del>...</del> content before counting', () => {
-    // "Hello <del>deleted</del> world" → "Hello world" → 2
-    expect(countWords('<p>Hello <del>deleted</del> world</p>')).toBe(2)
-  })
-
-  it('decodes HTML entities — decoded chars may be counted as words', () => {
-    // "&amp;" decodes to "&" which has no letters, counts as 0
-    expect(countWords('<p>&amp;</p>')).toBe(0)
-    // "&lt;tag&gt;" decodes to "<tag>" — "tag" is counted as a word (1)
-    expect(countWords('<p>&lt;tag&gt;</p>')).toBe(1)
-  })
-
-  it('ignores HTML tags in word count', () => {
-    expect(countWords('<h1>One</h1><p>two three</p>')).toBe(3)
-  })
-
-  it('counts &nbsp; as whitespace, not a word', () => {
-    expect(countWords('<p>one&nbsp;two</p>')).toBe(2)
-  })
-
-  it('handles ASCII-hyphenated words as two words (standard hyphen is a separator)', () => {
-    // The word regex uses typographic hyphens (\u2011, etc.), not ASCII "-"
-    // So "well-known" splits into 2 tokens, giving count 3 with "concept"
-    expect(countWords('<p>well-known concept</p>')).toBe(3)
   })
 })
 
