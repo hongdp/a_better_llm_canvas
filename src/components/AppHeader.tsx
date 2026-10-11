@@ -1,6 +1,7 @@
 import type { ChangeEvent } from 'react'
 import { Sun, Moon, Sparkles, Settings, Menu, LogOut } from 'lucide-react'
-import { useAppStore, PROVIDER_MODELS } from '../store/useAppStore'
+import { useAppStore } from '../store/useAppStore'
+import { PROVIDERS, PROVIDER_IDS, modelsFor } from '../utils/providers'
 import type { LLMProvider } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
 
@@ -28,13 +29,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     setProvider,
     providerConfigs,
     updateProviderConfig,
-    availableGeminiModels,
-    availableGrokModels,
-    availableAnthropicModels,
-    availableOpenAIModels,
-    availableMoonshotModels,
-    availableOllamaModels,
-    availableRunpodModels,
+    availableModels,
     customSystemPrompts,
     activeSystemPromptId,
     setActiveSystemPromptId,
@@ -53,33 +48,9 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     updateProviderConfig(activeProvider, { model: e.target.value })
   }
 
-  const getAvailableModels = () => {
-    if (activeProvider === 'gemini') {
-      return availableGeminiModels
-    }
-    if (activeProvider === 'grok') {
-      return availableGrokModels
-    }
-    if (activeProvider === 'anthropic' && availableAnthropicModels.length > 0) {
-      return availableAnthropicModels
-    }
-    if (activeProvider === 'openai' && availableOpenAIModels.length > 0) {
-      return availableOpenAIModels
-    }
-    if (activeProvider === 'moonshot' && availableMoonshotModels.length > 0) {
-      return availableMoonshotModels
-    }
-    // Discovered from the configured endpoint. The shipped list can never
-    // contain a locally-served model, and this dropdown is the one people
-    // actually use to switch models — Settings is not the only place.
-    if (activeProvider === 'ollama' && availableOllamaModels.length > 0) {
-      return availableOllamaModels
-    }
-    if (activeProvider === 'runpod' && availableRunpodModels.length > 0) {
-      return availableRunpodModels
-    }
-    return PROVIDER_MODELS[activeProvider] || []
-  }
+  // Discovered lists (the key's own, or what a local endpoint serves) beat the shipped one.
+  const getAvailableModels = () => modelsFor(activeProvider, availableModels)
+
 
   return (
     <header className="app-header">
@@ -113,13 +84,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
             onChange={(e) => setProvider(e.target.value as LLMProvider)}
             title="Select LLM Provider"
           >
-            <option value="gemini">Gemini</option>
-            <option value="openai">OpenAI</option>
-            <option value="anthropic">Anthropic</option>
-            <option value="ollama">Ollama</option>
-            <option value="runpod">RunPod</option>
-            <option value="grok">Grok (xAI)</option>
-            <option value="moonshot">Kimi (Moonshot)</option>
+            {PROVIDER_IDS.map(id => <option key={id} value={id}>{PROVIDERS[id].label}</option>)}
           </select>
         </div>
 

@@ -9,6 +9,7 @@ from unittest.mock import patch
 import httpx
 
 import server_generation as gen
+import wc_providers.common  # noqa: E402
 from test_api_server import _FakeStreamResponse, _new_job, _run_job
 
 GROK = {"apiKey": "k", "model": "grok-4.6", "baseUrl": "https://api.x.ai/v1"}
@@ -97,7 +98,7 @@ def test_grok_streams_go_idle_after_180_seconds():
             yield _FakeStreamResponse(lines=_lines({"type": "response.output_text.delta", "output_index": 0, "delta": "ok"}),
                                       text_chunks=['data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'])
         return fake_stream
-    with patch.object(gen, "_http_stream", stub(captured)):
+    with patch.object(wc_providers.common, "_http_stream", stub(captured)):
         asyncio.run(gen.run_job(_new_job(), "grok", GROK, [{"role": "user", "content": "q"}]))
     assert captured == [180.0]
 

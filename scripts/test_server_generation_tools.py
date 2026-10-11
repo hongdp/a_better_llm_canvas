@@ -4,7 +4,7 @@ Covers the request builders replaying tool history in each provider's native
 shape, the Anthropic / Gemini tool-definition translation, and the stream
 readers reporting tool calls through `GenerationJob.note_tool_call`.
 
-The HTTP layer is stubbed by patching `server_generation._http_stream` — the
+The HTTP layer is stubbed by patching `wc_providers.common._http_stream` — the
 module that OWNS it (see test_api_server.py).
 """
 
@@ -19,6 +19,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server_generation  # noqa: E402
+import wc_providers.common  # noqa: E402
 
 
 # Deliberately unusual spacing and non-ASCII: a builder that parses and
@@ -422,7 +423,7 @@ def _run_job(provider, config, messages, response):
         yield response
 
     job = server_generation.GenerationJob("gen-tools", "alice", {})
-    with patch.object(server_generation, "_http_stream", fake_stream):
+    with patch.object(wc_providers.common, "_http_stream", fake_stream):
         asyncio.run(server_generation.run_job(job, provider, config, messages))
     return job, captured
 
@@ -672,7 +673,7 @@ def _run_job_watching(provider, config, response):
     async def fake_stream(url, headers, body, read_timeout=None):
         yield response
 
-    with patch.object(server_generation, "_http_stream", fake_stream):
+    with patch.object(wc_providers.common, "_http_stream", fake_stream):
         asyncio.run(server_generation.run_job(job, provider, config, [{"role": "user", "content": "go"}]))
     events = []
     while not live.empty():

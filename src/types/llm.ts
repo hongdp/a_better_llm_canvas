@@ -236,19 +236,5 @@ export interface SystemPromptTemplate {
   content: string
 }
 
-export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
-  // Shown until the key's own list arrives (useModelFetcher, through /api/models). 2.5 is closed to new keys.
-  gemini: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-flash-latest', 'gemini-pro-latest'],
-  // Shown until the key's own list arrives (useModelFetcher, through /api/models).
-  openai: ['gpt-5.5', 'gpt-6.1-sol', 'gpt-5.4-mini', 'gpt-5.1', 'gpt-4.1', 'o3'],
-  // Shown until the key's own list arrives (useModelFetcher, through /api/models).
-  anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-sonnet-4-6', 'claude-opus-4-6'],
-  ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
-  // Shown only until the endpoint answers /models. These are the aliases
-  // llama.cpp's router derives from the model directory names in
-  // scripts/cloud_endpoint — a live listing replaces them.
-  runpod: ['qwen3.8-IQ4_XS', 'qwen3.8-IQ3_XXS', 'qwen3.8-Q4_K_M'],
-  grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
-  // Kimi (platform.kimi.ai, 2026-10-11). Shown until the key's own list arrives (/api/models).
-  moonshot: ['kimi-k2.6', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed']
-}
+/** The shipped model lists, from the provider registry (utils/providers). */
+export { PROVIDER_MODELS } from '../utils/providers'

@@ -90,6 +90,7 @@ src/
   utils/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
     llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
+    providers.ts          # The provider registry: one row per provider (defaults, labels, discovery)
     conversationSummary.ts  # History past the window as a fixed-section note (§0.9)
     turnTranscripts.ts    # Earlier turns replayed as sent (cache_continuity.md §3.1)
     attachments.ts  webText.ts  # Attachment paragraphs/sections/index/parts; web result text (parity)
@@ -107,6 +108,10 @@ scripts/
   server_secrets.py     # Seals a live run's provider key at rest (run_secret.key beside the DB)
   server_attachments.py # A book's reference files: decode, store, /api/books/{id}/attachments*
   server_web.py         # Anonymous headless Chromium: /api/web/search, /api/web/read (no LAN)
+  server_generation.py  # Generation jobs: registry, SSE readers, retries, the journal, /api/generate*
+  wc_providers/         # The providers' wire formats, one module per API family: common (errors,
+                        #   the HTTP seam tests patch, message helpers), openai_compat (Chat
+                        #   Completions with a Dialect row per provider), responses, anthropic, gemini
   server_static.py      # --serve-dist: the built frontend from the API process (installable release)
   release.sh            # npm run release (see Releases below)
   wc_agent/             # Python port of src/agent: async run loop, registry, every tool
@@ -240,8 +245,9 @@ run's own write event is ignored and the tab's next save is a 409.
 
 ### LLM integration
 `services/llm.ts` exposes `streamLLM(messages, config, callbacks)`; every call
-runs as a backend job (`/api/generate`, `scripts/server_generation.py`), which
-holds the ONE implementation of each provider's wire format — grok and
+runs as a backend job (`/api/generate`, `scripts/server_generation.py`);
+`scripts/wc_providers/` holds the ONE implementation of each provider's wire
+format, one module per API family — grok and
 OpenAI at api.openai.com on a **Responses API** (`uses_responses_api`; from
 gpt-5.4 on, Chat Completions refuses tools with reasoning), Ollama/llama.cpp
 and other OpenAI-compatible servers on Chat Completions, Gemini, Anthropic,
@@ -415,6 +421,15 @@ tools to a request that sends none silently disables editing), and the
 `<doc_status>` machinery above applies to the markup protocol only — a tool
 call IS the declaration, so text-based failure detection is skipped when one is
 present.
+
+**Adding a provider** (2026-10-11): the id in `LLMProvider` (`types/llm.ts`),
+a row in the registry (`utils/providers.ts`: defaults, labels, placeholders,
+help text, how its models are discovered — the UI, persistence and the model
+fetcher iterate it), a line in each measured table (`reasoningEffort`,
+`providerProfile`, `contextWindow`, `chapterIndex` batch sizes, with their
+`wc_text` ports and parity cases), and the wire format on the server: a
+`Dialect` row in `wc_providers/openai_compat.py` for an OpenAI-compatible
+API, a module of its own otherwise, named in `wc_providers.dispatch`.
 
 **Reasoning effort**: `utils/reasoningEffort.ts` holds the per-provider
 capability table (no provider exposes one over the API — xAI's

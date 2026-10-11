@@ -5,6 +5,7 @@ import {
 import { StreamingStatus } from './StreamingStatus'
 import { ASSISTANT_PLACEHOLDER } from '../hooks/chat/streamHandlers'
 import { useAppStore } from '../store/useAppStore'
+import { providerDisplayName } from '../utils/providers'
 import { convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from '../utils/text'
 import { useImageUpload } from '../hooks/useImageUpload'
 import { useChatLLM } from '../hooks/useChatLLM'
@@ -107,7 +108,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   }, [setRoleplayMode, setRoleplayConfig])
 
   const getProviderLabel = (prov: string) => {
-    return prov === 'grok' ? 'Grok' : prov === 'moonshot' ? 'Kimi' : prov.charAt(0).toUpperCase() + prov.slice(1)
+    return providerDisplayName(prov)
   }
 
   const getResponderName = (msg: typeof messages[0]) => {
@@ -533,7 +534,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 {roleplayMode && roleplayConfig
                   ? `What do you do, ${roleplayConfig.characterName}?`
                   : t.app.instructPlaceholder
-                    .replace('{provider}', activeProvider === 'grok' ? 'Grok' : activeProvider === 'moonshot' ? 'Kimi' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1))
+                    .replace('{provider}', providerDisplayName(activeProvider))
                     .replace('{model}', activeConfig.model)
                 }
               </span>
