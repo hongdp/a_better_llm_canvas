@@ -1724,6 +1724,30 @@ async def _dispatch_with_retries(job: GenerationJob, provider: str, config: Dict
             _check_abort(job)
 
 
+_LONE_SURROGATE_RE = re.compile("[\ud800-\udfff]")
+
+
+def scrub_surrogates(value: Any, counter: Optional[List[int]] = None) -> Any:
+    """`value` with every lone surrogate replaced by U+FFFD, recursively.
+
+    A browser that cut a string in the middle of an emoji sends half of it as
+    "\\ud83d"; json.loads keeps it, and encoding the provider request as UTF-8
+    then fails ("surrogates not allowed"), the whole step with it (2026-10-11).
+    A valid pair is one code point by then, so any surrogate left is a stray.
+    """
+    if isinstance(value, str):
+        if _LONE_SURROGATE_RE.search(value):
+            if counter is not None:
+                counter[0] += 1
+            return _LONE_SURROGATE_RE.sub("\ufffd", value)
+        return value
+    if isinstance(value, list):
+        return [scrub_surrogates(v, counter) for v in value]
+    if isinstance(value, dict):
+        return {k: scrub_surrogates(v, counter) for k, v in value.items()}
+    return value
+
+
 async def run_job(
     job: GenerationJob,
     provider: str,
@@ -1731,6 +1755,10 @@ async def run_job(
     messages: List[Dict[str, Any]],
 ) -> None:
     """Drive one provider stream to a terminal job state. Never raises."""
+    strays = [0]
+    messages = scrub_surrogates(messages, strays)
+    if strays[0]:
+        logger.warning("Job %s: %d string(s) in the request held a lone surrogate (a character cut in half); replaced", job.job_id, strays[0])
     try:
         try:
             usage = await _dispatch_with_retries(job, provider, config, messages)

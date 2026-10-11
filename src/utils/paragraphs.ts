@@ -10,6 +10,7 @@
  * included, so a number means the same thing to grep, read_chapter and the
  * user.
  */
+import { headChars } from './unicode'
 
 export interface ChapterParagraph {
   /** 1-based position among the chapter's paragraphs. */
@@ -357,7 +358,7 @@ export function applyParagraphEdits(html: string, edits: ParagraphEdit[]): Parag
   }
   const skipped = [
     ...errors,
-    ...stale.map(s => `¶${s.number} does not start with what you gave; it now reads: ${s.text.length > 160 ? `${s.text.slice(0, 160)}…` : s.text}`)
+    ...stale.map(s => `¶${s.number} does not start with what you gave; it now reads: ${s.text.length > 160 ? `${headChars(s.text, 160)}…` : s.text}`)
   ]
   if (valid.length === 0) return { ok: false, error: `nothing was applied:\n${skipped.join('\n')}`, stale }
   // Splices back to front. At one position a later paragraph's operation is

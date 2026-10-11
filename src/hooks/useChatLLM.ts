@@ -55,6 +55,7 @@ import type { ThinkingBlock } from '../types/llm'
 import { WEB_TOOLS } from '../agent/tools/web'
 import { attachmentParagraphsOf, webAvailable, webImages, webRead, webSearch } from '../services/attachments'
 import { renderAttachmentIndex } from '../utils/attachments'
+import { headChars } from '../utils/unicode'
 import {
   EMPTY_LEDGER,
   hashContent,
@@ -172,7 +173,7 @@ function agentHistoryNote(m: HistorySourceMessage): string {
   const trace = m.role === 'assistant' ? m.agent?.trace : undefined
   if (!trace?.length) return ''
   const line = trace.join('; ')
-  return `\n\n[Tools used in this turn: ${line.length > 400 ? `${line.slice(0, 400)}…` : line}]`
+  return `\n\n[Tools used in this turn: ${line.length > 400 ? `${headChars(line, 400)}…` : line}]`
 }
 
 /**

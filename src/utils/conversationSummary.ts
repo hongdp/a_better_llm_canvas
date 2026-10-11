@@ -10,6 +10,7 @@
  */
 import type { LLMMessage } from '../types/llm'
 import { IMAGE_PLACEHOLDER_TEXT } from './llmContext'
+import { headChars } from './unicode'
 
 export interface SummarizableMessage {
   id: string
@@ -81,7 +82,7 @@ A prior summary, when given, is authoritative for the history it covers: carry i
  */
 export function buildSummaryInstruction(keptFrom: string | null, hasPrior: boolean): string {
   const words = (keptFrom ?? '').replace(/\s+/g, ' ').trim()
-  const preview = words.length > 80 ? `${words.slice(0, 80)}…` : words
+  const preview = words.length > 80 ? `${headChars(words, 80)}…` : words
   const scope = preview
     ? `everything before the turn in which the user wrote "${preview}" will be replaced by a summary; that turn and everything after it stay verbatim`
     : 'the earlier part of it will be replaced by a summary'
