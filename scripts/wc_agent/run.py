@@ -330,6 +330,9 @@ class AgentRun:
                 continue
             self.effects["failedEdits"] += eff.get("failedEdits") or 0
             self.effects["producedNothing"] = self.effects["producedNothing"] or bool(eff.get("producedNothing"))
+        # A cut-off rewrite the model then did in parts is not a cut-off turn (see run.ts).
+        if self.effects["canvasIssue"] and any(c["kind"] == "write" and c["result"]["ok"] and not (c["result"].get("effects") or {}).get("canvasIssue") for c in executed):
+            self.effects["canvasIssue"] = None
 
         # The model asked the user something: the results are appended so the
         # call is answered, then the run waits for the answer (resume_with_answer).

@@ -335,6 +335,18 @@ def test_a_range_written_as_an_attribute_is_read():
     assert _parse_range('= "40-60"') == {"from": 40, "to": 60}
 
 
+def test_a_write_after_a_truncated_rewrite_clears_the_cut_off_warning():
+    # Step 1: a whole rewrite cut off at max_tokens; step 2: the same change as edits. The turn is not "cut off".
+    cut = StepOutput("<canvas><p>cut off here", [])
+    h = Harness([cut, text("<edit><<<<<<< SEARCH\n<p>alpha</p>\n=======\n<p>beta</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>"), DONE],
+                policy={"continueAfterWrites": True})
+    asyncio.run(h.run.start())
+    assert h.summary["effects"]["canvasIssue"] is None and "beta" in h.fake.last_write("doc-1")
+    only_cut = Harness([cut, DONE], policy={"continueAfterWrites": True})
+    asyncio.run(only_cut.run.start())
+    assert only_cut.summary["effects"]["canvasIssue"] == "truncated"
+
+
 def test_only_the_delete_button_deletes_a_chapter_with_text():
     def harness():
         h = Harness([calls("", ("d", "delete_chapter", '{"chapter":"2"}')), DONE], extra=[BOOK_TOOLS[4]], chapters=[dict(c) for c in DELETE_TWO])

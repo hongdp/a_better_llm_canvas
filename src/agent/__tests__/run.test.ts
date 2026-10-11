@@ -109,6 +109,27 @@ describe('what a reply lost is said, not left for the model to discover', () => 
   })
 })
 
+describe('a cut-off rewrite the model then does in parts', () => {
+  it('is not reported as a cut-off turn once a later write lands', async () => {
+    // Step 1's whole rewrite stopped at max_tokens; step 2 made the change as an edit (2026-10-11).
+    const cut: StepOutput = { text: '<canvas><p>cut off here', nativeCalls: [] }
+    const edit = text('<edit><<<<<<< SEARCH\n<p>alpha</p>\n=======\n<p>beta</p>\n>>>>>>> REPLACE\n</edit>\n<doc_status>updated</doc_status>')
+    const h = harness({ policy: { continueAfterWrites: true }, replies: [cut, edit, text('好了。')] })
+    await h.run.start()
+    // start() resolves with the first stream; the run's later steps are a tick behind.
+    await new Promise(r => setTimeout(r, 0))
+    expect(stripDiffMarkup(h.fake.lastCommit())).toBe('<p>beta</p>')
+    expect(h.summary()?.effects.canvasIssue).toBeNull()
+
+    // A reply with no action after the failed write may be nudged; it declares itself each time.
+    const gaveUp = text('没写成。\n<doc_status>unchanged</doc_status>')
+    const onlyCut = harness({ policy: { continueAfterWrites: true }, replies: [cut, gaveUp, gaveUp, gaveUp] })
+    await onlyCut.run.start()
+    await new Promise(r => setTimeout(r, 0))
+    expect(onlyCut.summary()?.effects.canvasIssue).toBe('truncated')
+  })
+})
+
 describe('a deletion runs after the other calls of its reply', () => {
   it('lets a write in the same reply keep the number it was given from the index', async () => {
     // Reply: delete #2 (an empty chapter) and rewrite #3. The model numbered

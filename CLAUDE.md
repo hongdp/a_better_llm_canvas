@@ -450,6 +450,10 @@ text. 2.5 is closed to new keys, so the model list leaves it out. **Claude** tak
 which refuse `{type: "enabled", budget_tokens}`; 4.5 and earlier take only
 the budget (`anthropicThinking`, measured per model 2026-10-10). Never send
 `{type: "disabled"}` (several 5.x models refuse it) or temperature/top_p.
+Anthropic counts thinking against `max_tokens`: with adaptive thinking the
+configured limit is the visible output and the request adds 32k of headroom
+(capped at 64k, `ADAPTIVE_THINKING_HEADROOM` in `wc_providers/anthropic.py`) —
+a whole-chapter rewrite on sonnet-5-5 stopped at 16384 otherwise.
 
 **Attachments and the web** (`docs/features/attachments_and_web.md`). A
 book's reference files (a source novel as `.txt`) live on the server, not in

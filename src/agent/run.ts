@@ -439,6 +439,14 @@ export class AgentRun {
       this.effects.failedEdits += e.failedEdits ?? 0
       this.effects.producedNothing ||= !!e.producedNothing
     }
+    // A cut-off rewrite the model then did in parts is not a cut-off turn.
+    // Problem: the first step's whole-chapter rewrite was truncated, the next
+    //   step applied 24 paragraph edits, and the bubble still ended with
+    //   "no changes were applied (your document is unchanged)" (2026-10-11).
+    // Fix: a write that landed after the issue clears it.
+    if (this.effects.canvasIssue && executed.some(c => c.kind === 'write' && c.result.ok && !c.result.effects?.canvasIssue)) {
+      this.effects.canvasIssue = null
+    }
 
     // The model asked the user something: its results are appended so the
     // call is answered, then the turn ends and the next message answers it.
