@@ -524,7 +524,10 @@ localStorage pointer — a new device must land in the book last worked in.
 - **Conventional commits**: `feat:`, `fix:`, `docs:`, `refactor:`, `test:`.
 - A `pre-push` git hook (`.githooks/pre-push`, wired by `npm run prepare`) runs
   `npm test`, then the backend pytest suite (skipped with a warning where
-  pytest/fastapi are missing), and blocks the push on failure. Bypass only in emergencies with
+  pytest/fastapi are missing), and blocks the push on failure. GitHub Actions
+  (`.github/workflows/ci.yml`) runs the same two suites plus lint, type-check
+  and build on every PR; `master` is protected by a ruleset (no force push or
+  deletion, PRs only, the `frontend` and `backend` checks required). Bypass only in emergencies with
   `git push --no-verify` (discouraged).
 - Before committing: run the unit suite (`npm test`), type-check/build
   (`npm run build` or `npx tsc --noEmit`), and a security scan of the diff for
