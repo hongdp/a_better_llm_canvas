@@ -203,7 +203,7 @@ describe('finding and reading a chapter (D6)', () => {
 
     // The index the model chose from: the outline is listed by number and
     // title, though nothing called it 大纲 (no summaries since 2026-10-11).
-    expect(calls[0].at(-1)?.content).toContain('3. "故事线"')
+    expect(calls[0].at(-1)?.content).toContain('#3 "故事线"')
     expect(calls[0].at(-1)?.content).not.toContain('全书分章计划')
     // Step 2 carries the read result under the call's id.
     expect(calls[1].at(-1)).toMatchObject({ role: 'tool', toolCallId: 'r1', content: expect.stringContaining('主角离开村子') })
@@ -240,7 +240,7 @@ describe('finding and reading a chapter (D6)', () => {
     expect(turn2.some(m => m.content.includes('[Tools used in this turn:'))).toBe(false)
     // A read does not join the ledger: only pins do (pinned_context.md).
     expect(turn2.some(m => m.content.includes('REFERENCED CHAPTERS'))).toBe(false)
-    expect(turn2.at(-1)?.content).toContain('3. "故事线" [read earlier, not in context]')
+    expect(turn2.at(-1)?.content).toContain('#3 "故事线" [read earlier, not in context]')
     h.unmount()
   })
 })
@@ -268,7 +268,7 @@ describe('a chapter the user revised between turns (D8)', () => {
     expect(turn3.some(m => m.content.includes('REFERENCED CHAPTERS') && m.content.includes('阿青被迫离开村子'))).toBe(false)
     expect(turn3.at(-1)?.content).toContain('PINNED CHAPTERS — changed or pinned since the copy you have')
     expect(turn3.at(-1)?.content).toContain('阿青被迫离开村子')
-    expect(turn3.at(-1)?.content).toContain('3. "故事线" [in context — CHANGED since you last saw it')
+    expect(turn3.at(-1)?.content).toContain('#3 "故事线" [in context — CHANGED since you last saw it')
     h.unmount()
   })
 })

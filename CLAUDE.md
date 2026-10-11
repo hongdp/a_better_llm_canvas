@@ -372,7 +372,7 @@ and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
 `plan_done` (an attribute on tags); eight look-up-only steps in a row get one
 reminder.
 
-**The CHAPTER INDEX lists chapters by number and title only** (with the
+**The CHAPTER INDEX lists chapters by position (`#n`) and title only** (with the
 open-chapter and freshness markers). Chapter summaries are not used anywhere —
 not in the index, `list`, the sidebar or the keyword scorer (2026-10-11): their
 generation was removed on 2026-08-29, the stored ones went stale, and switching

@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 CHAPTER_PARAM = {
     "type": "string",
-    "description": 'Optional. The chapter to change: its number in the CHAPTER INDEX (e.g. "3") or its exact title. Omit to change the active chapter. Write this argument first.',
+    "description": 'Optional. The chapter to change: its position in the CHAPTER INDEX (e.g. "3" for the third chapter — never a number from its title) or its exact title. Omit to change the active chapter. Write this argument first.',
 }
 
 DOCUMENT_TOOLS: List[Dict[str, Any]] = [

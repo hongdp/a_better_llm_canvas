@@ -52,7 +52,7 @@ export interface DocumentTool extends ToolSpec {
 const CHAPTER_PARAM: JsonSchema = {
   type: 'string',
   description:
-    'Optional. The chapter to change: its number in the CHAPTER INDEX (e.g. "3") or its exact title. Omit to change the active chapter. Write this argument first.'
+    'Optional. The chapter to change: its position in the CHAPTER INDEX (e.g. "3" for the third chapter — never a number from its title) or its exact title. Omit to change the active chapter. Write this argument first.'
 }
 
 export const DOCUMENT_TOOLS: DocumentTool[] = [

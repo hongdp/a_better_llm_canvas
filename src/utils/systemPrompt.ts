@@ -78,14 +78,14 @@ const TWO_DOCUMENTS = 'Two documents (say an outline and character cards) are tw
 
 export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: boolean): string {
   const write = protocol === 'markup'
-    ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the number from the CHAPTER INDEX.
+    ? `- <canvas> and <edit> change the ACTIVE chapter unless a chapter attribute names another: <canvas chapter="3">…</canvas>, <edit chapter="3">…</edit>, using the chapter's position from the CHAPTER INDEX (#6 is the sixth chapter, even when its title says "Chapter 4") or its exact title.
 - Before an <edit> on another chapter, read its HTML with read (format "html") and copy the SEARCH text from that result. ${NO_HTML_READ}
 - To add a chapter, write it: <canvas new_chapter="its title">…its full text…</canvas> creates it at the end of the book and fills it in one go. There is no separate step for creating a chapter.
 - You can also write a whole chapter with the update_document tool (\`new_chapter\` or \`chapter\`, and \`html\`): the same result, but the user sees the text only when the call is complete, while tags show it as you write.
 - ${REFERENCE_CHAPTERS} No other tool creates a chapter: open_chapter, rename_chapter and list only work with chapters that already exist.
 - ${EXTEND_BY_EDITS('<edit> blocks')}
 - The <doc_status> line is required only on a reply that calls no tool.`
-    : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its number in the CHAPTER INDEX.
+    : `- update_document and edit_document change the ACTIVE chapter unless their \`chapter\` argument names another, by its position in the CHAPTER INDEX (#6 is the sixth chapter, even when its title says "Chapter 4") or its exact title.
 - Before edit_document on another chapter, read its HTML with read (format "html") and copy the SEARCH text from that result. ${NO_HTML_READ}
 - To add a chapter, call update_document with \`new_chapter\` set to its title: that creates it at the end of the book and fills it in one call. There is no separate step for creating a chapter.
 - ${REFERENCE_CHAPTERS} No other tool creates a chapter.
@@ -131,7 +131,7 @@ export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: bo
   const recheck = `- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
 - If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.`
   return `WORKING ACROSS THE BOOK:
-- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read — or grep the book when no title says where something is. Do not guess at a chapter you have not read. Several look-ups in one reply are fine: their results come back together.
+- The CHAPTER INDEX in the user message lists every chapter by position: #1 is the first chapter of the book, #6 the sixth, whatever number its title carries — a chapter titled "Chapter 4" is #6 when an outline and notes come before it. Name a chapter by that position or by its exact title. Decide from it what you need, and read it with read — or grep the book when no title says where something is. Do not guess at a chapter you have not read. Several look-ups in one reply are fine: their results come back together.
 - ${DISCIPLINE}
 - ${PLAN_AND_ASK}
 - ${REMINDERS_NOTE}
@@ -315,7 +315,7 @@ export function agentMarkupPrompt(continueAfterWrites: boolean): string {
   return `You are connected to a document editor that holds a BOOK of chapters. This message defines ONLY how to work with it — what you can see, what you can do, how a turn goes, and the exact format. It says nothing about what to write or how to write it: the task, the subject, the voice, the language and the standards all come from the user.
 
 1. WHAT YOU ARE EDITING
-- The user message carries a CHAPTER INDEX: every chapter of the book, numbered, with a one-line digest. Chapters are addressed by that number (or their exact title) everywhere below.
+- The user message carries a CHAPTER INDEX: every chapter of the book by position — #1 is the first chapter of the book, #6 the sixth, whatever number its title carries (a chapter titled "Chapter 4" is #6 when an outline and notes come before it). Chapters are addressed by that position (or their exact title) everywhere below.
 - One chapter is ACTIVE — open in the user's editor. Its full HTML is in the user message as "CURRENT ACTIVE DOCUMENT CONTENT", as of the start of this turn; tool results tell you what changed since. Do not read the active chapter with a tool: it is already here.
 - Index markers: [in context] — its full text is in this request; [in context — CHANGED since you last saw it…] — the text in this request is a newer version than the one your earlier replies were based on, so plan from it; [changed since you read it] — read it again before relying on it; [read earlier, not in context] — its text is no longer here.
 - Paragraphs are numbered like lines (¶12). grep reports the ¶ of each hit; read only the paragraphs around it (read with paragraphs="40-60") rather than the whole chapter.

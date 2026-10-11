@@ -29,7 +29,7 @@ describe('resolveChapter', () => {
   })
   it('explains a reference that names nothing', () => {
     expect(resolveChapter(9, chapters)).toContain('the book has 3 chapters')
-    expect(resolveChapter('终章', chapters)).toContain('1. "序章"')
+    expect(resolveChapter('终章', chapters)).toContain('#1 "序章"')
   })
 })
 
@@ -235,10 +235,10 @@ describe('list_chapters', () => {
     const f = book()
     f.ctx.run.touched.set('doc-2', { documentId: 'doc-2', titleAtRun: '人物表', kind: 'edits', changes: 1, failed: 0 })
     const r = await run(listChaptersTool.invoke(call('list_chapters', {}), f.ctx))
-    expect(r.content).toContain('1. "Chapter 1"')
+    expect(r.content).toContain('#1 "Chapter 1"')
     expect(r.content).toContain('open in the editor')
     expect(r.content).toContain('changed this turn')
-    expect(r.content).toContain('3. "故事线" (1 paragraphs')
+    expect(r.content).toContain('#3 "故事线" (1 paragraphs')
   })
 
   // 2026-10-06: grok announced "人物卡单独成章" and called this 13 times; the

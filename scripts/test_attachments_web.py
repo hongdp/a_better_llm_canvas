@@ -412,7 +412,7 @@ def test_batches_stay_under_groks_price_line_for_chinese_text():
 def test_list_shows_chapters_and_attachments_then_an_attachments_sections():
     fake = book_with_novel()
     out = run_tool(list_tool, {}, fake.ctx)
-    assert '2. "第二章"' in out["content"] and 'A1 "万倍返还.txt" — ' in out["content"] and "40 sections" in out["content"]
+    assert '#2 "第二章"' in out["content"] and 'A1 "万倍返还.txt" — ' in out["content"] and "40 sections" in out["content"]
     assert out["trace"] == "📚 list chapters and 1 attachment"
     page = run_tool(list_tool, {"source": "A1", "from": 39}, fake.ctx)
     assert "39. ¶1939–1989 第三十九章 第39回的故事" in page["content"] and page["trace"] == "📚 list A1 sections 39–40 of 40"

@@ -745,7 +745,7 @@ export const listTool = defineTool<ListArgs>({
         ctx.run.created.has(c.id) ? 'created this turn' : '',
         ctx.run.touched.has(c.id) ? 'changed this turn' : ''
       ].filter(Boolean)
-      return `${i + 1}. "${c.title}" (${paras} paragraphs, ${chars} chars${marks.length ? `; ${marks.join('; ')}` : ''})`
+      return `#${i + 1} "${c.title}" (${paras} paragraphs, ${chars} chars${marks.length ? `; ${marks.join('; ')}` : ''})`
     })
     const list = lines.join('\n')
     /*

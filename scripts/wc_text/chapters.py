@@ -14,7 +14,7 @@ def cite_chapter(c: Dict[str, Any]) -> str:
 
 
 def _list_chapters(chapters: List[Dict[str, Any]]) -> str:
-    lines = [f'{i + 1}. "{c["title"]}"' for i, c in enumerate(chapters[:MAX_LISTED])]
+    lines = [f'#{i + 1} "{c["title"]}"' for i, c in enumerate(chapters[:MAX_LISTED])]
     if len(chapters) > MAX_LISTED:
         lines.append(f"… {len(chapters) - MAX_LISTED} more (see the CHAPTER INDEX)")
     return "\n".join(lines)
@@ -50,7 +50,7 @@ def resolve_chapter(ref: Any, chapters: List[Dict[str, Any]]) -> Union[Dict[str,
         return at(partial[0][1])
     if len(partial) > 1:
         return (f'"{ref}" matches {len(partial)} chapters — pass a number instead:\n'
-                + "\n".join(f'{i + 1}. "{c["title"]}"' for c, i in partial[:MAX_LISTED]))
+                + "\n".join(f'#{i + 1} "{c["title"]}"' for c, i in partial[:MAX_LISTED]))
     return f'No chapter is titled "{ref}". The chapters are:\n{_list_chapters(chapters)}'
 
 

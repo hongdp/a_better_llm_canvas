@@ -190,7 +190,7 @@ describe('analyze_book on part of an attachment, and what it costs', () => {
 describe('list', () => {
   it('lists the chapters and then each attachment', async () => {
     const out = await exec(listTool, {}, withNovel().ctx)
-    expect(out.content).toContain('2. "第二章"')
+    expect(out.content).toContain('#2 "第二章"')
     expect(out.content).toContain('A1 "万倍返还.txt" — ')
     expect(out.content).toContain('40 sections')
     expect(out.trace).toBe('📚 list chapters and 1 attachment')

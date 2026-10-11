@@ -592,7 +592,7 @@ async def _list_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
             "created this turn" if c["id"] in ctx.run.created else "",
             "changed this turn" if c["id"] in ctx.run.touched else "",
         ] if m]
-        lines.append(f'{i + 1}. "{c["title"]}" ({paras} paragraphs, {chars} chars{"; " + "; ".join(marks) if marks else ""})')
+        lines.append(f'#{i + 1} "{c["title"]}" ({paras} paragraphs, {chars} chars{"; " + "; ".join(marks) if marks else ""})')
     listing = "\n".join(lines)
     notes: List[str] = []
     if ctx.run.last_list == listing:
