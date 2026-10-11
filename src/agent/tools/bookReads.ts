@@ -17,7 +17,7 @@ import { sliceChars } from '../../utils/unicode'
 import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, isPlainChapterHtml, numberedLine, searchableText } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
-import { forgetChapter, renameChapterTool, userEdited } from './documentWrites'
+import { forgetChapter, renameChapterTool, storedContent, userEdited } from './documentWrites'
 import { ATTACHMENT_RUN_READ_CAP, LIST_SECTION_LINES, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, renderSectionList, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
 import { isBlankContent } from '../../utils/text'
 import { readForTask, restOfReadNote } from './analyzeBook'
@@ -126,9 +126,10 @@ export function parseRange(raw: unknown): ParagraphRange | null | string {
     const [a, b] = raw.map(Number)
     return a >= 1 && (b === undefined || b >= a) ? { from: a, to: b ?? a } : `paragraph range ${JSON.stringify(raw)} is not valid`
   }
-  // grok has sent the range quoted twice ("\"50-80\"") — the value is plain,
-  // only its wrapping is wrong, so it is read rather than refused.
-  const value = String(raw).trim().replace(/^["'“”「」]+|["'“”「」]+$/g, '')
+  // grok has sent the range quoted twice ("\"50-80\"") and claude-sonnet-5-5
+  // as an attribute ("=\"60-\"", three times on 2026-10-11) — the value is
+  // plain, only its wrapping is wrong, so it is read rather than refused.
+  const value = String(raw).trim().replace(/^=\s*/, '').replace(/^["'“”「」]+|["'“”「」]+$/g, '')
   // "-15": grok asked for the opening paragraphs this way (2026-10-06) and
   // was refused; it means what a reader would take it to mean.
   const head = /^\s*(?:-|–|~)\s*¶?(\d+)\s*$/.exec(value)
@@ -448,7 +449,8 @@ async function readItems(items: ReadItem[], format: 'text' | 'html', ctx: ToolCo
     // only if nothing else came back.
     retryable: errors.length > 0 && traces.length === 0,
     content: parts.join('\n\n'),
-    trace: `📖 read ${traces.join(', ')}`
+    // A read that returned nothing (¶60 of a 55-paragraph chapter) names its error, not an empty list.
+    trace: traces.length > 0 ? `📖 read ${traces.join(', ')}` : `⚠️ read: ${(errors[0] ?? 'nothing was read').split('\n')[0]}`
   }
 }
 
@@ -897,10 +899,18 @@ export const deleteChapterTool = defineTool<{ chapter: unknown }>({
     if (typeof target === 'string') return fail('delete_chapter', target)
     const refuse = (content: string, why: string): ToolResult =>
       ({ ok: false, retryable: false, content, trace: `🗑 delete ${citeChapter(target)} refused — ${why}` })
-    if (target.id === ctx.document.startId) {
-      return refuse(`${citeChapter(target)} is the chapter this turn started on; it cannot be deleted during the turn.`, 'the turn started there')
-    }
     if (chapters.length <= 1) return refuse('It is the only chapter of the book.', 'the only chapter')
+    // The chapter the turn started on is asked about like any other — the
+    // deletion lands after the turn (tab) or at the answer (server run), so
+    // nothing of the run points at a gone chapter meanwhile. The one
+    // exception is a selection turn: the selection lives there.
+    // Problem: it was refused outright, and "merge #12 into #11" — asked with
+    //   #12 open, naturally — ended every time with "delete #12 yourself"
+    //   (2026-10-11, twice).
+    if (target.id === ctx.document.startId) {
+      if (ctx.selection.originalText()) return refuse(`${citeChapter(target)} holds the selection this turn rewrites; it cannot be deleted during the turn.`, 'it holds the selection')
+      return askToDelete(ctx, target, storedContent(ctx, target.id))
+    }
     // Created this run and untouched by the user since: the run's own.
     const own = ctx.run.created.has(target.id) && !userEdited(ctx, target.id)
     if (!own) {

@@ -197,9 +197,13 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   the source" at 76% of it.
 - **Deleting.** `delete_chapter` deletes only what nothing would be lost
   from: a chapter this run created (unless the user typed into it since) or
-  an empty one. It refuses the turn's start chapter, the book's last
-  chapter, and a server chapter whose text has not loaded ('' there is not
-  "empty"). A chapter with text goes only on the user's confirmation
+  an empty one. It refuses the book's last chapter, a server chapter whose
+  text has not loaded ('' there is not "empty"), and the start chapter of a
+  selection turn (the selection lives there). The chapter the turn started
+  on is otherwise asked about like any other (2026-10-11: "merge #12 into
+  #11", asked with #12 open, used to end with "delete #12 yourself"); its
+  deletion lands after the turn or at the answer, so nothing of the run
+  points at a gone chapter meanwhile. A chapter with text goes only on the user's confirmation
   (2026-10-11): the call ends the turn — a server run pauses — with Delete /
   Keep buttons (`AskedQuestion.confirm`, `ChapterDeletionConfirm`). Only
   the Delete button deletes; a typed answer never does. The tab deletes it

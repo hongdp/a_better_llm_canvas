@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { readChapterTool, grepTool, openChapterTool, listChaptersTool, deleteChapterTool } from '../tools/bookReads'
+import { readChapterTool, grepTool, openChapterTool, listChaptersTool, deleteChapterTool, parseRange } from '../tools/bookReads'
 import { updateDocumentTool } from '../tools/documentWrites'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
@@ -31,6 +31,12 @@ describe('resolveChapter', () => {
   it('explains a reference that names nothing', () => {
     expect(resolveChapter(9, chapters)).toContain('the book has 3 chapters')
     expect(resolveChapter('终章', chapters)).toContain('#1 "序章"')
+  })
+
+  it('reads a range written as an attribute ("=\\"60-\\"") or quoted twice', () => {
+    expect(parseRange('="60-"')).toEqual({ from: 60, to: null })
+    expect(parseRange('= "40-60"')).toEqual({ from: 40, to: 60 })
+    expect(parseRange('"50-80"')).toEqual({ from: 50, to: 80 })
   })
 })
 
@@ -385,9 +391,20 @@ describe('delete_chapter: only what nothing would be lost from', () => {
     expect(f.removed).toEqual([])
   })
 
-  it('refuses the chapter the turn started on', async () => {
-    const f = fakeContext('<p></p>', { chapters: [{ id: 'doc-2', title: 'b', content: '<p>x</p>' }] })
-    expect((await del(f, 1)).ok).toBe(false)
+  it('asks about the chapter the turn started on, like any other — the deletion lands after the turn', async () => {
+    // "Merge #12 into #11", asked with #12 open, used to end with "delete #12 yourself".
+    const f = fakeContext('<p>start text</p>', { chapters: [{ id: 'doc-2', title: 'b', content: '<p>x</p>' }] })
+    const r = await del(f, 1)
+    expect(r.trace).toBe('🗑 asked to delete #1 "Chapter 1"')
+    expect(f.ctx.run.question?.confirm?.documentId).toBe('doc-1')
+    expect(f.removed).toEqual([])
+  })
+
+  it('refuses the start chapter of a selection turn: the selection lives there', async () => {
+    const f = fakeContext('<p>start text</p>', { chapters: [{ id: 'doc-2', title: 'b', content: '<p>x</p>' }], selectedText: 'start' })
+    const r = await del(f, 1)
+    expect(r).toMatchObject({ ok: false })
+    expect(r.content).toContain('holds the selection')
   })
 
   it('never takes a chapter whose text has not loaded for an empty one', async () => {

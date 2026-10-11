@@ -314,6 +314,27 @@ DELETE_TWO = [{"id": "doc-2", "title": "第7章　门外", "content": "<h1>第7�
               {"id": "doc-3", "title": "第8章　酒", "content": "<h1>第8章　酒</h1><p>eight</p>"}]
 
 
+def test_the_start_chapter_is_asked_about_and_deleted_at_the_answer():
+    # "Merge #12 into #11", asked with #12 open: the start chapter used to be refused outright.
+    h = Harness([calls("", ("d", "delete_chapter", '{"chapter":"1"}')), DONE], extra=[BOOK_TOOLS[4]], chapters=[dict(DELETE_TWO[1])])
+    asyncio.run(h.run.start())
+    assert h.run.paused["confirm"]["documentId"] == "doc-1" and h.fake.removed == []
+    asyncio.run(h.run.resume_with_answer("删除", confirmed=True))
+    assert h.fake.removed == ["doc-1"] and '#1 "Chapter 1" was deleted, as the user confirmed.' in h.requests[1][-1]["content"]
+
+
+def test_a_selection_turns_chapter_is_not_deleted():
+    fake = FakeBook("<p>alpha beta</p>", chapters=[dict(DELETE_TWO[1])], selected_text="beta")
+    out = run_tool(BOOK_TOOLS[4], {"chapter": "1"}, fake.ctx)
+    assert out["ok"] is False and "holds the selection" in out["content"] and fake.ctx.run.question is None
+
+
+def test_a_range_written_as_an_attribute_is_read():
+    from wc_agent.tools.book_reads import _parse_range
+    assert _parse_range('="60-"') == {"from": 60, "to": None}
+    assert _parse_range('= "40-60"') == {"from": 40, "to": 60}
+
+
 def test_only_the_delete_button_deletes_a_chapter_with_text():
     def harness():
         h = Harness([calls("", ("d", "delete_chapter", '{"chapter":"2"}')), DONE], extra=[BOOK_TOOLS[4]], chapters=[dict(c) for c in DELETE_TWO])

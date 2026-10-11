@@ -17,7 +17,7 @@ from wc_text.text import is_blank_content
 
 from ..registry import Tool
 from ..types import ToolContext, chapter_outline, result
-from .document_writes import forget_chapter, rename_chapter_tool, user_edited
+from .document_writes import _stored_content, forget_chapter, rename_chapter_tool, user_edited
 
 READ_CHAPTER_CAP = 20_000
 READ_CALL_CAP = 60_000
@@ -107,7 +107,7 @@ def _parse_range(raw: Any) -> Union[Dict[str, Any], None, str]:
         if a >= 1 and (b is None or b >= a):
             return {"from": a, "to": b if b is not None else a}
         return f"paragraph range {json.dumps(raw, ensure_ascii=False)} is not valid"
-    value = re.sub(r'^["\'“”「」]+|["\'“”「」]+$', "", js_trim(str(raw)))
+    value = re.sub(r'^["\'“”「」]+|["\'“”「」]+$', "", re.sub(r"^=\s*", "", js_trim(str(raw))))
     head = re.match(r"^\s*(?:-|–|~)\s*¶?(\d+)\s*$", value)
     if head:
         to = int(head.group(1))
@@ -351,7 +351,9 @@ async def _read_items(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -
         parts.append(f"[Not returned — this call reached its {READ_CALL_CAP}-character limit: {', '.join(skipped)}. Ask for them in another call.]")
     if errors:
         parts.append("\n".join(errors))
-    return result(not errors, "\n\n".join(parts), f"📖 read {', '.join(traces)}", retryable=bool(errors) and not traces)
+    # A read that returned nothing (¶60 of a 55-paragraph chapter) names its error, not an empty list.
+    trace = f"📖 read {', '.join(traces)}" if traces else f"⚠️ read: {(errors[0] if errors else 'nothing was read').splitlines()[0]}"
+    return result(not errors, "\n\n".join(parts), trace, retryable=bool(errors) and not traces)
 
 
 read_tool = Tool(
@@ -706,7 +708,7 @@ async def settle_deletion(ctx: ToolContext, confirm: Dict[str, Any], confirmed: 
     now = next((c for c in ctx.document.chapters() if c["id"] == current["id"]), None)
     if not now or now.get("loaded") is False or hash_content(now["content"]) != confirm["contentHash"]:
         return f"{cite_chapter(current)} was NOT deleted: it changed after the question was asked. Ask again if it should still go."
-    if current["id"] == ctx.document.start_id or len(chapters) <= 1:
+    if len(chapters) <= 1 or (current["id"] == ctx.document.start_id and ctx.selection.original_text()):
         return f"{cite_chapter(current)} was not deleted."
     _remove_chapter(ctx, current["id"])
     return f"{cite_chapter(current)} was deleted, as the user confirmed." + _moved_up_note(current["number"], len(chapters))
@@ -720,10 +722,14 @@ async def _delete_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str
 
     def refuse(content: str, why: str) -> Dict[str, Any]:
         return result(False, content, f"🗑 delete {cite_chapter(target)} refused — {why}", retryable=False)
-    if target["id"] == ctx.document.start_id:
-        return refuse(f"{cite_chapter(target)} is the chapter this turn started on; it cannot be deleted during the turn.", "the turn started there")
     if len(chapters) <= 1:
         return refuse("It is the only chapter of the book.", "the only chapter")
+    # The start chapter is asked about like any other (the deletion lands at the answer,
+    # settle_deletion); only a selection turn's chapter is off limits (see bookReads.ts).
+    if target["id"] == ctx.document.start_id:
+        if ctx.selection.original_text():
+            return refuse(f"{cite_chapter(target)} holds the selection this turn rewrites; it cannot be deleted during the turn.", "it holds the selection")
+        return _ask_to_delete(ctx, target, _stored_content(ctx, target["id"]))
     own = target["id"] in ctx.run.created and not user_edited(ctx, target["id"])
     if not own:
         await ctx.document.ensure_loaded([target["id"]])
