@@ -232,7 +232,8 @@ export interface SystemPromptTemplate {
 }
 
 export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
-  gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
+  // Shown until the key's own list arrives (useModelFetcher, through /api/models). 2.5 is closed to new keys.
+  gemini: ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash', 'gemini-3.1-pro-preview', 'gemini-flash-latest', 'gemini-pro-latest'],
   // Shown until the key's own list arrives (useModelFetcher, through /api/models).
   openai: ['gpt-5.5', 'gpt-6.1-sol', 'gpt-5.4-mini', 'gpt-5.1', 'gpt-4.1', 'o3'],
   // Shown until the key's own list arrives (useModelFetcher, through /api/models).

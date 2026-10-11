@@ -29,7 +29,7 @@ import {
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
 import { getChapterDigest, buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, diffTailParts, pinnedUpdates, type RenderableDoc, type DynamicContextOptions, type TailParts, type SentTail } from '../../hooks/chat/dynamicContext'
-import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking } from '../../utils/reasoningEffort'
+import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking, geminiThinking } from '../../utils/reasoningEffort'
 import { planHistoryUnits, summarizableHistory, historyWindow, transcriptWeight, type HistoryEntry, type TurnTranscript } from '../../utils/turnTranscripts'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
 import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
@@ -782,7 +782,7 @@ const MODULES: Module[] = [
     cases: {
       supported_reasoning_efforts: run(supportedReasoningEfforts, [
         ['grok', 'grok-4.20-0309-reasoning'], ['grok', 'grok-4.7'], ['grok', 'grok-4.5'], ['grok', 'grok-3-mini'], ['grok', 'grok-3'],
-        ...['gpt-5', 'gpt-5-mini', 'gpt-5-2025-08-07', 'gpt-5-codex', 'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.10', 'gpt-5.2', 'gpt-5.6-luna', 'gpt-6.1-sol', 'o3', 'o4-mini', 'gpt-4o', 'gpt-4.1'].map(m => ['openai', m] as [string, string]), ['gemini', 'gemini-2.5-flash'], ['gemini', 'gemini-1.5-pro'], ['ollama', 'x'], ['nope', 'y'],
+        ...['gpt-5', 'gpt-5-mini', 'gpt-5-2025-08-07', 'gpt-5-codex', 'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.10', 'gpt-5.2', 'gpt-5.6-luna', 'gpt-6.1-sol', 'o3', 'o4-mini', 'gpt-4o', 'gpt-4.1'].map(m => ['openai', m] as [string, string]), ['gemini', 'gemini-2.5-flash'], ['gemini', 'gemini-1.5-pro'], ['gemini', 'gemini-3.8-flash'], ['gemini', 'gemini-3.1-pro-preview'], ['gemini', 'gemini-flash-latest'], ['gemini', 'gemini-10-flash'], ['gemini', 'gemma-4-31b-it'], ['ollama', 'x'], ['nope', 'y'],
         ...['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
           'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet'].map(m => ['anthropic', m] as [string, string])
       ]),
@@ -790,6 +790,7 @@ const MODULES: Module[] = [
         ['anthropic', 'claude-sonnet-5-5', undefined], ['anthropic', 'claude-sonnet-5-5', 'default'], ['anthropic', 'claude-sonnet-5-5', 'xhigh'],
         ['anthropic', 'claude-opus-4-6', 'xhigh'], ['anthropic', 'claude-3-5-sonnet', 'high'], ['grok', 'grok-4.7', 'minimal'], ['openai', 'gpt-5', 'minimal'], ['openai', 'gpt-5.1', 'minimal'], ['openai', 'gpt-6.1-sol', 'xhigh'], ['openai', 'gpt-4o', 'low']
       ]),
+      gemini_thinking: run(geminiThinking, [['gemini-3.8-flash', null], ['gemini-3.8-flash', 'low'], ['gemini-pro-latest', 'high'], ['gemini-2.5-pro', 'medium'], ['gemini-2.5-flash', 'minimal'], ['gemini-1.5-pro', 'low'], ['gemma-4-31b-it', 'low']]),
       reasoning_budget_tokens: run(reasoningBudgetTokens, [['minimal'], ['low'], ['medium'], ['high'], ['xhigh']]),
       anthropic_thinking: run(anthropicThinking, [
         ['claude-sonnet-5-5', null, 16384], ['claude-sonnet-5-5', 'low', 16384], ['claude-opus-4-7', 'xhigh', 16384], ['claude-opus-4-6', 'minimal', 16384],

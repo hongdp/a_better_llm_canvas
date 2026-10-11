@@ -403,8 +403,12 @@ levels. The app default is **low**, not the provider's: grok-4.6 defaults to
 must forward `reasoningEffort` (the payload copies config field by
 field; a field left out is silently ignored, as `conversationId` was).
 The client forwards the RAW setting; the backend resolves it against the
-model (`wc_text/reasoning_effort.py`, the parity-tested port — for Anthropic
-and OpenAI; the tables were measured per model on 2026-10-10). **Claude** takes `thinking: {type: "adaptive", display:
+model (`wc_text/reasoning_effort.py`, the parity-tested port — for Anthropic,
+OpenAI and Gemini; the tables were measured per model on 2026-10-10).
+**Gemini** streams over SSE (`?alt=sse`, key in `x-goog-api-key`), takes
+`thinkingLevel` on 3.x and a budget on 2.5 (`geminiThinking`), and always
+gets `includeThoughts`: a `thought: true` part is reasoning, never document
+text. 2.5 is closed to new keys, so the model list leaves it out. **Claude** takes `thinking: {type: "adaptive", display:
 "summarized"}` + `output_config.effort` on Opus 4.6+ and every 5.x model,
 which refuse `{type: "enabled", budget_tokens}`; 4.5 and earlier take only
 the budget (`anthropicThinking`, measured per model 2026-10-10). Never send

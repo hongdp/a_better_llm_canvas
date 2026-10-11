@@ -15,7 +15,7 @@ export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
   },
   gemini: {
     apiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
-    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-1.5-pro',
+    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.8-flash',
     baseUrl: import.meta.env.VITE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
     geminiSafetySettings: [
       { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },

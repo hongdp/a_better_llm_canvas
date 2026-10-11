@@ -942,7 +942,13 @@ def test_generation_applies_reasoning_effort_per_provider():
         {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g", "reasoningEffort": "medium"},
         [{"role": "user", "content": "hi"}],
     )[2]
-    assert gemini_body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 4096}
+    assert gemini_body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 4096, "includeThoughts": True}
+    # Gemini 3.x takes a level (measured 2026-10-10).
+    gemini3 = server_generation.build_gemini_request(
+        {"apiKey": "k", "model": "gemini-3.8-flash", "baseUrl": "https://g", "reasoningEffort": "high"},
+        [{"role": "user", "content": "hi"}],
+    )[2]
+    assert gemini3["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "high", "includeThoughts": True}
 
     # Claude 4.6+ and 5.x: adaptive thinking with an effort (a budget is a 400 there, measured).
     anthropic_body = server_generation.build_anthropic_request(
@@ -1051,11 +1057,12 @@ def test_generation_omits_reasoning_effort_when_not_chosen():
         body = server_generation.build_openai_request(config, [{"role": "user", "content": "hi"}], "grok")[2]
         assert "reasoning_effort" not in body
 
+    # Gemini: 'default' sends no level, only the request to stream the thoughts as reasoning.
     gemini = server_generation.build_gemini_request(
-        {"apiKey": "k", "model": "gemini-2.5-pro", "baseUrl": "https://g"},
+        {"apiKey": "k", "model": "gemini-3.8-flash", "baseUrl": "https://g", "reasoningEffort": "default"},
         [{"role": "user", "content": "hi"}],
     )[2]
-    assert "generationConfig" not in gemini or "thinkingConfig" not in gemini.get("generationConfig", {})
+    assert gemini["generationConfig"]["thinkingConfig"] == {"includeThoughts": True}
 
 
 def test_generation_tolerates_a_trailing_slash_in_the_base_url():
@@ -1129,17 +1136,18 @@ def test_generation_grok_request_sets_conversation_cache_header():
 def test_generation_gemini_request_and_chunked_json_parsing():
     job = _new_job()
     captured = []
-    # Objects arrive split across network chunks, exactly like the real stream.
-    text_chunks = [
-        '[{"candidates":[{"content":{"parts":[{"text":"Hel',
-        'lo"}]}}]},{"candidates":[{"content":{"parts":[{"text":" there"}]},'
+    # Server-sent events (alt=sse); a thought part is reasoning, never text.
+    lines = [
+        'data: {"candidates":[{"content":{"parts":[{"text":"Weighing it.","thought":true},{"text":"Hel"},{"text":"lo"}]}}]}',
+        "",
+        'data: {"candidates":[{"content":{"parts":[{"text":" there"}]},'
         '"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":7,'
-        '"candidatesTokenCount":3,"cachedContentTokenCount":2}}]',
+        '"candidatesTokenCount":3,"cachedContentTokenCount":2,"thoughtsTokenCount":4}}',
     ]
     _run_job(
         job, "gemini",
         {
-            "apiKey": "gem-secret", "model": "models/gemini-2.5-flash",
+            "apiKey": "gem-secret", "model": "models/gemini-3.8-flash",
             "baseUrl": "https://generativelanguage.googleapis.com/v1beta",
             "maxOutputTokens": 8192,
             "geminiSafetySettings": [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"}],
@@ -1147,22 +1155,25 @@ def test_generation_gemini_request_and_chunked_json_parsing():
         [
             {"role": "system", "content": "Be brief"},
             {"role": "assistant", "content": "prior"},
+            {"role": "assistant", "content": ""},
             {"role": "user", "content": "Look", "images": ["data:image/jpeg;base64,ZZZ"]},
         ],
-        _FakeStreamResponse(text_chunks=text_chunks), captured,
+        _FakeStreamResponse(lines=lines), captured,
     )
 
     request = captured[0]
-    # The 'models/' prefix is stripped so the path is not doubled.
+    # The 'models/' prefix is stripped so the path is not doubled; the key is a header, not in the URL.
     assert request["url"] == (
         "https://generativelanguage.googleapis.com/v1beta"
-        "/models/gemini-2.5-flash:streamGenerateContent?key=gem-secret"
+        "/models/gemini-3.8-flash:streamGenerateContent?alt=sse"
     )
+    assert request["headers"]["x-goog-api-key"] == "gem-secret"
     body = request["body"]
     assert body["systemInstruction"] == {"parts": [{"text": "Be brief"}]}
     assert body["safetySettings"][0]["threshold"] == "BLOCK_NONE"
-    assert body["generationConfig"] == {"maxOutputTokens": 8192}
-    assert body["contents"][0]["role"] == "model"
+    assert body["generationConfig"] == {"maxOutputTokens": 8192, "thinkingConfig": {"thinkingLevel": "low", "includeThoughts": True}}
+    # The empty reply is left out: Gemini refuses an empty text part.
+    assert [c["role"] for c in body["contents"]] == ["model", "user"]
     assert body["contents"][1]["parts"] == [
         {"text": "Look"},
         {"text": "\n[Image 1]:"},
@@ -1170,8 +1181,8 @@ def test_generation_gemini_request_and_chunked_json_parsing():
     ]
 
     assert job.status == "done"
-    assert job.buffer == "Hello there"
-    assert job.usage == {"promptTokens": 7, "completionTokens": 3, "cachedPromptTokens": 2}
+    assert job.buffer == "Hello there" and "Weighing it." in job.reasoning_text
+    assert job.usage == {"promptTokens": 7, "completionTokens": 7, "cachedPromptTokens": 2, "reasoningTokens": 4}
 
 
 def test_generation_gemini_prompt_safety_block_becomes_error():
@@ -1181,7 +1192,7 @@ def test_generation_gemini_prompt_safety_block_becomes_error():
         job, "gemini",
         {"apiKey": "k", "model": "gemini-2.5-flash", "baseUrl": "https://g/v1beta"},
         [{"role": "user", "content": "bad"}],
-        _FakeStreamResponse(text_chunks=['[{"promptFeedback":{"blockReason":"SAFETY"}}]']),
+        _FakeStreamResponse(lines=['data: {"promptFeedback":{"blockReason":"SAFETY"}}']),
         captured,
     )
     assert job.status == "error"
@@ -1195,8 +1206,8 @@ def test_generation_gemini_abnormal_finish_reason_becomes_error():
         job, "gemini",
         {"apiKey": "k", "model": "gemini-2.5-flash", "baseUrl": "https://g/v1beta"},
         [{"role": "user", "content": "hi"}],
-        _FakeStreamResponse(text_chunks=[
-            '[{"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"RECITATION"}]}]'
+        _FakeStreamResponse(lines=[
+            'data: {"candidates":[{"content":{"parts":[{"text":"partial"}]},"finishReason":"RECITATION"}]}'
         ]),
         captured,
     )
@@ -1901,3 +1912,36 @@ def test_openai_responses_job_streams_text_reasoning_and_calls():
     assert job.status == "done" and job.buffer == "Ok" and "Plan." in job.reasoning_text
     assert job.response_items == [{"type": "reasoning", "id": "rs_1", "encrypted_content": "C=="}]
     assert job.usage == {"promptTokens": 20, "completionTokens": 4, "cachedPromptTokens": 16, "reasoningTokens": 2}
+
+
+def test_models_endpoint_lists_gemini_text_models_without_closed_or_media_ones(_stub_models_auth):
+    seen = {}
+
+    class _Client:
+        def __init__(self, **kw):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def get(self, url, params=None, headers=None):
+            seen.update(url=url, headers=headers, params=params)
+
+            class _R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    gen = ["generateContent"]
+                    return {"models": [{"name": f"models/{n}", "supportedGenerationMethods": gen} for n in (
+                        "gemini-2.5-flash", "gemini-flash-latest", "gemini-3.5-flash", "gemini-3.8-flash", "gemini-3.8-flash-tts",
+                        "gemini-3.1-flash-image", "lyria-3.5", "gemini-3.1-pro-preview")] + [{"name": "models/text-embedding-9", "supportedGenerationMethods": ["embedContent"]}]}
+            return _R()
+    with patch.object(server_generation.httpx, "AsyncClient", _Client):
+        result = asyncio.run(server_generation.list_provider_models(
+            _FakeRequest({"provider": "gemini", "apiKey": "AIza-k", "baseUrl": "https://generativelanguage.googleapis.com/v1beta"})))
+    assert result == {"models": ["gemini-3.8-flash", "gemini-3.5-flash", "gemini-3.1-pro-preview", "gemini-flash-latest"]}
+    assert seen["headers"] == {"x-goog-api-key": "AIza-k"} and "key=" not in seen["url"]

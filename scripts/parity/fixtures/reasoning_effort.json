@@ -246,6 +246,63 @@
    },
    {
     "input": [
+     "gemini",
+     "gemini-3.8-flash"
+    ],
+    "output": [
+     "default",
+     "low",
+     "medium",
+     "high"
+    ]
+   },
+   {
+    "input": [
+     "gemini",
+     "gemini-3.1-pro-preview"
+    ],
+    "output": [
+     "default",
+     "low",
+     "medium",
+     "high"
+    ]
+   },
+   {
+    "input": [
+     "gemini",
+     "gemini-flash-latest"
+    ],
+    "output": [
+     "default",
+     "low",
+     "medium",
+     "high"
+    ]
+   },
+   {
+    "input": [
+     "gemini",
+     "gemini-10-flash"
+    ],
+    "output": [
+     "default",
+     "low",
+     "medium",
+     "high"
+    ]
+   },
+   {
+    "input": [
+     "gemini",
+     "gemma-4-31b-it"
+    ],
+    "output": [
+     "default"
+    ]
+   },
+   {
+    "input": [
      "ollama",
      "x"
     ],
@@ -487,6 +544,71 @@
     "input": [
      "openai",
      "gpt-4o",
+     "low"
+    ],
+    "output": null
+   }
+  ],
+  "gemini_thinking": [
+   {
+    "input": [
+     "gemini-3.8-flash",
+     null
+    ],
+    "output": {
+     "includeThoughts": true
+    }
+   },
+   {
+    "input": [
+     "gemini-3.8-flash",
+     "low"
+    ],
+    "output": {
+     "thinkingLevel": "low",
+     "includeThoughts": true
+    }
+   },
+   {
+    "input": [
+     "gemini-pro-latest",
+     "high"
+    ],
+    "output": {
+     "thinkingLevel": "high",
+     "includeThoughts": true
+    }
+   },
+   {
+    "input": [
+     "gemini-2.5-pro",
+     "medium"
+    ],
+    "output": {
+     "thinkingBudget": 4096,
+     "includeThoughts": true
+    }
+   },
+   {
+    "input": [
+     "gemini-2.5-flash",
+     "minimal"
+    ],
+    "output": {
+     "thinkingBudget": 512,
+     "includeThoughts": true
+    }
+   },
+   {
+    "input": [
+     "gemini-1.5-pro",
+     "low"
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     "gemma-4-31b-it",
      "low"
     ],
     "output": null
