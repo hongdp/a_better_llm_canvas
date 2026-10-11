@@ -252,7 +252,9 @@ chosen; xhigh is sent as max), kimi-k2.6 gets `thinking: {enabled, keep:
 block and sent back on the assistant message (`moonshotThinking` /
 `moonshot_thinking`, `_reasoning_content`): Kimi's docs call it required in
 a tool-calling loop (measured 2026-10-11: accepted without it too — replayed
-for the model's continuity, as the other providers' reasoning is).
+for the model's continuity, as the other providers' reasoning is). Kimi's
+Responses API is not used: kimi-k3 only, `encrypted_content` always null,
+`tool_choice` only `auto` (the design.md row has the measurements).
 OpenAI's function tools are sent `strict: false` (strict, the default, makes
 the model fill every optional argument with an empty value). There is no
 in-browser transport: it was removed (2026-10-10) because login is required
