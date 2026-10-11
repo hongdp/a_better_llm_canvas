@@ -85,11 +85,9 @@ src/
                           #   tools/askUser (a question the turn waits on), tools/web
                           #   (web_search / web_read through the server's browser)
   services/
-    llm.ts                # Provider-agnostic streaming (OpenAI/Gemini/Anthropic/Ollama/Grok)
+    llm.ts                # streamLLM: every generation is a backend job (no in-browser transport)
     serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
     attachments.ts        # Attachment + web API client; an attachment's text fetched once per tab
-    providerMessages.ts   # History (incl. tool calls/results) → provider shapes; mirrored
-                          #   by scripts/server_generation.py — change both together
     chapterSummaries.ts   # Background chapter summarizer (lazy queue)
     imageGen.ts  imageGenModels.ts
     import/               # Import pipeline: parser, contentBuilder, imageProcessor,
@@ -242,8 +240,12 @@ commits what it previewed); a **server** run's preview is flagged silent
 run's own write event is ignored and the tab's next save is a 409.
 
 ### LLM integration
-`services/llm.ts` exposes `streamLLM(messages, config, callbacks)`, dispatching
-to OpenAI/Ollama/Grok (OpenAI-compatible), Gemini, or Anthropic. All responses
+`services/llm.ts` exposes `streamLLM(messages, config, callbacks)`; every call
+runs as a backend job (`/api/generate`, `scripts/server_generation.py`), which
+holds the ONE implementation of each provider's wire format — OpenAI/Ollama
+(OpenAI-compatible), grok (Responses API), Gemini, Anthropic. There is no
+in-browser transport: it was removed (2026-10-10) because login is required
+and it was a second copy of every provider to keep in step. All responses
 **stream**; never block the UI. The **Canvas Markup Protocol** wraps document
 updates in `<canvas>...</canvas>` blocks so the frontend can route document
 content to the editor and conversational text to chat. The static system
@@ -345,7 +347,7 @@ window (`agent/runCompaction`, `promptTokenLimit`; the latest step's results
 are never touched), sized by the last step's measured prompt tokens.
 **A failing step** (agentic_chat_loop.md §0.10): a call that produced
 nothing is retried (`utils/retryPolicy`; 429/5xx/connection, `Retry-After`,
-never a context-length error) by the backend job and the tab's direct path;
+never a context-length error) by the backend job;
 a server-run step that broke mid-reply or looped (xAI's repetition-check
 headers, which END the generation on a trigger) is redone once; when that
 is not enough the run **pauses** (`step_failed`, `repeating_output`) with
@@ -393,9 +395,8 @@ capability table (no provider exposes one over the API — xAI's
 `/language-models` returns pricing and modalities only) plus the normalized
 levels. The app default is **low**, not the provider's: grok-4.6 defaults to
 `high` and was measured thinking for 127–199s before its first visible token.
-Both transports must apply it — `services/llm.ts` for the direct path and
-`scripts/server_generation.py` for the backend path — and the remote start
-payload must forward `reasoningEffort` (the payload copies config field by
+`scripts/server_generation.py` applies it, and the remote start payload
+must forward `reasoningEffort` (the payload copies config field by
 field; a field left out is silently ignored, as `conversationId` was).
 
 **Attachments and the web** (`docs/features/attachments_and_web.md`). A

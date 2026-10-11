@@ -24,8 +24,8 @@ vi.mock('../../services/remoteGeneration', () => ({
   clearPersistedJob: vi.fn()
 }))
 
-// The rejoin never starts a new request; a no-op keeps the direct transport
-// (and its provider fetches) out of this test entirely.
+// The rejoin never starts a new request; a no-op keeps the transport out of
+// this test entirely.
 vi.mock('../../services/llm', () => ({ streamLLM: vi.fn() }))
 vi.mock('../../services/chapterSummaries', () => ({ enqueueStaleSummaryRefreshes: vi.fn() }))
 

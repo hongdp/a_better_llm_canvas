@@ -2,8 +2,8 @@
  * When a model call that failed is worth sending again, and how long to wait
  * (docs/features/agentic_chat_loop.md §0.10; after Grok Build's sampler).
  *
- * Pure. The transports apply it: the backend job (server_generation.run_job)
- * and the tab's direct path (services/llm.ts). Mirrored by
+ * Pure. The backend job applies it (server_generation.run_job); this is its
+ * specification, mirrored by
  * scripts/wc_text/retry_policy.py — change both together.
  */
 

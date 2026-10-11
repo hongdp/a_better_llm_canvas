@@ -203,7 +203,6 @@ export function useRoleplayLLM({
     }
     // Generation runs server-side now, so dropping the local reader is not
     // enough — the job would keep producing (and billing) until it finished.
-    // No-op on the direct transport.
     void abortRemoteGeneration()
     useAppStore.getState().setStreaming(false)
   }, [])

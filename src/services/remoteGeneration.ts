@@ -55,9 +55,8 @@ const ACTIVE_JOB_KEY = 'web_canvas_active_generation'
 
 /**
  * Thrown only when the job could not be STARTED (backend down, 4xx/5xx, no
- * jobId). It is the single condition under which `streamLLM` may fall back to
- * the direct transport: once a job exists, re-running it locally would
- * double-generate.
+ * jobId). `streamLLM` reports it as the call's error; there is no other
+ * transport to fall back to.
  */
 export class RemoteStartError extends Error {
   constructor(message: string) {
@@ -327,8 +326,7 @@ function clearActiveJob(jobId: string): void {
 /**
  * Start a backend generation job and stream it into `callbacks`.
  *
- * Throws {@link RemoteStartError} when the job could never be created, which
- * is the caller's signal to fall back to the direct transport. Everything
+ * Throws {@link RemoteStartError} when the job could never be created. Everything
  * after a successful start is reported through the callbacks.
  */
 export async function startRemoteGeneration(
