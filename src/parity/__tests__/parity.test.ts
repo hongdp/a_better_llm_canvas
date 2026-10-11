@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
 import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
 import type { LLMMessage } from '../../types/llm'
-import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
+import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, searchableText, blockImages, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
@@ -380,7 +380,9 @@ const MODULES: Module[] = [
       top_level_blocks: run(topLevelBlocks, [[CHAPTER], [ENGLISH], [''], ['loose only'], ['<p>a</p> between <p>b</p>'], ['<p>un &amp; closed'], ['<img src="x"><p>after</p>'], ['<p><img src="y"/></p>text &amp; more']]),
       chapter_paragraphs: run(chapterParagraphs, [[CHAPTER], [ENGLISH], ['<p>{{IMAGE_PLACEHOLDER_3}}</p>'], ['<h1>标题</h1><p>一。</p><p></p><p><img src="x"></p><ul><li>a</li><li>b</li></ul>loose'], [DIFFED]]),
       chapter_chars: run(chapterChars, [[CHAPTER], [ENGLISH], ['']]),
-      numbered_line: run(numberedLine, chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul>').map(p => [p] as [typeof p])),
+      numbered_line: run(numberedLine, chapterParagraphs('<h2>T</h2><p>a &amp; b</p><p><img src="x"></p><ul><li>x</li><li>y</li></ul><p>words then a picture <img src="y"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p>tail {{IMAGE_PLACEHOLDER_1}}</p>').map(p => [p] as [typeof p])),
+      searchable_text: run(searchableText, chapterParagraphs('<p>t</p><p><img src="x"></p><p>t <img src="y"></p>').map(p => [p] as [typeof p])),
+      block_images: run(blockImages, [['<p>a <img src="x" alt="1"> b <img src="y"></p>'], ['<p>{{IMAGE_PLACEHOLDER_3}} x</p>'], ['<p>none</p>']]),
       paragraph_spans_card: run(paragraphSpans, [[CARD]]),
       numbered_paragraph_spans_card: run(numberedParagraphSpans, [[CARD]]),
       paragraph_spans: run(paragraphSpans, [[CHAPTER], [ENGLISH], [''], [SPANNED], ['loose <p>a</p> tail'], ['<!-- c --><p>a</p></p><div><div>x</div></div><br/><p class="x>y">q</p>'], ['<p>never closed'], ['<p>a<p>b</p>']]),
@@ -394,6 +396,10 @@ const MODULES: Module[] = [
         [SPANNED, [{ paragraph: 2, action: 'replace', html: '<p>Uno</p>', startsWith: 'One' }, { paragraph: 5, action: 'insert_after', html: 'Four\n\nFive', startsWith: '¶5 Three' }, { paragraph: 4, action: 'delete', startsWith: '[image]' }]],
         [SPANNED, [{ paragraph: 1, action: 'insert_before', html: '<p>pre</p>', startsWith: '# T' }, { paragraph: 1, action: 'replace', html: '<h1>New</h1>', startsWith: 'T' }, { paragraph: 2, action: 'insert_before', html: '<p>mid</p>', startsWith: 'One' }]],
         [SPANNED, [{ paragraph: 3, action: 'replace', html: 'x', startsWith: 'Nope' }, { paragraph: 9, action: 'delete', startsWith: 'x' }]],
+        // A replaced paragraph keeps its inline image; a replacement of its own with an image keeps that one only.
+        ['<p>Intro.</p><p>She smiled. <img src="pic"></p><p>End.</p>', [{ paragraph: 2, action: 'replace', html: '<p>She grinned.</p>', startsWith: 'She smiled' }]],
+        ['<p>Intro.</p><p>She smiled. <img src="pic"></p>', [{ paragraph: 2, action: 'replace', html: 'Plain words', startsWith: 'She smiled' }]],
+        ['<p>Intro.</p><p>She smiled. <img src="pic"></p>', [{ paragraph: 2, action: 'replace', html: '<p>Own <img src="other"></p>', startsWith: 'She smiled' }]],
         [SPANNED, [{ paragraph: 4, action: 'replace', html: '<p>x</p>', startsWith: 'image' }]],
         [SPANNED, [{ paragraph: 2, action: 'delete', startsWith: 'One' }, { paragraph: 2, action: 'replace', html: '<p>x</p>', startsWith: 'One' }]],
         [SPANNED, [{ paragraph: 2, action: 'replace', startsWith: 'One' }, { paragraph: 3, action: 'move', startsWith: 'Two' }, { paragraph: 3, action: 'delete', startsWith: '  ' }]],

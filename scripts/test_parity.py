@@ -140,6 +140,8 @@ FUNCTIONS = {
     ("paragraphs", "chapter_paragraphs"): paragraphs.chapter_paragraphs,
     ("paragraphs", "chapter_chars"): paragraphs.chapter_chars,
     ("paragraphs", "numbered_line"): paragraphs.numbered_line,
+    ("paragraphs", "searchable_text"): paragraphs.searchable_text,
+    ("paragraphs", "block_images"): paragraphs.block_images,
     ("paragraphs", "paragraph_spans"): paragraphs.paragraph_spans,
     ("paragraphs", "numbered_paragraph_spans"): paragraphs.numbered_paragraph_spans,
     ("paragraphs", "is_plain_chapter_html"): paragraphs.is_plain_chapter_html,

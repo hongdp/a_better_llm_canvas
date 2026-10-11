@@ -11,7 +11,7 @@ from wc_text.context_ledger import hash_content
 from wc_text.diff import strip_diff_markup
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
-from wc_text.paragraphs import chapter_paragraphs, is_plain_chapter_html, numbered_line
+from wc_text.paragraphs import chapter_paragraphs, is_plain_chapter_html, numbered_line, searchable_text
 from wc_text.pending_changes import pending_changes, render_pending_changes
 from wc_text.text import is_blank_content
 
@@ -359,7 +359,7 @@ read_tool = Tool(
     aliases=["read_chapter", "analyze_book"],
     description=(
         "Read chapters of the book, or attachments. Find chapters in the CHAPTER INDEX and pass their numbers. "
-        'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency; '
+        'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency — an image is "[image]", on its own line or at the end of the paragraph that carries it (grep finds it by that word, and a replaced paragraph keeps its image); '
         '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. '
         'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. '
         f'To look at several places at once, pass parts (up to {MAX_READ_PARTS}), e.g. [{{"chapter":"3","paragraphs":"10-16"}},{{"chapter":"8","paragraphs":"30-36"}}]: one call, one step. '
@@ -443,7 +443,7 @@ def _search_pattern(pattern: str, scope: List[Dict[str, Any]], ctx: ToolContext,
     for chapter in scope:
         count = 0
         for para in chapter_paragraphs(accepted_html(ctx, chapter["id"])):
-            text = para["text"]
+            text = searchable_text(para)
             for m in regex.finditer(text):
                 if not m.group(0):
                     continue
