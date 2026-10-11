@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 1.1.0 — 2026-10-11
+
+The assistant can now bring a web page's pictures into the book, the
+Import-from-URL modal is gone, chapter summaries are retired, settings are per
+user with per-book preferences, and three live failures on Claude 5.x and
+long turns are fixed. Download `web_canvas-1.1.0.tar.gz` from the GitHub
+release; it needs Python only (see the README).
+
+### Fixes
 
 - A string cut in the middle of an emoji no longer loses a step (the server
   rejected the request: "surrogates not allowed"); cuts avoid the middle of
@@ -11,15 +19,24 @@
 - The footer's chapter length is the count the assistant's tools report:
   characters of the text, punctuation included (it used to leave punctuation
   out, so the two numbers differed by ~15% on Chinese prose).
+- An image inside a text paragraph shows as `[image]` in reads and grep and
+  survives a paragraph replace.
+
+### Features
+
 - `web_images`: the assistant fetches a page's pictures (numbered in
   `web_read`) and places them in a chapter as it writes. The Import-from-URL
   modal and its scrape pipeline are removed; loading a page into a chapter is
   a chat request. `Pillow` joins the requirements (image shrinking).
-- An image inside a text paragraph shows as `[image]` in reads and grep and
-  survives a paragraph replace.
 - Chapter summaries are no longer used; the chapter index is titles and
   markers. Settings are per user; each book remembers its provider, model,
   effort and preset.
+
+### Project
+
+- CI on GitHub Actions (lint, type-check, both test suites, build) on every
+  PR; `master` is protected (PRs only, checks required). Legacy files and the
+  per-machine dev certificate are out of the repository; a fresh clone builds.
 
 ## 1.0.0 — 2026-10-11
 
