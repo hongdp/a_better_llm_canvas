@@ -9,7 +9,7 @@ import type { CanvasDocument } from '../types/document'
 export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
   openai: {
     apiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
-    model: import.meta.env.VITE_OPENAI_MODEL || 'gpt-4o',
+    model: import.meta.env.VITE_OPENAI_MODEL || 'gpt-5.5',
     baseUrl: import.meta.env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1',
     maxOutputTokens: 16384,
   },
@@ -27,7 +27,7 @@ export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
   },
   anthropic: {
     apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY || '',
-    model: import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-3-5-sonnet',
+    model: import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-sonnet-5-5',
     baseUrl: import.meta.env.VITE_ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
     maxOutputTokens: 16384,
   },

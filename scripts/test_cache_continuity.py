@@ -165,8 +165,10 @@ def test_transcripts_are_stored_per_reply_pruned_and_deleted_with_the_book(tmp_p
     server_db.init_db()
     server_context.ensure_tables()
     for i in range(3):
-        server_context.save_transcript("alice", "b1", f"a{i}", f"u{i}", [{"role": "user", "content": f"t{i}"}], f"2026-10-10T00:00:0{i}Z")
-    got = server_context.load_transcripts("alice", "b1", ["a0", "a1", "a2", "zz"])
+        server_context.save_transcript("alice", "b1", f"a{i}", f"u{i}", [{"role": "user", "content": f"t{i}"}], f"2026-10-10T00:00:0{i}Z", "grok|g")
+    got = server_context.load_transcripts("alice", "b1", ["a0", "a1", "a2", "zz"], "grok|g")
     assert sorted(got) == ["a1", "a2"] and got["a2"] == {"userMessageId": "u2", "messages": [{"role": "user", "content": "t2"}]}
+    # Another provider or model gets the collapsed pair: these are grok's ciphertexts.
+    assert server_context.load_transcripts("alice", "b1", ["a1", "a2"], "openai|gpt-5.5") == {}
     server_context.delete_book_context("alice", "b1")
-    assert server_context.load_transcripts("alice", "b1", ["a1", "a2"]) == {}
+    assert server_context.load_transcripts("alice", "b1", ["a1", "a2"], "grok|g") == {}

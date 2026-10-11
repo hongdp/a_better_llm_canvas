@@ -36,6 +36,12 @@ export interface SettingsSlice {
   setAvailableGeminiModels: (models: string[]) => void
   availableGrokModels: string[]
   setAvailableGrokModels: (models: string[]) => void
+  /** The Claude models the configured key can use, listed through the backend (/api/models). */
+  availableAnthropicModels: string[]
+  setAvailableAnthropicModels: (models: string[]) => void
+  /** OpenAI's text models for the configured key (api.openai.com only), through /api/models. */
+  availableOpenAIModels: string[]
+  setAvailableOpenAIModels: (models: string[]) => void
   /**
    * Models reported by the configured Ollama-compatible endpoint. Discovered
    * rather than hardcoded: the endpoint may be Ollama itself or any
@@ -111,6 +117,8 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     providerConfigs: loadSavedConfigs(),
     availableGeminiModels: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
     availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
+    availableAnthropicModels: [],
+    availableOpenAIModels: [],
     availableOllamaModels: [],
     availableRunpodModels: [],
     setProvider: (provider) => {
@@ -123,6 +131,12 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     },
     setAvailableGrokModels: (models) => {
       set({ availableGrokModels: models })
+    },
+    setAvailableAnthropicModels: (models) => {
+      set({ availableAnthropicModels: models })
+    },
+    setAvailableOpenAIModels: (models) => {
+      set({ availableOpenAIModels: models })
     },
 
     discoveredContextWindows: {},

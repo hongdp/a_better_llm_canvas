@@ -51,12 +51,22 @@ const SUPPORT_TABLE: Record<string, ModelReasoningSupport[]> = {
     { match: /grok-4\.5/i, levels: ['default', 'low', 'medium', 'high'] },
     { match: /grok-3-mini/i, levels: ['default', 'low', 'high'] }
   ],
+  // Probed against api.openai.com's Responses API on 2026-10-10, one tiny
+  // request per model and level. gpt-4o / gpt-4.1 refuse the field.
   openai: [
-    { match: /^(?:o[1-9]|gpt-5)/i, levels: ['default', 'minimal', 'low', 'medium', 'high'] }
+    { match: /^gpt-5(?:-mini|-nano)?(?:-\d{4}-\d{2}-\d{2})?$/i, levels: ['default', 'minimal', 'low', 'medium', 'high'] },
+    { match: /^gpt-5\.1(?!\d)/i, levels: ['default', 'low', 'medium', 'high'] },
+    { match: /^gpt-(?:5\.(?:[2-9]|\d\d)|[6-9])/i, levels: ['default', 'low', 'medium', 'high', 'xhigh'] },
+    { match: /^o[1-9]/i, levels: ['default', 'low', 'medium', 'high'] }
   ],
+  // Probed against api.anthropic.com on 2026-10-10, one tiny request per
+  // model and shape (anthropicThinking below says what each family is sent):
+  // Opus 4.7 and later take adaptive thinking with an effort up to xhigh;
+  // 4.6 takes it without xhigh; 4.5 and earlier take a token budget only.
   anthropic: [
-    // Extended thinking: a token budget, mapped in buildAnthropicThinking.
-    { match: /claude-(?:3-7|opus-4|sonnet-4|haiku-4|opus-5|sonnet-5|fable-5)/i, levels: ['default', 'low', 'medium', 'high'] }
+    { match: /claude-(?:opus|sonnet|haiku|fable)-[5-9]|claude-opus-4-[7-9]/i, levels: ['default', 'low', 'medium', 'high', 'xhigh'] },
+    { match: /claude-(?:opus|sonnet)-4-6/i, levels: ['default', 'low', 'medium', 'high'] },
+    { match: /claude-(?:3-7|opus-4|sonnet-4|haiku-4)/i, levels: ['default', 'low', 'medium', 'high'] }
   ],
   gemini: [
     { match: /gemini-2\.5|gemini-3/i, levels: ['default', 'minimal', 'low', 'medium', 'high'] }
@@ -127,4 +137,29 @@ const THINKING_BUDGET_TOKENS: Record<Exclude<ReasoningEffort, 'default'>, number
 
 export function reasoningBudgetTokens(effort: Exclude<ReasoningEffort, 'default'>): number {
   return THINKING_BUDGET_TOKENS[effort]
+}
+
+/**
+ * How a Claude model is asked to think at a resolved level (the request
+ * fields, merged into the body by server_generation.build_anthropic_request).
+ *
+ * Measured 2026-10-10: Opus 4.7+ and every 5.x model refuse
+ * `thinking: {type: "enabled", budget_tokens}` ("Use thinking.type.adaptive
+ * and output_config.effort"); 4.6 takes either; 4.5 and earlier refuse
+ * adaptive thinking and the effort field. Several 5.x models also refuse
+ * `{type: "disabled"}`, so "no thinking" is sent as no thinking field at all.
+ * `display: "summarized"` is accepted by every family (measured) and makes
+ * 5.x stream its thinking, which it otherwise omits.
+ * A budget must leave room for the answer: at most half of max_tokens, and
+ * at least the API's 1024.
+ */
+export function anthropicThinking(model: string, effort: Exclude<ReasoningEffort, 'default'> | null, maxTokens: number): Record<string, unknown> {
+  if (!effort) return {}
+  if (/claude-(?:opus|sonnet|haiku|fable)-[5-9]|claude-(?:opus|sonnet)-4-[6-9]/i.test(model || '')) {
+    const level = effort === 'minimal' ? 'low' : effort
+    // Summarized: 5.x omits the thinking text by default, and the chat shows it live.
+    return { thinking: { type: 'adaptive', display: 'summarized' }, output_config: { effort: level } }
+  }
+  const budget = Math.min(THINKING_BUDGET_TOKENS[effort], Math.floor(maxTokens / 2))
+  return budget >= 1024 ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}
 }

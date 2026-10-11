@@ -136,7 +136,7 @@ export interface LLMMessage {
    * exactly as returned — reasoning (with its encrypted_content), message,
    * function_call — in order. The next step of the same turn sends them back
    * unchanged, so the model keeps its reasoning (server_generation
-   * build_grok_responses_request). Opaque: never inspect or rebuild them. A history
+   * build_responses_request). Opaque: never inspect or rebuild them. A history
    * message carries only the reasoning items of its turn; the converter then
    * adds the message's text after them.
    */
@@ -233,8 +233,10 @@ export interface SystemPromptTemplate {
 
 export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   gemini: ['gemini-2.5-flash', 'gemini-2.5-pro', 'gemini-1.5-flash', 'gemini-1.5-pro', 'gemini-1.5-flash-8b'],
-  openai: ['gpt-4o', 'gpt-4o-mini', 'o1-preview', 'o1-mini', 'gpt-4-turbo', 'gpt-3.5-turbo'],
-  anthropic: ['claude-sonnet-5', 'claude-opus-4-8', 'claude-haiku-4-5-20251001', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest'],
+  // Shown until the key's own list arrives (useModelFetcher, through /api/models).
+  openai: ['gpt-5.5', 'gpt-6.1-sol', 'gpt-5.4-mini', 'gpt-5.1', 'gpt-4.1', 'o3'],
+  // Shown until the key's own list arrives (useModelFetcher, through /api/models).
+  anthropic: ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5', 'claude-fable-5-1', 'claude-sonnet-4-6', 'claude-opus-4-6'],
   ollama: ['llama3', 'mistral', 'gemma2', 'codegemma', 'phi3'],
   // Shown only until the endpoint answers /models. These are the aliases
   // llama.cpp's router derives from the model directory names in

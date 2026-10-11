@@ -666,7 +666,7 @@ class RunEngine:
             stored_summary=server_context.load_chat_summary(run.username, run.book_id),
             summarize=_ModelCall(self, run, None, "low", f"{run.book_id}:summary"),
             transcripts=server_context.load_transcripts(run.username, run.book_id,
-                                                        [str(m.get("id")) for m in history if m.get("role") == "assistant" and m.get("id")]),
+                                                        [str(m.get("id")) for m in history if m.get("role") == "assistant" and m.get("id")], scope),
             turn=str(req.get("assistantMessageId") or ""),
             summarize_live=_ConversationCall(self, run, to_tool_specs(offered)))
         server_context.save_state(run.username, run.book_id, scope, state, _now_iso())
@@ -1033,7 +1033,8 @@ class RunEngine:
         # The turn as sent, for the next one to replay verbatim (cache_continuity.md §3.1).
         if summary.get("transcript") and run.request.get("assistantMessageId"):
             server_context.save_transcript(run.username, run.book_id, run.request["assistantMessageId"], run.request.get("userMessageId"),
-                                           summary["transcript"], _now_iso())
+                                           summary["transcript"], _now_iso(),
+                                           f"{run.request['provider']}|{(run.request.get('config') or {}).get('model') or ''}")
         self._finalize(run, status)
 
     def _remember_reads(self, run: Run, summary: Dict[str, Any]) -> None:

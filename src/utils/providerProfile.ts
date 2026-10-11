@@ -115,3 +115,14 @@ export function targetPromptTokens(
   }
   return contextWindowTokens
 }
+
+/**
+ * Whether this provider runs on a Responses API (server_generation.uses_responses_api):
+ * grok, and OpenAI at its own host. Their replies carry output items
+ * (reasoning with its ciphertext) that later requests send back verbatim, so
+ * a turn's reasoning items are kept on its chat message and replayed.
+ */
+export function usesResponsesApi(provider: string, baseUrl: string): boolean {
+  if (provider === 'grok') return true
+  return provider === 'openai' && /^https:\/\/api\.openai\.com(?:[/:?#]|$)/i.test(baseUrl || '')
+}

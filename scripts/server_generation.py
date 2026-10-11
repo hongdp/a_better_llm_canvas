@@ -61,6 +61,8 @@ from fastapi.responses import StreamingResponse
 from server_auth import get_authenticated_username
 # The parity-checked ports of src/utils/documentTools.ts: this module used to keep
 # its own copies, which no parity case covered (test audit, 2026-10-10).
+from wc_text.provider_profile import uses_responses_api
+from wc_text.reasoning_effort import anthropic_thinking, resolve_reasoning_effort
 from wc_text.document_tools import from_openai_tools, to_anthropic_tools, to_gemini_tools
 from wc_text.retry_policy import (MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, parse_retry_after,
                                   retry_delay_ms, with_jitter)
@@ -183,6 +185,12 @@ LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
 REMOTE_MODEL_HOST_SUFFIXES = (".proxy.runpod.net",)
 
 
+#: The non-local hosts /api/models will query, with the user's key (the official model lists).
+OFFICIAL_MODEL_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com"}
+_OPENAI_CHAT_MODEL_RE = re.compile(r"^(?:gpt-\d|o\d)")
+_OPENAI_NON_CHAT_RE = re.compile(r"audio|realtime|image|transcribe|tts|search|instruct|live|embedding|diarize|whisper|translate")
+
+
 def is_queryable_model_host(base_url: str) -> bool:
     """Whether /api/models may fetch a listing from this URL."""
     parsed = urlparse(base_url)
@@ -303,7 +311,7 @@ class GenerationJob:
         #: grok (xAI Responses API): this step's output items, verbatim and in
         #: order — reasoning (with its encrypted_content), message,
         #: function_call. The next step sends them back unchanged so the model
-        #: keeps its reasoning (see _stream_grok_responses).
+        #: keeps its reasoning (see _stream_responses).
         self.response_items: List[Dict[str, Any]] = []
         #: Reasoning the model streamed before (or between) visible tokens.
         #: Counted, never buffered — it is not document text and must not move
@@ -988,7 +996,8 @@ def build_anthropic_request(
             continue
 
         if images:
-            parts: List[Dict[str, Any]] = [{"type": "text", "text": content}]
+            # A text block may not be empty (minLength 1): an image-only message has none.
+            parts: List[Dict[str, Any]] = [{"type": "text", "text": content}] if content else []
             for idx, img in enumerate(images):
                 split = _split_data_url(img)
                 if split:
@@ -1017,14 +1026,16 @@ def build_anthropic_request(
         if config.get("toolChoice") == "none":
             body["tool_choice"] = {"type": "none"}
 
-    # Extended thinking is a budget, and the API requires it to stay under
-    # max_tokens — clamp rather than let the request 400.
-    anthropic_effort = _reasoning_effort(config)
-    if anthropic_effort:
-        max_tokens = body.get("max_tokens") or 8192
-        budget = min(THINKING_BUDGET_TOKENS[anthropic_effort], max_tokens // 2)
-        if budget >= 1024:
-            body["thinking"] = {"type": "enabled", "budget_tokens": budget}
+    # Thinking, in the shape this model takes (wc_text.reasoning_effort.anthropic_thinking):
+    # adaptive with an effort on Opus 4.6+ and 5.x, which refuse a budget; a
+    # budget under max_tokens before that. The level is resolved here against
+    # the model, so an unset one gets the app's default and one the model does
+    # not take is not sent at all.
+    body.update(anthropic_thinking(
+        config.get("model") or "",
+        resolve_reasoning_effort("anthropic", config.get("model") or "", config.get("reasoningEffort")),
+        body.get("max_tokens") or 8192,
+    ))
 
     # Structured system prompt with cache_control for Anthropic prompt caching.
     if system_message:
@@ -1059,8 +1070,8 @@ def build_anthropic_request(
     headers = {
         "Content-Type": "application/json",
         "x-api-key": config.get("apiKey") or "",
+        # Prompt caching is GA: the old prompt-caching beta header is not sent.
         "anthropic-version": "2023-06-01",
-        "anthropic-beta": "prompt-caching-2024-07-31",
     }
     return url, headers, body
 
@@ -1163,11 +1174,22 @@ def _response_items(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [item for item in raw if isinstance(item, dict) and isinstance(item.get("type"), str)]
 
 
-def build_grok_responses_request(
+# grok, and OpenAI at its own host, run on the Responses API (wc_text.provider_profile.uses_responses_api).
+# Problem (OpenAI, measured 2026-10-10): from gpt-5.4 on, Chat Completions
+#   refuses function tools with reasoning ("use /v1/responses"), and gpt-5.6 /
+#   gpt-6.x refuse tools there even with no effort set — every agent step
+#   carries tools, so those models could not be used at all.
+# Fix: the same Responses path as grok, with OpenAI's own spelling of the
+#   reasoning (build_responses_request). A compatible server under the
+#   `openai` provider stays on Chat Completions.
+
+
+def build_responses_request(
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
+    provider: str = "grok",
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
-    """grok over the xAI Responses API (mirrors toGrokResponsesInput in providerMessages.ts).
+    """grok over the xAI Responses API, or OpenAI over its own (uses_responses_api).
 
     Problem: on Chat Completions a step's reasoning is gone by the next step.
       grok planned a chapter for 83 s, called a tool, and the next step — with
@@ -1185,7 +1207,7 @@ def build_grok_responses_request(
     headers: Dict[str, str] = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
-    if config.get("conversationId"):
+    if provider == "grok" and config.get("conversationId"):
         headers["x-grok-conv-id"] = str(config["conversationId"])
 
     items: List[Dict[str, Any]] = []
@@ -1233,35 +1255,53 @@ def build_grok_responses_request(
     }
     if config.get("maxOutputTokens"):
         body["max_output_tokens"] = config["maxOutputTokens"]
-    effort = _reasoning_effort(config)
-    if effort:
-        body["reasoning"] = {"effort": effort}
+    if provider == "openai":
+        # Resolved against the model here: OpenAI's families take different
+        # sets (gpt-5 has minimal, 5.1 none, 5.4+ xhigh; gpt-4o/4.1 refuse the
+        # field), and a summary streams the reasoning to the chat live.
+        effort = resolve_reasoning_effort("openai", config.get("model") or "", config.get("reasoningEffort"))
+        if effort:
+            body["reasoning"] = {"effort": effort, "summary": "auto"}
+        else:
+            # A model without reasoning has no encrypted reasoning to return.
+            body.pop("include", None)
+    else:
+        effort = _reasoning_effort(config)
+        if effort:
+            body["reasoning"] = {"effort": effort}
     if config.get("conversationId"):
         body["prompt_cache_key"] = str(config["conversationId"])
     tools = _tool_specs(config.get("tools"))
     if tools:
-        body["tools"] = [{"type": "function", **spec} for spec in tools]
+        # OpenAI's Responses API makes function tools strict by default, and a
+        # strict schema has every property required: the model then fills each
+        # optional argument with an empty value (`"paragraphs": ""`, measured
+        # 2026-10-10), which the tools read as a request. Ours are not strict.
+        strict = {"strict": False} if provider == "openai" else {}
+        body["tools"] = [{"type": "function", **spec, **strict} for spec in tools]
         if config.get("toolChoice") == "none":
             body["tool_choice"] = "none"
     return f"{base_url}/responses", headers, body
 
 
-async def _stream_grok_responses(
+async def _stream_responses(
     job: GenerationJob,
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
+    provider: str = "grok",
 ) -> Optional[Dict[str, Any]]:
-    url, headers, body = build_grok_responses_request(config, messages)
-    _debug_log("xAI Responses", url, headers, body, config)
+    url, headers, body = build_responses_request(config, messages, provider)
+    label = "xAI" if provider == "grok" else "OpenAI"
+    _debug_log(f"{label} Responses", url, headers, body, config)
     if config.get("conversationId"):
-        logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"grok:{config['conversationId']}", body))
+        logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"{provider}:{config['conversationId']}", body))
 
-    if config.get("loopCheck"):
+    if provider == "grok" and config.get("loopCheck"):
         headers = {**headers, **LOOP_CHECK_HEADERS}
     usage: Optional[Dict[str, Any]] = None
-    async with _http_stream(url, headers, body, read_timeout=IDLE_TIMEOUT_SECONDS["grok"]) as response:
+    async with _http_stream(url, headers, body, read_timeout=IDLE_TIMEOUT_SECONDS.get(provider)) as response:
         if response.status_code >= 400:
-            raise _http_error("xAI", response, await _read_error_text(response))
+            raise _http_error(label, response, await _read_error_text(response))
         async for line in response.aiter_lines():
             _check_abort(job)
             trimmed = (line or "").strip()
@@ -1308,7 +1348,7 @@ async def _stream_grok_responses(
                 failure = (event.get("response") or {}).get("error") or event
                 code = str(failure.get("code") or "")
                 message = str(failure.get("message") or "")
-                raise ProviderError(f"xAI API error: {message or code or 'response failed'}",
+                raise ProviderError(f"{label} API error: {message or code or 'response failed'}",
                                     transient=code in ("server_error", "internal_error", "overloaded") or "internal error" in message.lower())
     return usage
 
@@ -1400,6 +1440,7 @@ async def _stream_anthropic(
     # just before content_block_stop. redacted_thinking arrives whole in its
     # start event. Published once complete, never half-built.
     open_thinking: Dict[int, Dict[str, Any]] = {}
+    stop_reason: Optional[str] = None
 
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
@@ -1437,6 +1478,9 @@ async def _stream_anthropic(
                 building = open_thinking.get(block_index)
                 if building is not None and building["type"] == "thinking":
                     building["thinking"] += delta.get("thinking") or ""
+                # Shown live, as grok's reasoning is: a long think is not a dead connection.
+                if delta.get("thinking"):
+                    job.note_reasoning(delta["thinking"])
             elif event_type == "content_block_delta" and delta.get("type") == "signature_delta":
                 building = open_thinking.get(block_index)
                 if building is not None and building["type"] == "thinking":
@@ -1464,6 +1508,17 @@ async def _stream_anthropic(
             elif event_type == "message_delta" and (parsed.get("usage") or {}).get("output_tokens"):
                 # Assignment, not +=: this field is a running total.
                 output_tokens = parsed["usage"]["output_tokens"]
+            if event_type == "message_delta" and delta.get("stop_reason"):
+                stop_reason = delta["stop_reason"]
+            elif event_type == "error":
+                # An error inside an open stream (overloaded_error): retryable like a 529.
+                err = parsed.get("error") or {}
+                raise ProviderError(f"Anthropic stream error: {err.get('type') or 'error'}: {err.get('message') or ''}",
+                                    transient=err.get("type") in ("overloaded_error", "api_error"))
+
+    # A refusal is a 200 with no answer: say so, or the turn ends in silence.
+    if stop_reason == "refusal" and job.length == 0 and not job.tool_calls:
+        raise ProviderError("Anthropic declined to answer this request (stop_reason: refusal).")
 
     if input_tokens > 0 or output_tokens > 0:
         return {
@@ -1627,8 +1682,8 @@ async def _dispatch_provider(
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
 ) -> Optional[Dict[str, Any]]:
-    if provider == "grok":
-        return await _stream_grok_responses(job, config, messages)
+    if uses_responses_api(provider, config.get("baseUrl") or ""):
+        return await _stream_responses(job, config, messages, provider)
     if provider in ("openai", "ollama", "runpod"):
         return await _stream_openai(job, config, messages, provider)
     if provider == "gemini":
@@ -1712,8 +1767,10 @@ async def run_job(
                 return
             # Safe to retry only before any token was buffered — a parameter
             # rejection is a 400 at request time, so nothing has streamed.
+            # "default" is the one setting that sends nothing; an unset one may
+            # resolve to the app's default level (build_anthropic_request).
             if not (
-                config.get("reasoningEffort")
+                config.get("reasoningEffort") != "default"
                 and job.length == 0
                 and _is_reasoning_effort_rejection(str(exc))
             ):
@@ -1722,7 +1779,7 @@ async def run_job(
                 "Job %s: provider rejected the reasoning effort; retrying without it",
                 job.job_id,
             )
-            retry_config = {k: v for k, v in config.items() if k != "reasoningEffort"}
+            retry_config = {**config, "reasoningEffort": "default"}
             usage = await _dispatch_provider(job, provider, retry_config, messages)
         job.finish("done", usage=usage)
     except (asyncio.CancelledError, _JobAborted):
@@ -1919,6 +1976,33 @@ async def list_provider_models(request: Request):
     base_url = str((body or {}).get("baseUrl") or "").rstrip("/")
     if not base_url:
         raise HTTPException(status_code=400, detail="baseUrl is required.")
+
+    # Anthropic's API cannot be called from a page (CORS), so the Claude and
+    # OpenAI model lists are fetched here too — with the user's key, from the
+    # provider's own host only, so this never becomes a proxy for any URL.
+    provider = (body or {}).get("provider")
+    if provider in OFFICIAL_MODEL_HOSTS:
+        host = OFFICIAL_MODEL_HOSTS[provider]
+        if urlparse(base_url).hostname != host:
+            raise HTTPException(status_code=400, detail=f"Only {host} can be queried for {provider} models.")
+        api_key = str(body.get("apiKey") or "")
+        headers = ({"x-api-key": api_key, "anthropic-version": "2023-06-01"} if provider == "anthropic"
+                   else {"Authorization": f"Bearer {api_key}"})
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.get(f"{base_url}/models", params={"limit": 1000} if provider == "anthropic" else None, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except Exception as exc:  # noqa: BLE001 — a bad key or an outage: the UI keeps its fallback list
+            logger.info("%s model listing failed: %s", provider, exc)
+            return {"models": []}
+        ids = [m["id"] for m in data.get("data") or [] if isinstance(m, dict) and isinstance(m.get("id"), str)]
+        if provider == "openai":
+            # Text models only, the gpt line newest first, then the o-series: the
+            # account also lists audio, image and realtime models.
+            text = [i for i in ids if _OPENAI_CHAT_MODEL_RE.match(i) and not _OPENAI_NON_CHAT_RE.search(i)]
+            ids = sorted((i for i in text if i.startswith("gpt-")), reverse=True) + sorted((i for i in text if not i.startswith("gpt-")), reverse=True)
+        return {"models": ids}
 
     if not is_queryable_model_host(base_url):
         raise HTTPException(

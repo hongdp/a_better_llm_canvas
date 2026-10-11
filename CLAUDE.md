@@ -242,8 +242,12 @@ run's own write event is ignored and the tab's next save is a 409.
 ### LLM integration
 `services/llm.ts` exposes `streamLLM(messages, config, callbacks)`; every call
 runs as a backend job (`/api/generate`, `scripts/server_generation.py`), which
-holds the ONE implementation of each provider's wire format — OpenAI/Ollama
-(OpenAI-compatible), grok (Responses API), Gemini, Anthropic. There is no
+holds the ONE implementation of each provider's wire format — grok and
+OpenAI at api.openai.com on a **Responses API** (`uses_responses_api`; from
+gpt-5.4 on, Chat Completions refuses tools with reasoning), Ollama/llama.cpp
+and other OpenAI-compatible servers on Chat Completions, Gemini, Anthropic.
+OpenAI's function tools are sent `strict: false` (strict, the default, makes
+the model fill every optional argument with an empty value). There is no
 in-browser transport: it was removed (2026-10-10) because login is required
 and it was a second copy of every provider to keep in step. All responses
 **stream**; never block the UI. The **Canvas Markup Protocol** wraps document
@@ -282,7 +286,7 @@ reasoning item, with its `encrypted_content`, goes back unchanged in the next
 step (`LLMMessage.responseItems`), so the model keeps its plan — and the final
 step's reasoning is kept on the chat message (`ChatMessage.reasoningItems`,
 `messages.reasoning_items`) and replayed for the last 8 turns, so it keeps what
-it worked out across turns too. The tools offered are
+it worked out across turns too (grok and OpenAI: `usesResponsesApi`). The tools offered are
 fixed at a run's first step. Writes reach any chapter through `chapter` (a
 `chapter="…"` attribute on grok's markup). An edit on a chapter whose HTML the
 model has not seen this run is refused, and a live preview must never paint
@@ -398,6 +402,13 @@ levels. The app default is **low**, not the provider's: grok-4.6 defaults to
 `scripts/server_generation.py` applies it, and the remote start payload
 must forward `reasoningEffort` (the payload copies config field by
 field; a field left out is silently ignored, as `conversationId` was).
+The client forwards the RAW setting; the backend resolves it against the
+model (`wc_text/reasoning_effort.py`, the parity-tested port — for Anthropic
+and OpenAI; the tables were measured per model on 2026-10-10). **Claude** takes `thinking: {type: "adaptive", display:
+"summarized"}` + `output_config.effort` on Opus 4.6+ and every 5.x model,
+which refuse `{type: "enabled", budget_tokens}`; 4.5 and earlier take only
+the budget (`anthropicThinking`, measured per model 2026-10-10). Never send
+`{type: "disabled"}` (several 5.x models refuse it) or temperature/top_p.
 
 **Attachments and the web** (`docs/features/attachments_and_web.md`). A
 book's reference files (a source novel as `.txt`) live on the server, not in
