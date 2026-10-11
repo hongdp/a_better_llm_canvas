@@ -531,7 +531,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                       
                       return safetyCategories.map(cat => {
                         const currentSetting = currentSettings.find(s => s.category === cat.id)
-                        const currentValue = currentSetting?.threshold || 'BLOCK_MEDIUM_AND_ABOVE'
+                        const currentValue = currentSetting?.threshold || 'BLOCK_NONE'
                         
                         return (
                           <div key={cat.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
