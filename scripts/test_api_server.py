@@ -2030,4 +2030,4 @@ def test_a_lone_surrogate_from_the_browser_is_replaced_before_the_provider_reque
     captured = []
     _run_job(job, "openai", {"apiKey": "sk", "model": "gpt-4o", "baseUrl": "https://llm.example.com/v1"},
              messages, _FakeStreamResponse(lines=['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"]), captured)
-    assert job.status == "done" and captured[0]["body"]["messages"][0]["content"] == "fire �"
+    assert job.status == "done" and captured[0]["body"]["messages"][0]["content"][0] == {"type": "text", "text": "fire \ufffd"}

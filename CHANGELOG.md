@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- A string cut in the middle of an emoji no longer loses a step (the server
+  rejected the request: "surrogates not allowed"); cuts avoid the middle of
+  a character, and the server replaces any stray half.
 - Anthropic: a thinking block that came after the reply's text is replayed
   after it; replaying it ahead made the next step a 400 ("cannot be
   modified") on Claude 5.x.
