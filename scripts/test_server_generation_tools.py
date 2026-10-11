@@ -510,6 +510,42 @@ def _parse_sse_frames(frames):
     return [json.loads(f[len("data: "):]) for f in frames if f.startswith("data: ")]
 
 
+def test_anthropic_cache_diagnostics_thread_the_previous_message_id_through_a_conversation():
+    import wc_providers.anthropic as anth
+    anth._last_message_ids.clear()
+    cfg = {"model": "claude-sonnet-5-5", "baseUrl": "https://api.anthropic.com/v1", "apiKey": "k", "conversationId": "book-7"}
+    # First request of the conversation: opted in, nothing to compare against.
+    _, _, body = server_generation.build_anthropic_request(cfg, [{"role": "user", "content": "hi"}])
+    assert body["diagnostics"] == {"previous_message_id": None}
+    # No conversation: no opt-in (nothing to thread it through).
+    _, _, lone = server_generation.build_anthropic_request({**cfg, "conversationId": None}, [{"role": "user", "content": "hi"}])
+    assert "diagnostics" not in lone
+    # The response's id is remembered from message_start…
+    lines = [
+        _sse({"type": "message_start", "message": {"id": "msg_first", "usage": {"input_tokens": 10, "output_tokens": 1}, "diagnostics": None}}),
+        _sse({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}}),
+        _sse({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "ok"}}),
+        _sse({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+    ]
+    _run_job("anthropic", cfg, [{"role": "user", "content": "hi"}], _FakeStreamResponse(lines=lines))
+    # …and the next request of the same conversation carries it; another conversation does not.
+    _, _, second = server_generation.build_anthropic_request(cfg, [{"role": "user", "content": "hi"}])
+    assert second["diagnostics"] == {"previous_message_id": "msg_first"}
+    _, _, other = server_generation.build_anthropic_request({**cfg, "conversationId": "book-8"}, [{"role": "user", "content": "hi"}])
+    assert other["diagnostics"] == {"previous_message_id": None}
+    # A divergence the API reports is logged as a warning, in its words.
+    diverged = [
+        _sse({"type": "message_start", "message": {"id": "msg_second", "usage": {"input_tokens": 10, "output_tokens": 1},
+                                                   "diagnostics": {"cache_miss_reason": {"type": "system_changed", "cache_missed_input_tokens": 41850}}}}),
+        _sse({"type": "message_delta", "delta": {"stop_reason": "end_turn"}, "usage": {"output_tokens": 2}}),
+    ]
+    with patch.object(anth.logger, "warning") as warned:
+        _run_job("anthropic", cfg, [{"role": "user", "content": "hi"}], _FakeStreamResponse(lines=diverged))
+    assert any("cache diagnostics" in c.args[0] and c.args[2] == "system_changed (≈41850 input tokens after the divergence)" for c in warned.call_args_list)
+    assert anth._last_message_ids["anthropic:book-7"] == "msg_second"
+    assert anth.describe_diagnostics({"cache_miss_reason": None}) == "comparison still pending"
+
+
 def test_anthropic_request_replays_thinking_first_and_verbatim():
     history = _tool_history()
     history[2]["thinking"] = [THINKING, REDACTED]

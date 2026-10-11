@@ -149,9 +149,12 @@ npm run parity:fixtures     # regenerate scripts/parity/fixtures from the TypeSc
 
 **Logs**: `app.log` holds the orchestrator + Vite output; the Python API
 server's own output (including `web_canvas.*` log lines — job starts,
-time-to-first-token, per-job summaries with prompt-cache hits, and a
+time-to-first-token, per-job summaries with prompt-cache hits, a
 `prefix:` line saying where a request departs from the conversation's
-previous one) goes to **`api-server.log`**. Grepping
+previous one, and for Anthropic a `cache diagnostics:` line — the API's own
+verdict on where the two requests diverged, threaded by `previous_message_id`
+per conversation, which also fills the Console's Caching page) goes to
+**`api-server.log`**. Grepping
 `app.log` for API behavior finds nothing. Every finished step's reasoning,
 visible text and tool calls go to **`.local_db/step-journal/<date>.jsonl`**
 (kept 7 days): read it to learn WHY a run did something, instead of guessing.
