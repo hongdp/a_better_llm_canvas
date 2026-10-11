@@ -274,8 +274,7 @@
        {
         "id": "o",
         "title": "大纲",
-        "content": "<p>outline</p>",
-        "summary": "dragon king villain arc"
+        "content": "<p>outline</p>"
        },
        {
         "id": "c1",
@@ -285,8 +284,7 @@
        {
         "id": "c2",
         "title": "第二章",
-        "content": "<p>two</p>",
-        "summary": "龙王 出场"
+        "content": "<p>two</p>"
        },
        {
         "id": "c3",
@@ -303,8 +301,7 @@
        {
         "id": "c5",
         "title": "Notes",
-        "content": "<p>n</p>",
-        "summary": "dragon dragon king"
+        "content": "<p>n</p>"
        }
       ],
       "activeDocumentId": "c2"
@@ -341,8 +338,7 @@
        {
         "id": "o",
         "title": "大纲",
-        "content": "<p>outline</p>",
-        "summary": "dragon king villain arc"
+        "content": "<p>outline</p>"
        },
        {
         "id": "c1",
@@ -352,8 +348,7 @@
        {
         "id": "c2",
         "title": "第二章",
-        "content": "<p>two</p>",
-        "summary": "龙王 出场"
+        "content": "<p>two</p>"
        },
        {
         "id": "c3",
@@ -370,8 +365,7 @@
        {
         "id": "c5",
         "title": "Notes",
-        "content": "<p>n</p>",
-        "summary": "dragon dragon king"
+        "content": "<p>n</p>"
        }
       ],
       "activeDocumentId": "c1",
@@ -399,11 +393,11 @@
      ],
      "droppedForBudget": [],
      "scores": {
-      "o": 60,
+      "o": 40,
       "c2": 40,
       "c3": 110,
       "c4": 30,
-      "c5": 80
+      "c5": 60
      },
      "estimatedChars": 18
     }
@@ -417,8 +411,7 @@
        {
         "id": "o",
         "title": "大纲",
-        "content": "<p>outline</p>",
-        "summary": "dragon king villain arc"
+        "content": "<p>outline</p>"
        },
        {
         "id": "c1",
@@ -428,8 +421,7 @@
        {
         "id": "c2",
         "title": "第二章",
-        "content": "<p>two</p>",
-        "summary": "龙王 出场"
+        "content": "<p>two</p>"
        },
        {
         "id": "c3",
@@ -446,8 +438,7 @@
        {
         "id": "c5",
         "title": "Notes",
-        "content": "<p>n</p>",
-        "summary": "dragon dragon king"
+        "content": "<p>n</p>"
        }
       ],
       "activeDocumentId": null
@@ -477,8 +468,7 @@
        {
         "id": "o",
         "title": "大纲",
-        "content": "<p>outline</p>",
-        "summary": "dragon king villain arc"
+        "content": "<p>outline</p>"
        },
        {
         "id": "c1",
@@ -488,8 +478,7 @@
        {
         "id": "c2",
         "title": "第二章",
-        "content": "<p>two</p>",
-        "summary": "龙王 出场"
+        "content": "<p>two</p>"
        },
        {
         "id": "c3",
@@ -506,8 +495,7 @@
        {
         "id": "c5",
         "title": "Notes",
-        "content": "<p>n</p>",
-        "summary": "dragon dragon king"
+        "content": "<p>n</p>"
        }
       ],
       "activeDocumentId": "c2"
@@ -523,11 +511,11 @@
       "c1"
      ],
      "scores": {
-      "o": 10,
+      "o": 0,
       "c1": 40,
       "c3": 150,
       "c4": 0,
-      "c5": 10
+      "c5": 0
      },
      "estimatedChars": 0
     }
@@ -547,8 +535,7 @@
        {
         "id": "o",
         "title": "大纲",
-        "content": "<p>outline</p>",
-        "summary": "dragon king villain arc"
+        "content": "<p>outline</p>"
        },
        {
         "id": "c1",
@@ -558,8 +545,7 @@
        {
         "id": "c2",
         "title": "第二章",
-        "content": "<p>two</p>",
-        "summary": "龙王 出场"
+        "content": "<p>two</p>"
        },
        {
         "id": "c3",
@@ -576,8 +562,7 @@
        {
         "id": "c5",
         "title": "Notes",
-        "content": "<p>n</p>",
-        "summary": "dragon dragon king"
+        "content": "<p>n</p>"
        }
       ],
       "activeDocumentId": "c2"
@@ -591,22 +576,22 @@
      "attachedIds": [
       "c1",
       "o",
-      "c5",
-      "c4"
+      "c4",
+      "c5"
      ],
      "autoIds": [
       "c1",
       "o",
-      "c5",
-      "c4"
+      "c4",
+      "c5"
      ],
      "droppedForBudget": [],
      "scores": {
-      "o": 10,
+      "o": 0,
       "c1": 40,
       "c3": 150,
       "c4": 0,
-      "c5": 10
+      "c5": 0
      },
      "estimatedChars": 20
     }
@@ -620,8 +605,7 @@
        {
         "id": "o",
         "title": "大纲",
-        "content": "<p>outline</p>",
-        "summary": "dragon king villain arc"
+        "content": "<p>outline</p>"
        },
        {
         "id": "c1",
@@ -631,8 +615,7 @@
        {
         "id": "c2",
         "title": "第二章",
-        "content": "<p>two</p>",
-        "summary": "龙王 出场"
+        "content": "<p>two</p>"
        },
        {
         "id": "c3",
@@ -649,8 +632,7 @@
        {
         "id": "c5",
         "title": "Notes",
-        "content": "<p>n</p>",
-        "summary": "dragon dragon king"
+        "content": "<p>n</p>"
        }
       ],
       "activeDocumentId": "c5",

@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, FileText, Pin } from 'lucide-react'
+import { Plus, Trash2, BookOpen, ChevronLeft, Upload, ShieldAlert, Book, Library, RefreshCw, X, Check, GripVertical, ChevronUp, ChevronDown, Globe, Pin } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { markdownToHtml, txtToHtml, sanitizeHtml, splitHtmlToChapters, splitMarkdownToChapters, splitTxtToChapters } from '../utils/convert'
 import { ImportUrlModal } from './ImportUrlModal'
@@ -39,13 +39,6 @@ export const ChaptersSidebar: React.FC = () => {
     setDocumentPinned,
     isStreaming
   } = useAppStore()
-
-  /**
-   * Chapters whose summary is expanded. Until now the summaries were written,
-   * synced, injected into every prompt — and visible nowhere, so their quality
-   * could not be judged at all.
-   */
-  const [expandedSummaries, setExpandedSummaries] = useState<Set<string>>(new Set())
 
   const [showReplaceConfirm, setShowReplaceConfirm] = useState(false)
   const [pendingChapters, setPendingChapters] = useState<{ title: string; content: string }[]>([])
@@ -401,21 +394,6 @@ export const ChaptersSidebar: React.FC = () => {
                 onClick={(e) => e.stopPropagation()}
                 onDragStart={(e) => e.stopPropagation()}
               >
-                {doc.summary && (
-                  <button
-                    onClick={() => setExpandedSummaries(prev => {
-                      const next = new Set(prev)
-                      if (next.has(doc.id)) next.delete(doc.id); else next.add(doc.id)
-                      return next
-                    })}
-                    className="btn-icon chapter-action-btn"
-                    title={expandedSummaries.has(doc.id) ? t.sidebar.hideSummary : t.sidebar.showSummary}
-                    type="button"
-                    style={{ padding: '0.15rem' }}
-                  >
-                    <FileText size={13} />
-                  </button>
-                )}
                 <button
                   onClick={() => setDocumentPinned(doc.id, !doc.pinned)}
                   className={`btn-icon chapter-action-btn${doc.pinned ? ' pinned' : ''}`}
@@ -461,27 +439,6 @@ export const ChaptersSidebar: React.FC = () => {
                   <Trash2 size={13} />
                 </button>
               </div>
-              {expandedSummaries.has(doc.id) && doc.summary && (
-                // What the assistant actually reads for this chapter, verbatim.
-                <div
-                  onClick={(e) => e.stopPropagation()}
-                  style={{
-                    margin: '0.35rem 0 0.15rem',
-                    padding: '0.5rem 0.6rem',
-                    borderRadius: '6px',
-                    backgroundColor: 'var(--bg-tertiary)',
-                    border: '1px solid var(--border-color)',
-                    fontSize: '0.72rem',
-                    lineHeight: 1.55,
-                    color: 'var(--text-muted)',
-                    whiteSpace: 'pre-wrap',
-                    maxHeight: '14rem',
-                    overflowY: 'auto'
-                  }}
-                >
-                  {doc.summary}
-                </div>
-              )}
             </div>
           )
         })}

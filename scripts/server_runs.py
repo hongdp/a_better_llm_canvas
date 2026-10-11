@@ -298,7 +298,7 @@ class ServerPorts:
             if cached is None or cached["revision"] != meta["revision"]:
                 cached = {"revision": meta["revision"], "content": load_document_content(self.username, self.book_id, meta["id"])}
                 self._contents[meta["id"]] = cached
-            out.append({"id": meta["id"], "title": meta["title"], "content": cached["content"], "summary": meta.get("summary"),
+            out.append({"id": meta["id"], "title": meta["title"], "content": cached["content"],
                         "updatedAt": meta.get("updated_at"), "revision": meta["revision"], "loaded": True,
                         "pinned": bool(meta.get("pinned"))})
         return out

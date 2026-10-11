@@ -71,7 +71,7 @@ def select_reference_chapters(inp: Dict, options: Optional[Dict] = None) -> Dict
         if doc["id"] not in ledger_ids and doc["id"] in model_read:
             score += SCORE_READ_BY_MODEL
         if keywords:
-            digest = f"{doc['title']}\n{doc.get('summary') or ''}".lower()
+            digest = doc["title"].lower()  # titles only: chapter summaries are no longer used
             hits = sum(1 for kw in keywords if kw in digest)
             score += min(SCORE_KEYWORD_MAX, hits * SCORE_PER_KEYWORD_HIT)
         scores[doc["id"]] = score

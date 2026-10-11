@@ -40,4 +40,3 @@ export function savePersistedSize(key: string, value: number, bounds: SizeBounds
 
 export const CHAT_WIDTH = { key: 'web_canvas_chat_width', fallback: 380, bounds: { min: 280, max: 600 } }
 export const SIDEBAR_WIDTH = { key: 'web_canvas_chapters_width', fallback: 240, bounds: { min: 200, max: 420 } }
-export const OVERVIEW_HEIGHT = { key: 'web_canvas_overview_height', fallback: 320, bounds: { min: 160, max: 720 } }

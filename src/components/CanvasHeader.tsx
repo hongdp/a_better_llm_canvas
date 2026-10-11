@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { History, Cloud, CloudOff, CloudUpload, Wand2, RefreshCw, Save, Download, BookOpen, LayoutList, Sparkles } from 'lucide-react'
+import { History, Cloud, CloudOff, CloudUpload, Wand2, RefreshCw, Save, Download, BookOpen, Sparkles } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import type { CanvasDocument } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
@@ -15,8 +15,6 @@ interface CanvasHeaderProps {
   isHistoryOpen: boolean
   setIsHistoryOpen: (open: boolean) => void
   onOpenImageGen: (selectedText: string) => void
-  isOverviewOpen: boolean
-  setIsOverviewOpen: (open: boolean) => void
 }
 
 /**
@@ -32,8 +30,6 @@ export function CanvasHeader({
   forceSave,
   triggerUnsaved,
   isHistoryOpen,
-  isOverviewOpen,
-  setIsOverviewOpen,
   setIsHistoryOpen,
   onOpenImageGen
 }: CanvasHeaderProps) {
@@ -160,16 +156,6 @@ export function CanvasHeader({
           ) : (
             <Cloud size={18} />
           )}
-        </button>
-
-        <button
-          onClick={() => setIsOverviewOpen(!isOverviewOpen)}
-          className={`btn-icon ${isOverviewOpen ? 'active' : ''}`}
-          title={t.overview.toggle}
-          type="button"
-          style={{ color: isOverviewOpen ? 'var(--accent)' : 'inherit' }}
-        >
-          <LayoutList size={18} />
         </button>
 
         <button

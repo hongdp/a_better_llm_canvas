@@ -124,16 +124,7 @@ export const en = {
     answer: 'Answer',
     answerPlaceholder: 'Or type your own answer…'
   },
-  overview: {
-    title: 'Book overview — {count} chapters',
-    close: 'Close overview',
-    notSummarized: 'Not summarized yet — click the sparkles to generate.',
-    dragToResize: 'Drag to resize',
-    toggle: 'Book overview (all chapter summaries)'
-  },
   sidebar: {
-    showSummary: 'Show the summary the assistant reads',
-    hideSummary: 'Hide summary',
     collapse: 'Collapse Sidebar',
     expand: 'Expand Sidebar',
     untitledBook: 'Untitled Book',

@@ -131,7 +131,7 @@ export function agentRules(protocol: 'tools' | 'markup', continueAfterWrites: bo
   const recheck = `- Before writing a chapter, decide whether you need to look again at what it depends on — its outline entry, the source passages, earlier chapters. Re-read only what you need (a paragraph range, or grep), best in the reply that writes the chapter before it.
 - If the outline no longer fits what has been written or what the user has asked for, you may update the outline chapter before going on; say in your reply what you changed and why. Ask the user before restructuring the plan.`
   return `WORKING ACROSS THE BOOK:
-- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read — or grep the book when no title or summary says where something is. Do not guess at a chapter you have not read. Several look-ups in one reply are fine: their results come back together.
+- The CHAPTER INDEX in the user message lists every chapter by number. Decide from it what you need, and read it with read — or grep the book when no title says where something is. Do not guess at a chapter you have not read. Several look-ups in one reply are fine: their results come back together.
 - ${DISCIPLINE}
 - ${PLAN_AND_ASK}
 - ${REMINDERS_NOTE}

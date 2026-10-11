@@ -1,14 +1,15 @@
-import { htmlToPlainText } from './llmContext'
 import { tokensToChars } from './contextWindow'
 
 /**
- * Chapter index ("Layer 0") helpers: give the LLM whole-book awareness by
- * always sending a compact list of every chapter (title + short summary),
- * while full chapter text is attached separately on demand.
+ * The CHAPTER INDEX: every chapter of the book by number and title, which one
+ * is open, and what the model has seen of each (freshness markers, D8). Built
+ * from the chapter list on every request, so it is never stale.
  *
- * Mirrors the skill pattern from agentic frameworks: the index line is the
- * chapter's metadata (always in context); the full text is its body (loaded
- * when needed). See docs/features/smart_context_selection.md.
+ * It no longer carries a per-chapter summary or digest (2026-10-11): their
+ * generation was removed on 2026-08-29, the stored summaries went stale as
+ * chapters changed, and three had been copied onto another book's chapter of
+ * the same id. The model reads or greps a chapter when it needs its text, and
+ * `list` gives each chapter's size.
  */
 
 /** Minimal document shape the index helpers need. */
@@ -16,40 +17,8 @@ export interface IndexableDoc {
   id: string
   title: string
   content: string
-  summary?: string
-  summaryContentHash?: string
 }
 
-/** Max characters of a chapter's digest line inside the index block. */
-const INDEX_DIGEST_MAX_CHARS = 400
-/** Above this chapter count, digests are clamped harder to bound index size. */
-const LARGE_BOOK_CHAPTER_THRESHOLD = 40
-const LARGE_BOOK_DIGEST_MAX_CHARS = 150
-/** Fallback digest length when a chapter has no generated summary yet. */
-const FALLBACK_DIGEST_CHARS = 300
-/**
- * One-line digest of a chapter for the index: the generated summary when
- * present (even if slightly stale — staleness is tolerated by design), else
- * the first chars of the plain text. Newlines are flattened so each chapter
- * stays a single readable entry.
- */
-export function getChapterDigest(doc: IndexableDoc, maxChars: number = INDEX_DIGEST_MAX_CHARS): string {
-  const source = doc.summary?.trim()
-    ? doc.summary
-    : htmlToPlainText(doc.content).slice(0, FALLBACK_DIGEST_CHARS)
-  const flattened = source.replace(/\s*\n\s*/g, ' ').trim()
-  if (flattened.length <= maxChars) return flattened
-  return `${flattened.slice(0, maxChars)}…`
-}
-
-/**
- * Build the CHAPTER INDEX block sent with every request in a multi-chapter
- * book. Returns '' for single-document books, where an index says nothing.
- *
- * Lives in the dynamic context (final user message), NOT the system prompt:
- * the index churns whenever a summary regenerates, and the system prompt's
- * byte-stability is what provider prompt caching depends on.
- */
 /** Options for the agentic loop (agentic_chat_loop.md D2, D6, D8). */
 export interface ChapterIndexOptions {
   /** The model can write any chapter, so the active line must not say otherwise. */
@@ -58,16 +27,17 @@ export interface ChapterIndexOptions {
   markers?: Record<string, string>
 }
 
+/**
+ * Build the CHAPTER INDEX block sent with every request in a multi-chapter
+ * book. Returns '' for single-document books, where an index says nothing.
+ * It lives in the dynamic context (final user message), not the system prompt.
+ */
 export function buildChapterIndex(
   documents: IndexableDoc[],
   activeDocumentId: string | null,
   options: ChapterIndexOptions = {}
 ): string {
   if (documents.length < 2) return ''
-  const digestMax = documents.length > LARGE_BOOK_CHAPTER_THRESHOLD
-    ? LARGE_BOOK_DIGEST_MAX_CHARS
-    : INDEX_DIGEST_MAX_CHARS
-
   const lines = documents.map((doc, idx) => {
     const active = doc.id === activeDocumentId
     const marker = active
@@ -76,15 +46,7 @@ export function buildChapterIndex(
         : ' [ACTIVE — this is the document you can edit]'
       : ''
     const freshness = options.markers?.[doc.id] ? ` [${options.markers[doc.id]}]` : ''
-    let digest = ''
-    if (!active) {
-      const text = getChapterDigest(doc, digestMax)
-      // A chapter with no summary yet and no loaded text has nothing to show
-      // but its title; say so, so the model knows the title is all it has
-      // and reads or searches instead of guessing (D6).
-      digest = text ? ` — ${text}` : options.agentTools ? ' — (not summarized yet)' : ' — '
-    }
-    return `${idx + 1}. "${doc.title}"${marker}${freshness}${digest}`
+    return `${idx + 1}. "${doc.title}"${marker}${freshness}`
   })
 
   return `CHAPTER INDEX (all chapters in this book; full text NOT included unless it appears in REFERENCED DOCUMENT CONTEXTS or is the active document):

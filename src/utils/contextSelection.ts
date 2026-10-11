@@ -14,7 +14,6 @@ export interface SelectableDoc {
   id: string
   title: string
   content: string
-  summary?: string
   contentLoaded?: boolean
 }
 
@@ -172,7 +171,8 @@ export function selectReferenceChapters(
     if (!ledgerIds.includes(doc.id) && previousAttachedIds.includes(doc.id)) score += SCORE_PREVIOUS_TURN
     if (!ledgerIds.includes(doc.id) && modelReadIds.includes(doc.id)) score += SCORE_READ_BY_MODEL
     if (keywords.length > 0) {
-      const digest = `${doc.title}\n${doc.summary ?? ''}`.toLowerCase()
+      // Titles only: chapter summaries are no longer used (chapterIndex.ts).
+      const digest = doc.title.toLowerCase()
       let hits = 0
       for (const kw of keywords) {
         if (digest.includes(kw)) hits++

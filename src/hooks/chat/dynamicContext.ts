@@ -34,7 +34,6 @@ export interface RenderableDoc {
   id: string
   title: string
   content: string
-  summary?: string
 }
 
 export interface DynamicContextOptions {
@@ -137,7 +136,7 @@ export function buildLedgerMessages(
  * final user message, after the history.
  *
  * The chapter index lives here rather than in the ledger by decision: it moves
- * whenever any chapter's title or background-refreshed summary moves, and it
+ * whenever a chapter is added, renamed, opened or read, and it
  * is a few hundred bytes against the ledger's tens of thousands — cheap to
  * re-send, expensive to let invalidate a cached prefix.
  *

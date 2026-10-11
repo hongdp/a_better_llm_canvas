@@ -4,7 +4,6 @@ import { ChatPanel } from './components/ChatPanel'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { AppHeader } from './components/AppHeader'
 import { CanvasHeader } from './components/CanvasHeader'
-import { BookOverviewDrawer } from './components/BookOverviewDrawer'
 import { CHAT_WIDTH, loadPersistedSize, savePersistedSize } from './utils/layoutPrefs'
 import { CanvasFooter } from './components/CanvasFooter'
 import { VersionHistorySidebar } from './components/VersionHistorySidebar'
@@ -59,7 +58,6 @@ function App() {
   const [chatWidth, setChatWidth] = useState(() =>
     loadPersistedSize(CHAT_WIDTH.key, CHAT_WIDTH.fallback, CHAT_WIDTH.bounds))
   const [isResizing, setIsResizing] = useState(false)
-  const [isOverviewOpen, setIsOverviewOpen] = useState(false)
   const [isSettingsOpen, setIsSettingsOpen] = useState(false)
   const [isHistoryOpen, setIsHistoryOpen] = useState(false)
   const [imageGenInitialPrompt, setImageGenInitialPrompt] = useState('')
@@ -504,13 +502,7 @@ function App() {
                 isHistoryOpen={isHistoryOpen}
                 setIsHistoryOpen={setIsHistoryOpen}
                 onOpenImageGen={handleOpenImageGen}
-                isOverviewOpen={isOverviewOpen}
-                setIsOverviewOpen={setIsOverviewOpen}
               />
-
-              {isOverviewOpen && (
-                <BookOverviewDrawer layoutMode={layoutMode} onClose={() => setIsOverviewOpen(false)} />
-              )}
 
               {syncNotice && (
                 <div className="diff-review-banner sync-notice-banner" role="status">

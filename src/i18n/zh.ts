@@ -126,16 +126,7 @@ export const zh: TranslationDictionary = {
     answer: '回答',
     answerPlaceholder: '或者输入你自己的回答…'
   },
-  overview: {
-    title: '全书总览——共 {count} 章',
-    close: '关闭总览',
-    notSummarized: '尚未生成摘要——点击 ✨ 生成。',
-    dragToResize: '拖动调整高度',
-    toggle: '全书总览（所有章节摘要）'
-  },
   sidebar: {
-    showSummary: '查看助手读到的摘要',
-    hideSummary: '收起摘要',
     collapse: '收起侧边栏',
     expand: '展开侧边栏',
     untitledBook: '未命名书籍',

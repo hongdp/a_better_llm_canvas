@@ -12,7 +12,7 @@ const run = async (r: ToolResult | Promise<ToolResult>) => r
 const book = () => fakeContext('<p>start</p>', {
   chapters: [
     { id: 'doc-2', title: '人物表', content: '<p>主角：阿青。</p>' },
-    { id: 'doc-3', title: '故事线', content: '<p>大纲：第一章，阿青离开村子。</p>', summary: '全书分章计划' }
+    { id: 'doc-3', title: '故事线', content: '<p>大纲：第一章，阿青离开村子。</p>' }
   ]
 })
 
@@ -232,7 +232,7 @@ describe('list_chapters', () => {
     expect(r.content).toContain('1. "Chapter 1"')
     expect(r.content).toContain('open in the editor')
     expect(r.content).toContain('changed this turn')
-    expect(r.content).toContain('全书分章计划')
+    expect(r.content).toContain('3. "故事线" (1 paragraphs')
   })
 
   // 2026-10-06: grok announced "人物卡单独成章" and called this 13 times; the

@@ -125,7 +125,6 @@ export interface BookChapter {
   id: string
   title: string
   content: string
-  summary?: string
   /** False while a server book's content has not arrived ('' is then not "empty"). */
   loaded?: boolean
 }
