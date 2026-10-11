@@ -695,6 +695,20 @@ function alignSelectionBlocks(base: string, search: string, replace: string): Ed
   return BLOCK_START_RE.test(replace) ? null : { search, replace }
 }
 
+/**
+ * The rewrite without the line breaks that only lay out its tag.
+ *
+ * Problem: models write `<selection_replace>\n…text…\n</selection_replace>`.
+ *   Placed inside a paragraph, each of those breaks became a space —
+ *   "蜷得发白。 那根才进了一半多" — and the model then spent four steps
+ *   failing to remove them (2026-10-11; also "只管往前顶。 我翻身压上她").
+ * Fix: a run of whitespace at either end that contains a line break is
+ *   layout, and goes. A plain space at an end is kept: it can be the text's.
+ */
+export function trimTagLayout(text: string): string {
+  return text.replace(/^[ \t]*\r?\n\s*/, '').replace(/\s*\r?\n[ \t]*$/, '')
+}
+
 export const replaceSelectionTool = defineTool<{ html: string }>({
   ...schemaOf('replace_selection'),
   kind: 'write',
@@ -706,11 +720,11 @@ export const replaceSelectionTool = defineTool<{ html: string }>({
   parse: raw => ({ html: htmlArg(raw) }),
   preview: (text, ctx) => {
     const partial = partialStringArgument(text, 'html')
-    if (partial !== null) ctx.editor.previewSelection(trimIncompleteHtmlTail(partial))
+    if (partial !== null) ctx.editor.previewSelection(trimIncompleteHtmlTail(partial).replace(/^[ \t]*\r?\n\s*/, ''))
   },
   execute: ({ html }, ctx): ToolResult => {
     ctx.run.selectionAttempted = true
-    const cleaned = stripIncompleteEndTag(html)
+    const cleaned = trimTagLayout(stripIncompleteEndTag(html))
     if (!cleaned.trim()) {
       return { ok: false, content: 'replace_selection had an empty html argument; nothing was written.', trace: '⚠️ selection rewrite: empty', effects: { producedNothing: true } }
     }

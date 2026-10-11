@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { stripDiffMarkup, diffHtml } from '../../utils/diff'
-import { updateDocumentTool, editDocumentTool, replaceSelectionTool, previewRewrite, renameChapterTool, similarChapters } from '../tools/documentWrites'
+import { updateDocumentTool, editDocumentTool, replaceSelectionTool, previewRewrite, renameChapterTool, similarChapters, trimTagLayout } from '../tools/documentWrites'
 import { readChapterTool } from '../tools/bookReads'
 import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
@@ -595,5 +595,15 @@ describe('a SEARCH that was not found names the nearest paragraph (utils/editHin
     expect(out.ok).toBe(false)
     expect(out.content).toContain('Nearest: ¶1 — copy this HTML exactly: <p>她说：“我们走吧。”他没有回头。</p>')
     expect(out.content).toContain('curly quotes')
+  })
+})
+
+describe('trimTagLayout', () => {
+  it('drops the line breaks that lay out a <selection_replace> tag, and keeps a plain space', () => {
+    // Placed inside a paragraph, each break became a space ("蜷得发白。 那根…", 2026-10-11).
+    expect(trimTagLayout('\n脚趾在半空里蜷得发白。\n')).toBe('脚趾在半空里蜷得发白。')
+    expect(trimTagLayout('  \n  text \n ')).toBe('text')
+    expect(trimTagLayout(' text ')).toBe(' text ')
+    expect(trimTagLayout('\n<p>a</p>\n<p>b</p>\n')).toBe('<p>a</p>\n<p>b</p>')
   })
 })
