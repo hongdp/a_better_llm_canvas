@@ -756,6 +756,29 @@ describe('reasoning artifacts over the backend transport', () => {
     expect('signature' in rec.deltas[0]).toBe(false)
   })
 
+  it('keeps the afterText mark on a block that streamed after the text, and adds nothing to the others', async () => {
+    // The server replays such a block after the text; moved ahead of it,
+    // Anthropic calls the block modified (400, 2026-10-11).
+    const LATER: ThinkingBlock = { type: 'thinking', thinking: 'Again.', signature: 'S2', afterText: true }
+    routes = [
+      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-after' }) : undefined,
+      url => url.includes('/stream')
+        ? streamingResponse(sse([
+            { type: 'thinking_block', index: 0, block: THINKING },
+            { type: 'delta', text: 'Draft.', offset: 6 },
+            { type: 'thinking_block', index: 1, block: { ...LATER, afterText: true, stray: 'dropped' } },
+            { type: 'done', offset: 6 }
+          ]))
+        : undefined
+    ]
+    const rec = artifactRecorder()
+
+    await streamLLM(messages, { ...config, provider: 'anthropic' }, rec.callbacks)
+
+    expect(rec.blocks).toEqual([THINKING, LATER])
+    expect(Object.keys(rec.blocks[1])).toEqual(['type', 'thinking', 'signature', 'afterText'])
+  })
+
   it("carries a tool_call event's signature onto the delta, live and on replay", async () => {
     routes = [
       url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-sig' }) : undefined,

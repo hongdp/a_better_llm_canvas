@@ -663,9 +663,10 @@ def _assistant_tool_calls(message: Dict[str, Any]) -> List[Dict[str, Any]]:
 def _thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     """An assistant message's Anthropic reasoning blocks, copied verbatim.
 
-    Mirrors `anthropicThinkingPart` in providerMessages.ts: the known fields
-    only, values untouched — Anthropic checks each signature and rejects a
-    modified block (400). Anything malformed is skipped rather than sent.
+    The known fields only, values untouched — Anthropic checks each signature
+    and rejects a modified block (400). Anything malformed is skipped rather
+    than sent. `afterText` (ours, never sent) says the block streamed after the
+    reply's text began: it must be replayed after the text, not ahead of it.
     """
     if message.get("role") != "assistant":
         return []
@@ -676,14 +677,15 @@ def _thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     for block in raw:
         if not isinstance(block, dict):
             continue
+        after = {"afterText": True} if block.get("afterText") else {}
         if block.get("type") == "redacted_thinking" and isinstance(block.get("data"), str):
-            blocks.append({"type": "redacted_thinking", "data": block["data"]})
+            blocks.append({"type": "redacted_thinking", "data": block["data"], **after})
         elif (
             block.get("type") == "thinking"
             and isinstance(block.get("thinking"), str)
             and isinstance(block.get("signature"), str)
         ):
-            blocks.append({"type": "thinking", "thinking": block["thinking"], "signature": block["signature"]})
+            blocks.append({"type": "thinking", "thinking": block["thinking"], "signature": block["signature"], **after})
     return blocks
 
 
@@ -986,12 +988,17 @@ def build_anthropic_request(
         tool_calls = _assistant_tool_calls(message)
         thinking = _thinking_blocks(message)
         if tool_calls or thinking:
-            # Reasoning first, verbatim, then text, then tool_use — the order
-            # Anthropic streamed them in; manual extended thinking also needs
-            # the replayed turn to BEGIN with a thinking block.
-            blocks: List[Dict[str, Any]] = list(thinking)
+            # Verbatim, in the order Anthropic streamed them: reasoning, the
+            # text, then any reasoning that came after the text began (Claude
+            # 5.x thinks again mid-reply), then tool_use. A block moved ahead
+            # of the text is "modified" to the API — a 400 for the next step,
+            # seen 2026-10-11 as "messages.25.content.1". Manual extended
+            # thinking also needs the replayed turn to BEGIN with a block.
+            strip = lambda b: {k: v for k, v in b.items() if k != "afterText"}  # noqa: E731
+            blocks: List[Dict[str, Any]] = [strip(b) for b in thinking if not b.get("afterText")]
             if content:
                 blocks.append({"type": "text", "text": content})
+            blocks.extend(strip(b) for b in thinking if b.get("afterText"))
             for call in tool_calls:
                 blocks.append({
                     "type": "tool_use",
@@ -1473,13 +1480,16 @@ async def _stream_anthropic(
             block_index = parsed.get("index")
             if block_index is None:
                 block_index = 0
+            # A block that starts after the reply's text began is replayed after the text (build_anthropic_request).
+            after_text = {"afterText": True} if job.length > 0 else {}
             if event_type == "content_block_start" and block.get("type") == "redacted_thinking":
-                open_thinking[block_index] = {"type": "redacted_thinking", "data": str(block.get("data") or "")}
+                open_thinking[block_index] = {"type": "redacted_thinking", "data": str(block.get("data") or ""), **after_text}
             elif event_type == "content_block_start" and block.get("type") == "thinking":
                 open_thinking[block_index] = {
                     "type": "thinking",
                     "thinking": str(block.get("thinking") or ""),
                     "signature": str(block.get("signature") or ""),
+                    **after_text,
                 }
             elif event_type == "content_block_delta" and delta.get("type") == "thinking_delta":
                 building = open_thinking.get(block_index)

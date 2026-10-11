@@ -113,9 +113,14 @@ export interface LLMToolCall {
  * step is rejected (400). `thinking` may be '' (display: "omitted") — the
  * `signature` is what the API checks. `redacted_thinking` has no text at all.
  */
+/**
+ * An Anthropic reasoning block, replayed verbatim. `afterText` (ours, never
+ * sent) marks a block that streamed after the reply's text began: the server
+ * puts it back after the text, where Anthropic expects it.
+ */
 export type ThinkingBlock =
-  | { type: 'thinking'; thinking: string; signature: string }
-  | { type: 'redacted_thinking'; data: string }
+  | { type: 'thinking'; thinking: string; signature: string; afterText?: true }
+  | { type: 'redacted_thinking'; data: string; afterText?: true }
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant' | 'tool'

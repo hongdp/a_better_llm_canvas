@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Anthropic: a thinking block that came after the reply's text is replayed
+  after it; replaying it ahead made the next step a 400 ("cannot be
+  modified") on Claude 5.x.
 - The footer's chapter length is the count the assistant's tools report:
   characters of the text, punctuation included (it used to leave punctuation
   out, so the two numbers differed by ~15% on Chinese prose).
