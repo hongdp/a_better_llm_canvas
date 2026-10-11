@@ -2015,3 +2015,19 @@ def test_anthropic_thinking_after_the_text_is_replayed_after_the_text():
         {"type": "thinking", "thinking": "Again.", "signature": "S2"},
         {"type": "tool_use", "id": "toolu_1", "name": "plan", "input": {}},
     ]
+
+
+def test_a_lone_surrogate_from_the_browser_is_replaced_before_the_provider_request():
+    """A JS string cut in the middle of an emoji arrives as "\\ud83d"; encoding the request as UTF-8
+    then failed the whole step ('surrogates not allowed', 2026-10-11)."""
+    import json as _j
+    messages = _j.loads('[{"role":"user","content":"fire \\ud83d","images":["ok"]},{"role":"tool","content":"\\ud83d\\ude25 whole"}]')
+    counter = [0]
+    out = server_generation.scrub_surrogates(messages, counter)
+    assert out[0]["content"] == "fire �" and out[1]["content"] == "\U0001f625 whole" and counter == [1]
+    _j.dumps(out, ensure_ascii=False).encode("utf-8")  # what httpx does
+    job = _new_job()
+    captured = []
+    _run_job(job, "openai", {"apiKey": "sk", "model": "gpt-4o", "baseUrl": "https://llm.example.com/v1"},
+             messages, _FakeStreamResponse(lines=['data: {"choices":[{"delta":{"content":"ok"}}]}', "data: [DONE]"]), captured)
+    assert job.status == "done" and captured[0]["body"]["messages"][0]["content"] == "fire �"

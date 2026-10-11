@@ -13,8 +13,9 @@ import { defineTool } from '../registry'
 import type { ToolResult } from '../types'
 import { parseRange, type ParagraphRange } from './bookReads'
 import { WEB_READ_CAP, renderSearchResults, renderWebImages, renderWebPage } from '../../utils/webText'
+import { headChars } from '../../utils/unicode'
 
-const firstLine = (e: unknown) => String(e instanceof Error ? e.message : e).split('\n')[0].slice(0, 120)
+const firstLine = (e: unknown) => headChars(String(e instanceof Error ? e.message : e).split('\n')[0], 120)
 const message = (e: unknown) => String(e instanceof Error ? e.message : e)
 
 export const webSearchTool = defineTool<{ query: string; maxResults: number }>({

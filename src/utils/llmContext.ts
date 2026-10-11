@@ -1,4 +1,5 @@
 import type { LLMMessage } from '../types/llm'
+import { headChars } from './unicode'
 
 /**
  * Options for trimming chat history before sending it to an LLM.
@@ -227,5 +228,5 @@ export function buildAttachmentsLabel(
  */
 export function truncateWithNotice(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text
-  return `${text.slice(0, maxChars)}\n…[truncated: showing first ${maxChars} of ${text.length} characters]`
+  return `${headChars(text, maxChars)}\n…[truncated: showing first ${maxChars} of ${text.length} characters]`
 }

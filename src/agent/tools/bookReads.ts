@@ -13,6 +13,7 @@ import { citeChapter, resolveChapter, type ResolvedChapter } from '../chapters'
 import { chapterOutline, type ToolContext, type ToolResult } from '../types'
 import { stripDiffMarkup } from '../../utils/diff'
 import { htmlToPlainText } from '../../utils/llmContext'
+import { sliceChars } from '../../utils/unicode'
 import { hashContent } from '../../utils/contextLedger'
 import { chapterParagraphs, isPlainChapterHtml, numberedLine, searchableText } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
@@ -498,7 +499,7 @@ function searchPattern(pattern: string, scope: ScopedChapter[], ctx: ToolContext
         if (output === 'snippets' && hits.length < maxResults) {
           const from = Math.max(0, m.index - context)
           const to = Math.min(text.length, m.index + m[0].length + context)
-          hits.push(`${label} ¶${i + 1}: ${from > 0 ? '…' : ''}${text.slice(from, to).replace(/\s+/g, ' ')}${to < text.length ? '…' : ''}`)
+          hits.push(`${label} ¶${i + 1}: ${from > 0 ? '…' : ''}${sliceChars(text, from, to).replace(/\s+/g, ' ')}${to < text.length ? '…' : ''}`)
         }
       }
     })
@@ -521,7 +522,7 @@ function searchPattern(pattern: string, scope: ScopedChapter[], ctx: ToolContext
         if (output === 'snippets' && hits.length < maxResults) {
           const from = Math.max(0, m.index - context)
           const to = Math.min(text.length, m.index + m[0].length + context)
-          const snippet = text.slice(from, to).replace(/\s+/g, ' ')
+          const snippet = sliceChars(text, from, to).replace(/\s+/g, ' ')
           hits.push(`#${chapter.number} "${chapter.title}" ¶${para.number}: ${from > 0 ? '…' : ''}${snippet}${to < text.length ? '…' : ''}`)
         }
       }
