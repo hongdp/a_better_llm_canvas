@@ -13,6 +13,8 @@
 
 [Install](#install-from-a-release) · [How it works](#how-it-works) · [Features](#features) · [Develop](#develop-from-source) · [Docs](#documentation)
 
+<img src="docs/images/workspace.png" alt="The Web Canvas workspace: chapters sidebar, chat with the assistant, and the editor" width="900" />
+
 </div>
 
 ---
