@@ -488,15 +488,24 @@ def align_selection_blocks(base: str, search: str, replace: str) -> Optional[Dic
     return None if _BLOCK_START_RE.search(replace) else {"search": search, "replace": replace}
 
 
+_LEADING_LAYOUT_RE = re.compile(r"^[ \t]*\r?\n\s*")
+_TRAILING_LAYOUT_RE = re.compile(r"\s*\r?\n[ \t]*$")
+
+
+def trim_tag_layout(text: str) -> str:
+    """The rewrite without the line breaks that only lay out its tag (trimTagLayout in documentWrites.ts)."""
+    return _TRAILING_LAYOUT_RE.sub("", _LEADING_LAYOUT_RE.sub("", text, count=1), count=1)
+
+
 def _selection_preview(text: str, ctx: ToolContext) -> None:
     partial = partial_string_argument(text, "html")
     if partial is not None:
-        ctx.editor.preview_selection(trim_incomplete_html_tail(partial))
+        ctx.editor.preview_selection(_LEADING_LAYOUT_RE.sub("", trim_incomplete_html_tail(partial), count=1))
 
 
 async def _selection_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     ctx.run.selection_attempted = True
-    cleaned = strip_incomplete_end_tag(args["html"])
+    cleaned = trim_tag_layout(strip_incomplete_end_tag(args["html"]))
     if not js_trim(cleaned):
         return result(False, "replace_selection had an empty html argument; nothing was written.", "⚠️ selection rewrite: empty", effects={"producedNothing": True})
     target = resolve_target(None, ctx)

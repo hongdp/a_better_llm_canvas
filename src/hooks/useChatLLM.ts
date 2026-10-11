@@ -1019,7 +1019,8 @@ export function useChatLLM({
         // tool calls use — routed by the canvas's chapter attribute.
         if (isSelectionEdit) {
           toolCtx.selection.relocate()
-          const cleanedText = stripIncompleteEndTag(selectionReplaceText)
+          // The tag's own line break is layout, not text (trimTagLayout).
+          const cleanedText = stripIncompleteEndTag(selectionReplaceText).replace(/^[ \t]*\r?\n\s*/, '')
           if (cleanedText) toolCtx.editor.previewSelection(cleanedText)
         } else if (canvasText.trim()) {
           setSaveStatus('unsaved')

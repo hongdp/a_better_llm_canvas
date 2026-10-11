@@ -203,6 +203,22 @@ def test_new_chapter_title_of_an_unread_chapter_is_refused():
     assert fake.last_write("doc-2") is None and fake.created == 0
 
 
+def test_a_selection_rewrite_inside_a_paragraph_drops_the_tags_line_breaks():
+    # <selection_replace>\n…\n</selection_replace>: each break used to become a space.
+    fake = FakeBook("<p>她到了。脚趾抠进他的背。那根才进了一半。</p>", selected_text="脚趾抠进他的背。")
+    replace = DOCUMENT_WRITE_TOOLS[2]
+    out = run_tool(replace, {"html": "\n脚趾在半空里蜷得发白。\n"}, fake.ctx)
+    assert out["ok"], out
+    assert strip_diff_markup(fake.last_write("doc-1")) == "<p>她到了。脚趾在半空里蜷得发白。那根才进了一半。</p>"
+
+
+def test_trim_tag_layout_keeps_a_plain_space():
+    from wc_agent.tools.document_writes import trim_tag_layout
+    assert trim_tag_layout("\n  text\n") == "text"
+    assert trim_tag_layout(" text ") == " text "
+    assert trim_tag_layout("\n<p>a</p>\n<p>b</p>\n") == "<p>a</p>\n<p>b</p>"
+
+
 def test_selection_rewrite_is_placed_by_text_and_edits_beside_it_apply_locally():
     fake = FakeBook("<p>Keep this. Change this.</p><p>other</p>", selected_text="Change this.")
     _, edit, replace = DOCUMENT_WRITE_TOOLS
