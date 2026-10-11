@@ -1,197 +1,152 @@
 # Web Canvas (a_better_llm_canvas)
 
-An advanced, LLM-powered document editing workspace. Inspired by OpenAI Canvas, Web Canvas allows writers to draft, structure, and refine multi-chapter books or documentation side-by-side with an LLM chat assistant.
+A self-hosted writing workspace where an LLM works on your book with you.
+A rich-text editor (the canvas) sits beside a chat assistant that can read,
+search and edit every chapter of a multi-chapter book, with each change shown
+as a reviewable diff you can accept, reject or undo.
 
 ---
 
-## 🌟 Key Features
+## Features
 
-### 1. **Inline AI Document Editing & Diffs**
-*   **Selection-Aware Editing**: Highlight any section of your draft to request target modifications from the AI. Natively supports complex HTML (like images), serializing them to safe placeholders so the LLM doesn't overwrite your media.
-*   **Inline Diff View**: Real-time visual additions (green) and deletions (red) rendered directly in the editor. Accept or reject modifications on a per-change basis.
-*   **Quick Action Selection Bar**: Instant options to polish, shorten, extend, or explain selected texts.
-
-### 2. **Multi-User Secure Authentication**
-*   **Registration & Login**: Full user registration with password-strength checking.
-*   **Secure Session Management**: Protected using secure, `HttpOnly`, `SameSite=Lax` cookies.
-*   **CSRF Protection**: Form actions validated via Double Submit Cookie CSRF tokens.
-
-### 3. **User-Isolated Server Workspace Storage**
-*   **Workspace Sync**: Automatic or manual sync between local browser storage and server-side state.
-*   **Multi-User Isolation**: Automatic isolation of workspaces (saved securely on the server as `state_<username>.json`).
-*   **Automatic Conflict Resolution**: Interactive UI prompt to resolve content discrepancies between local browser cache and server storage.
-
-### 4. **Mobile & Cross-Device Optimization (M7)**
-*   **Adaptive Layouts**: Responsive grids dynamically rearranging panels for Desktop, Tablet-Square, Landscape, and Portrait aspect ratios.
-*   **Compact Mobile Header**: Hides heavy selectors (Model, System Prompts) on portrait mobile screens, consolidating those selections cleanly inside the Settings Modal.
-*   **Viewport Containment**: Enforced viewport rules (`100%` bounds) preventing layout overflows and elastic bounces across mobile browsers.
-
-### 5. **Multi-Provider LLM Integration**
-*   Robust support for leading LLM providers:
-    *   **Google Gemini** (Gemini 2.5 Flash / Pro, Gemini 1.5)
-    *   **OpenAI** (GPT-4o, GPT-4o-mini, o1)
-    *   **Anthropic Claude** (Claude 3.5 Sonnet / Haiku, Opus)
-    *   **Grok** by xAI (Grok-3, Grok-2)
-    *   **Ollama** (llama3, mistral, gemma2, phi3)
-    *   **RunPod** — a rented cloud GPU serving llama.cpp, in its own config slot so a local model and a pod stay configured at once
-*   Dynamic local model detection and custom base API URLs.
-
-### 6. **Multi-Document & Version History**
-*   **Chapters Manager**: Organize chapters or sections in a collapsible sidebar. Each chapter spins up an independent, isolated editing context to guarantee Undo/Redo histories never collide.
-*   **Auto-Save & Snapshotting**: Create manual or automated snapshots and restore past versions.
-*   **Import / Export**: Import from web URLs, `.md`, `.html`, or `.txt`. Features a resilient image extraction pipeline to securely scrape web content. Export documents to Markdown, raw HTML, or plain text.
+- **An assistant that works on the whole book.** Each chat turn is a run of
+  steps: the model reads chapters, greps the book, lists what is there, plans,
+  and writes, rewrites, renames or creates chapters through tools. It can ask
+  you a question mid-turn, and you can steer a running turn by sending another
+  message.
+- **Reviewable edits.** Changes stream into the editor as inline diffs (green
+  added, red removed), accepted or rejected per change. Every turn snapshots
+  the book first, and version history restores any earlier state.
+- **Turns that outlive the tab.** A turn can run on the server: close the
+  browser, reload, or open the book on another device and the run continues
+  and is rejoined. Long or looping runs pause instead of being killed.
+- **Context you control, cache-friendly by design.** Pin the chapters the
+  model should always have (an outline, a character sheet); it reads the rest
+  itself. Each request extends the previous one, so the provider's prompt
+  cache keeps hitting across turns, and history past the window is summarized
+  rather than cut.
+- **Reference files and the web.** Attach a long `.txt` (a source novel) to a
+  book and the model reads it in sections; with Playwright installed it can
+  also search and read web pages.
+- **Many providers.** Anthropic Claude, OpenAI, Google Gemini, xAI Grok, and
+  local or rented OpenAI-compatible servers (Ollama, llama.cpp, RunPod). Model
+  lists come from your key; reasoning effort is set per model.
+- **Per-user workspace.** Accounts with secure sessions; each user's books,
+  settings and keys are kept apart on the server. Each book remembers the
+  provider, model, effort and system-prompt preset it uses.
+- **Also:** selection-aware rewrites, a polish pass, import from URLs or
+  `.md` / `.html` / `.txt` files, export to Markdown / HTML / text, a roleplay
+  game-master mode, image generation, light and dark themes, and layouts for
+  desktop, tablet and phone (installable as a PWA).
 
 ---
 
-## 📜 License
+## Install from a release
 
-This project is licensed under the **GNU General Public License v3.0 (GPL-3.0)** - see the [LICENSE](LICENSE) file for details.
+A release archive contains the source and the built frontend, so it needs
+**Python 3.10+** only.
 
----
+1. Download `web_canvas-<version>.tar.gz` from
+   [Releases](https://github.com/hongdp/a_better_llm_canvas/releases) and
+   check it against the `.sha256` file:
+   ```bash
+   sha256sum -c web_canvas-1.0.0.tar.gz.sha256
+   tar xzf web_canvas-1.0.0.tar.gz && cd web_canvas-1.0.0
+   ```
+2. Install the server's dependencies (a virtual environment is recommended):
+   ```bash
+   python3 -m venv .venv && . .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+3. Start it. One process serves both the app and its API:
+   ```bash
+   python3 scripts/api_server.py --serve-dist --port 8080 --storage-dir ./storage
+   ```
+4. Open <http://localhost:8080>, create an account, and add your API keys
+   under **Settings**. Keys are stored with your account on the server.
 
-## 🚀 Getting Started
+Optional: for the model's web search and page reading,
+`pip install playwright && python -m playwright install chromium`.
 
-### 1. Prerequisites
-Ensure you have **Node.js** (v18+) and **npm** installed.
+### Using it from other devices
 
-### 2. Installation
-Clone the repository and install the dependencies:
+Sessions use `Secure` cookies, which browsers accept over HTTPS or on
+`localhost` only. To reach the server from another device, serve HTTPS:
+
 ```bash
-git clone git@github.com:hongdp/a_better_llm_canvas.git
+# A self-signed certificate: list every host name / IP you will browse to
+# under [alt] in certs/san.cnf first.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/server-key.pem \
+  -out certs/server-cert.pem -days 825 -config certs/san.cnf
+python3 scripts/api_server.py --serve-dist --host 0.0.0.0 --port 8443 \
+  --ssl-certfile certs/server-cert.pem --ssl-keyfile certs/server-key.pem
+```
+
+Or put the server behind a reverse proxy that terminates TLS. Running it as a
+service, logs, and troubleshooting: [docs/deployment.md](docs/deployment.md).
+
+### Server options
+
+| Option | Default | |
+|---|---|---|
+| `--storage-dir DIR` | `$VITE_STORAGE_DIR`, else `./storage` | Books, accounts and sessions |
+| `--host` / `--port` | `127.0.0.1` / `3000` | Where to listen |
+| `--serve-dist [DIR]` | off (`dist/` when given bare) | Also serve the built app |
+| `--ssl-certfile` / `--ssl-keyfile` | none | Serve HTTPS |
+
+The metadata database lives in `.local_db/metadata.db` in the install
+directory (keep it on a local disk, not a network mount).
+
+---
+
+## Develop from source
+
+Needs **Node.js 20+** and **Python 3.10+**.
+
+```bash
+git clone https://github.com/hongdp/a_better_llm_canvas.git
 cd a_better_llm_canvas
-npm install
+npm ci                                  # also wires the pre-push test hook
+pip install -r requirements-dev.txt
+cp .env.example .env                    # optional defaults (see below)
+npm run dev                             # API on :3000 + Vite on :5173 (proxying /api)
 ```
 
-### 3. Environment Setup
-Create a `.env` file in the root directory (you can copy `.env.example` as a starting template):
-```bash
-cp .env.example .env
-```
-Provide API keys for your preferred LLM providers (e.g., `VITE_GEMINI_API_KEY`, `VITE_OPENAI_API_KEY`).
+`npm run dev -- --storage-dir /path/to/storage --host` uses another storage
+directory and listens on the network. The Vite dev server uses HTTPS when
+`certs/dev-cert.pem` and `certs/dev-key.pem` exist, plain HTTP otherwise.
 
-### 4. Run the Development Server
-Run the application locally:
-```bash
-npm run dev
-```
+`.env` holds optional defaults for a new user's settings (`VITE_*_MODEL`,
+`VITE_*_BASE_URL`, `VITE_STORAGE_DIR`). A `VITE_*_API_KEY` there is built into
+the frontend bundle, so set keys in the app's Settings for anything that is
+not your own machine — and never build a bundle you share with keys in
+`.env` (`npm run release` refuses to).
 
-To run with a **custom server-side storage path** (for multi-user states and local persistence) and expose the port to your internal network, pass the storage directory parameters:
-```bash
-npm run dev -- --storage-dir /path/to/your/workspace --host
-```
-
-### 5. Build for Production
-Bundle the production client:
-```bash
-npm run build
-```
-
----
-
-## 🛠 Tech Stack
-*   **Frontend**: React (TypeScript), Vite, TailwindCSS (for modular helper utilities), Lucide React (Icons).
-*   **Editor Engine**: TipTap / ProseMirror.
-*   **State Management**: Zustand.
-*   **Server Middleware**: Express-style middleware configured inside `vite.config.ts` for database state persistence and authentication endpoints.
-
----
-
-## 🖥 Deployment (Systemd Services)
-
-The app runs as **two independent systemd user services** on the dev server, ensuring persistence across terminal closes, automatic crash recovery, and boot-time startup.
-
-### Architecture
-```
-┌─────────────────────────────────────────────┐
-│  systemd user services                      │
-│                                             │
-│  web-canvas-api   (Python, port 3000)       │
-│       ↕  Vite proxy (/api/* → :3000)        │
-│  web-canvas-vite  (Node/Vite, port 5173)    │
-│       ↕  HTTPS (self-signed cert, IP SAN)   │
-│  LAN clients (192.168.0.110:5173)           │
-└─────────────────────────────────────────────┘
-```
-
-### Service Files
-Located at `~/.config/systemd/user/`:
-
-| Service | File | Description |
-|---|---|---|
-| `web-canvas-api` | `web-canvas-api.service` | Python API server (storage, auth, books CRUD) |
-| `web-canvas-vite` | `web-canvas-vite.service` | Vite dev server (frontend, HMR, HTTPS, proxy) |
-
-### Common Commands
-
-```bash
-# Restart both services
-./restart.sh
-# — or manually:
-systemctl --user restart web-canvas-api web-canvas-vite
-
-# Check status
-systemctl --user status web-canvas-api web-canvas-vite
-
-# Stop both
-systemctl --user stop web-canvas-vite web-canvas-api
-
-# View logs (live)
-journalctl --user -u web-canvas-api -f
-journalctl --user -u web-canvas-vite -f
-# — or from log files:
-tail -f ~/Workspace/web_canvas/api-server.log
-tail -f ~/Workspace/web_canvas/vite-server.log
-
-# Reload after editing service files
-systemctl --user daemon-reload
-systemctl --user restart web-canvas-api web-canvas-vite
-
-# Enable auto-start on login
-systemctl --user enable web-canvas-api web-canvas-vite
-```
-
-### Key Config
-
-| Setting | Value |
+| Command | |
 |---|---|
-| Storage directory | `/mnt/smb_data/media/noval/workspace` |
-| API host/port | `127.0.0.1:3000` (localhost only) |
-| Vite host/port | `0.0.0.0:5173` (LAN-accessible, HTTPS) |
-| Python binary | `/home/hongdp/miniconda3/bin/python3` |
-| Restart policy | `Restart=always`, `RestartSec=2` |
+| `npm run dev` | Full stack with hot reload |
+| `npm test` | Frontend tests (Vitest) |
+| `cd scripts && python3 -m pytest -q` | Backend tests, incl. TypeScript↔Python parity |
+| `npm run lint` · `npm run build` | ESLint · type-check and build `dist/` |
+| `npm start` | Serve `dist/` and the API from one process |
+| `npm run release` | Build `release/web_canvas-<version>.tar.gz` from `HEAD` |
 
-### Environment / Secrets
-All API keys and the storage path are stored in `.env.local` (git-ignored):
-```bash
-# .env.local (example)
-VITE_STORAGE_DIR=/mnt/smb_data/media/noval/workspace
-VITE_GEMINI_API_KEY=your-key
-VITE_OPENAI_API_KEY=your-key
-VITE_GROK_API_KEY=your-key
-```
+Architecture, decisions and feature specs: [docs/design.md](docs/design.md)
+and [docs/features/](docs/features/). Working conventions:
+[CLAUDE.md](CLAUDE.md) and [SKILL.md](SKILL.md).
 
-### Troubleshooting
+---
 
-| Symptom | Check | Fix |
-|---|---|---|
-| "NetworkError" only in Firefox (Chrome works) | Cert's SAN must list the IP you browse to (see TLS Cert below) | Visit `https://<ip>:5173/` → "Advanced" → "Accept the Risk"; clear any stale cert exception for that IP |
-| "NetworkError when attempting to fetch resource" (all browsers) | `systemctl --user status web-canvas-api` | `systemctl --user restart web-canvas-api web-canvas-vite` |
-| Port 5173 in use | `fuser 5173/tcp` | `fuser -k 5173/tcp` then restart |
-| API won't start | `tail -30 api-server.log` | Check Python deps, storage mount |
-| Vite won't start | `tail -30 vite-server.log` | Check Node version, `npm install` |
-| SW SSL error on LAN | Expected — SW only registers on `localhost` | Use "Add to Home Screen" for PWA |
+## Tech stack
 
-### TLS Cert (local HTTPS)
+- **Frontend:** React 19, TypeScript, Vite, Zustand, TipTap / ProseMirror,
+  lucide-react; plain CSS with light and dark themes.
+- **Backend:** Python, FastAPI and Uvicorn; SQLite for metadata, files for
+  chapter content. Generation and agent turns run server-side and stream to
+  the browser over SSE.
 
-Vite serves HTTPS using a self-signed cert at `certs/dev-cert.pem` (private key `certs/dev-key.pem`, git-ignored). The cert's **Subject Alternative Name** must list every host/IP you browse to — as `IP Address` entries for IP access, not `DNS`. Chrome tolerates a mismatch after you click through, but Firefox then rejects same-origin `fetch()`/XHR with "NetworkError when attempting to fetch resource".
+---
 
-To add a new IP/hostname, edit the `[alt]` section of `certs/san.cnf` and regenerate:
-```bash
-openssl req -x509 -newkey rsa:2048 -nodes \
-  -keyout certs/dev-key.pem -out certs/dev-cert.pem \
-  -days 825 -config certs/san.cnf
-./restart.sh
-# verify:
-openssl x509 -in certs/dev-cert.pem -noout -ext subjectAltName
-```
-Browsers must re-accept the cert after regeneration.
+## License
+
+GNU General Public License v3.0 (GPL-3.0) — see [LICENSE](LICENSE).

@@ -18,6 +18,10 @@ parser = argparse.ArgumentParser(description="Web Canvas API Server")
 parser.add_argument("--storage-dir", default=os.getenv("VITE_STORAGE_DIR", "storage"), help="Path to storage folder")
 parser.add_argument("--host", default="127.0.0.1", help="Host IP to listen on")
 parser.add_argument("--port", type=int, default=3000, help="Port to listen on")
+parser.add_argument("--serve-dist", nargs="?", const="", default=None, metavar="DIR",
+                    help="Also serve the built frontend (default DIR: the repository's dist/), so one process is the whole app")
+parser.add_argument("--ssl-certfile", default=None, help="Serve HTTPS with this certificate (PEM)")
+parser.add_argument("--ssl-keyfile", default=None, help="…and this private key (PEM)")
 args, unknown = parser.parse_known_args()
 
 STORAGE_DIR = os.path.abspath(args.storage_dir)

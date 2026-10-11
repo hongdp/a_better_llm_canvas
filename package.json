@@ -1,13 +1,15 @@
 {
   "name": "web_canvas",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
   "license": "GPL-3.0",
   "scripts": {
     "dev": "node scripts/start-server.js",
     "dev:debug": "node scripts/start-server.js --mode debug",
     "build": "tsc -b && vite build",
+    "start": "python3 scripts/api_server.py --serve-dist",
+    "release": "bash scripts/release.sh",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",

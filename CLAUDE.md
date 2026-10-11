@@ -111,6 +111,8 @@ scripts/
   server_secrets.py     # Seals a live run's provider key at rest (run_secret.key beside the DB)
   server_attachments.py # A book's reference files: decode, store, /api/books/{id}/attachments*
   server_web.py         # Anonymous headless Chromium: /api/web/search, /api/web/read (no LAN)
+  server_static.py      # --serve-dist: the built frontend from the API process (installable release)
+  release.sh            # npm run release (see Releases below)
   wc_agent/             # Python port of src/agent: async run loop, registry, every tool
   test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
   test_agent.py  test_runs.py   # pytest — the tools/loop on a fake book; the engine on a scripted provider
@@ -133,6 +135,8 @@ npm run dev                 # start full stack (Python API + Vite) via scripts/s
 npm run dev -- --storage-dir <path> --host   # custom storage dir, expose to LAN
 npm run dev:debug           # Vite debug mode
 npm run build               # tsc -b && vite build (always run before considering work done)
+npm start                   # serve dist/ + the API from one process (api_server.py --serve-dist)
+npm run release             # release/web_canvas-<version>.tar.gz from HEAD: clean export, no .env, key scan
 npm run lint                # eslint .
 npm test                    # vitest run (the pre-push gate, with pytest after it)
 npm run test:watch          # vitest watch
@@ -528,6 +532,17 @@ localStorage pointer — a new device must land in the book last worked in.
   stray secrets/keys/local config.
 - **Do not commit unless the user explicitly asks.** Do not open a PR unless the
   user explicitly asks.
+
+## Releases
+
+`npm run release` builds `release/web_canvas-<version>.tar.gz` (source + the
+built `dist/`, so an install needs Python only) from a clean `git archive` of
+`HEAD`, with no `.env` and an emptied environment: Vite bakes every `VITE_*`
+it sees — including API keys — into the bundle, and the script refuses a
+bundle with anything key-shaped. Bump `package.json`'s `version`, add a
+`CHANGELOG.md` entry, merge, then build from the merged commit, tag it
+`v<version>` and attach the archive and its `.sha256` to a GitHub release.
+Install and operations docs: `README.md`, `docs/deployment.md`.
 
 ## Documentation Rules
 

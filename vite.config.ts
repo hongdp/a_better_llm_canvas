@@ -1,5 +1,5 @@
 import { defineConfig } from 'vite'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import react from '@vitejs/plugin-react'
 
@@ -15,6 +15,14 @@ const certPath = (f: string) => fileURLToPath(new URL(`./certs/${f}`, import.met
 // DNS) fixes it for both browsers. Regenerate with:
 //   openssl req -x509 -newkey rsa:2048 -nodes \
 //     -keyout certs/dev-key.pem -out certs/dev-cert.pem -days 825 -config certs/san.cnf
+//
+// Optional: a fresh clone has no cert (the key is git-ignored), and reading it
+// unconditionally made even `npm run build` fail there. Without one the dev
+// server runs plain HTTP, which works on localhost (browsers treat it as secure,
+// so the Secure session cookie is kept) but not from another device.
+const devHttps = existsSync(certPath('dev-key.pem')) && existsSync(certPath('dev-cert.pem'))
+  ? { key: readFileSync(certPath('dev-key.pem')), cert: readFileSync(certPath('dev-cert.pem')) }
+  : undefined
 
 export default defineConfig({
   plugins: [react()],
@@ -30,10 +38,7 @@ export default defineConfig({
     watch: {
       ignored: ['**/.claude/**']
     },
-    https: {
-      key: readFileSync(certPath('dev-key.pem')),
-      cert: readFileSync(certPath('dev-cert.pem')),
-    },
+    https: devHttps,
     proxy: {
       '/api': {
         target: 'http://127.0.0.1:3000',

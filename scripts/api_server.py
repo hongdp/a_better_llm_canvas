@@ -33,6 +33,7 @@ import server_config
 import server_auth
 import server_db
 import server_scrape
+import server_static
 import server_generation
 import server_events
 import server_runs
@@ -893,10 +894,18 @@ def _configure_app_logging() -> None:
     app_logger.propagate = False
 
 
+# The built frontend, last: its catch-all route must not shadow any API route.
+if server_config.args.serve_dist is not None:
+    server_static.mount_frontend(app, server_config.args.serve_dist or server_static.DEFAULT_DIST_DIR)
+
+
 if __name__ == "__main__":
     import uvicorn
     _configure_app_logging()
-    print(f"[Storage Server] Listening on http://{server_config.args.host}:{server_config.args.port}")
+    scheme = "https" if server_config.args.ssl_certfile else "http"
+    print(f"[Storage Server] Listening on {scheme}://{server_config.args.host}:{server_config.args.port}"
+          + (" (serving the app)" if server_config.args.serve_dist is not None else ""))
     print(f"[Storage Server] Storage directory: {server_config.STORAGE_DIR}")
     print(f"[Storage Server] Database: {server_db.DB_PATH}")
-    uvicorn.run(app, host=server_config.args.host, port=server_config.args.port, log_level="warning")
+    uvicorn.run(app, host=server_config.args.host, port=server_config.args.port, log_level="warning",
+                ssl_certfile=server_config.args.ssl_certfile, ssl_keyfile=server_config.args.ssl_keyfile)
