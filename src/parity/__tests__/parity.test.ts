@@ -22,7 +22,7 @@ import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, 
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
-import { replaceImagesWithPlaceholders, restoreImagePlaceholders, reinsertMissingImages, type ImagePlaceholderEntry } from '../../utils/imagePreservation'
+import { replaceImagesWithPlaceholders, restoreImagePlaceholders, registerImage, reinsertMissingImages, type ImagePlaceholderEntry } from '../../utils/imagePreservation'
 import {
   stripIncompleteEndTag, chapterAttribute, newChapterAttribute, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement,
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
@@ -53,7 +53,7 @@ import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longRea
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
 import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
-import { renderSearchResults, renderWebPage, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
+import { renderSearchResults, renderWebPage, renderWebImages, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
 import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
 import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
@@ -447,6 +447,10 @@ const MODULES: Module[] = [
     cases: {
       replace_images_with_placeholders: run((html: string, registry: ImagePlaceholderEntry[]) => ({ html: replaceImagesWithPlaceholders(html, registry), registry }), [
         [CHAPTER, []], ['<p><img src="a"><img src="b"><img src="a"></p>', [{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="b">' }]], ['<p>none</p>', []]
+      ]),
+      register_image: run((registry: ImagePlaceholderEntry[], dataUrl: string, alt: string) => ({ placeholder: registerImage(registry, dataUrl, alt), registry }), [
+        [[], 'data:image/jpeg;base64,AAAA', '封面 "A" <b>&'], [[{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="x">' }], 'data:image/jpeg;base64,BBBB', ''],
+        [[{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="data:image/jpeg;base64,BBBB">' }], 'data:image/jpeg;base64,BBBB', '']
       ]),
       restore_image_placeholders: run(restoreImagePlaceholders, [
         ['<p>{{IMAGE_PLACEHOLDER_0}} and {{ IMAGE_PLACEHOLDER_1 }} and {IMAGE-PLACEHOLDER-0} and image_placeholder 1</p>', [{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="a">' }, { placeholder: '{{IMAGE_PLACEHOLDER_1}}', tag: '<img src="b">' }]],
@@ -873,7 +877,14 @@ const MODULES: Module[] = [
         [{ url: 'https://x.org/a', title: '', paragraphs: ['# Head', 'one', 'two', 'three'] }, 2, 3, 20000],
         [{ url: 'https://x.org/a', title: 'A', paragraphs: ['# Head', 'one', 'two', 'three'] }, 1, null, 12],
         [{ url: 'https://x.org/a', title: 'A', paragraphs: [] }, 1, null, 100],
-        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['x'] }, 5, null, 100]
+        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['x'] }, 5, null, 100],
+        [{ url: 'https://x.org/p', title: 'P', paragraphs: ['intro', '[image 1: 封面]', 'body', '[image 2]'], images: [{ n: 1, url: 'https://x.org/1.jpg', alt: '封面' }, { n: 2, url: 'https://x.org/2.jpg', alt: '' }] }, 1, null, 20000],
+        [{ url: 'https://x.org/p', title: 'P', paragraphs: ['intro', '[image 1]'], images: [{ n: 1, url: 'https://x.org/1.jpg', alt: '' }] }, 1, 1, 20000]
+      ]),
+      render_web_images: run(renderWebImages, [
+        ['https://x.org/p', [{ n: 1, alt: '封面', bytes: 40_000, placeholder: '{{IMAGE_PLACEHOLDER_0}}' }, { n: 2, alt: '', bytes: 500, placeholder: '{{IMAGE_PLACEHOLDER_1}}' }, { n: 7, error: 'the page has no image 7 (it has 2)' }]],
+        ['https://x.org/p', [{ n: 3, error: 'HTTP 403' }]],
+        ['https://x.org/p', []]
       ])
     }
   },

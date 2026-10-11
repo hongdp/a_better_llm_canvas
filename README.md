@@ -85,7 +85,7 @@ for HTTPS, other devices and the server options.
 | **Editing** | Rich-text editor (TipTap) · inline diffs per change · selection-aware rewrites and quick actions · a polish pass · images in chapters · undo that always matches what is on screen |
 | **The agent** | Whole-book tools · paragraph-addressed edits with anchors · plans and questions · steerable mid-turn · pauses instead of dying · server-side runs that survive reloads |
 | **Context** | Pinned chapters · cache-continuous requests (transcripts replayed, context as differences, frozen ledger) · conversation summaries from the live conversation · reasoning carried across turns (Grok, OpenAI) |
-| **Sources** | Attach long `.txt` files (a source novel, notes) and read them in sections · web search and page reading through a headless browser (optional) · import from URLs, `.md`, `.html`, `.txt` |
+| **Sources** | Attach long `.txt` files (a source novel, notes) and read them in sections · web search, page reading and image fetching through a headless browser (optional) — "load this post into a chapter" is a chat request · import `.md`, `.html`, `.txt` files |
 | **Books** | Many books per account · chapters sidebar with drag ordering · version history and snapshots · export to Markdown / HTML / text · each book remembers its model, effort and prompt preset |
 | **Workspace** | Accounts with secure sessions · settings and keys per user · light and dark themes · desktop, tablet and phone layouts · installable PWA · a roleplay game-master mode · image generation |
 

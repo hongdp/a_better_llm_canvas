@@ -14,7 +14,6 @@ import {
   loadSavedTheme,
   loadSavedLanguage,
   loadSavedDebugMode,
-  loadSavedImageAnalysisPrompt,
   loadSavedPolishPrompt,
   savePolishPrompt,
   loadSavedImageGenConfig,
@@ -63,9 +62,6 @@ export interface SettingsSlice {
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
 
-  // Image analysis prompt
-  imageAnalysisPrompt: string
-  setImageAnalysisPrompt: (prompt: string) => void
   /** The polish pass's prompt (D9), user-editable; persisted locally. */
   polishPrompt: PolishPrompt
   setPolishPrompt: (prompt: PolishPrompt) => void
@@ -167,11 +163,6 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     setPolishPrompt: (prompt) => {
       savePolishPrompt(prompt)
       set({ polishPrompt: prompt })
-    },
-    imageAnalysisPrompt: loadSavedImageAnalysisPrompt(),
-    setImageAnalysisPrompt: (prompt) => {
-      localStorage.setItem('web_canvas_image_analysis_prompt', prompt)
-      set({ imageAnalysisPrompt: prompt })
     },
 
     // Image generation config

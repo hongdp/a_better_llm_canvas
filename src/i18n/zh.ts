@@ -145,7 +145,6 @@ export const zh: TranslationDictionary = {
     loadingBooks: '正在加载书籍...',
     deleteBook: '删除书籍',
     newChapter: '新章节',
-    importUrl: '从 URL 导入',
     importChapter: '导入章节',
     replaceAllChapters: '替换所有章节',
     confirmReplace: '确认替换',

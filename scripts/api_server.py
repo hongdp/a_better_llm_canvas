@@ -8,13 +8,12 @@ plain sibling imports work — the pytest flow does the same via sys.path.append
 - server_db        — SQLite path/pragmas, get_db, init_db (schema migrations)
 - server_content   — document/version content-file save/load/delete
 - server_auth      — sessions, CSRF middleware, /api/auth/* endpoints
-- server_scrape    — URL/HTML scraping pipeline, /api/import-url, /api/import-file
 - server_generation — resumable LLM generation jobs, /api/generate/*
 - server_runs       — server-side agent runs, /api/books/{id}/runs*
 - server_migration — one-time legacy state_*.json migration
 
 Note for tests: patch state on the module that OWNS it (server_db.DB_PATH,
-server_auth.SESSIONS_FILE, server_scrape.http_requests) — patching an alias
+server_auth.SESSIONS_FILE) — patching an alias
 re-exported here would not affect the executing code.
 """
 
@@ -32,7 +31,6 @@ from fastapi.middleware.cors import CORSMiddleware
 import server_config
 import server_auth
 import server_db
-import server_scrape
 import server_static
 import server_generation
 import server_events
@@ -114,10 +112,9 @@ app.add_middleware(
 init_db()
 migrate_legacy_files()
 
-# CSRF middleware + auth (/api/auth/*) and scraping (/api/import-*) routes
+# CSRF middleware + auth (/api/auth/*) routes
 app.middleware("http")(server_auth.csrf_middleware)
 app.include_router(server_auth.router)
-app.include_router(server_scrape.router)
 # Resumable server-side generation jobs (/api/generate/*)
 app.include_router(server_generation.router)
 # Server-side agent runs (/api/books/{id}/runs*, backend_authority.md §4.3)

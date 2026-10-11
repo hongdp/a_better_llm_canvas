@@ -23,6 +23,18 @@ def replace_images_with_placeholders(html: str, registry: List[Dict[str, str]]) 
     return out
 
 
+def register_image(registry: List[Dict[str, str]], data_url: str, alt: str = "") -> str:
+    """Port of registerImage: an image the run fetched (web_images) joins the registry as a tag; its placeholder is returned."""
+    safe_alt = (alt or "").replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+    tag = f'<img src="{data_url}" alt="{safe_alt}">' if safe_alt else f'<img src="{data_url}">'
+    existing = next((e for e in registry if e["tag"] == tag), None)
+    if existing is not None:
+        return existing["placeholder"]
+    entry = {"placeholder": f"{{{{IMAGE_PLACEHOLDER_{len(registry)}}}}}", "tag": tag}
+    registry.append(entry)
+    return entry["placeholder"]
+
+
 def restore_image_placeholders(html: str, registry: List[Dict[str, str]]) -> str:
     def lookup(m):
         index = int(m.group(1))

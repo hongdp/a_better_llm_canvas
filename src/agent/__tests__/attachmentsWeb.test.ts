@@ -8,9 +8,9 @@ import { describe, it, expect } from 'vitest'
 import { readChapterTool, grepTool, readTool as analyzeBookTool, listTool } from '../tools/bookReads'
 import { ATTACHMENT_CHUNK_CHARS } from '../tools/analyzeBook'
 import { planAnalysis, ANALYZE_CONFIRM_TOKENS } from '../analyzeBook'
-import { webSearchTool, webReadTool } from '../tools/web'
+import { webSearchTool, webReadTool, webImagesTool } from '../tools/web'
 import { ATTACHMENT_RUN_READ_CAP, attachmentParagraphs, attachmentSections, type AttachmentMeta } from '../../utils/attachments'
-import { UNTRUSTED_WEB_NOTE, type WebPage, type WebSearchResult } from '../../utils/webText'
+import { UNTRUSTED_WEB_NOTE, type WebPage, type WebSearchResult, type WebImageResult } from '../../utils/webText'
 import type { ToolContext, ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 
@@ -232,9 +232,35 @@ describe('web tools', () => {
         calls.push(['read', url])
         if (fail) throw new Error(fail)
         return { url, title: '页面', paragraphs: Array.from({ length: 30 }, (_, i) => `第${i + 1}段`) }
+      },
+      images: async (url: string, numbers: number[]): Promise<WebImageResult[]> => {
+        calls.push(['images', url, numbers])
+        if (fail) throw new Error(fail)
+        return numbers.map(n => n <= 2
+          ? { n, alt: n === 1 ? '封面' : '', dataUrl: `data:image/jpeg;base64,IMG${n}`, bytes: 40_000 * n }
+          : { n, error: `the page has no image ${n} (it has 2)` })
       }
     }
   }
+
+  // A page's images come into the book as placeholders the write turns into images (attachments_and_web.md §2).
+  it('web_images registers each fetched image and hands the model its placeholder', async () => {
+    const f = withNovel()
+    const web = fakeWeb()
+    f.ctx.web = web
+    const out = await exec(webImagesTool, { url: 'https://example.org/post', images: [1, 2, 2, 7] }, f.ctx)
+    expect(out.ok).toBe(true)
+    expect(web.calls[0]).toEqual(['images', 'https://example.org/post', [1, 2, 7]])
+    expect(f.registered).toEqual([{ dataUrl: 'data:image/jpeg;base64,IMG1', alt: '封面' }, { dataUrl: 'data:image/jpeg;base64,IMG2', alt: '' }])
+    expect(out.content).toContain('2 of 3 fetched')
+    expect(out.content).toContain('image 1 → {{IMAGE_PLACEHOLDER_0}} (封面), 39 KB')
+    expect(out.content).toContain('image 2 → {{IMAGE_PLACEHOLDER_1}}, 78 KB')
+    expect(out.content).toContain('image 7: not fetched — the page has no image 7')
+    expect(out.content).toContain('<p>{{IMAGE_PLACEHOLDER_0}}</p>')
+    expect(out.trace).toBe('🖼️ fetched 2/3 images from example.org')
+    expect(await exec(webImagesTool, { url: 'https://example.org/post', images: [] }, f.ctx)).toMatchObject({ ok: false, content: expect.stringContaining('images is empty') })
+    expect(await exec(webImagesTool, { url: 'https://example.org/post', images: ['a'] }, f.ctx)).toMatchObject({ ok: false })
+  })
 
   it('are offered only with a browser', () => {
     const f = withNovel()

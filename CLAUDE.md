@@ -61,8 +61,6 @@ src/
     editorExtensions.ts   # TipTap extensions (DiffAddition/Deletion, CustomImage, ...)
     AppHeader.tsx  CanvasHeader.tsx  CanvasFooter.tsx  VersionHistorySidebar.tsx
     ChatPanel.tsx  ChaptersSidebar.tsx  SettingsModal.tsx  AuthForm.tsx
-    ImportUrlModal.tsx    # Import state machine (Phase 0/1/2); steps in import/
-    import/               # Import modal step components
     ImageGenerationModal.tsx  imageGen/   # Image-gen modal + step components
     RoleplaySetupModal.tsx  RoleplayBanner.tsx
     AttachmentsSection.tsx  # The book's reference files in the sidebar (A1, A2…; add / remove)
@@ -83,14 +81,12 @@ src/
                           #   chapter; rename_chapter in documentWrites), tools/analyzeBook (read
                           #   with a task: batches outside the conversation), tools/polishChapter, tools/plan (checklist),
                           #   tools/askUser (a question the turn waits on), tools/web
-                          #   (web_search / web_read through the server's browser)
+                          #   (web_search / web_read / web_images through the server's browser)
   services/
     llm.ts                # streamLLM: every generation is a backend job (no in-browser transport)
     serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
     attachments.ts        # Attachment + web API client; an attachment's text fetched once per tab
     imageGen.ts  imageGenModels.ts
-    import/               # Import pipeline: parser, contentBuilder, imageProcessor,
-                          #   scraper, prompts, responseParsers, visionFilter, errors
   utils/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
     llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
@@ -140,7 +136,7 @@ npm run release             # release/web_canvas-<version>.tar.gz from HEAD: cle
 npm run lint                # eslint .
 npm test                    # vitest run (the pre-push gate, with pytest after it)
 npm run test:watch          # vitest watch
-npm run test:coverage       # coverage over utils, services/import, store/persistence
+npm run test:coverage       # coverage over utils, store/persistence
 npm run parity:fixtures     # regenerate scripts/parity/fixtures from the TypeScript
 (cd scripts && python3 -m pytest -q)   # backend tests incl. the Python parity suite
 ./start.sh [--daemon|--stop|--status|--logs]  # convenience wrapper around npm run dev
@@ -433,6 +429,10 @@ text into the conversation whole — one read is capped at 20,000 characters
 and one turn at 100,000 (`ATTACHMENT_RUN_READ_CAP`). `web_search` /
 `web_read` run in a fresh, cookie-less headless Chromium on the API server
 that refuses private addresses; a bot check is reported, never bypassed.
+`web_images` brings a page's pictures into the book: fetched and shrunk on
+the server, registered in the run's image registry, placed by the model as
+`{{IMAGE_PLACEHOLDER_n}}` tokens. The Import-from-URL modal and its pipeline
+are gone (2026-10-11): loading a page into a chapter is a chat request.
 
 ### Backend API (`scripts/api_server.py`)
 FastAPI with cookie-based sessions (HttpOnly, SameSite=Lax) + CSRF
@@ -440,8 +440,7 @@ double-submit tokens. Per-user storage isolated as `state_<username>.json` /
 per-book files; metadata indexed in a local SQLite DB at `.local_db/metadata.db`
 (DELETE journal mode, kept off network mounts). Endpoints are under `/api/*`:
 auth (`/api/auth/*`), books (`/api/books`, `/api/books/{id}`), nested documents
-and versions, and scraping (`/api/import-url`,
-`/api/import-file`). **Performance**: list endpoints extract metadata by regex
+and versions. **Performance**: list endpoints extract metadata by regex
 over the first few KB of large JSON files rather than full-parsing; the save
 endpoint reorders JSON keys so `bookTitle`/`updatedAt` stay within that window.
 **Chapter revisions** (`docs/features/backend_authority.md` §4.1): every
@@ -500,7 +499,7 @@ localStorage pointer — a new device must land in the book last worked in.
   such tests in `.ts` (no JSX) so the runner's `include` pattern picks them up.
 - Tests must be deterministic and isolated; reset store/mocks/storage in
   `beforeEach`/`afterEach`; mock only at boundaries (`fetch`, LLM calls, timers).
-- Coverage is collected over `src/utils/**`, `src/services/import/**`, and
+- Coverage is collected over `src/utils/**` and
   `src/store/persistence.ts`. Extend the `include` list in `vitest.config.ts`
   when adding non-trivial pure-logic modules elsewhere.
 - **Timeouts**: `testTimeout` (5s) catches a test awaiting a promise that never

@@ -9,7 +9,7 @@
  * through the ports in {@link ToolContext}, so they run under a fake in tests.
  */
 import type { AttachmentMeta } from '../utils/attachments'
-import type { WebPage, WebSearchResult } from '../utils/webText'
+import type { WebPage, WebSearchResult, WebImageResult } from '../utils/webText'
 import type { JsonSchema, ToolSpec } from '../utils/documentTools'
 import type { AppState } from '../store/types'
 import type { AgentTouchedChapter } from '../types/chat'
@@ -176,6 +176,8 @@ export interface UiPort {
 export interface ImagePort {
   preserve(html: string): string
   restore(html: string): string
+  /** An image the run fetched (web_images): registered as a tag, its placeholder returned for the model's write. */
+  register(dataUrl: string, alt?: string): string
 }
 
 /**
@@ -378,6 +380,8 @@ export interface AttachmentsPort {
 export interface WebPort {
   search(query: string, maxResults: number): Promise<WebSearchResult[]>
   read(url: string): Promise<WebPage>
+  /** The page's images by number (its web_read markers), fetched and shrunk on the server as data URLs. */
+  images(url: string, numbers: number[]): Promise<WebImageResult[]>
 }
 
 export interface ToolContext {

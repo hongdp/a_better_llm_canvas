@@ -156,7 +156,7 @@ These rules govern how unit tests are written and run in this project. The stack
 - Assert on **observable outcomes**, not internal call sequencing, unless the interaction itself is the contract (e.g. a provider adapter must send a specific request shape).
 
 **Coverage Expectations**
-- Coverage is collected (v8) over `src/utils/**`, `src/services/import/**`, and `src/store/persistence.ts`. New pure-logic modules in these areas are expected to keep coverage high — when adding a non-trivial module elsewhere that warrants coverage, extend the `include` list in [vitest.config.ts](file:///home/hongdp/Workspace/web_canvas/vitest.config.ts).
+- Coverage is collected (v8) over `src/utils/**` and `src/store/persistence.ts`. New pure-logic modules in these areas are expected to keep coverage high — when adding a non-trivial module elsewhere that warrants coverage, extend the `include` list in [vitest.config.ts](file:///home/hongdp/Workspace/web_canvas/vitest.config.ts).
 - A new feature is not "done" until `npm test` passes locally and the new logic is covered. This is part of the §4.1 pre-commit verification and the §4.2 review checklist.
 
 ### 2.6 Persistent Data Versioning
@@ -367,33 +367,3 @@ curl -k https://localhost:5173 -o /dev/null -w "%{http_code}"
 
 ---
 
-## 6. LLM Image Analysis
-
-### 6.1 Where the Image Prompt Lives
-The LLM vision prompt for image analysis during URL import is in:
-```
-src/components/ImportUrlModal.tsx
-```
-Function: `analyzeImages` → inner `processImage` → `systemPrompt` constant (~line 1041).
-
-### 6.2 Prompt Structure & Intent
-The system prompt instructs the LLM to describe images in Chinese JSON format:
-```json
-{ "descriptions": [{ "index": <N>, "description": "..." }] }
-```
-
-**Current focus priority (in order):**
-1. **People** — appearance (age, hair, skin, build), body parts (hands, arms, legs, feet, shoulders, neck, waist), clothing/style/accessories, posture & position in frame, facial expressions
-2. **Multiple people** — describe each individually + their spatial relationships
-3. **Scene/background** — brief setting and atmosphere
-
-**Description length:** 100–250 Chinese characters.
-
-### 6.3 Image Filtering Before LLM Call
-Images are filtered before being sent to the LLM:
-- Must be `image/jpeg`, `image/png`, `image/webp`, or `image/jpg` MIME type
-- Must be `≥ 1000` bytes of base64 data
-- Must be `≥ 512 total pixels` and neither dimension `< 20px`
-- Tiny images (e.g. 15×13 emoji/icon placeholders common on Chinese forums) are silently skipped with the label `（配图尺寸过小，已忽略分析）`
-
-**Concurrency:** Up to 10 images analyzed in parallel (`concurrencyLimit = 10`).
