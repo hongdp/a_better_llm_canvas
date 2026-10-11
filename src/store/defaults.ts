@@ -17,11 +17,15 @@ export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     apiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
     model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.8-flash',
     baseUrl: import.meta.env.VITE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
+    // The lowest threshold Gemini offers (user decision, 2026-10-11): this is
+    // a fiction-writing tool and the writer, not the provider's classifier,
+    // decides what their book contains. Each category stays adjustable in
+    // Settings; a saved config keeps whatever the user set there.
     geminiSafetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
+      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
     ],
     maxOutputTokens: 16384,
   },
