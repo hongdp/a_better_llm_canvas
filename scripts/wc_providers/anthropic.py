@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from wc_text.reasoning_effort import anthropic_thinking, resolve_reasoning_effort
@@ -15,6 +16,41 @@ if TYPE_CHECKING:
     from server_generation import GenerationJob
 
 logger = logging.getLogger("web_canvas.generation")
+
+# Cache diagnostics (platform.claude.com/docs/en/build-with-claude/cache-diagnostics):
+# the request carries the previous response's id and the API says where the two
+# requests diverged — model, system, tools or an earlier message — on the
+# `message_start` event. It stores hashes and token counts only, nothing of the
+# text; ZDR-eligible. Keyed by the conversation, like the local prefix log:
+# `prefix:` says where OUR request changed, `cache diagnostics:` says what the
+# API's cache saw. The Console's Caching page fills in from the same data.
+DIAGNOSTICS_MEMORY = 64
+_last_message_ids: "OrderedDict[str, str]" = OrderedDict()
+
+
+def _diagnostics_key(config: Dict[str, Any]) -> Optional[str]:
+    conversation = config.get("conversationId")
+    return f"anthropic:{conversation}" if conversation else None
+
+
+def remember_message_id(key: str, message_id: str) -> None:
+    _last_message_ids[key] = message_id
+    _last_message_ids.move_to_end(key)
+    while len(_last_message_ids) > DIAGNOSTICS_MEMORY:
+        _last_message_ids.popitem(last=False)
+
+
+def describe_diagnostics(diagnostics: Any) -> str:
+    """One line for the log, in the response's own words."""
+    if diagnostics is None:
+        return "no divergence from the previous request"
+    reason = (diagnostics or {}).get("cache_miss_reason") if isinstance(diagnostics, dict) else None
+    if not reason:
+        return "comparison still pending"
+    kind = reason.get("type") or "unknown"
+    missed = reason.get("cache_missed_input_tokens")
+    return f"{kind}" + (f" (≈{missed} input tokens after the divergence)" if isinstance(missed, int) else "")
+
 
 #: Tokens added to max_tokens for an adaptive-thinking model's reasoning (see build_anthropic_request).
 ADAPTIVE_THINKING_HEADROOM = 32768
@@ -165,6 +201,12 @@ def build_anthropic_request(
             target["content"][-1]["cache_control"] = {"type": "ephemeral"}
             cache_breakpoints += 1
 
+    # Opt in to cache diagnostics for every request of a conversation: null on
+    # its first, the previous response's id after that (see DIAGNOSTICS_MEMORY).
+    key = _diagnostics_key(config)
+    if key:
+        body["diagnostics"] = {"previous_message_id": _last_message_ids.get(key)}
+
     url = f"{(config.get('baseUrl') or '').rstrip('/')}/messages"
     headers = {
         "Content-Type": "application/json",
@@ -220,6 +262,17 @@ async def _stream_anthropic(
             event_type = parsed.get("type")
             delta = parsed.get("delta") or {}
             block = parsed.get("content_block") or {}
+            if event_type == "message_start":
+                started = parsed.get("message") or {}
+                key = _diagnostics_key(config)
+                if key and isinstance(started.get("id"), str):
+                    remember_message_id(key, started["id"])
+                if key and "diagnostics" in body:
+                    if body["diagnostics"].get("previous_message_id") is None:
+                        logger.info("Job %s cache diagnostics: opted in (first request of this conversation)", job.job_id)
+                    else:
+                        line = describe_diagnostics(started.get("diagnostics"))
+                        (logger.warning if "_changed" in line else logger.info)("Job %s cache diagnostics: %s", job.job_id, line)
             # Tool calls are keyed by the event's content-block index, as
             # streamAnthropic does (`json.index ?? 0`): a text block before
             # the call makes it index 1, and that is fine — it is a key.
