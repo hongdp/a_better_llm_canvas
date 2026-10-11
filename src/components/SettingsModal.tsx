@@ -26,6 +26,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     availableGrokModels,
     availableAnthropicModels,
     availableOpenAIModels,
+    availableMoonshotModels,
     availableOllamaModels,
     availableRunpodModels,
     customSystemPrompts,
@@ -72,7 +73,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     anthropic: 'Anthropic',
     ollama: 'Ollama (Local)',
     runpod: 'RunPod (Cloud GPU)',
-    grok: 'Grok (xAI)'
+    grok: 'Grok (xAI)',
+    moonshot: 'Kimi (Moonshot)'
   }
 
   return (
@@ -99,14 +101,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
         {/* Selection Tabs */}
         <div className="settings-tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-          {(['gemini', 'openai', 'anthropic', 'ollama', 'runpod', 'grok'] as const).map((prov) => (
+          {(['gemini', 'openai', 'anthropic', 'ollama', 'runpod', 'grok', 'moonshot'] as const).map((prov) => (
             <button
               key={prov}
               onClick={() => setActiveTab(prov)}
               type="button"
               className={`settings-tab-btn ${activeTab === prov ? 'active' : ''}`}
             >
-              {labels[prov].replace(' (Local)', '').replace(' (xAI)', '')}
+              {labels[prov].replace(' (Local)', '').replace(' (xAI)', '').replace(' (Moonshot)', '')}
             </button>
           ))}
         </div>
@@ -193,6 +195,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     ? availableAnthropicModels
                     : activeTab === 'openai' && availableOpenAIModels.length > 0
                     ? availableOpenAIModels
+                    : activeTab === 'moonshot' && availableMoonshotModels.length > 0
+                    ? availableMoonshotModels
                     : activeTab === 'ollama' && availableOllamaModels && availableOllamaModels.length > 0
                     ? availableOllamaModels
                     : activeTab === 'runpod' && availableRunpodModels && availableRunpodModels.length > 0
@@ -221,6 +225,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     activeTab === 'openai' ? 'Enter OpenAI API Key (sk-...)...' :
                     activeTab === 'anthropic' ? 'Enter Anthropic API Key (sk-ant-...)...' :
                     activeTab === 'grok' ? 'Enter Grok API Key (xai-...)...' :
+                    activeTab === 'moonshot' ? 'Enter Moonshot API Key (sk-...)...' :
                     activeTab === 'runpod' ? 'Leave as ollama-no-key unless the endpoint sets --api-key...' :
                     'Optional token for authenticated local proxies...'
                   }
@@ -241,6 +246,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                     activeTab === 'openai' ? 'e.g. https://api.openai.com/v1' :
                     activeTab === 'anthropic' ? 'e.g. https://api.anthropic.com/v1' :
                     activeTab === 'grok' ? 'e.g. https://api.x.ai/v1' :
+                    activeTab === 'moonshot' ? 'e.g. https://api.moonshot.ai/v1 (or https://api.moonshot.cn/v1)' :
                     activeTab === 'runpod' ? 'e.g. http://127.0.0.1:8100/v1 (tunnel) or https://<pod-id>-8000.proxy.runpod.net/v1' :
                     'e.g. http://localhost:11434/v1'
                   }
@@ -580,6 +586,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                         xAI Console
                       </a>
                       . The default base URL is <code>https://api.x.ai/v1</code>.
+                    </>
+                  )}
+                  {activeTab === 'moonshot' && (
+                    <>
+                      To get a Kimi API key, visit the{' '}
+                      <a
+                        href="https://platform.kimi.ai/"
+                        target="_blank"
+                        rel="noreferrer"
+                        style={{ color: 'var(--accent)', textDecoration: 'underline' }}
+                      >
+                        Kimi Open Platform
+                      </a>
+                      . The default base URL is <code>https://api.moonshot.ai/v1</code>; a China account uses <code>https://api.moonshot.cn/v1</code>.
                     </>
                   )}
                 </span>

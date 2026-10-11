@@ -1,6 +1,6 @@
 import type { ReasoningEffort } from '../utils/reasoningEffort'
 import type { DocumentProtocol } from '../utils/protocolChoice'
-export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'runpod' | 'grok'
+export type LLMProvider = 'openai' | 'gemini' | 'anthropic' | 'ollama' | 'runpod' | 'grok' | 'moonshot'
 
 export interface GeminiSafetySetting {
   category: string
@@ -248,5 +248,7 @@ export const PROVIDER_MODELS: Record<LLMProvider, string[]> = {
   // llama.cpp's router derives from the model directory names in
   // scripts/cloud_endpoint — a live listing replaces them.
   runpod: ['qwen3.8-IQ4_XS', 'qwen3.8-IQ3_XXS', 'qwen3.8-Q4_K_M'],
-  grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta']
+  grok: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
+  // Kimi (platform.kimi.ai, 2026-10-11). Shown until the key's own list arrives (/api/models).
+  moonshot: ['kimi-k2.6', 'kimi-k3', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed']
 }

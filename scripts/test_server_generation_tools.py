@@ -586,6 +586,56 @@ def test_openai_request_ignores_reasoning_artifacts():
     assert set(assistant["tool_calls"][0]) == {"id", "type", "function"}
 
 
+KIMI_REASONING = {"type": "thinking", "thinking": "第三章先读。", "signature": ""}
+
+
+def test_moonshot_request_sends_kimi_reasoning_fields_and_replays_reasoning_content():
+    history = _tool_history()
+    history[2]["thinking"] = [KIMI_REASONING]
+    # kimi-k3: this app's low unless chosen (Kimi's own default is max), no thinking field,
+    # the conversation pinned to its cache with a body field.
+    _, _, body = server_generation.build_openai_request(
+        {"model": "kimi-k3", "baseUrl": "https://api.moonshot.ai/v1", "apiKey": "k", "conversationId": "book-1"}, history, "moonshot",
+    )
+    assert body["reasoning_effort"] == "low" and "thinking" not in body and body["prompt_cache_key"] == "book-1"
+    assert body["messages"][2]["reasoning_content"] == "第三章先读。"
+    assert set(body["messages"][2]) == {"role", "reasoning_content", "content", "tool_calls"}
+    assert body["stream_options"] == {"include_usage": True}
+    _, _, xhigh = server_generation.build_openai_request(
+        {"model": "kimi-k3", "baseUrl": "https://api.moonshot.ai/v1", "apiKey": "k", "reasoningEffort": "xhigh"}, history, "moonshot",
+    )
+    assert xhigh["reasoning_effort"] == "max"
+    # kimi-k2.6: thinking kept across turns, no effort.
+    _, _, k26 = server_generation.build_openai_request(
+        {"model": "kimi-k2.6", "baseUrl": "https://api.moonshot.cn/v1", "apiKey": "k"}, history, "moonshot",
+    )
+    assert k26["thinking"] == {"type": "enabled", "keep": "all"} and "reasoning_effort" not in k26
+    # A plain assistant reply carries it too; other providers never see the field.
+    plain = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok", "thinking": [KIMI_REASONING]}, {"role": "user", "content": "go"}]
+    _, _, k3 = server_generation.build_openai_request({"model": "kimi-k3", "baseUrl": "https://api.moonshot.ai/v1", "apiKey": "k"}, plain, "moonshot")
+    assert k3["messages"][1] == {"role": "assistant", "reasoning_content": "第三章先读。", "content": "ok"}
+    _, _, grok = server_generation.build_openai_request({"model": "grok-4", "baseUrl": "https://api.x.ai/v1", "apiKey": "k"}, plain, "grok")
+    assert "reasoning_content" not in grok["messages"][1]
+
+
+def test_moonshot_stream_keeps_reasoning_content_as_one_thinking_block():
+    lines = [
+        _sse({"choices": [{"delta": {"reasoning_content": "第三章"}}]}),
+        _sse({"choices": [{"delta": {"reasoning_content": "先读。"}}]}),
+        _sse({"choices": [{"delta": {"content": "好。"}}]}),
+        _sse({"choices": [], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 8}}}),
+        "data: [DONE]",
+    ]
+    job, events = _run_job_watching("moonshot", {"model": "kimi-k3", "baseUrl": "https://api.moonshot.ai/v1", "apiKey": "k"}, _FakeStreamResponse(lines=lines))
+    assert job.buffer == "好。"
+    assert job.thinking_blocks == [{"type": "thinking", "thinking": "第三章先读。", "signature": ""}]
+    blocks = [e for e in events if e.get("type") == "thinking_block"]
+    assert blocks == [{"type": "thinking_block", "index": 0, "block": KIMI_REASONING}]
+    # The same deltas on another Chat Completions provider are shown live and not kept.
+    job2, _ = _run_job_watching("ollama", {"model": "qwen3", "baseUrl": "http://localhost:11434/v1", "apiKey": "ollama-no-key"}, _FakeStreamResponse(lines=lines))
+    assert job2.thinking_blocks == []
+
+
 def _anthropic_thinking_lines():
     return [
         _sse({"type": "message_start", "message": {"usage": {"input_tokens": 10, "output_tokens": 1}}}),

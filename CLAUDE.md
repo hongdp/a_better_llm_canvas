@@ -244,7 +244,15 @@ runs as a backend job (`/api/generate`, `scripts/server_generation.py`), which
 holds the ONE implementation of each provider's wire format — grok and
 OpenAI at api.openai.com on a **Responses API** (`uses_responses_api`; from
 gpt-5.4 on, Chat Completions refuses tools with reasoning), Ollama/llama.cpp
-and other OpenAI-compatible servers on Chat Completions, Gemini, Anthropic.
+and other OpenAI-compatible servers on Chat Completions, Gemini, Anthropic,
+and Moonshot's Kimi (`moonshot`, Chat Completions at api.moonshot.ai or .cn):
+kimi-k3 takes `reasoning_effort` low/high/max (this app sends low unless
+chosen; xhigh is sent as max), kimi-k2.6 gets `thinking: {enabled, keep:
+"all"}`, and every Kimi's `reasoning_content` is kept as the step's thinking
+block and sent back on the assistant message (`moonshotThinking` /
+`moonshot_thinking`, `_reasoning_content`): Kimi's docs call it required in
+a tool-calling loop (measured 2026-10-11: accepted without it too — replayed
+for the model's continuity, as the other providers' reasoning is).
 OpenAI's function tools are sent `strict: false` (strict, the default, makes
 the model fill every optional argument with an empty value). There is no
 in-browser transport: it was removed (2026-10-10) because login is required

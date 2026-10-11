@@ -41,6 +41,9 @@ export interface SettingsSlice {
   /** OpenAI's text models for the configured key (api.openai.com only), through /api/models. */
   availableOpenAIModels: string[]
   setAvailableOpenAIModels: (models: string[]) => void
+  /** Kimi models for the configured key (api.moonshot.ai / .cn), through /api/models. */
+  availableMoonshotModels: string[]
+  setAvailableMoonshotModels: (models: string[]) => void
   /**
    * Models reported by the configured Ollama-compatible endpoint. Discovered
    * rather than hardcoded: the endpoint may be Ollama itself or any
@@ -109,6 +112,7 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
     availableAnthropicModels: [],
     availableOpenAIModels: [],
+    availableMoonshotModels: [],
     availableOllamaModels: [],
     availableRunpodModels: [],
     setProvider: (provider) => {
@@ -127,6 +131,9 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     },
     setAvailableOpenAIModels: (models) => {
       set({ availableOpenAIModels: models })
+    },
+    setAvailableMoonshotModels: (models) => {
+      set({ availableMoonshotModels: models })
     },
 
     discoveredContextWindows: {},

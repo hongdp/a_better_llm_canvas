@@ -84,6 +84,16 @@ const PROFILES: Record<string, ProviderCacheProfile> = {
     cachedTokensPath: ['cachedContentTokenCount'],
     exclusiveCache: false,
     windowDiscovered: false
+  },
+  // Kimi: automatic, exact-prefix, reported like OpenAI's. The conversation is
+  // pinned with a `prompt_cache_key` in the body, not a header (the builder
+  // sets it). No long-context price line (platform.kimi.ai, 2026-10-11).
+  moonshot: {
+    mode: 'automatic',
+    maxBreakpoints: 0,
+    cachedTokensPath: ['prompt_tokens_details', 'cached_tokens'],
+    exclusiveCache: false,
+    windowDiscovered: false
   }
 }
 

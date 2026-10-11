@@ -76,7 +76,14 @@ const SUPPORT_TABLE: Record<string, ModelReasoningSupport[]> = {
   ],
   ollama: [],
   // llama.cpp takes --reasoning as a server flag, not a per-request field.
-  runpod: []
+  runpod: [],
+  // Kimi (platform.kimi.ai, 2026-10-11): kimi-k3 always reasons and takes
+  // reasoning_effort low / high / max (its own default is max — minutes of
+  // thinking on a chapter edit); xhigh is sent as max (moonshotThinking).
+  // kimi-k2.6 and k2.7-code take no effort: thinking is on or off.
+  moonshot: [
+    { match: /kimi-k3/i, levels: ['default', 'low', 'high', 'xhigh'] }
+  ]
 }
 
 /**
@@ -165,6 +172,23 @@ export function anthropicThinking(model: string, effort: Exclude<ReasoningEffort
   }
   const budget = Math.min(THINKING_BUDGET_TOKENS[effort], Math.floor(maxTokens / 2))
   return budget >= 1024 ? { thinking: { type: 'enabled', budget_tokens: budget } } : {}
+}
+
+/**
+ * Kimi's reasoning fields at a resolved level, merged into the Chat Completions
+ * body (server_generation.build_openai_request). Per platform.kimi.ai:
+ * kimi-k3 takes `reasoning_effort` low / high / max and no `thinking` field;
+ * kimi-k2.6 thinks by default and forgets its reasoning between turns unless
+ * `thinking.keep` is "all" — and the tool-calling loop needs it replayed, so
+ * it is always kept; kimi-k2.7-code is fixed to enabled / all and takes
+ * nothing. Every Kimi returns its reasoning as `reasoning_content`, which the
+ * next step's assistant message sends back.
+ */
+export function moonshotThinking(model: string, effort: Exclude<ReasoningEffort, 'default'> | null): Record<string, unknown> {
+  const name = model || ''
+  if (/kimi-k3/i.test(name)) return effort ? { reasoning_effort: effort === 'xhigh' ? 'max' : effort } : {}
+  if (/kimi-k2\.6/i.test(name)) return { thinking: { type: 'enabled', keep: 'all' } }
+  return {}
 }
 
 /**

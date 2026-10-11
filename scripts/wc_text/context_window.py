@@ -9,8 +9,9 @@ MODEL_CONTEXT_TOKENS = [
     ("claude-opus-4", 200_000), ("claude-sonnet-4", 200_000), ("claude-3", 200_000), ("claude-", 200_000),
     ("gemini-1.5-pro", 2_097_152), ("gemini-1.5", 1_048_576), ("gemini-2", 1_048_576), ("gemini-", 1_048_576),
     ("grok-4", 256_000), ("grok-3", 131_072), ("grok-", 131_072),
+    ("kimi-k3", 1_048_576), ("kimi-", 262_144),
 ]
-PROVIDER_FALLBACK_TOKENS = {"openai": 128_000, "anthropic": 200_000, "gemini": 1_048_576, "grok": 131_072, "ollama": 32_768}
+PROVIDER_FALLBACK_TOKENS = {"openai": 128_000, "anthropic": 200_000, "gemini": 1_048_576, "grok": 131_072, "moonshot": 262_144, "ollama": 32_768}
 DEFAULT_CONTEXT_TOKENS = 32_768
 MIN_HISTORY_CHARS = 4_000
 _CJK_RE = re.compile(r"[㐀-䶿一-鿿豈-﫿]")

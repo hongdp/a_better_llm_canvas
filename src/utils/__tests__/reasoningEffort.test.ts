@@ -4,8 +4,32 @@ import {
   supportsReasoningEffort,
   resolveReasoningEffort,
   reasoningBudgetTokens,
+  moonshotThinking,
   DEFAULT_REASONING_EFFORT
 } from '../reasoningEffort'
+
+describe('moonshot (Kimi)', () => {
+  it('offers kimi-k3 its three efforts and the others none', () => {
+    expect(supportedReasoningEfforts('moonshot', 'kimi-k3')).toEqual(['default', 'low', 'high', 'xhigh'])
+    expect(supportedReasoningEfforts('moonshot', 'kimi-k2.6')).toEqual(['default'])
+    expect(supportedReasoningEfforts('moonshot', 'kimi-k2.7-code')).toEqual(['default'])
+  })
+
+  it("sends kimi-k3 this app's low when nothing was chosen — its own default is max", () => {
+    expect(resolveReasoningEffort('moonshot', 'kimi-k3', undefined)).toBe('low')
+    expect(moonshotThinking('kimi-k3', 'low')).toEqual({ reasoning_effort: 'low' })
+    expect(moonshotThinking('kimi-k3', 'xhigh')).toEqual({ reasoning_effort: 'max' })
+    expect(moonshotThinking('kimi-k3', null)).toEqual({})
+    // medium is not a Kimi level: nothing is sent rather than a 400.
+    expect(resolveReasoningEffort('moonshot', 'kimi-k3', 'medium')).toBeNull()
+  })
+
+  it('keeps kimi-k2.6 thinking across turns and sends kimi-k2.7-code nothing', () => {
+    expect(moonshotThinking('kimi-k2.6', null)).toEqual({ thinking: { type: 'enabled', keep: 'all' } })
+    expect(moonshotThinking('kimi-k2.7-code', null)).toEqual({})
+    expect(moonshotThinking('moonshot-v1-8k', 'low')).toEqual({})
+  })
+})
 
 describe('supportedReasoningEfforts', () => {
   it('follows the provider docs per model family', () => {

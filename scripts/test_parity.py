@@ -205,6 +205,7 @@ FUNCTIONS = {
     ("reasoning_effort", "reasoning_budget_tokens"): reasoning_effort.reasoning_budget_tokens,
     ("reasoning_effort", "anthropic_thinking"): reasoning_effort.anthropic_thinking,
     ("reasoning_effort", "gemini_thinking"): reasoning_effort.gemini_thinking,
+    ("reasoning_effort", "moonshot_thinking"): reasoning_effort.moonshot_thinking,
     ("turn_transcripts", "plan_history_units"): turn_transcripts.plan_history_units,
     ("turn_transcripts", "transcript_weight"): turn_transcripts.transcript_weight,
     ("turn_transcripts", "summarizable_history"): turn_transcripts.summarizable_history,

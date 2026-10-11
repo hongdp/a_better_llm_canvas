@@ -62,7 +62,7 @@ from server_auth import get_authenticated_username
 # The parity-checked ports of src/utils/documentTools.ts: this module used to keep
 # its own copies, which no parity case covered (test audit, 2026-10-10).
 from wc_text.provider_profile import uses_responses_api
-from wc_text.reasoning_effort import anthropic_thinking, gemini_thinking, resolve_reasoning_effort
+from wc_text.reasoning_effort import anthropic_thinking, gemini_thinking, moonshot_thinking, resolve_reasoning_effort
 from wc_text.document_tools import from_openai_tools, to_anthropic_tools, to_gemini_tools
 from wc_text.retry_policy import (MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, parse_retry_after,
                                   retry_delay_ms, with_jitter)
@@ -166,7 +166,7 @@ IDLE_TIMEOUT_SECONDS = {"grok": 180.0}
 # failed after one is the loop, not a transient error.
 LOOP_CHECK_HEADERS = {"x-grok-doom-loop-check": "1024", "x-grok-exact-repetition-check": "64"}
 
-SUPPORTED_PROVIDERS = ("openai", "ollama", "runpod", "grok", "gemini", "anthropic")
+SUPPORTED_PROVIDERS = ("openai", "ollama", "runpod", "grok", "gemini", "anthropic", "moonshot")
 
 #: Hosts /api/models will query. Local model servers only — see the endpoint.
 LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1", "0.0.0.0"})
@@ -186,7 +186,8 @@ REMOTE_MODEL_HOST_SUFFIXES = (".proxy.runpod.net",)
 
 
 #: The non-local hosts /api/models will query, with the user's key (the official model lists).
-OFFICIAL_MODEL_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com", "gemini": "generativelanguage.googleapis.com"}
+OFFICIAL_MODEL_HOSTS = {"anthropic": ("api.anthropic.com",), "openai": ("api.openai.com",), "gemini": ("generativelanguage.googleapis.com",),
+                        "moonshot": ("api.moonshot.ai", "api.moonshot.cn")}
 _OPENAI_CHAT_MODEL_RE = re.compile(r"^(?:gpt-\d|o\d)")
 _GEMINI_TEXT_MODEL_RE = re.compile(r"^gemini-(?:[3-9]|\d\d|flash-latest|flash-lite-latest|pro-latest)")
 _GEMINI_NON_TEXT_RE = re.compile(r"tts|image|transcribe|robotics|computer-use|omni|customtools|banana")
@@ -689,6 +690,11 @@ def _thinking_blocks(message: Dict[str, Any]) -> List[Dict[str, Any]]:
     return blocks
 
 
+def _reasoning_content(message: Dict[str, Any]) -> str:
+    """The text of an assistant message's thinking blocks, for the providers that take it back as one field (Kimi)."""
+    return "".join(b["thinking"] for b in _thinking_blocks(message) if b.get("type") == "thinking")
+
+
 def _arguments_text(call: Dict[str, Any]) -> str:
     text = call.get("argumentsText")
     return text if isinstance(text, str) else ""
@@ -755,7 +761,7 @@ def build_openai_request(
     messages: List[Dict[str, Any]],
     provider: str = "openai",
 ) -> Tuple[str, Dict[str, str], Dict[str, Any]]:
-    """OpenAI-compatible request (openai / ollama / runpod / grok)."""
+    """OpenAI-compatible request (openai / ollama / runpod / grok / moonshot)."""
     api_key = config.get("apiKey") or ""
     base_url = (config.get("baseUrl") or "").rstrip("/")
 
@@ -781,9 +787,16 @@ def build_openai_request(
             })
             continue
         tool_calls = _assistant_tool_calls(message)
+        # Kimi returns its reasoning as `reasoning_content` and its docs want it
+        # back on the assistant message in a tool-calling loop (measured: the
+        # step is accepted without it too; replayed so the model keeps its
+        # plan, as every other provider's reasoning is). It rides in the
+        # message's thinking blocks.
+        reasoning = {"reasoning_content": _reasoning_content(message)} if provider == "moonshot" and _reasoning_content(message) else {}
         if tool_calls:
             openai_messages.append({
                 "role": "assistant",
+                **reasoning,
                 # A reply that only called tools has no text; the API's own
                 # replay of such a turn uses null, not "".
                 "content": content or None,
@@ -807,7 +820,7 @@ def build_openai_request(
                 parts.append({"type": "image_url", "image_url": {"url": img}})
             openai_messages.append({"role": message.get("role"), "content": parts})
         else:
-            openai_messages.append({"role": message.get("role"), "content": content})
+            openai_messages.append({"role": message.get("role"), **reasoning, "content": content})
 
     body: Dict[str, Any] = {
         "model": config.get("model"),
@@ -817,9 +830,17 @@ def build_openai_request(
     if config.get("maxOutputTokens"):
         body["max_tokens"] = config["maxOutputTokens"]
 
-    effort = _reasoning_effort(config)
-    if effort:
-        body["reasoning_effort"] = effort
+    if provider == "moonshot":
+        # Kimi's reasoning fields per model (wc_text.reasoning_effort.moonshot_thinking), the
+        # effort resolved here so kimi-k3 gets this app's low rather than its own max; and
+        # the conversation pinned to its cache (prompt_cache_key is a body field on Kimi).
+        body.update(moonshot_thinking(config.get("model") or "", resolve_reasoning_effort("moonshot", config.get("model") or "", config.get("reasoningEffort"))))
+        if config.get("conversationId"):
+            body["prompt_cache_key"] = str(config["conversationId"])
+    else:
+        effort = _reasoning_effort(config)
+        if effort:
+            body["reasoning_effort"] = effort
 
     # Tools come from the client already in OpenAI shape — the internal
     # representation, since four of five providers speak it natively.
@@ -1379,6 +1400,9 @@ async def _stream_openai(
         logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"{provider}:{config['conversationId']}", body))
 
     usage: Optional[Dict[str, Any]] = None
+    # Kimi's reasoning_content comes back on the next request (see
+    # build_openai_request), so the step keeps it as one thinking block.
+    kept_reasoning: List[str] = []
     async with _http_stream(url, headers, body) as response:
         if response.status_code >= 400:
             err = await _read_error_text(response)
@@ -1410,6 +1434,8 @@ async def _stream_openai(
                 reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                 if reasoning:
                     job.note_reasoning(reasoning)
+                    if provider == "moonshot":
+                        kept_reasoning.append(reasoning)
                 for tc in delta.get("tool_calls") or []:
                     fn = tc.get("function") or {}
                     job.note_tool_call(
@@ -1426,6 +1452,8 @@ async def _stream_openai(
                     "cachedPromptTokens": (u.get("prompt_tokens_details") or {}).get("cached_tokens") or 0,
                     "reasoningTokens": (u.get("completion_tokens_details") or {}).get("reasoning_tokens") or 0,
                 }
+    if kept_reasoning:
+        job.note_thinking_block({"type": "thinking", "thinking": "".join(kept_reasoning), "signature": ""})
     return usage
 
 
@@ -1665,7 +1693,7 @@ async def _dispatch_provider(
 ) -> Optional[Dict[str, Any]]:
     if uses_responses_api(provider, config.get("baseUrl") or ""):
         return await _stream_responses(job, config, messages, provider)
-    if provider in ("openai", "ollama", "runpod"):
+    if provider in ("openai", "ollama", "runpod", "moonshot"):
         return await _stream_openai(job, config, messages, provider)
     if provider == "gemini":
         return await _stream_gemini(job, config, messages)
@@ -1991,9 +2019,9 @@ async def list_provider_models(request: Request):
     # provider's own host only, so this never becomes a proxy for any URL.
     provider = (body or {}).get("provider")
     if provider in OFFICIAL_MODEL_HOSTS:
-        host = OFFICIAL_MODEL_HOSTS[provider]
-        if urlparse(base_url).hostname != host:
-            raise HTTPException(status_code=400, detail=f"Only {host} can be queried for {provider} models.")
+        hosts = OFFICIAL_MODEL_HOSTS[provider]
+        if urlparse(base_url).hostname not in hosts:
+            raise HTTPException(status_code=400, detail=f"Only {' or '.join(hosts)} can be queried for {provider} models.")
         api_key = str(body.get("apiKey") or "")
         headers = ({"x-api-key": api_key, "anthropic-version": "2023-06-01"} if provider == "anthropic"
                    else {"x-goog-api-key": api_key} if provider == "gemini"

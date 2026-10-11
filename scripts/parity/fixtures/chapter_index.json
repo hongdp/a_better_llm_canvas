@@ -776,6 +776,7 @@
      "anthropic": 120000,
      "openai": 80000,
      "grok": 140000,
+     "moonshot": 140000,
      "ollama": 20000
     }
    }
@@ -815,6 +816,13 @@
      1.5
     ],
     "output": 20000
+   },
+   {
+    "input": [
+     "moonshot",
+     1
+    ],
+    "output": 140000
    }
   ]
  }

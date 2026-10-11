@@ -45,7 +45,10 @@ const MODEL_CONTEXT_TOKENS: Array<[string, number]> = [
   // xAI
   ['grok-4', 256_000],
   ['grok-3', 131_072],
-  ['grok-', 131_072]
+  ['grok-', 131_072],
+  // Moonshot (platform.kimi.ai pricing page, 2026-10-11)
+  ['kimi-k3', 1_048_576],
+  ['kimi-', 262_144]
 ]
 
 /** Used when neither the server nor the table knows the model. */
@@ -54,6 +57,7 @@ const PROVIDER_FALLBACK_TOKENS: Record<string, number> = {
   anthropic: 200_000,
   gemini: 1_048_576,
   grok: 131_072,
+  moonshot: 262_144,
   // Local endpoints vary wildly and always report `n_ctx`; this only applies
   // before the first successful model listing.
   ollama: 32_768

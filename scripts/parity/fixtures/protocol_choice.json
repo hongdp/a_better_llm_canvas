@@ -50,6 +50,13 @@
      null
     ],
     "output": "markup"
+   },
+   {
+    "input": [
+     "moonshot",
+     null
+    ],
+    "output": "markup"
    }
   ]
  }

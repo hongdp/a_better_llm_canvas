@@ -101,6 +101,21 @@
      "exclusiveCache": false,
      "windowDiscovered": false
     }
+   },
+   {
+    "input": [
+     "moonshot"
+    ],
+    "output": {
+     "mode": "automatic",
+     "maxBreakpoints": 0,
+     "cachedTokensPath": [
+      "prompt_tokens_details",
+      "cached_tokens"
+     ],
+     "exclusiveCache": false,
+     "windowDiscovered": false
+    }
    }
   ],
   "target_prompt_tokens": [

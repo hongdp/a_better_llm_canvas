@@ -32,6 +32,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     availableGrokModels,
     availableAnthropicModels,
     availableOpenAIModels,
+    availableMoonshotModels,
     availableOllamaModels,
     availableRunpodModels,
     customSystemPrompts,
@@ -64,6 +65,9 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
     }
     if (activeProvider === 'openai' && availableOpenAIModels.length > 0) {
       return availableOpenAIModels
+    }
+    if (activeProvider === 'moonshot' && availableMoonshotModels.length > 0) {
+      return availableMoonshotModels
     }
     // Discovered from the configured endpoint. The shipped list can never
     // contain a locally-served model, and this dropdown is the one people
@@ -115,6 +119,7 @@ export function AppHeader({ layoutMode, onOpenSettings }: AppHeaderProps) {
             <option value="ollama">Ollama</option>
             <option value="runpod">RunPod</option>
             <option value="grok">Grok (xAI)</option>
+            <option value="moonshot">Kimi (Moonshot)</option>
           </select>
         </div>
 
