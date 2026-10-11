@@ -1,24 +1,40 @@
 import { useEffect } from 'react'
 import { useAppStore } from '../store/useAppStore'
-import { PROVIDER_MODELS } from '../types/llm'
+import type { LLMProvider } from '../types/llm'
+import { PROVIDERS, PROVIDER_IDS } from '../utils/providers'
 
-const FALLBACK_GEMINI_MODELS = PROVIDER_MODELS.gemini
-/** What a stale Gemini model setting is replaced with (2.5 and earlier are closed to new keys). */
-const RECOMMENDED_GEMINI_MODEL = 'gemini-3.8-flash'
+/**
+ * Model discovery for every provider, driven by the registry
+ * (utils/providers `discovery`):
+ *
+ *  - `official`: the key's own list, through the backend (/api/models) —
+ *    Anthropic's API refuses calls from a page (CORS), the key stays out of
+ *    URLs, and the backend trims each list to text models. Only from the
+ *    provider's own host: a compatible server under the OpenAI setting keeps
+ *    the shipped list. A configured model the list lacks (an old default that
+ *    is no longer a valid id) is replaced by the recommended one.
+ *  - `local`: whatever the endpoint serves. The shipped list (llama3,
+ *    mistral, …) can never contain what someone runs locally, and the model
+ *    field is a fixed dropdown — so a local model not on that list was simply
+ *    unselectable. Direct first; the page is served over HTTPS, so a plain-http
+ *    endpoint is blocked as mixed content and the backend (same host as the
+ *    model server) answers instead. llama.cpp also states each model's `n_ctx`,
+ *    which the context budgeter should believe over any table.
+ *
+ * One effect per discovery kind, keyed on the fields that matter (key, base
+ * URL, model) rather than one effect per provider: adding a provider is a
+ * registry row, not a hook.
+ */
 
-/** What a stale Claude model setting is replaced with (fast, and strong at long-form prose). */
-const RECOMMENDED_CLAUDE_MODEL = 'claude-sonnet-5-5'
-/** …and a stale OpenAI one (gpt-4o is not the default any more; it cannot reason). */
-const RECOMMENDED_OPENAI_MODEL = 'gpt-5.5'
-/** Kimi's general-purpose model: 262k window, thinking on, a quarter of kimi-k3's price. */
-const RECOMMENDED_KIMI_MODEL = 'kimi-k2.6'
-
-/** An official provider's model list for this key, through the backend (/api/models); [] on any failure. */
-async function listOfficialModels(provider: 'anthropic' | 'openai' | 'gemini' | 'moonshot', apiKey: string, baseUrl: string): Promise<string[]> {
+/** The backend lists a hosted provider's models with the user's key, from the provider's host only. */
+async function listOfficialModels(provider: LLMProvider, apiKey: string, baseUrl: string): Promise<string[]> {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': useAppStore.getState().csrfToken || '' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': useAppStore.getState().csrfToken || ''
+      },
       body: JSON.stringify({ provider, apiKey, baseUrl })
     })
     return res.ok ? normalizeModelList(await res.json()) : []
@@ -27,16 +43,6 @@ async function listOfficialModels(provider: 'anthropic' | 'openai' | 'gemini' | 
     return []
   }
 }
-
-const FALLBACK_GROK_MODELS = [
-  'grok-4.3',
-  'grok-build-0.1',
-  'grok-3',
-  'grok-2',
-  'grok-2-vision',
-  'grok-beta'
-]
-
 
 /**
  * Shapes a model listing into plain names.
@@ -85,7 +91,9 @@ function normalizeContextWindows(data: unknown): Record<string, number> {
   return out
 }
 
-async function listLocalModelsDirect(baseUrl: string): Promise<{ names: string[]; windows: Record<string, number> }> {
+type Listed = { names: string[]; windows: Record<string, number> }
+
+async function listLocalModelsDirect(baseUrl: string): Promise<Listed> {
   try {
     const res = await fetch(`${baseUrl.replace(/\/$/, '')}/models`)
     if (!res.ok) return { names: [], windows: {} }
@@ -96,7 +104,7 @@ async function listLocalModelsDirect(baseUrl: string): Promise<{ names: string[]
   }
 }
 
-async function listLocalModelsViaBackend(baseUrl: string): Promise<{ names: string[]; windows: Record<string, number> }> {
+async function listLocalModelsViaBackend(baseUrl: string): Promise<Listed> {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
@@ -114,6 +122,15 @@ async function listLocalModelsViaBackend(baseUrl: string): Promise<{ names: stri
   }
 }
 
+const OFFICIAL = PROVIDER_IDS.filter(id => PROVIDERS[id].discovery.kind === 'official')
+const LOCAL = PROVIDER_IDS.filter(id => PROVIDERS[id].discovery.kind === 'local')
+
+/** Does this provider's configuration point at the host its key lists models from? */
+function listsFromKey(id: LLMProvider, apiKey: string, baseUrl: string): boolean {
+  const discovery = PROVIDERS[id].discovery
+  return discovery.kind === 'official' && !!apiKey && discovery.hosts.test(`${baseUrl}/`)
+}
+
 export function useModelFetcher(
   // When true the hook fetches the live model lists. Passed `isSettingsOpen`
   // from the Settings modal (so it refreshes + surfaces errors there), and
@@ -123,231 +140,68 @@ export function useModelFetcher(
   setErrorMsg: (msg: string | null) => void,
   setIsLoadingModels: (loading: boolean) => void
 ) {
-  const {
-    providerConfigs,
-    setAvailableGeminiModels,
-    setAvailableGrokModels,
-    setAvailableAnthropicModels,
-    setAvailableOpenAIModels,
-    setAvailableMoonshotModels,
-    setAvailableOllamaModels,
-    setAvailableRunpodModels,
-    updateProviderConfig
-  } = useAppStore()
+  const { providerConfigs, setAvailableModels, updateProviderConfig } = useAppStore()
 
-  const geminiConfig = providerConfigs.gemini
-  const geminiApiKey = geminiConfig.apiKey
-  const geminiBaseUrl = geminiConfig.baseUrl
+  // The effects re-run on the fields that decide a listing, not on every
+  // config edit (a max-tokens change must not refetch anything).
+  const officialDeps = OFFICIAL.map(id => `${providerConfigs[id].apiKey}\u0000${providerConfigs[id].baseUrl}\u0000${providerConfigs[id].model}`).join('\u0001')
+  const localDeps = LOCAL.map(id => `${providerConfigs[id].baseUrl}\u0000${providerConfigs[id].model}`).join('\u0001')
 
-  const ollamaConfig = providerConfigs.ollama
-  const ollamaBaseUrl = ollamaConfig.baseUrl
-
-  const runpodConfig = providerConfigs.runpod
-  const runpodBaseUrl = runpodConfig.baseUrl
-
-  const openaiConfig = providerConfigs.openai
-  const openaiApiKey = openaiConfig.apiKey
-  const openaiBaseUrl = openaiConfig.baseUrl
-
-  const moonshotConfig = providerConfigs.moonshot
-  const moonshotApiKey = moonshotConfig.apiKey
-  const moonshotBaseUrl = moonshotConfig.baseUrl
-
-  const anthropicConfig = providerConfigs.anthropic
-  const anthropicApiKey = anthropicConfig.apiKey
-  const anthropicBaseUrl = anthropicConfig.baseUrl
-
-  const grokConfig = providerConfigs.grok
-  const grokApiKey = grokConfig.apiKey
-  const grokBaseUrl = grokConfig.baseUrl
-
-  // Gemini's text models for this key, through the backend (/api/models): the
-  // key stays out of URLs, and the list leaves out speech/image/music models
-  // and 2.5, which Google still lists but refuses to new keys. A model the
-  // list does not have is replaced by the recommended one.
   useEffect(() => {
     if (!enabled) return
-    if (!geminiApiKey) {
-      setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-      return
-    }
     let cancelled = false
+    const configs = useAppStore.getState().providerConfigs
+    const pending = OFFICIAL.filter(id => listsFromKey(id, configs[id].apiKey, configs[id].baseUrl))
+    // No key, or a foreign host: the shipped list.
+    for (const id of OFFICIAL) if (!pending.includes(id)) setAvailableModels(id, [])
+    if (pending.length === 0) return
     setIsLoadingModels(true)
-    void listOfficialModels('gemini', geminiApiKey, geminiBaseUrl).then(list => {
+    void Promise.all(pending.map(async id => {
+      const spec = PROVIDERS[id]
+      const config = configs[id]
+      const list = await listOfficialModels(id, config.apiKey, config.baseUrl)
+      if (cancelled) return true
+      if (list.length === 0) {
+        setAvailableModels(id, [])
+        setErrorMsg(`Could not load the ${spec.label} models for this key (check the key and base URL). Using the built-in list.`)
+        return false
+      }
+      setAvailableModels(id, list)
+      if (!list.includes(config.model)) {
+        updateProviderConfig(id, { model: spec.recommendedModel && list.includes(spec.recommendedModel) ? spec.recommendedModel : list[0] })
+      }
+      return true
+    })).then(results => {
       if (cancelled) return
       setIsLoadingModels(false)
-      if (list.length === 0) {
-        setAvailableGeminiModels(FALLBACK_GEMINI_MODELS)
-        setErrorMsg('Could not load the Gemini models for this key (check the key and base URL). Using the built-in list.')
-        return
-      }
-      setAvailableGeminiModels(list)
-      setErrorMsg(null)
-      if (!list.includes(geminiConfig.model)) {
-        updateProviderConfig('gemini', { model: list.includes(RECOMMENDED_GEMINI_MODEL) ? RECOMMENDED_GEMINI_MODEL : list[0] })
-      }
+      if (results.every(Boolean)) setErrorMsg(null)
     })
     return () => { cancelled = true }
-  }, [enabled, geminiApiKey, geminiBaseUrl, setAvailableGeminiModels, updateProviderConfig, geminiConfig.model, setErrorMsg, setIsLoadingModels])
+  }, [enabled, officialDeps, setAvailableModels, updateProviderConfig, setErrorMsg, setIsLoadingModels])
 
-  // Fetch official Grok models dynamically when API Key or Base URL changes
   useEffect(() => {
     if (!enabled) return
-
-    const fetchGrokModels = async () => {
-      if (!grokApiKey) {
-        setAvailableGrokModels(FALLBACK_GROK_MODELS)
-        return
-      }
-      try {
-        const url = `${grokBaseUrl.replace(/\/$/, '')}/models`
-        const res = await fetch(url, {
-          headers: {
-            'Authorization': `Bearer ${grokApiKey}`
+    let cancelled = false
+    const configs = useAppStore.getState().providerConfigs
+    for (const id of LOCAL) {
+      void (async () => {
+        try {
+          const { baseUrl, model } = configs[id]
+          let listed = await listLocalModelsDirect(baseUrl)
+          if (listed.names.length === 0) listed = await listLocalModelsViaBackend(baseUrl)
+          if (cancelled || listed.names.length === 0) return
+          setAvailableModels(id, listed.names)
+          if (Object.keys(listed.windows).length > 0) {
+            useAppStore.getState().setDiscoveredContextWindows(listed.windows)
           }
-        })
-        if (res.ok) {
-          const data = await res.json()
-          if (data.data && Array.isArray(data.data)) {
-            const list = data.data
-              .map((m: { id: string }) => m.id)
-              .sort((a: string, b: string) => {
-                if (a.startsWith('grok-3') && !b.startsWith('grok-3')) return -1
-                if (!a.startsWith('grok-3') && b.startsWith('grok-3')) return 1
-                return a.localeCompare(b)
-              })
-            if (list.length > 0) {
-              setAvailableGrokModels(list)
-              if (!list.includes(grokConfig.model)) {
-                updateProviderConfig('grok', { model: list[0] })
-              }
-            }
-          }
+          // A stale name from a previous endpoint would 404 on every send.
+          if (!listed.names.includes(model)) updateProviderConfig(id, { model: listed.names[0] })
+        } catch {
+          // No server running (a stopped pod) is the normal case, not an
+          // error worth showing: the dropdown falls back to the shipped list.
         }
-      } catch (err) {
-        console.error('Failed to fetch official Grok models', err)
-      }
+      })()
     }
-    fetchGrokModels()
-  }, [enabled, grokApiKey, grokBaseUrl, setAvailableGrokModels, updateProviderConfig, grokConfig.model])
-
-  // The Claude models this key can use. Anthropic's API refuses calls from a
-  // page (CORS), so the backend lists them. A model the list does not have
-  // (an old default such as claude-3-5-sonnet, which is not a valid id) is
-  // replaced by the recommended one, as the grok list does.
-  useEffect(() => {
-    if (!enabled || !anthropicApiKey) return
-    let cancelled = false
-    void listOfficialModels('anthropic', anthropicApiKey, anthropicBaseUrl).then(list => {
-      if (cancelled || list.length === 0) return
-      setAvailableAnthropicModels(list)
-      if (!list.includes(anthropicConfig.model)) {
-        updateProviderConfig('anthropic', { model: list.includes(RECOMMENDED_CLAUDE_MODEL) ? RECOMMENDED_CLAUDE_MODEL : list[0] })
-      }
-    })
     return () => { cancelled = true }
-  }, [enabled, anthropicApiKey, anthropicBaseUrl, anthropicConfig.model, setAvailableAnthropicModels, updateProviderConfig])
-
-  // OpenAI's text models for this key, the same way. Only for OpenAI's own
-  // host: a compatible server under this provider keeps the shipped list.
-  useEffect(() => {
-    if (!enabled || !openaiApiKey || !/^https:\/\/api\.openai\.com\//.test(`${openaiBaseUrl}/`)) return
-    let cancelled = false
-    void listOfficialModels('openai', openaiApiKey, openaiBaseUrl).then(list => {
-      if (cancelled || list.length === 0) return
-      setAvailableOpenAIModels(list)
-      if (!list.includes(openaiConfig.model)) {
-        updateProviderConfig('openai', { model: list.includes(RECOMMENDED_OPENAI_MODEL) ? RECOMMENDED_OPENAI_MODEL : list[0] })
-      }
-    })
-    return () => { cancelled = true }
-  }, [enabled, openaiApiKey, openaiBaseUrl, openaiConfig.model, setAvailableOpenAIModels, updateProviderConfig])
-
-  // Kimi's models for this key, from either of Moonshot's hosts (.ai, .cn).
-  useEffect(() => {
-    if (!enabled || !moonshotApiKey || !/^https:\/\/api\.moonshot\.(?:ai|cn)\//.test(`${moonshotBaseUrl}/`)) return
-    let cancelled = false
-    void listOfficialModels('moonshot', moonshotApiKey, moonshotBaseUrl).then(list => {
-      if (cancelled || list.length === 0) return
-      setAvailableMoonshotModels(list)
-      if (!list.includes(moonshotConfig.model)) {
-        updateProviderConfig('moonshot', { model: list.includes(RECOMMENDED_KIMI_MODEL) ? RECOMMENDED_KIMI_MODEL : list[0] })
-      }
-    })
-    return () => { cancelled = true }
-  }, [enabled, moonshotApiKey, moonshotBaseUrl, moonshotConfig.model, setAvailableMoonshotModels, updateProviderConfig])
-
-  // Discover the models the local endpoint actually serves.
-  //
-  // The shipped list (llama3, mistral, …) can never contain what someone runs
-  // locally, and the model name is a fixed dropdown — so a local model that is
-  // not on that list is simply unselectable. Both shapes are accepted because
-  // "Ollama-compatible" covers two dialects: Ollama's own {models:[{name}]}
-  // and OpenAI's {data:[{id}]} (llama.cpp answers with both).
-  useEffect(() => {
-    if (!enabled) return
-
-    const fetchOllamaModels = async () => {
-      try {
-        let listed = await listLocalModelsDirect(ollamaBaseUrl)
-        if (listed.names.length === 0) {
-          // The page is served over HTTPS in this setup, so the browser blocks
-          // every plain-http local endpoint as mixed content — the fetch above
-          // can never succeed there. The backend runs on the same host as the
-          // model server and is same-origin for the page, so it can answer.
-          listed = await listLocalModelsViaBackend(ollamaBaseUrl)
-        }
-        const list = listed.names
-        if (list.length === 0) return
-        setAvailableOllamaModels(list)
-        if (Object.keys(listed.windows).length > 0) {
-          useAppStore.getState().setDiscoveredContextWindows(listed.windows)
-        }
-        // A stale name from a previous endpoint would 404 on every send.
-        if (!list.includes(ollamaConfig.model)) {
-          updateProviderConfig('ollama', { model: list[0] })
-        }
-      } catch {
-        // No local server running is the normal case, not an error worth
-        // showing: the dropdown falls back to the shipped list.
-      }
-    }
-    fetchOllamaModels()
-  }, [enabled, ollamaBaseUrl, setAvailableOllamaModels, updateProviderConfig, ollamaConfig.model])
-
-  // Same discovery for the RunPod endpoint, against its own config slot.
-  //
-  // Two routes, and which one works depends on how the pod is addressed. A
-  // tunnelled endpoint is plain http, so the browser blocks it as mixed
-  // content and only the backend can answer. A pod addressed directly at
-  // *.proxy.runpod.net is https, so the direct fetch succeeds (llama.cpp
-  // serves CORS *) — and the backend can answer that one too, because
-  // LOCAL_HOSTNAMES was widened to admit exactly that host suffix.
-  useEffect(() => {
-    if (!enabled) return
-
-    const fetchRunpodModels = async () => {
-      try {
-        let listed = await listLocalModelsDirect(runpodBaseUrl)
-        if (listed.names.length === 0) {
-          listed = await listLocalModelsViaBackend(runpodBaseUrl)
-        }
-        const list = listed.names
-        if (list.length === 0) return
-        setAvailableRunpodModels(list)
-        // The pod's llama.cpp states its n_ctx (262144 here) the same way the
-        // local one does, and the context budgeter should believe it.
-        if (Object.keys(listed.windows).length > 0) {
-          useAppStore.getState().setDiscoveredContextWindows(listed.windows)
-        }
-        // A stale name from a previous pod would 404 on every send.
-        if (!list.includes(runpodConfig.model)) {
-          updateProviderConfig('runpod', { model: list[0] })
-        }
-      } catch {
-        // A stopped pod is the normal case, not an error worth showing.
-      }
-    }
-    fetchRunpodModels()
-  }, [enabled, runpodBaseUrl, setAvailableRunpodModels, updateProviderConfig, runpodConfig.model])
+  }, [enabled, localDeps, setAvailableModels, updateProviderConfig])
 }

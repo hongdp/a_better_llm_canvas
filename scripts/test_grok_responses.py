@@ -7,6 +7,7 @@ Event shapes are the ones the live API sent (probed 2026-10-07).
 import json
 
 import server_generation as gen
+import wc_providers.common  # noqa: E402
 from test_api_server import _FakeStreamResponse, _new_job, _run_job
 
 CONFIG = {"apiKey": "k", "model": "grok-4.7", "baseUrl": "https://api.x.ai/v1", "conversationId": "book-1"}
@@ -166,7 +167,7 @@ def test_a_rejected_ciphertext_is_retried_once_without_the_items():
 
     job = _new_job()
     from unittest.mock import patch
-    with patch.object(gen, "_http_stream", fake_stream):
+    with patch.object(wc_providers.common, "_http_stream", fake_stream):
         asyncio.run(gen.run_job(job, "grok", CONFIG, [
             {"role": "assistant", "content": "a", "responseItems": [{"type": "reasoning", "id": "rs", "encrypted_content": "stale"}]},
             {"role": "user", "content": "q"},

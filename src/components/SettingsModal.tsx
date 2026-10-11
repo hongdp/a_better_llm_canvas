@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, ShieldAlert } from 'lucide-react'
-import { useAppStore, type LLMProvider, PROVIDER_MODELS } from '../store/useAppStore'
+import { useAppStore, type LLMProvider } from '../store/useAppStore'
+import { PROVIDERS, PROVIDER_IDS, modelsFor } from '../utils/providers'
 import { useTranslation } from '../i18n'
 import { defaultMaxSteps, defaultContinueAfterWrites } from '../agent/policy'
 import { defaultPolishModel } from '../agent/polish'
@@ -22,13 +23,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     updateProviderConfig,
     polishPrompt,
     setPolishPrompt,
-    availableGeminiModels,
-    availableGrokModels,
-    availableAnthropicModels,
-    availableOpenAIModels,
-    availableMoonshotModels,
-    availableOllamaModels,
-    availableRunpodModels,
+    availableModels,
     customSystemPrompts,
     addSystemPrompt,
     updateSystemPrompt,
@@ -67,15 +62,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
     updateProviderConfig(activeTab, { [field]: value })
   }
 
-  const labels: Record<LLMProvider, string> = {
-    gemini: 'Gemini',
-    openai: 'OpenAI',
-    anthropic: 'Anthropic',
-    ollama: 'Ollama (Local)',
-    runpod: 'RunPod (Cloud GPU)',
-    grok: 'Grok (xAI)',
-    moonshot: 'Kimi (Moonshot)'
-  }
+  const spec = PROVIDERS[activeTab]
+
 
   return (
     <div className="modal-overlay" onClick={onClose}>
@@ -92,7 +80,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
         <div className="modal-header">
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Shield size={18} style={{ color: 'var(--accent)' }} />
-            <h3>{`${labels[activeTab]} ${t.settings.title}`}</h3>
+            <h3>{`${spec.label} ${t.settings.title}`}</h3>
           </div>
           <button onClick={onClose} className="btn-icon" title="Close" type="button">
             <X size={18} />
@@ -101,14 +89,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
 
         {/* Selection Tabs */}
         <div className="settings-tabs" style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
-          {(['gemini', 'openai', 'anthropic', 'ollama', 'runpod', 'grok', 'moonshot'] as const).map((prov) => (
+          {PROVIDER_IDS.map((prov) => (
             <button
               key={prov}
               onClick={() => setActiveTab(prov)}
               type="button"
               className={`settings-tab-btn ${activeTab === prov ? 'active' : ''}`}
             >
-              {labels[prov].replace(' (Local)', '').replace(' (xAI)', '').replace(' (Moonshot)', '')}
+              {PROVIDERS[prov].shortLabel}
             </button>
           ))}
         </div>
@@ -187,22 +175,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   className="select-styled"
                   style={{ width: '100%' }}
                 >
-                  {(activeTab === 'gemini' && availableGeminiModels && availableGeminiModels.length > 0
-                    ? availableGeminiModels
-                    : activeTab === 'grok' && availableGrokModels && availableGrokModels.length > 0
-                    ? availableGrokModels
-                    : activeTab === 'anthropic' && availableAnthropicModels.length > 0
-                    ? availableAnthropicModels
-                    : activeTab === 'openai' && availableOpenAIModels.length > 0
-                    ? availableOpenAIModels
-                    : activeTab === 'moonshot' && availableMoonshotModels.length > 0
-                    ? availableMoonshotModels
-                    : activeTab === 'ollama' && availableOllamaModels && availableOllamaModels.length > 0
-                    ? availableOllamaModels
-                    : activeTab === 'runpod' && availableRunpodModels && availableRunpodModels.length > 0
-                    ? availableRunpodModels
-                    : (PROVIDER_MODELS[activeTab as LLMProvider] || [])
-                  ).map(model => (
+                  {modelsFor(activeTab, availableModels).map(model => (
                     <option key={model} value={model}>
                       {model}
                     </option>
@@ -213,7 +186,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               {/* API Key Input */}
               <div className="form-group">
                 <label htmlFor="api-key-input" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                  <Key size={14} /> {activeTab === 'ollama' || activeTab === 'runpod' ? 'API Key (Optional)' : `${labels[activeTab]} ${t.settings.apiKey}`}
+                  <Key size={14} /> {spec.keyOptional ? 'API Key (Optional)' : `${spec.label} ${t.settings.apiKey}`}
                 </label>
                 <input
                   id="api-key-input"
@@ -221,13 +194,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   value={currentConfig.apiKey}
                   onChange={(e) => handleConfigChange('apiKey', e.target.value)}
                   placeholder={
-                    activeTab === 'gemini' ? 'Enter Google AI Studio API Key...' :
-                    activeTab === 'openai' ? 'Enter OpenAI API Key (sk-...)...' :
-                    activeTab === 'anthropic' ? 'Enter Anthropic API Key (sk-ant-...)...' :
-                    activeTab === 'grok' ? 'Enter Grok API Key (xai-...)...' :
-                    activeTab === 'moonshot' ? 'Enter Moonshot API Key (sk-...)...' :
-                    activeTab === 'runpod' ? 'Leave as ollama-no-key unless the endpoint sets --api-key...' :
-                    'Optional token for authenticated local proxies...'
+                    spec.keyPlaceholder
                   }
                   className="form-input"
                 />
@@ -242,13 +209,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   value={currentConfig.baseUrl}
                   onChange={(e) => handleConfigChange('baseUrl', e.target.value)}
                   placeholder={
-                    activeTab === 'gemini' ? 'e.g. https://generativelanguage.googleapis.com/v1beta' :
-                    activeTab === 'openai' ? 'e.g. https://api.openai.com/v1' :
-                    activeTab === 'anthropic' ? 'e.g. https://api.anthropic.com/v1' :
-                    activeTab === 'grok' ? 'e.g. https://api.x.ai/v1' :
-                    activeTab === 'moonshot' ? 'e.g. https://api.moonshot.ai/v1 (or https://api.moonshot.cn/v1)' :
-                    activeTab === 'runpod' ? 'e.g. http://127.0.0.1:8100/v1 (tunnel) or https://<pod-id>-8000.proxy.runpod.net/v1' :
-                    'e.g. http://localhost:11434/v1'
+                    spec.baseUrlPlaceholder
                   }
                   className="form-input"
                 />
@@ -527,81 +488,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
               >
                 <HelpCircle size={16} style={{ flexShrink: 0, color: 'var(--text-secondary)', marginTop: '2px' }} />
                 <span style={{ fontSize: '0.85rem', lineHeight: '1.4' }}>
-                  {activeTab === 'gemini' && (
+                  {spec.help.intro}
+                  {spec.help.link && (
                     <>
-                      To get a free Gemini API key, visit the{' '}
-                      <a 
-                        href="https://aistudio.google.com/" 
-                        target="_blank" 
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-                      >
-                        Google AI Studio
+                      {' '}
+                      <a href={spec.help.link.href} target="_blank" rel="noreferrer" style={{ color: 'var(--accent)', textDecoration: 'underline' }}>
+                        {spec.help.link.label}
                       </a>
-                      . The default base URL is <code>https://generativelanguage.googleapis.com/v1beta</code>.
                     </>
                   )}
-                  {activeTab === 'openai' && (
-                    <>
-                      To get an OpenAI API key, visit the{' '}
-                      <a 
-                        href="https://platform.openai.com/" 
-                        target="_blank" 
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-                      >
-                        OpenAI Platform
-                      </a>
-                      . The default base URL is <code>https://api.openai.com/v1</code>.
-                    </>
-                  )}
-                  {activeTab === 'anthropic' && (
-                    <>
-                      To get an Anthropic API key, visit the{' '}
-                      <a 
-                        href="https://console.anthropic.com/" 
-                        target="_blank" 
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-                      >
-                        Anthropic Console
-                      </a>
-                      . The default base URL is <code>https://api.anthropic.com/v1</code>.
-                    </>
-                  )}
-                  {activeTab === 'ollama' && (
-                    <>
-                      Ollama runs locally on your machine. Ensure Ollama is running (run <code>ollama serve</code>) and the base URL is reachable. The default is <code>http://localhost:11434/v1</code>.
-                    </>
-                  )}
-                  {activeTab === 'grok' && (
-                    <>
-                      To get a Grok API key, visit the{' '}
-                      <a 
-                        href="https://console.x.ai/" 
-                        target="_blank" 
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-                      >
-                        xAI Console
-                      </a>
-                      . The default base URL is <code>https://api.x.ai/v1</code>.
-                    </>
-                  )}
-                  {activeTab === 'moonshot' && (
-                    <>
-                      To get a Kimi API key, visit the{' '}
-                      <a
-                        href="https://platform.kimi.ai/"
-                        target="_blank"
-                        rel="noreferrer"
-                        style={{ color: 'var(--accent)', textDecoration: 'underline' }}
-                      >
-                        Kimi Open Platform
-                      </a>
-                      . The default base URL is <code>https://api.moonshot.ai/v1</code>; a China account uses <code>https://api.moonshot.cn/v1</code>.
-                    </>
-                  )}
+                  . The default base URL is <code>{spec.defaults.baseUrl}</code>.
+                  {spec.help.extra && ` ${spec.help.extra}`}
                 </span>
               </div>
 

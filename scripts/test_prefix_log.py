@@ -4,6 +4,7 @@ A turn that lost its cached prefix must say whether the request changed or
 the provider missed: the line names the first message that differs.
 """
 import server_generation as gen
+import wc_providers.common
 
 
 def _body(*contents, tools=None, model="grok-4.6"):
@@ -11,7 +12,7 @@ def _body(*contents, tools=None, model="grok-4.6"):
 
 
 def setup_function(_):
-    gen._last_requests.clear()
+    wc_providers.common._last_requests.clear()
 
 
 def test_the_first_request_of_a_conversation_says_so():
@@ -43,6 +44,6 @@ def test_conversations_are_compared_only_with_themselves():
 
 
 def test_memory_is_bounded():
-    for i in range(gen.PREFIX_MEMORY + 5):
+    for i in range(wc_providers.common.PREFIX_MEMORY + 5):
         gen.describe_prefix(f"grok:{i}", _body("a"), now=i)
-    assert len(gen._last_requests) == gen.PREFIX_MEMORY
+    assert len(wc_providers.common._last_requests) == wc_providers.common.PREFIX_MEMORY

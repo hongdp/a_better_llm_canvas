@@ -31,7 +31,7 @@ const originalFetch = globalThis.fetch
 
 beforeEach(() => {
   useAppStore.setState({
-    availableOllamaModels: [],
+    availableModels: {},
     providerConfigs: {
       ...useAppStore.getState().providerConfigs,
       ollama: {
@@ -60,7 +60,7 @@ describe('useModelFetcher — local endpoint discovery', () => {
     const unmount = renderFetcher()
     await flush()
 
-    expect(useAppStore.getState().availableOllamaModels).toEqual(['qwen3.8-27b-uncensored', 'llama3'])
+    expect(useAppStore.getState().availableModels.ollama).toEqual(['qwen3.8-27b-uncensored', 'llama3'])
     unmount()
   })
 
@@ -72,7 +72,7 @@ describe('useModelFetcher — local endpoint discovery', () => {
     const unmount = renderFetcher()
     await flush()
 
-    expect(useAppStore.getState().availableOllamaModels).toEqual(['local-model-a'])
+    expect(useAppStore.getState().availableModels.ollama).toEqual(['local-model-a'])
     unmount()
   })
 
@@ -90,7 +90,7 @@ describe('useModelFetcher — local endpoint discovery', () => {
     const unmount = renderFetcher()
     await flush()
 
-    expect(useAppStore.getState().availableOllamaModels).toEqual(['qwen3.8-27b-uncensored'])
+    expect(useAppStore.getState().availableModels.ollama).toEqual(['qwen3.8-27b-uncensored'])
     unmount()
   })
 
@@ -132,7 +132,7 @@ describe('useModelFetcher — local endpoint discovery', () => {
     const unmount = renderFetcher()
     await flush()
 
-    expect(useAppStore.getState().availableOllamaModels).toEqual([])
+    expect(useAppStore.getState().availableModels.ollama ?? []).toEqual([])
     expect(useAppStore.getState().providerConfigs.ollama.model).toBe('llama3')
     unmount()
   })

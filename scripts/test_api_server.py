@@ -9,6 +9,7 @@ import api_server
 import server_auth
 import server_db
 import server_generation
+import wc_providers.common  # noqa: E402
 
 # NOTE: patches must target the module that OWNS the state the executing code
 # reads (server_db.DB_PATH, server_auth.SESSIONS_FILE).
@@ -137,7 +138,7 @@ def test_get_book_returns_document_metadata_with_summaries(tmp_path, monkeypatch
 # ==============================================================================
 # Resumable generation jobs (docs/features/resumable_generation.md)
 #
-# The HTTP layer is stubbed by patching server_generation._http_stream — the
+# The HTTP layer is stubbed by patching wc_providers.common._http_stream — the
 # module that OWNS it. Patching an alias elsewhere would not affect the
 # executing code.
 # ==============================================================================
@@ -188,7 +189,7 @@ def _stub_http_stream(captured, response):
 
 
 def _run_job(job, provider, config, messages, response, captured):
-    with patch.object(server_generation, "_http_stream", _stub_http_stream(captured, response)):
+    with patch.object(wc_providers.common, "_http_stream", _stub_http_stream(captured, response)):
         asyncio.run(server_generation.run_job(job, provider, config, messages))
 
 
@@ -966,7 +967,7 @@ def test_generation_retries_without_effort_when_the_provider_rejects_it():
         captured.append({"url": url, "headers": headers, "body": body})
         yield response
 
-    with patch.object(server_generation, "_http_stream", fake_stream):
+    with patch.object(wc_providers.common, "_http_stream", fake_stream):
         asyncio.run(server_generation.run_job(
             job, "grok",
             {"apiKey": "sk", "model": "grok-4.6", "baseUrl": "https://api.x.ai/v1", "reasoningEffort": "xhigh"},

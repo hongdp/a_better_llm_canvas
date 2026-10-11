@@ -3,72 +3,11 @@
  * system prompt presets, and image pipeline defaults. Pure data — no side
  * effects — so any store module can import it without cycle concerns.
  */
-import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../types/llm'
+import type { ImageGenConfig, SystemPromptTemplate } from '../types/llm'
 import type { CanvasDocument } from '../types/document'
 
-export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
-  openai: {
-    apiKey: import.meta.env.VITE_OPENAI_API_KEY || '',
-    model: import.meta.env.VITE_OPENAI_MODEL || 'gpt-5.5',
-    baseUrl: import.meta.env.VITE_OPENAI_BASE_URL || 'https://api.openai.com/v1',
-    maxOutputTokens: 16384,
-  },
-  gemini: {
-    apiKey: import.meta.env.VITE_GEMINI_API_KEY || '',
-    model: import.meta.env.VITE_GEMINI_MODEL || 'gemini-3.8-flash',
-    baseUrl: import.meta.env.VITE_GEMINI_BASE_URL || 'https://generativelanguage.googleapis.com/v1beta',
-    // The lowest threshold Gemini offers (user decision, 2026-10-11): this is
-    // a fiction-writing tool and the writer, not the provider's classifier,
-    // decides what their book contains. Each category stays adjustable in
-    // Settings; a saved config keeps whatever the user set there.
-    geminiSafetySettings: [
-      { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-      { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' },
-    ],
-    maxOutputTokens: 16384,
-  },
-  anthropic: {
-    apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY || '',
-    model: import.meta.env.VITE_ANTHROPIC_MODEL || 'claude-sonnet-5-5',
-    baseUrl: import.meta.env.VITE_ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1',
-    maxOutputTokens: 16384,
-  },
-  ollama: {
-    apiKey: import.meta.env.VITE_OLLAMA_API_KEY || 'ollama-no-key',
-    model: import.meta.env.VITE_OLLAMA_MODEL || 'llama3',
-    baseUrl: import.meta.env.VITE_OLLAMA_BASE_URL || 'http://localhost:11434/v1',
-    maxOutputTokens: 16384,
-  },
-  // A remote llama.cpp on a rented GPU. Separate from `ollama` on purpose:
-  // both are OpenAI-compatible servers with no auth, and keeping one slot for
-  // each is what lets the local model and the pod stay configured at once.
-  // The default points at an SSH tunnel (`ssh -L 8092:localhost:<port>`)
-  // rather than a pod address, because a tunnel's port survives a pod restart
-  // while RunPod's own port mapping does not.
-  runpod: {
-    apiKey: import.meta.env.VITE_RUNPOD_API_KEY || 'ollama-no-key',
-    model: import.meta.env.VITE_RUNPOD_MODEL || 'qwen3.8-IQ4_XS',
-    baseUrl: import.meta.env.VITE_RUNPOD_BASE_URL || 'http://127.0.0.1:8100/v1',
-    maxOutputTokens: 16384,
-  },
-  grok: {
-    apiKey: import.meta.env.VITE_GROK_API_KEY || '',
-    model: import.meta.env.VITE_GROK_MODEL || 'grok-3',
-    baseUrl: import.meta.env.VITE_GROK_BASE_URL || 'https://api.x.ai/v1',
-    maxOutputTokens: 16384,
-  },
-  // Moonshot's Kimi, on Chat Completions. api.moonshot.cn/v1 for a China
-  // account. Kimi's max_tokens covers the reasoning AND the reply, and its
-  // docs ask for 16k or more in a tool-calling loop: 32k, not 16k.
-  moonshot: {
-    apiKey: import.meta.env.VITE_MOONSHOT_API_KEY || '',
-    model: import.meta.env.VITE_MOONSHOT_MODEL || 'kimi-k2.6',
-    baseUrl: import.meta.env.VITE_MOONSHOT_BASE_URL || 'https://api.moonshot.ai/v1',
-    maxOutputTokens: 32768,
-  },
-}
+/** Every provider's default config, from the provider registry (utils/providers). */
+export { DEFAULT_CONFIGS } from '../utils/providers'
 
 
 export const MOCK_DOCUMENTS: CanvasDocument[] = [

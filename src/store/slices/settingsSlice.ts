@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand'
 import type { PolishPrompt } from '../../utils/polish'
-import { PROVIDER_MODELS, type LLMProvider, type ImageGenConfig, type ProviderConfig, type SystemPromptTemplate } from '../../types/llm'
+import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../../types/llm'
 import type { AppState } from '../types'
 import { localStorage } from '../persistence'
 import {
@@ -31,27 +31,13 @@ export interface SettingsSlice {
   providerConfigs: Record<LLMProvider, ProviderConfig>
   setProvider: (provider: LLMProvider) => void
   updateProviderConfig: (provider: LLMProvider, config: Partial<ProviderConfig>) => void
-  availableGeminiModels: string[]
-  setAvailableGeminiModels: (models: string[]) => void
-  availableGrokModels: string[]
-  setAvailableGrokModels: (models: string[]) => void
-  /** The Claude models the configured key can use, listed through the backend (/api/models). */
-  availableAnthropicModels: string[]
-  setAvailableAnthropicModels: (models: string[]) => void
-  /** OpenAI's text models for the configured key (api.openai.com only), through /api/models. */
-  availableOpenAIModels: string[]
-  setAvailableOpenAIModels: (models: string[]) => void
-  /** Kimi models for the configured key (api.moonshot.ai / .cn), through /api/models. */
-  availableMoonshotModels: string[]
-  setAvailableMoonshotModels: (models: string[]) => void
   /**
-   * Models reported by the configured Ollama-compatible endpoint. Discovered
-   * rather than hardcoded: the endpoint may be Ollama itself or any
-   * OpenAI-compatible local server (llama.cpp, vLLM), and whatever the user
-   * runs locally is never going to be in a list shipped with the app.
+   * Discovered model lists by provider (hooks/useModelFetcher): the key's own
+   * list for a hosted provider, the endpoint's /models for a local one.
+   * Absent or empty = offer the shipped list (utils/providers modelsFor).
    */
-  availableOllamaModels: string[]
-  setAvailableOllamaModels: (models: string[]) => void
+  availableModels: Partial<Record<LLMProvider, string[]>>
+  setAvailableModels: (provider: LLMProvider, models: string[]) => void
   /**
    * Context window per model id, as reported by the endpoint itself
    * (llama.cpp states `n_ctx` on /v1/models). Only the server knows what it
@@ -60,8 +46,6 @@ export interface SettingsSlice {
    */
   discoveredContextWindows: Record<string, number>
   setDiscoveredContextWindows: (windows: Record<string, number>) => void
-  availableRunpodModels: string[]
-  setAvailableRunpodModels: (models: string[]) => void
   debugMode: boolean
   setDebugMode: (enabled: boolean) => void
 
@@ -108,43 +92,19 @@ export const createSettingsSlice: StateCreator<AppState, [], [], SettingsSlice> 
     // LLM configurations
     activeProvider: loadSavedProvider(),
     providerConfigs: loadSavedConfigs(),
-    availableGeminiModels: [...PROVIDER_MODELS.gemini],
-    availableGrokModels: ['grok-4.3', 'grok-build-0.1', 'grok-3', 'grok-2', 'grok-2-vision', 'grok-beta'],
-    availableAnthropicModels: [],
-    availableOpenAIModels: [],
-    availableMoonshotModels: [],
-    availableOllamaModels: [],
-    availableRunpodModels: [],
+    availableModels: {},
+    setAvailableModels: (provider, models) => {
+      set(state => ({ availableModels: { ...state.availableModels, [provider]: models } }))
+    },
     setProvider: (provider) => {
       localStorage.setItem('web_canvas_active_provider', provider)
       setCookie('__Secure-web_canvas_active_provider', provider)
       set({ activeProvider: provider })
     },
-    setAvailableGeminiModels: (models) => {
-      set({ availableGeminiModels: models })
-    },
-    setAvailableGrokModels: (models) => {
-      set({ availableGrokModels: models })
-    },
-    setAvailableAnthropicModels: (models) => {
-      set({ availableAnthropicModels: models })
-    },
-    setAvailableOpenAIModels: (models) => {
-      set({ availableOpenAIModels: models })
-    },
-    setAvailableMoonshotModels: (models) => {
-      set({ availableMoonshotModels: models })
-    },
 
     discoveredContextWindows: {},
     setDiscoveredContextWindows: (windows) => {
       set(state => ({ discoveredContextWindows: { ...state.discoveredContextWindows, ...windows } }))
-    },
-    setAvailableRunpodModels: (models) => {
-      set({ availableRunpodModels: models })
-    },
-    setAvailableOllamaModels: (models) => {
-      set({ availableOllamaModels: models })
     },
     updateProviderConfig: (provider, newConfig) => {
       set((state) => {

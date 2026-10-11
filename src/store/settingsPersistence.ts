@@ -8,6 +8,7 @@ import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate 
 import type { CanvasDocument } from '../types/document'
 import { localStorage } from './persistence'
 import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_GEN_CONFIG, DEFAULT_POLISH_PROMPT } from './defaults'
+import { isProviderId } from '../utils/providers'
 import type { PolishPrompt } from '../utils/polish'
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
@@ -288,13 +289,11 @@ export const mergeProviderConfigs = (
 
 export const loadSavedProvider = (): LLMProvider => {
   const saved = localStorage.getItem('web_canvas_active_provider')
-  if (saved && ['openai', 'gemini', 'anthropic', 'ollama', 'runpod', 'grok', 'moonshot'].includes(saved)) {
-    return saved as LLMProvider
-  }
+  if (isProviderId(saved)) return saved
   const cookieSaved = getCookie('__Secure-web_canvas_active_provider')
-  if (cookieSaved && ['openai', 'gemini', 'anthropic', 'ollama', 'runpod', 'grok', 'moonshot'].includes(cookieSaved)) {
+  if (isProviderId(cookieSaved)) {
     localStorage.setItem('web_canvas_active_provider', cookieSaved)
-    return cookieSaved as LLMProvider
+    return cookieSaved
   }
   return 'gemini'
 }
