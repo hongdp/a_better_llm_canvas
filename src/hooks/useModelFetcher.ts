@@ -10,9 +10,11 @@ const RECOMMENDED_GEMINI_MODEL = 'gemini-3.8-flash'
 const RECOMMENDED_CLAUDE_MODEL = 'claude-sonnet-5-5'
 /** …and a stale OpenAI one (gpt-4o is not the default any more; it cannot reason). */
 const RECOMMENDED_OPENAI_MODEL = 'gpt-5.5'
+/** Kimi's general-purpose model: 262k window, thinking on, a quarter of kimi-k3's price. */
+const RECOMMENDED_KIMI_MODEL = 'kimi-k2.6'
 
 /** An official provider's model list for this key, through the backend (/api/models); [] on any failure. */
-async function listOfficialModels(provider: 'anthropic' | 'openai' | 'gemini', apiKey: string, baseUrl: string): Promise<string[]> {
+async function listOfficialModels(provider: 'anthropic' | 'openai' | 'gemini' | 'moonshot', apiKey: string, baseUrl: string): Promise<string[]> {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
@@ -127,6 +129,7 @@ export function useModelFetcher(
     setAvailableGrokModels,
     setAvailableAnthropicModels,
     setAvailableOpenAIModels,
+    setAvailableMoonshotModels,
     setAvailableOllamaModels,
     setAvailableRunpodModels,
     updateProviderConfig
@@ -145,6 +148,10 @@ export function useModelFetcher(
   const openaiConfig = providerConfigs.openai
   const openaiApiKey = openaiConfig.apiKey
   const openaiBaseUrl = openaiConfig.baseUrl
+
+  const moonshotConfig = providerConfigs.moonshot
+  const moonshotApiKey = moonshotConfig.apiKey
+  const moonshotBaseUrl = moonshotConfig.baseUrl
 
   const anthropicConfig = providerConfigs.anthropic
   const anthropicApiKey = anthropicConfig.apiKey
@@ -255,6 +262,20 @@ export function useModelFetcher(
     })
     return () => { cancelled = true }
   }, [enabled, openaiApiKey, openaiBaseUrl, openaiConfig.model, setAvailableOpenAIModels, updateProviderConfig])
+
+  // Kimi's models for this key, from either of Moonshot's hosts (.ai, .cn).
+  useEffect(() => {
+    if (!enabled || !moonshotApiKey || !/^https:\/\/api\.moonshot\.(?:ai|cn)\//.test(`${moonshotBaseUrl}/`)) return
+    let cancelled = false
+    void listOfficialModels('moonshot', moonshotApiKey, moonshotBaseUrl).then(list => {
+      if (cancelled || list.length === 0) return
+      setAvailableMoonshotModels(list)
+      if (!list.includes(moonshotConfig.model)) {
+        updateProviderConfig('moonshot', { model: list.includes(RECOMMENDED_KIMI_MODEL) ? RECOMMENDED_KIMI_MODEL : list[0] })
+      }
+    })
+    return () => { cancelled = true }
+  }, [enabled, moonshotApiKey, moonshotBaseUrl, moonshotConfig.model, setAvailableMoonshotModels, updateProviderConfig])
 
   // Discover the models the local endpoint actually serves.
   //

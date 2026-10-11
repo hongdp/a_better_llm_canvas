@@ -58,6 +58,36 @@
    },
    {
     "input": [
+     "moonshot",
+     "kimi-k3"
+    ],
+    "output": [
+     "default",
+     "low",
+     "high",
+     "xhigh"
+    ]
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k2.6"
+    ],
+    "output": [
+     "default"
+    ]
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k2.7-code"
+    ],
+    "output": [
+     "default"
+    ]
+   },
+   {
+    "input": [
      "openai",
      "gpt-5"
     ],
@@ -547,6 +577,103 @@
      "low"
     ],
     "output": null
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k3",
+     null
+    ],
+    "output": "low"
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k3",
+     "xhigh"
+    ],
+    "output": "xhigh"
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k3",
+     "medium"
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k2.6",
+     "high"
+    ],
+    "output": null
+   }
+  ],
+  "moonshot_thinking": [
+   {
+    "input": [
+     "kimi-k3",
+     "low"
+    ],
+    "output": {
+     "reasoning_effort": "low"
+    }
+   },
+   {
+    "input": [
+     "kimi-k3",
+     "xhigh"
+    ],
+    "output": {
+     "reasoning_effort": "max"
+    }
+   },
+   {
+    "input": [
+     "kimi-k3",
+     null
+    ],
+    "output": {}
+   },
+   {
+    "input": [
+     "kimi-k2.6",
+     null
+    ],
+    "output": {
+     "thinking": {
+      "type": "enabled",
+      "keep": "all"
+     }
+    }
+   },
+   {
+    "input": [
+     "kimi-k2.6",
+     "high"
+    ],
+    "output": {
+     "thinking": {
+      "type": "enabled",
+      "keep": "all"
+     }
+    }
+   },
+   {
+    "input": [
+     "kimi-k2.7-code",
+     null
+    ],
+    "output": {}
+   },
+   {
+    "input": [
+     "moonshot-v1-8k",
+     "low"
+    ],
+    "output": {}
    }
   ],
   "gemini_thinking": [

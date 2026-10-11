@@ -55,6 +55,15 @@ export const DEFAULT_CONFIGS: Record<LLMProvider, ProviderConfig> = {
     baseUrl: import.meta.env.VITE_GROK_BASE_URL || 'https://api.x.ai/v1',
     maxOutputTokens: 16384,
   },
+  // Moonshot's Kimi, on Chat Completions. api.moonshot.cn/v1 for a China
+  // account. Kimi's max_tokens covers the reasoning AND the reply, and its
+  // docs ask for 16k or more in a tool-calling loop: 32k, not 16k.
+  moonshot: {
+    apiKey: import.meta.env.VITE_MOONSHOT_API_KEY || '',
+    model: import.meta.env.VITE_MOONSHOT_MODEL || 'kimi-k2.6',
+    baseUrl: import.meta.env.VITE_MOONSHOT_BASE_URL || 'https://api.moonshot.ai/v1',
+    maxOutputTokens: 32768,
+  },
 }
 
 

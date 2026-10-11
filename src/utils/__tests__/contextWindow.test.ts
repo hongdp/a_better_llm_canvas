@@ -16,6 +16,12 @@ describe('resolveContextWindowTokens', () => {
     expect(resolveContextWindowTokens('grok', 'grok-4.6', 8_192)).toBe(8_192)
   })
 
+  it('knows the Kimi line: kimi-k3 at 1M, the K2 models at 262k', () => {
+    expect(resolveContextWindowTokens('moonshot', 'kimi-k3')).toBe(1_048_576)
+    expect(resolveContextWindowTokens('moonshot', 'kimi-k2.7-code-highspeed')).toBe(262_144)
+    expect(resolveContextWindowTokens('moonshot', '')).toBe(262_144)
+  })
+
   it('matches the longest model prefix, not the first', () => {
     expect(resolveContextWindowTokens('openai', 'gpt-4-turbo-2024')).toBe(128_000)
     expect(resolveContextWindowTokens('openai', 'gpt-4')).toBe(8_192)

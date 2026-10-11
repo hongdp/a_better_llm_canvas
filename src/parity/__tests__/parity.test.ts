@@ -29,7 +29,7 @@ import {
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
 import { buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
 import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, diffTailParts, pinnedUpdates, type RenderableDoc, type DynamicContextOptions, type TailParts, type SentTail } from '../../hooks/chat/dynamicContext'
-import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking, geminiThinking } from '../../utils/reasoningEffort'
+import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking, geminiThinking, moonshotThinking } from '../../utils/reasoningEffort'
 import { planHistoryUnits, summarizableHistory, historyWindow, transcriptWeight, type HistoryEntry, type TurnTranscript } from '../../utils/turnTranscripts'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
 import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
@@ -491,7 +491,7 @@ const MODULES: Module[] = [
       build_chapter_index: run(buildChapterIndex, [[BOOK, 'd2'], [BOOK, 'd2', { agentTools: true, markers: { d1: 'in context', d3: 'read this turn' } }], [BOOK, null], [[BOOK[0]], 'd1'], [BIG_BOOK, 'b0', { agentTools: true }], [BIG_BOOK, 'b40']]),
       pack_chapters_into_batches: run(packChaptersIntoBatches, [[BOOK, 100], [BOOK, 10], [[], 50], [BOOK, 100000]]),
       analyze_batch_tokens: run(() => ANALYZE_BATCH_TOKENS, [[]]),
-      analyze_batch_chars: run(analyzeBatchChars, [['grok', 1], ['grok', 0], ['anthropic', 0.5], ['nope', 0.9], ['ollama', 1.5]])
+      analyze_batch_chars: run(analyzeBatchChars, [['grok', 1], ['grok', 0], ['anthropic', 0.5], ['nope', 0.9], ['ollama', 1.5], ['moonshot', 1]])
     }
   },
   {
@@ -591,7 +591,7 @@ const MODULES: Module[] = [
   {
     module: 'context_window',
     cases: {
-      resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0]]),
+      resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0], ['moonshot', 'kimi-k3'], ['moonshot', 'kimi-k2.7-code'], ['moonshot', '']]),
       estimate_tokens: run(estimateTokens, [[''], ['hello world'], ['你好世界'], ['mixed 中文 text'], ['a']]),
       tokens_to_chars: run(tokensToChars, [[1000, 0], [1000, 1], [1000, 0.5], [1000, 2], [1000, -1], [7, 0.3]]),
       history_budget_chars: run(historyBudgetChars, [[{ contextTokens: 131072, maxOutputTokens: 16384, fixedTokens: 30000, cjkRatio: 0.8 }], [{ contextTokens: 32768, maxOutputTokens: 16384, fixedTokens: 20000, cjkRatio: 0 }], [{ contextTokens: 200000, maxOutputTokens: 4096, fixedTokens: 0, cjkRatio: 0.123 }]]),
@@ -601,7 +601,7 @@ const MODULES: Module[] = [
   {
     module: 'provider_profile',
     cases: {
-      get_cache_profile: run(getCacheProfile, [['grok'], ['ollama'], ['anthropic'], ['openai'], ['gemini'], ['runpod'], ['nope']]),
+      get_cache_profile: run(getCacheProfile, [['grok'], ['ollama'], ['anthropic'], ['openai'], ['gemini'], ['runpod'], ['nope'], ['moonshot']]),
       target_prompt_tokens: run(targetPromptTokens, [[getCacheProfile('grok'), 256000], [getCacheProfile('grok'), 131072], [getCacheProfile('ollama'), 262144]]),
       uses_responses_api: run(usesResponsesApi, [['grok', ''], ['openai', 'https://api.openai.com/v1'], ['openai', 'https://API.openai.com'], ['openai', 'https://api.openai.com.evil.example/v1'],
         ['openai', 'http://127.0.0.1:8090/v1'], ['openai', ''], ['ollama', 'https://api.openai.com/v1'], ['anthropic', 'https://api.anthropic.com/v1']]),
@@ -610,7 +610,7 @@ const MODULES: Module[] = [
   {
     module: 'protocol_choice',
     cases: {
-      resolve_document_protocol: run(resolveDocumentProtocol, [['grok', undefined], ['grok', 'tools'], ['ollama', 'auto' as DocumentProtocol], ['runpod', 'markup'], ['openai', undefined], ['gemini', 'auto' as DocumentProtocol], ['weird', undefined]])
+      resolve_document_protocol: run(resolveDocumentProtocol, [['grok', undefined], ['grok', 'tools'], ['ollama', 'auto' as DocumentProtocol], ['runpod', 'markup'], ['openai', undefined], ['gemini', 'auto' as DocumentProtocol], ['weird', undefined], ['moonshot', undefined]])
     }
   },
   {
@@ -791,14 +791,17 @@ const MODULES: Module[] = [
     cases: {
       supported_reasoning_efforts: run(supportedReasoningEfforts, [
         ['grok', 'grok-4.20-0309-reasoning'], ['grok', 'grok-4.7'], ['grok', 'grok-4.5'], ['grok', 'grok-3-mini'], ['grok', 'grok-3'],
+        ['moonshot', 'kimi-k3'], ['moonshot', 'kimi-k2.6'], ['moonshot', 'kimi-k2.7-code'],
         ...['gpt-5', 'gpt-5-mini', 'gpt-5-2025-08-07', 'gpt-5-codex', 'gpt-5.1', 'gpt-5.1-codex', 'gpt-5.10', 'gpt-5.2', 'gpt-5.6-luna', 'gpt-6.1-sol', 'o3', 'o4-mini', 'gpt-4o', 'gpt-4.1'].map(m => ['openai', m] as [string, string]), ['gemini', 'gemini-2.5-flash'], ['gemini', 'gemini-1.5-pro'], ['gemini', 'gemini-3.8-flash'], ['gemini', 'gemini-3.1-pro-preview'], ['gemini', 'gemini-flash-latest'], ['gemini', 'gemini-10-flash'], ['gemini', 'gemma-4-31b-it'], ['ollama', 'x'], ['nope', 'y'],
         ...['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5', 'claude-fable-5-1', 'claude-opus-4-8', 'claude-opus-4-7', 'claude-opus-4-6',
           'claude-sonnet-4-6', 'claude-opus-4-5-20251101', 'claude-haiku-4-5-20251001', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet'].map(m => ['anthropic', m] as [string, string])
       ]),
       resolve_reasoning_effort: run(resolveReasoningEffort, [
         ['anthropic', 'claude-sonnet-5-5', undefined], ['anthropic', 'claude-sonnet-5-5', 'default'], ['anthropic', 'claude-sonnet-5-5', 'xhigh'],
-        ['anthropic', 'claude-opus-4-6', 'xhigh'], ['anthropic', 'claude-3-5-sonnet', 'high'], ['grok', 'grok-4.7', 'minimal'], ['openai', 'gpt-5', 'minimal'], ['openai', 'gpt-5.1', 'minimal'], ['openai', 'gpt-6.1-sol', 'xhigh'], ['openai', 'gpt-4o', 'low']
+        ['anthropic', 'claude-opus-4-6', 'xhigh'], ['anthropic', 'claude-3-5-sonnet', 'high'], ['grok', 'grok-4.7', 'minimal'], ['openai', 'gpt-5', 'minimal'], ['openai', 'gpt-5.1', 'minimal'], ['openai', 'gpt-6.1-sol', 'xhigh'], ['openai', 'gpt-4o', 'low'],
+        ['moonshot', 'kimi-k3', undefined], ['moonshot', 'kimi-k3', 'xhigh'], ['moonshot', 'kimi-k3', 'medium'], ['moonshot', 'kimi-k2.6', 'high']
       ]),
+      moonshot_thinking: run(moonshotThinking, [['kimi-k3', 'low'], ['kimi-k3', 'xhigh'], ['kimi-k3', null], ['kimi-k2.6', null], ['kimi-k2.6', 'high'], ['kimi-k2.7-code', null], ['moonshot-v1-8k', 'low']]),
       gemini_thinking: run(geminiThinking, [['gemini-3.8-flash', null], ['gemini-3.8-flash', 'low'], ['gemini-pro-latest', 'high'], ['gemini-2.5-pro', 'medium'], ['gemini-2.5-flash', 'minimal'], ['gemini-1.5-pro', 'low'], ['gemma-4-31b-it', 'low']]),
       reasoning_budget_tokens: run(reasoningBudgetTokens, [['minimal'], ['low'], ['medium'], ['high'], ['xhigh']]),
       anthropic_thinking: run(anthropicThinking, [

@@ -35,6 +35,9 @@ _SUPPORT_TABLE: Dict[str, List[Dict[str, Any]]] = {
     ],
     "ollama": [],
     "runpod": [],
+    "moonshot": [
+        {"match": re.compile(r"kimi-k3", re.I), "levels": ["default", "low", "high", "xhigh"]},
+    ],
 }
 
 _THINKING_BUDGET_TOKENS = {"minimal": 512, "low": 1024, "medium": 4096, "high": 16384, "xhigh": 32768}
@@ -69,6 +72,16 @@ def anthropic_thinking(model: str, effort: Optional[str], max_tokens: int) -> Di
         return {"thinking": {"type": "adaptive", "display": "summarized"}, "output_config": {"effort": "low" if effort == "minimal" else effort}}
     budget = min(_THINKING_BUDGET_TOKENS[effort], math.floor(max_tokens / 2))
     return {"thinking": {"type": "enabled", "budget_tokens": budget}} if budget >= 1024 else {}
+
+
+def moonshot_thinking(model: str, effort: Optional[str]) -> Dict[str, Any]:
+    """Port of moonshotThinking: kimi-k3's reasoning_effort (xhigh sent as max), k2.6's thinking kept across turns."""
+    name = model or ""
+    if re.search(r"kimi-k3", name, re.I):
+        return {"reasoning_effort": "max" if effort == "xhigh" else effort} if effort else {}
+    if re.search(r"kimi-k2\.6", name, re.I):
+        return {"thinking": {"type": "enabled", "keep": "all"}}
+    return {}
 
 
 def gemini_thinking(model: str, effort: Optional[str]) -> Optional[Dict[str, Any]]:

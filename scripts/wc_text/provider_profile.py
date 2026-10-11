@@ -13,6 +13,8 @@ PROFILES: Dict[str, Dict[str, Any]] = {
                "cachedTokensPath": ["prompt_tokens_details", "cached_tokens"], "exclusiveCache": False, "windowDiscovered": False},
     "gemini": {"mode": "automatic", "maxBreakpoints": 0, "cachedTokensPath": ["cachedContentTokenCount"],
                "exclusiveCache": False, "windowDiscovered": False},
+    "moonshot": {"mode": "automatic", "maxBreakpoints": 0, "cachedTokensPath": ["prompt_tokens_details", "cached_tokens"],
+                 "exclusiveCache": False, "windowDiscovered": False},
 }
 UNKNOWN_PROFILE: Dict[str, Any] = {"mode": "none", "maxBreakpoints": 0, "exclusiveCache": False, "windowDiscovered": False}
 

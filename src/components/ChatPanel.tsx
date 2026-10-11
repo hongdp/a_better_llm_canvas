@@ -107,7 +107,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   }, [setRoleplayMode, setRoleplayConfig])
 
   const getProviderLabel = (prov: string) => {
-    return prov === 'grok' ? 'Grok' : prov.charAt(0).toUpperCase() + prov.slice(1)
+    return prov === 'grok' ? 'Grok' : prov === 'moonshot' ? 'Kimi' : prov.charAt(0).toUpperCase() + prov.slice(1)
   }
 
   const getResponderName = (msg: typeof messages[0]) => {
@@ -533,7 +533,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                 {roleplayMode && roleplayConfig
                   ? `What do you do, ${roleplayConfig.characterName}?`
                   : t.app.instructPlaceholder
-                    .replace('{provider}', activeProvider === 'grok' ? 'Grok' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1))
+                    .replace('{provider}', activeProvider === 'grok' ? 'Grok' : activeProvider === 'moonshot' ? 'Kimi' : activeProvider.charAt(0).toUpperCase() + activeProvider.slice(1))
                     .replace('{model}', activeConfig.model)
                 }
               </span>

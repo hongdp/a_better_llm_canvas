@@ -73,6 +73,27 @@
      0
     ],
     "output": 256000
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k3"
+    ],
+    "output": 1048576
+   },
+   {
+    "input": [
+     "moonshot",
+     "kimi-k2.7-code"
+    ],
+    "output": 262144
+   },
+   {
+    "input": [
+     "moonshot",
+     ""
+    ],
+    "output": 262144
    }
   ],
   "estimate_tokens": [

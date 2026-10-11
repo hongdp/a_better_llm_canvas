@@ -82,6 +82,7 @@ export const ANALYZE_BATCH_TOKENS: Record<string, number> = {
   anthropic: 120_000, // 200k window
   openai: 80_000, // 128k window
   grok: 140_000, // long-context price above 200k
+  moonshot: 140_000, // 262k window on the K2 line
   ollama: 20_000 // local models: assume small windows
 }
 

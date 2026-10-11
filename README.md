@@ -10,7 +10,7 @@
 [![CI](https://github.com/hongdp/a_better_llm_canvas/actions/workflows/ci.yml/badge.svg)](https://github.com/hongdp/a_better_llm_canvas/actions/workflows/ci.yml)
 [![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](#install-from-a-release)
-[![Claude · OpenAI · Gemini · Grok · local](https://img.shields.io/badge/models-Claude%20%7C%20OpenAI%20%7C%20Gemini%20%7C%20Grok%20%7C%20local-6c47ff.svg)](#supported-models)
+[![Claude · OpenAI · Gemini · Grok · Kimi · local](https://img.shields.io/badge/models-Claude%20%7C%20OpenAI%20%7C%20Gemini%20%7C%20Grok%20%7C%20Kimi%20%7C%20local-6c47ff.svg)](#supported-models)
 
 [Install](#install-from-a-release) · [How it works](#how-it-works) · [Features](#features) · [Develop](#develop-from-source) · [Docs](#documentation)
 
@@ -98,6 +98,7 @@ for HTTPS, other devices and the server options.
 | **OpenAI** | Responses API at api.openai.com (GPT-5.x, GPT-6.x, o-series) with reasoning carried across steps and turns |
 | **Google Gemini** | Gemini 3.x with thinking levels; thoughts streamed as reasoning |
 | **xAI Grok** | Responses API with encrypted reasoning replayed; repetition checks |
+| **Moonshot Kimi** | kimi-k3 (1M context, effort low/high/max) and the K2 line; reasoning carried through tool-calling loops; `.ai` and `.cn` hosts |
 | **Local / rented** | Any OpenAI-compatible server: Ollama, llama.cpp, a RunPod pod |
 
 Model lists come from your key; reasoning effort is set per model, in the app.
