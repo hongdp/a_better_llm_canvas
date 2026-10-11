@@ -23,6 +23,7 @@ from wc_text.text import claims_own_write, is_blank_content
 from wc_text.tool_call_stream import call_signature
 
 from .registry import Tool, ToolRegistry
+from .tools.book_reads import settle_deletion
 from .types import ToolContext, seen_chapters, writes_so_far
 
 UNKNOWN_TOOL_KIND = "read"
@@ -141,10 +142,20 @@ class AgentRun:
         self.guard_floor = len(self.step_log)
         await self._loop()
 
-    async def resume_with_answer(self, answer: str) -> None:
-        """The user answered `ask_user`: the answer is the next message, and the run goes on."""
+    async def resume_with_answer(self, answer: str, confirmed: bool = False) -> None:
+        """The user answered a question: the answer is the next message, and the run goes on.
+
+        A question delete_chapter asked is settled here first: the chapter is
+        deleted only when the Delete button sent the answer (`confirmed`), and
+        the message says what happened, because the CHAPTER INDEX the model
+        has still shows it.
+        """
+        question = self.ctx.run.question or {}
         self.ctx.run.question = None
-        self.messages = [*self.messages, {"role": "user", "content": f"The user answered: {answer}"}]
+        content = f"The user answered: {answer}"
+        if question.get("confirm"):
+            content += "\n\n" + await settle_deletion(self.ctx, question["confirm"], confirmed)
+        self.messages = [*self.messages, {"role": "user", "content": content}]
         self._next = {"messages": self.messages, "step": self.steps_taken, "final": steps_left(self.budgets, self.steps_taken) == 1}
         await self.resume()
 
@@ -219,11 +230,14 @@ class AgentRun:
             return
 
         self.ctx.run.step = self.steps_taken - 1
+        # Deletions after everything, renames included: they renumber the chapters after them.
         last = lambda inv: bool((self.registry.get(inv["name"]) or Tool("", "", {}, "read", None)).run_last)  # noqa: E731
+        renumbers = lambda inv: bool((self.registry.get(inv["name"]) or Tool("", "", {}, "read", None)).renumbers)  # noqa: E731
         writes = [inv for inv in collected["invocations"] if self._kind_of(inv) == "write" and not last(inv)]
         planned = plan_writes(writes)
         to_run = ([inv for inv in collected["invocations"] if self._kind_of(inv) != "write" and not last(inv)]
-                  + planned["run"] + [inv for inv in collected["invocations"] if last(inv)])
+                  + planned["run"] + [inv for inv in collected["invocations"] if last(inv) and not renumbers(inv)]
+                  + [inv for inv in collected["invocations"] if last(inv) and renumbers(inv)])
         self.stray += collected["strayMarkup"] + planned["dropped"]
         self.step_dropped = collected["strayMarkup"] + planned["dropped"]
         if js_trim(collected["chatText"]):

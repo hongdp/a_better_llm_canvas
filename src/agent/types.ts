@@ -12,7 +12,7 @@ import type { AttachmentMeta } from '../utils/attachments'
 import type { WebPage, WebSearchResult, WebImageResult } from '../utils/webText'
 import type { JsonSchema, ToolSpec } from '../utils/documentTools'
 import type { AppState } from '../store/types'
-import type { AgentTouchedChapter } from '../types/chat'
+import type { AgentTouchedChapter, ChapterDeletionConfirm } from '../types/chat'
 import type { PolishOutcome } from './polish'
 import type { AnalyzeChapter, AnalyzeOutcome, AnalyzePlan } from './analyzeBook'
 import { hashContent } from '../utils/contextLedger'
@@ -277,6 +277,8 @@ export interface AskedQuestion {
   question: string
   /** Choices, the recommended one first; the user may also answer freely. */
   options: string[]
+  /** Asked by delete_chapter: the deletion that only the Delete button carries out. */
+  confirm?: ChapterDeletionConfirm
 }
 
 /** A book's chapter list as a comparable string: ids and titles, in order. */
@@ -426,6 +428,12 @@ export interface AgentTool<A = Record<string, unknown>> extends ToolSpec {
    * reply from the index as it was.
    */
   runLast?: boolean
+  /**
+   * Renumbers the chapters after the one it removes: runs after every other
+   * runLast call too, so a rename in the same reply ("#10 → 第7章…") still
+   * means the chapter the model saw as #10.
+   */
+  renumbers?: boolean
   /** Offered this step? (a selection exists, the book is loaded, …) */
   isAvailable(ctx: ToolContext): boolean
   /**

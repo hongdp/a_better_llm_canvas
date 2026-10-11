@@ -5,6 +5,7 @@ import type { ToolInvocation, ToolResult } from '../types'
 import { fakeContext } from './fakeContext'
 import { resolveChapter } from '../chapters'
 import { chapterOutline } from '../types'
+import { hashContent } from '../../utils/contextLedger'
 
 const call = (name: string, args: Record<string, unknown> | null): ToolInvocation => ({ id: `c-${name}`, name, args, source: 'native' })
 const run = async (r: ToolResult | Promise<ToolResult>) => r
@@ -356,20 +357,31 @@ describe('delete_chapter: only what nothing would be lost from', () => {
     expect(r.content).not.toContain('moved up')
   })
 
-  it('refuses a chapter with text, which only the user may delete', async () => {
+  it('asks the user about a chapter with text — Delete / Keep, and the turn ends — and deletes nothing itself', async () => {
     const f = book()
     const r = await del(f, 2)
-    expect(r).toMatchObject({ ok: false, retryable: false })
-    expect(r.content).toContain('ask them with ask_user')
+    expect(r).toMatchObject({ ok: true, trace: '🗑 asked to delete #2 "大纲"' })
+    expect(r.content).toContain('Delete / Keep')
     expect(f.removed).toEqual([])
+    expect(f.ctx.run.question).toEqual({
+      question: 'Delete #2 "大纲" (7 characters)?',
+      options: [],
+      confirm: { action: 'delete_chapter', documentId: 'doc-2', title: '大纲', number: 2, chars: 7, contentHash: hashContent('<p>outline</p>') }
+    })
+    // One question at a time.
+    const second = await del(f, 4)
+    expect(second).toMatchObject({ ok: false })
+    expect(second.content).toContain('one question is asked at a time')
   })
 
-  it('refuses a chapter it created once the user has typed into it', async () => {
+  it('asks, rather than deletes, a chapter it created once the user has typed into it', async () => {
     const f = book()
     await run(updateDocumentTool.invoke(call('update_document', { new_chapter: '新章', html: '<p>the run wrote this</p>' }), f.ctx))
     const id = [...f.ctx.run.created][0]
     f.userEdits(id, '<p>the user started writing here</p>')
-    expect((await del(f, '新章')).ok).toBe(false)
+    const r = await del(f, '新章')
+    expect(r.trace).toBe('🗑 asked to delete #5 "新章"')
+    expect(f.ctx.run.question?.confirm?.documentId).toBe(id)
     expect(f.removed).toEqual([])
   })
 
@@ -386,9 +398,9 @@ describe('delete_chapter: only what nothing would be lost from', () => {
     expect(r.ok).toBe(false)
     expect(r.content).toContain('could not be loaded')
     expect(f.removed).toEqual([])
-    // Loaded, it has text: refused for that.
+    // Loaded, it has text: the user is asked.
     f.ensureLoaded.mockRestore()
     const g = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-2', title: 'lazy', content: '' }], lazy: { 'doc-2': '<p>real text</p>' } })
-    expect((await del(g, 2)).content).toContain('has text')
+    expect((await del(g, 2)).content).toContain('has text, so the user is asked to confirm')
   })
 })

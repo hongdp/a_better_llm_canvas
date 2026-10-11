@@ -900,6 +900,43 @@ export const editParagraphsTool = defineTool<{ chapter: unknown; edits: Paragrap
  *   a chapter this run created can do that: its text is the model's own, so
  *   a rejected review loses nothing of the user's.
  */
+/**
+ * A rename carries the chapter's leading <h1> along when it read the old
+ * title — the same linkage as renaming in the editor's header
+ * (`contentWithRenamedHeading`).
+ *
+ * Problem: renumbering the chapters after a deleted one took two calls per
+ *   chapter — rename_chapter, then an edit of ¶1 — 30 calls for 15
+ *   chapters (2026-10-11).
+ * Fix: a heading that equals the old title follows the rename. Any other
+ *   heading is the writer's, and stays (the result says what it reads). It
+ *   is not a reviewable change, as the rename itself is not; a chapter the
+ *   user changed meanwhile, or one whose heading has a pending diff, is left
+ *   alone.
+ *
+ * The run's working copy of the chapter, if it has one, gets the same
+ * heading, or its next write would put the old one back.
+ */
+function renameHeading(ctx: ToolContext, target: Target, title: string): boolean {
+  if (userEdited(ctx, target.id)) return false
+  const stored = storedContent(ctx, target.id)
+  if (leadingH1Text(stored) !== target.title.trim()) return false
+  const renamed = contentWithRenamedHeading(stored, title)
+  if (renamed === null) return false
+  const st = ctx.run.docs.get(target.id)
+  if (st) {
+    const follow = (html: string) => contentWithRenamedHeading(html, title) ?? html
+    st.original = follow(st.original)
+    st.base = follow(st.base)
+    st.reviewBase = follow(st.reviewBase)
+    st.html = follow(st.html)
+    commitHtml(ctx, target.id, st.dirty ? diffHtml(st.reviewBase, st.html) : st.original)
+  } else {
+    commitHtml(ctx, target.id, renamed)
+  }
+  return true
+}
+
 export const renameChapterTool = defineTool<{ chapter: unknown; title: string; replace: boolean }>({
   name: 'rename_chapter',
   // Problem: replayed 2026-10-06, grok with no reasoning wanted to "create"
@@ -954,15 +991,19 @@ export const renameChapterTool = defineTool<{ chapter: unknown; title: string; r
       if (source.title === title) {
         return { ok: true, content: `${citeChapter(source)} already has that title.`, trace: `✏️ ${citeChapter(source)} already so titled` }
       }
-      ctx.document.rename(source.id, title)
-      touch(ctx, { ...source, title }, 'renamed', 0, 0)
-      const heading = leadingH1Text(storedContent(ctx, source.id))
-      return {
-        ok: true,
-        content: `Renamed #${source.number} from "${source.title}" to "${title}".` +
-          (heading && heading !== title ? ` Its first heading still reads "${heading}"; change it with an edit if it should match.` : ''),
-        trace: `🏷 renamed #${source.number} "${source.title}" → "${title}"`
-      }
+      return withLoaded(ctx, source, () => {
+        ctx.document.rename(source.id, title)
+        touch(ctx, { ...source, title }, 'renamed', 0, 0)
+        const headingMoved = renameHeading(ctx, source, title)
+        const heading = leadingH1Text(storedContent(ctx, source.id))
+        return {
+          ok: true,
+          content: `Renamed #${source.number} from "${source.title}" to "${title}".` +
+            (headingMoved ? ' Its first heading, which read the old title, now reads the new one.'
+              : heading && heading !== title ? ` Its first heading still reads "${heading}"; change it with an edit if it should match.` : ''),
+          trace: `🏷 renamed #${source.number} "${source.title}" → "${title}"`
+        }
+      })
     }
 
     const holder = { ...chapters[holderIndex], number: holderIndex + 1 }

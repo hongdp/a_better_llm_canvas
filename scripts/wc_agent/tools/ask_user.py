@@ -24,7 +24,7 @@ async def _execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any])
 
 ask_user_tool = Tool(
     name="ask_user",
-    description=("Ask the user one question and wait for the answer. Use it only when the answer changes what you would do: the request can be read two ways, or the next step is hard to undo (deleting a chapter with text, restructuring the outline, discarding a draft). "
+    description=("Ask the user one question and wait for the answer. Use it only when the answer changes what you would do: the request can be read two ways, or the next step is hard to undo (restructuring the outline, discarding a draft). delete_chapter asks for itself; do not ask before calling it. "
                  'Never use it to ask permission for ordinary work, to confirm an obvious next step, or to announce progress. Put the choice you recommend first and end its label with "(Recommended)"; the user can also type their own answer.'),
     parameters={"type": "object", "properties": {
         "question": {"type": "string", "description": "The question, in the language of the conversation."},

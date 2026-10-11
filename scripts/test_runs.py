@@ -437,6 +437,32 @@ def test_ask_user_pauses_the_run_and_the_answer_continues_it(book, monkeypatch):
     assert any(e.get("kind") == "paused" and e["pause"]["reason"] == "question" for e in events if e.get("type") == "run")
 
 
+def test_a_chapter_with_text_is_deleted_only_by_the_delete_button(book, monkeypatch):
+    import server_documents
+
+    def scripted():
+        return Scripted([{"text": "", "calls": [("d1", "delete_chapter", '{"chapter":"2"}')]}, "好。\n<doc_status>unchanged</doc_status>"])
+
+    async def main(answer, confirm):
+        provider = scripted()
+        monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        pause = dict(run.pause or {})
+        assert book.answer(run, answer, confirm=confirm)
+        await settle(run)
+        return run, pause, provider
+    # A typed answer keeps the chapter, whatever it says.
+    run, pause, provider = asyncio.run(main("yes delete it", False))
+    assert pause["reason"] == "question" and pause["confirm"]["documentId"] == "doc-2" and pause["confirm"]["chars"] == 3
+    assert [d["id"] for d in server_documents.list_documents("alice", "book-1")] == ["doc-1", "doc-2"]
+    assert '#2 "Chapter 2" was not deleted.' in provider.requests[1]["messages"][-1]["content"]
+    # The Delete button deletes it, and the model is told.
+    run, pause, provider = asyncio.run(main("删除 #2「Chapter 2」。", True))
+    assert run.status == "done" and [d["id"] for d in server_documents.list_documents("alice", "book-1")] == ["doc-1"]
+    assert '#2 "Chapter 2" was deleted, as the user confirmed.' in provider.requests[1]["messages"][-1]["content"]
+
+
 def test_a_user_edit_during_the_run_is_reported_in_the_next_results(book, monkeypatch):
     provider = Scripted([{"text": "", "calls": [("c1", "read_chapter", '{"chapters":["2"],"format":"html"}')]},
                          {"text": "", "calls": [("c2", "grep", '{"pattern":"x"}')]}, "done.\n<doc_status>unchanged</doc_status>"])

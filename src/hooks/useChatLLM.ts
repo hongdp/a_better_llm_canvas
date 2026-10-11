@@ -50,7 +50,8 @@ import { clearPendingSave } from '../store/syncRuntime'
 import { mergeVersions } from '../store/versionMerge'
 import { applyRunEvent, ensureRunMessages, bubbleStillWaiting, type RunLive, runUsageDelta, type RunUsage } from './chat/serverRunEvents'
 import { freshnessMarkers, recordSeen, type SeenRecord } from '../agent/freshness'
-import type { AgentTurnRecord } from '../types/chat'
+import type { AgentTurnRecord, ChapterDeletionConfirm } from '../types/chat'
+import { currentTranslation } from '../i18n'
 import type { ThinkingBlock } from '../types/llm'
 import { WEB_TOOLS } from '../agent/tools/web'
 import { attachmentParagraphsOf, webAvailable, webImages, webRead, webSearch } from '../services/attachments'
@@ -1564,14 +1565,35 @@ export function useChatLLM({
   }, [activeDocumentId])
 
   /** The user's answer to a server run paused on `ask_user` (components/RunControls). */
-  const handleRunAnswer = useCallback(async (runId: string, answer: string) => {
+  const handleRunAnswer = useCallback(async (runId: string, answer: string, confirm = false) => {
     const s = useAppStore.getState()
     if (!s.activeBookId) return
     try {
-      await answerServerRun(s.activeBookId, runId, answer)
+      await answerServerRun(s.activeBookId, runId, answer, confirm)
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e))
     }
+  }, [])
+
+  /**
+   * The Delete button of a question delete_chapter asked in a tab-run (the
+   * turn has ended; the answer is sent as the next message after this).
+   * Deletes the chapter only while it still has the text the question was
+   * about; true when it is gone and the answer may be sent.
+   */
+  const confirmChapterDeletion = useCallback(async (confirm: ChapterDeletionConfirm): Promise<boolean> => {
+    let s = useAppStore.getState()
+    if (!s.documents.some(d => d.id === confirm.documentId)) return true
+    await s.ensureDocumentContents([confirm.documentId])
+    s = useAppStore.getState()
+    const doc = s.documents.find(d => d.id === confirm.documentId)
+    if (!doc) return true
+    if (doc.contentLoaded === false || hashContent(doc.content) !== confirm.contentHash || s.documents.length <= 1) {
+      setErrorMsg(currentTranslation().agent.deleteChanged)
+      return false
+    }
+    s.deleteDocument(confirm.documentId)
+    return true
   }, [])
 
   /** Queue and pause controls under a bubble (components/RunControls). */
@@ -2564,6 +2586,7 @@ export function useChatLLM({
     handleResubmitMessage,
     handleStopGeneration,
     handleRunAction,
-    handleRunAnswer
+    handleRunAnswer,
+    confirmChapterDeletion
   }
 }

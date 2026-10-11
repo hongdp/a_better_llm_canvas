@@ -124,7 +124,13 @@ export const zh: TranslationDictionary = {
     resume: '继续',
     abandon: '停止',
     answer: '回答',
-    answerPlaceholder: '或者输入你自己的回答…'
+    answerPlaceholder: '或者输入你自己的回答…',
+    confirmDelete: (number: number, title: string, chars: number) => `删除 #${number}「${title}」（${chars} 字）？`,
+    deleteChapter: '删除',
+    keepChapter: '保留',
+    deletedAnswer: (number: number, title: string) => `删除 #${number}「${title}」。`,
+    keptAnswer: (number: number, title: string) => `保留 #${number}「${title}」。`,
+    deleteChanged: '这一章在提问之后又被改过，所以没有删除。如果仍要删，请重新让它删。'
   },
   sidebar: {
     collapse: '收起侧边栏',

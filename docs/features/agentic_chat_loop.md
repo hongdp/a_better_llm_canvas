@@ -83,9 +83,11 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   such a write marks the reply as tool-protocol, and tags beside it are
   dropped as stray. A write that only exists as a call (polish, delete)
   does not: a `<canvas>` beside a `delete_chapter` is applied.
-- A tool marked `runLast` (`delete_chapter`) runs after every other call
-  of its reply. The model numbered the other calls from the index as it
-  was, before the deletion renumbered it.
+- A tool marked `runLast` (`delete_chapter`, `rename_chapter`) runs after
+  every other call of its reply, and one marked `renumbers`
+  (`delete_chapter`) after those too. The model numbered every call from
+  the index as it was, before the deletion renumbered it: "delete #9,
+  rename #10 to 第7章…" must rename what was #10.
 - The offered set is fixed at the run's first step. The tools array is part
   of every request, so changing it would break the cached prefix.
 - With `agentTools` off, only the tag-form writes remain: the pre-loop
@@ -197,9 +199,20 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
   from: a chapter this run created (unless the user typed into it since) or
   an empty one. It refuses the turn's start chapter, the book's last
   chapter, and a server chapter whose text has not loaded ('' there is not
-  "empty"). A chapter with text is the user's to delete; the loop cannot ask
-  for confirmation yet (`approval`, phase 3), so the tool says to ask the
-  user. The result tells the model the chapters after it moved up.
+  "empty"). A chapter with text goes only on the user's confirmation
+  (2026-10-11): the call ends the turn — a server run pauses — with Delete /
+  Keep buttons (`AskedQuestion.confirm`, `ChapterDeletionConfirm`). Only
+  the Delete button deletes; a typed answer never does. The tab deletes it
+  (`confirmChapterDeletion`) and then sends the answer; a server run gets
+  `/answer` with `confirm: true` and deletes it in `resume_with_answer`
+  (`settle_deletion`), telling the model what happened. Either way the
+  chapter must still have the text it had when asked (the stored HTML's
+  hash), or it is kept. The result tells the model the chapters after it
+  moved up.
+- **Renumbering** after a deletion is `rename_chapter` on each chapter after
+  it, in one reply. A rename carries the chapter's leading `<h1>` along when
+  it read the old title (`renameHeading`, the editor header's linkage), so
+  each chapter is one call, not a rename and an edit.
 - **Renaming, and undoing a wrongly titled new chapter** (user request,
   2026-10-06). `rename_chapter` renames an existing chapter. Its description
   says to rename only what the user asked for, or a chapter added this turn,
@@ -470,7 +483,7 @@ cached prefix and role alternation stay intact):
   the user may also type. A tab-run ends with the question as buttons under
   the bubble, and the answer is the next message; a server run pauses with
   the question and continues with the answer (`/answer`). `delete_chapter`
-  now points at it for a chapter with text.
+  asks for itself, with fixed Delete / Keep buttons (see Deleting).
 - **What moved while it worked** (server runs): the user's edit to a chapter
   the model has seen, a change to the chapter list, and requests waiting in
   the queue arrive as reminders in the next results, not only as a refused
@@ -1826,8 +1839,8 @@ interface AgentTouchedChapter {
 | `read_chapter` | read | native | `{chapters: [numbers or titles], format: "text" \| "html", paragraphs?: "40-60" \| "45" \| "81-" \| "-15"}` ("-15" is the first 15: grok asked that way and was refused, 2026-10-06). Text returns **numbered paragraphs** (`¶12 …`, headings `# …`, images `[image]`); html returns exact block HTML, unnumbered (SEARCH copies it), and marks the chapter `htmlShown`. A long chapter is returned in parts of ≤20k chars ending at a whole paragraph, with the range to continue from. A text read of a whole chapter already in context is refused as redundant in the first two steps; a range read never is. A repeat of the same read is refused only within one step of the first |
 | `grep` | read | native | regex over every chapter's text, or only those named (lazy contents loaded first). Output "snippets" (chapter, offset, context) or "chapters" (counts). A broken regex is searched literally. Its trace names the scope ("in the whole book" or "in #13"); "→ 30 in 1 chapter(s)" without it read as "grep only searches one chapter". Chapters whose text could not be loaded are listed as not searched, not reported as having no match. Replaced `search_book` (user request, 2026-10-06): grep is the search interface models already know |
 | `open_chapter` | navigate | native | ONLY to show the user a chapter (`setActiveDocumentId`); writing never needs it (D2). Says "already open" when it is. Refused while a selection rewrite is pending |
-| `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one; anything with text is refused ("ask the user"). Runs last in its reply; reports the renumbering (§0.4) |
-| `rename_chapter` | write | native (no tag form) | `{chapter, title, replace?}`. Renames an existing chapter (only what the user asked for, or one added this turn); a taken title is refused; a missing chapter is answered with how one is added. `replace=true` moves a chapter created this run into the one with that title (in place, reviewable) and removes it (§0). Runs last in its reply |
+| `delete_chapter` | write | native (no tag form) | Deletes a chapter created this run or an empty one at once; one with text only after the user presses Delete (the turn ends asking). Runs after every other call of its reply, renames included; reports the renumbering (§0.4) |
+| `rename_chapter` | write | native (no tag form) | `{chapter, title, replace?}`. Renames an existing chapter (only what the user asked for, or one added this turn); a taken title is refused; a missing chapter is answered with how one is added. `replace=true` moves a chapter created this run into the one with that title (in place, reviewable) and removes it (§0). A leading `<h1>` that read the old title follows the rename. Runs last in its reply |
 | `polish_chapter` | write | native (no tag form) | D9. Only when the user asks. Rewrites the chapter chunk by chunk with the polish model, as a reviewable diff, and makes the model read it again before editing |
 | `analyze_book` | read | native | **Since 2026-10-10 `read` with a `task` ([read_and_list.md](read_and_list.md)); the old name is an alias.** D7. Notes from reading the whole book (or the chapters named) in batches, one model call per batch, for a task that needs all of it at once. Batches are packed by `ANALYZE_BATCH_TOKENS` per provider (tokens, converted by the text's CJK share; under each window and long-context price line — 140k for grok, whose price doubles past 200k), and an attachment can be limited to `section` (one heading or a run, "第62–87章") or `paragraphs`. A run estimated past 200,000 input tokens (`planAnalysis`) is not started: the model gets the estimate, asks the user with ask_user, and calls again with `confirmed: true` (the consent the retired toggle had; run-737f3d809b45 read a 2M-character attachment whole, 1.58M tokens, for a task that needed chapters 62–87). Stop ends it between batches, keeping the notes so far. |
 

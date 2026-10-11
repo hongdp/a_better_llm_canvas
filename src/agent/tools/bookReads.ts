@@ -835,17 +835,50 @@ export const openChapterTool = defineTool<{ chapter: unknown }>({
 // ── delete_chapter ──────────────────────────────────────────────────────────
 
 /**
- * Delete a chapter nothing would be lost from: one this run created (by
- * mistake — grok once created an empty "skip" chapter, 2026-10-06)
- * or an empty one. A chapter with text is the user's to delete; the loop has
- * no way yet to ask for their confirmation (spec §6, `approval`), so it says
- * so instead.
+ * Delete a chapter. One nothing would be lost from — created by this run
+ * (by mistake: grok once created an empty "skip" chapter, 2026-10-06) or
+ * empty — goes at once.
+ *
+ * A chapter with text goes only on the user's confirmation.
+ * Problem: it was refused outright, so a turn that merged #9 into #8 ended
+ *   with "only you can delete #9" and the user had to find and delete it by
+ *   hand before the model could renumber the chapters after it (2026-10-11).
+ * Fix: the call asks. The turn ends (a server run pauses) with Delete / Keep
+ *   buttons under the bubble; only the Delete button deletes — a typed answer
+ *   never does, so the model's reading of the user's words decides nothing —
+ *   and only if the chapter still has the text it had when asked
+ *   (`ChapterDeletionConfirm.contentHash`). The tab deletes it before sending
+ *   the answer as the next message; a server run deletes it on /answer before
+ *   it continues (`resume_with_answer`).
  */
+function askToDelete(ctx: ToolContext, target: ResolvedChapter, content: string): ToolResult {
+  if (ctx.run.question) {
+    return {
+      ok: false,
+      retryable: false,
+      content: `${citeChapter(target)} was not deleted: the user is already being asked something this turn, and one question is asked at a time. Ask about this deletion after their answer.`,
+      trace: `🗑 delete ${citeChapter(target)} not asked — a question is already pending`
+    }
+  }
+  const chars = htmlToPlainText(content).length
+  ctx.run.question = {
+    question: `Delete ${citeChapter(target)} (${chars.toLocaleString('en-US')} characters)?`,
+    options: [],
+    confirm: { action: 'delete_chapter', documentId: target.id, title: target.title, number: target.number, chars, contentHash: hashContent(content) }
+  }
+  return {
+    ok: true,
+    content: `${citeChapter(target)} has text, so the user is asked to confirm: they see Delete / Keep buttons, and this turn ends here. ` +
+      `If they press Delete, the chapter is deleted before their answer reaches you and the chapters after it move up by one; otherwise it stays.`,
+    trace: `🗑 asked to delete ${citeChapter(target)}`
+  }
+}
+
 export const deleteChapterTool = defineTool<{ chapter: unknown }>({
   name: 'delete_chapter',
   description:
-    'Delete a chapter you created by mistake, or an empty chapter. A chapter that has text can only be deleted by the user — ask them with ask_user; never empty a chapter to get around this. ' +
-    'Deleting renumbers the chapters after it.',
+    'Delete a chapter. One you created in this turn, or an empty one, is deleted at once. A chapter with text is deleted only if the user confirms: the call shows them Delete / Keep buttons and ends this turn, and their answer tells you what happened — do not also ask with ask_user, and never empty a chapter to get around this. ' +
+    'Deleting renumbers the chapters after it. It runs after every other call of the same reply, so number those calls from the CHAPTER INDEX as you see it.',
   parameters: {
     type: 'object',
     properties: { chapter: { type: 'string', description: 'Its number in the CHAPTER INDEX, or its exact title.' } },
@@ -855,6 +888,7 @@ export const deleteChapterTool = defineTool<{ chapter: unknown }>({
   // After every other call of the reply: they were numbered from the index
   // as it was before this deletion.
   runLast: true,
+  renumbers: true,
   isAvailable: () => true,
   parse: raw => (raw && raw.chapter !== undefined ? { chapter: raw.chapter } : 'no chapter was named'),
   execute: async ({ chapter }, ctx): Promise<ToolResult> => {
@@ -877,9 +911,7 @@ export const deleteChapterTool = defineTool<{ chapter: unknown }>({
       if (!now || now.loaded === false) {
         return refuse(`${citeChapter(target)} could not be loaded, so it is not known to be empty. It was not deleted.`, 'not loaded')
       }
-      if (!isBlankContent(now.content)) {
-        return refuse(`${citeChapter(target)} has text. Only the user can delete a chapter with text: ask them with ask_user whether to, and tell them it is #${target.number} in the chapter list.`, 'it has text')
-      }
+      if (!isBlankContent(now.content)) return askToDelete(ctx, target, now.content)
     }
     ctx.document.remove(target.id)
     forgetChapter(ctx, target.id)

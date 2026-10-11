@@ -139,10 +139,14 @@ export async function steerServerRun(bookId: string, runId: string, text: string
   await expectOk(res, 'Steering the run')
 }
 
-/** The user's answer to a run paused on `ask_user`; the run continues with it. */
-export async function answerServerRun(bookId: string, runId: string, answer: string, fetchFn: typeof fetch = fetch): Promise<void> {
+/**
+ * The user's answer to a run paused on a question; the run continues with it.
+ * `confirm` is set only by the Delete button of a delete_chapter question: the
+ * server deletes the chapter before the run goes on.
+ */
+export async function answerServerRun(bookId: string, runId: string, answer: string, confirm = false, fetchFn: typeof fetch = fetch): Promise<void> {
   const res = await fetchFn(`/api/books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/answer`, {
-    method: 'POST', headers: headers(), body: JSON.stringify({ answer })
+    method: 'POST', headers: headers(), body: JSON.stringify(confirm ? { answer, confirm: true } : { answer })
   })
   await expectOk(res, 'Answering the run')
 }

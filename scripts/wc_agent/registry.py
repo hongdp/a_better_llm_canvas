@@ -14,7 +14,7 @@ class Tool:
                  is_available: Optional[Callable[[ToolContext], bool]] = None,
                  preview: Optional[Callable[[str, ToolContext], None]] = None,
                  markup_form: bool = False, native_on_markup: bool = False, run_last: bool = False,
-                 aliases: Optional[List[str]] = None) -> None:
+                 aliases: Optional[List[str]] = None, renumbers: bool = False) -> None:
         self.name = name
         #: Earlier names a call may still use (read_and_list.md §4); never offered.
         self.aliases = list(aliases or [])
@@ -24,6 +24,8 @@ class Tool:
         self.markup_form = markup_form
         self.native_on_markup = native_on_markup
         self.run_last = run_last
+        #: Renumbers the chapters after the one it removes: runs after every other run_last call too.
+        self.renumbers = renumbers
         self._execute = execute
         self._parse = parse or (lambda raw: raw if raw is not None else "its arguments could not be parsed")
         self._is_available = is_available or (lambda ctx: True)
