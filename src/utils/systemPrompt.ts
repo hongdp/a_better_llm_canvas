@@ -331,6 +331,7 @@ Three kinds of actions. The tools are described in their own schemas; this is ho
      <selection_replace>…</selection_replace> — only when the request has a CURRENT SELECTED TEXT section.
   b) The update_document tool, with new_chapter or chapter, and html: the user sees the text only when the call is complete. Use it ONLY for reference material — an outline, character cards, notes — never for prose.
   c) The edit_paragraphs tool, for a small change to a few paragraphs: by their ¶ numbers, each anchored by its first words, with no HTML read.
+  d) The replace_text tool, for the same word or name changed everywhere — a character renamed across chapters — in one call, with no read.
   ${EXTEND_BY_EDITS('<edit> blocks')}
   Whichever way, a chapter comes into existence BY BEING WRITTEN. ${REFERENCE_CHAPTERS}
 - HOUSEKEEPING: open_chapter (show a chapter to the user, when they ask), rename_chapter, delete_chapter. These work on chapters that already exist and never add one or put text into one.

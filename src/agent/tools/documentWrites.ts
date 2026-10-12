@@ -40,6 +40,7 @@ import {
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { reinsertMissingImages } from '../../utils/imagePreservation'
+import { replaceInHtmlText } from '../../utils/textReplace'
 import { htmlToPlainText } from '../../utils/llmContext'
 import { chapterChars, isTextRewritableHtml, rewriteLoss, rewriteLossNote, stripImageMarkerParagraphs } from '../../utils/paragraphs'
 import { hashContent } from '../../utils/contextLedger'
@@ -898,6 +899,103 @@ export const editParagraphsTool = defineTool<{ chapter: unknown; edits: Paragrap
         trace: `✏️ edited ${citeChapter(target)} by paragraph (${outcome.applied} change${outcome.applied === 1 ? '' : 's'}${left > 0 ? `; ${left} not applied` : ''})`
       }
     }), r => withPlanDone(ctx, r, planDone))
+  }
+})
+
+// ── replace_text ────────────────────────────────────────────────────────────
+
+/**
+ * Find and replace across chapters, in their text only (utils/textReplace):
+ * renaming a character in ten chapters is one call, not a read and an edit
+ * per chapter (user request, 2026-10-12). No read first — the change is
+ * mechanical, and the result reports the count and samples per chapter.
+ * Each chapter it changes becomes one reviewable diff with a version
+ * snapshot, like any other write. `expect` refuses the whole call when the
+ * count differs (a short name inside longer words), `preview` only reports.
+ */
+export const replaceTextTool = defineTool<{ find: string; replace: string; chapters: unknown[] | 'all'; regex: boolean; expect: number | null; preview: boolean }>({
+  name: 'replace_text',
+  description:
+    'Find and replace text across chapters in one call — renaming a character, a place, a term — in the text only, never in markup, links or images. No read is needed first. ' +
+    'Each chapter changed becomes a change the user reviews. A short name can sit inside longer words (王 in 王小明): run it with preview first, or pass expect (the number of replacements you intend; if the count differs nothing is changed and you get the matches). ' +
+    'For changes that need judgement occurrence by occurrence, use edit_paragraphs instead.',
+  parameters: {
+    type: 'object',
+    properties: {
+      find: { type: 'string', description: 'The text to find (exactly as it reads), or a regular expression when regex is true.' },
+      replace: { type: 'string', description: 'The replacement text. With regex, $1, $2… insert groups and $& the whole match.' },
+      chapters: { type: 'array', description: 'The chapters to change: positions from the CHAPTER INDEX or exact titles; ["all"] for every chapter.', items: { type: 'string' } },
+      regex: { type: 'boolean', description: 'Optional: find is a regular expression (JavaScript syntax).' },
+      expect: { type: 'integer', description: 'Optional: the total number of replacements you intend; a different count changes nothing.' },
+      preview: { type: 'boolean', description: 'Optional: only list the matches; change nothing.' }
+    },
+    required: ['find', 'replace', 'chapters']
+  },
+  kind: 'write',
+  isAvailable: () => true,
+  parse: raw => {
+    if (!raw) return 'its arguments could not be parsed'
+    const find = typeof raw.find === 'string' ? raw.find : ''
+    if (!find) return 'find was empty'
+    if (typeof raw.replace !== 'string') return 'replace is required (an empty string deletes the text)'
+    const list = Array.isArray(raw.chapters) ? raw.chapters : raw.chapters === undefined ? [] : [raw.chapters]
+    if (list.length === 0) return 'no chapters were named (pass "chapters": ["3", "4"] or ["all"])'
+    const all = list.some(c => typeof c === 'string' && c.trim().toLowerCase() === 'all')
+    const expect = typeof raw.expect === 'number' && Number.isInteger(raw.expect) && raw.expect >= 0 ? raw.expect : null
+    return { find, replace: raw.replace, chapters: all ? 'all' : list, regex: raw.regex === true || raw.regex === 'true', expect, preview: raw.preview === true || raw.preview === 'true' }
+  },
+  execute: async ({ find, replace, chapters, regex, expect, preview }, ctx): Promise<ToolResult> => {
+    const book = ctx.document.chapters()
+    const targets: Target[] = []
+    const problems: string[] = []
+    const refs: unknown[] = chapters === 'all' ? book.map((_, i) => i + 1) : chapters
+    for (const ref of refs) {
+      const t = resolveTarget(ref, ctx)
+      if (typeof t === 'string') problems.push(t.split('\n')[0])
+      else if (!targets.some(x => x.id === t.id)) targets.push(t)
+    }
+    if (targets.length === 0) return { ok: false, retryable: true, content: `replace_text: ${problems.join(' ') || 'no chapter matched'}`, trace: '⚠️ replace_text: no chapter' }
+    await ctx.document.ensureLoaded(targets.filter(t => !t.isStart).map(t => t.id))
+
+    const planned: Array<{ target: Target; html: string; count: number; samples: string[] }> = []
+    const skipped: string[] = []
+    for (const target of targets) {
+      if (target.isStart && ctx.run.selectionAttempted) { skipped.push(`${citeChapter(target)}: it has a selection rewrite in this turn`); continue }
+      if (ctx.document.chapters().find(c => c.id === target.id)?.loaded === false) { skipped.push(`${citeChapter(target)}: could not be loaded`); continue }
+      if (userEdited(ctx, target.id)) { forgetChapter(ctx, target.id); skipped.push(`${citeChapter(target)}: the user changed it while you worked — read it again`); continue }
+      const st = docState(ctx, target)
+      const outcome = replaceInHtmlText(st.html, find, replace, regex)
+      if (outcome.error) return { ok: false, retryable: true, content: `replace_text: ${outcome.error}. Nothing was changed.`, trace: `⚠️ replace_text: ${outcome.error}` }
+      if (outcome.count > 0) planned.push({ target, html: outcome.html, count: outcome.count, samples: outcome.samples })
+    }
+    const total = planned.reduce((sum, p) => sum + p.count, 0)
+    const report = planned.map(p => `${citeChapter(p.target)}: ${p.count}\n${p.samples.map(x => `  ${x}`).join('\n')}`).join('\n')
+    const notes = [...problems, ...skipped].map(x => `Not searched — ${x}`).join('\n')
+    const label = `${find.length > 20 ? `${find.slice(0, 20)}…` : find}→${replace.length > 20 ? `${replace.slice(0, 20)}…` : replace}`
+
+    if (preview || (expect !== null && expect !== total)) {
+      const why = preview ? 'Preview only: nothing was changed.' : `You expected ${expect} replacement(s); there are ${total}, so nothing was changed. Narrow find (or use regex), or pass the right expect.`
+      return {
+        ok: preview, retryable: !preview,
+        content: `${why}\n${total} match(es) in ${planned.length} chapter(s)${report ? `:\n${report}` : '.'}${notes ? `\n${notes}` : ''}`,
+        trace: preview ? `🔍 replace_text preview ${label}: ${total} in ${planned.length} chapter(s)` : `⚠️ replace_text ${label}: ${total} found, ${expect} expected — nothing changed`
+      }
+    }
+    if (total === 0) {
+      return { ok: false, retryable: true, content: `No "${find}" in the ${targets.length} chapter(s) searched; nothing was changed.${notes ? `\n${notes}` : ''}`, trace: `⚠️ replace_text ${label}: not found` }
+    }
+    for (const p of planned) {
+      const st = docState(ctx, p.target)
+      st.html = p.html
+      st.dirty = true
+      commitDoc(ctx, p.target, st)
+      touch(ctx, p.target, 'edits', p.count, 0)
+    }
+    return {
+      ok: true,
+      content: `Replaced ${total} occurrence(s) in ${planned.length} chapter(s), each a change the user reviews:\n${report}${notes ? `\n${notes}` : ''}`,
+      trace: `🔁 replaced ${label}: ${total} in ${planned.length} chapter${planned.length === 1 ? '' : 's'}${skipped.length + problems.length > 0 ? ` (${skipped.length + problems.length} not searched)` : ''}`
+    }
   }
 })
 

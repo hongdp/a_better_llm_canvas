@@ -55,6 +55,7 @@ import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, 
 import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
 import { renderSearchResults, renderWebPage, renderWebImages, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
 import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
+import { replaceInHtmlText, expandReplacement, escapeHtmlText } from '../../utils/textReplace'
 import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
 import type { ToolInvocation, ToolKind } from '../../agent/types'
 
@@ -822,6 +823,24 @@ const MODULES: Module[] = [
       history_window: run(historyWindow, [
         [TT_ENTRIES, TT_UNITS, TT, 0, null], [TT_ENTRIES, TT_UNITS, TT, 2, null], [TT_ENTRIES, TT_UNITS, TT, 0, 400],
         [TT_ENTRIES, TT_UNITS, TT, 0, 10], [TT_ENTRIES, planHistoryUnits(TT_ENTRIES, {}), {}, 0, 30], [TT_ENTRIES, TT_UNITS, TT, 6, null]
+      ])
+    }
+  },
+  {
+    module: 'text_replace',
+    cases: {
+      escape_html_text: run(escapeHtmlText, [['a<b>&c'], ['']]),
+      expand_replacement: run(expandReplacement, [['[$1]', 'ab', ['a']], ['$&-$&', 'x', []], ['$$1', 'x', ['y']], ['$12', 'x', ['a']], ['$12', 'x', Array.from({ length: 12 }, (_, i) => `g${i + 1}`)], ['$2', 'x', ['a']], ['end$', 'x', []]]),
+      replace_in_html_text: run(replaceInHtmlText, [
+        ['<p>小王走了。小王回来。</p><p class="小王"><img alt="小王" src="小王.png">小王</p>', '小王', '阿杰'],
+        ['<p>a & b</p>', '&', 'and'],
+        ['<p>x</p>', 'y', 'z'],
+        ['<p>王小明和王小红</p>', '王(小.)', '李$1', true],
+        ['<p>abc</p>', 'b*', 'x', true],
+        ['<p>abc</p>', '(', 'x', true],
+        ['<p>abc</p>', '', 'x'],
+        ['<p>' + '前'.repeat(20) + '小王' + '后'.repeat(20) + '小王小王小王</p>', '小王', '阿杰'],
+        ['<p>老王<strong>家</strong>的</p>', '王家', '李家']
       ])
     }
   },

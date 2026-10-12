@@ -164,7 +164,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_paragraphs', 'read', 'grep', 'list', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'plan', 'ask_user'])
+    expect(offered(0)).toEqual(['update_document', 'edit_paragraphs', 'replace_text', 'read', 'grep', 'list', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'plan', 'ask_user'])
     // …and the system prompt teaches the chapter attribute.
     expect(calls[0][0].content).toContain('<canvas chapter="3">')
     h.unmount()
@@ -176,7 +176,7 @@ describe('what a step offers', () => {
     const h = renderChatHook()
     await send(h, '你好')
 
-    expect(offered(0)).toEqual(['update_document', 'edit_document', 'edit_paragraphs', 'read', 'grep', 'list', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'plan', 'ask_user'])
+    expect(offered(0)).toEqual(['update_document', 'edit_document', 'edit_paragraphs', 'replace_text', 'read', 'grep', 'list', 'open_chapter', 'delete_chapter', 'rename_chapter', 'polish_chapter', 'plan', 'ask_user'])
     h.unmount()
   })
 

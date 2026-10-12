@@ -13,7 +13,7 @@ import pytest
 from wc_text import (attachments, web_text, chapter_index, chapters, context_ledger, context_selection, context_window, conversation_summary, diff, diff_resolution,
                      document_tools, dynamic_context, edit_hints, freshness, image_preservation, invocations, llm_context, paragraphs, pending_changes,
                      plan, policy, polish, protocol_choice, provider_profile, reminders, retry_policy, run_compaction, stream_handlers, system_prompt, text,
-                     title_sync, tool_call_stream, turn_transcripts, reasoning_effort)
+                     title_sync, tool_call_stream, turn_transcripts, reasoning_effort, text_replace)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 
@@ -217,6 +217,9 @@ FUNCTIONS = {
     ("run_compaction", "elision_trace"): run_compaction.elision_trace,
     ("run_compaction", "prompt_tokens"): run_compaction.prompt_tokens,
     ("run_compaction", "plan_elisions"): run_compaction.plan_elisions,
+    ("text_replace", "escape_html_text"): text_replace.escape_html_text,
+    ("text_replace", "expand_replacement"): text_replace.expand_replacement,
+    ("text_replace", "replace_in_html_text"): text_replace.replace_in_html_text,
     ("run_compaction", "calibrated_prompt_tokens"): run_compaction.calibrated_prompt_tokens,
     ("attachments", "constants"): lambda: {"ATTACHMENT_INDEX_LINES": attachments.ATTACHMENT_INDEX_LINES, "ATTACHMENT_RUN_READ_CAP": attachments.ATTACHMENT_RUN_READ_CAP},
     ("attachments", "attachment_budget_note"): attachments.attachment_budget_note,

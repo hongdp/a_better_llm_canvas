@@ -34,7 +34,7 @@ import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
 import { AgentRun, type RunObserver } from '../agent/run'
 import { ToolRegistry, toToolSpecs } from '../agent/registry'
-import { DOCUMENT_WRITE_TOOLS, previewRewrite, editParagraphsTool } from '../agent/tools/documentWrites'
+import { DOCUMENT_WRITE_TOOLS, previewRewrite, editParagraphsTool, replaceTextTool } from '../agent/tools/documentWrites'
 import { BOOK_TOOLS } from '../agent/tools/bookReads'
 import { polishChapterTool } from '../agent/tools/polishChapter'
 import { planTool } from '../agent/tools/plan'
@@ -113,7 +113,7 @@ const MAX_KEPT_TRANSCRIPTS = 60
 /** The output a summary at the end of the conversation may use (server_context.SUMMARY_MAX_OUTPUT_TOKENS). */
 const SUMMARY_MAX_OUTPUT_TOKENS = 8_192
 
-const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, editParagraphsTool, ...BOOK_TOOLS, polishChapterTool, planTool, askUserTool, ...WEB_TOOLS])
+const CHAT_TOOLS = new ToolRegistry([...DOCUMENT_WRITE_TOOLS, editParagraphsTool, replaceTextTool, ...BOOK_TOOLS, polishChapterTool, planTool, askUserTool, ...WEB_TOOLS])
 
 /**
  * Whether the API server has a browser (attachments_and_web.md §2): asked
