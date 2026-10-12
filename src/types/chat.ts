@@ -20,6 +20,13 @@ export interface AgentTouchedChapter {
 export type AgentTimelineItem =
   | { type: 'text'; text: string }
   | { type: 'tool'; line: string; ok: boolean }
+  /**
+   * Where a message the user sent mid-turn reached the run (a steer). The chat
+   * shows the turn split there: the bubble so far, the user's message(s), and
+   * the rest of the turn as a new bubble. Display only — the run, its record
+   * and its transcript stay one turn.
+   */
+  | { type: 'steer'; messageIds: string[]; text: string }
 
 /**
  * A deletion waiting for the user's confirmation (delete_chapter on a chapter

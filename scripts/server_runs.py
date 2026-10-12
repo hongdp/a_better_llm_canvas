@@ -591,11 +591,11 @@ class RunEngine:
         if run.ports is not None:
             run.ports.view = document_id
 
-    def steer(self, run: Run, text: str) -> bool:
+    def steer(self, run: Run, text: str, message_id: Optional[str] = None) -> bool:
         """A message sent while the run works goes to the run (agentic_chat_loop.md §0.8); only a running run takes it."""
         if run.status != "running" or run.agent is None or run.stop_requested:
             return False
-        run.agent.steer(text)
+        run.agent.steer(text, message_id)
         # In the snapshot, so a restart between steps keeps it.
         run.snapshot = run.agent.snapshot()
         run.persist()
@@ -1392,7 +1392,8 @@ async def steer_run(request: Request, book_id: str, run_id: str):
     text = body.get("text") if isinstance(body, dict) else None
     if not isinstance(text, str) or not js_trim(text):
         raise HTTPException(status_code=400, detail="text must be a non-empty string.")
-    if not engine.steer(run, js_trim(text)):
+    message_id = body.get("messageId") if isinstance(body.get("messageId"), str) else None
+    if not engine.steer(run, js_trim(text), message_id):
         raise HTTPException(status_code=409, detail="This run is not running; send the request as a new turn.")
     return {"success": True, "run": run.summary()}
 

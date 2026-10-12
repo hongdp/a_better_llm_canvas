@@ -2297,7 +2297,7 @@ export function useChatLLM({
     if (server) {
       if (!s.activeBookId) return false
       try {
-        await steerServerRun(s.activeBookId, server.id, promptText)
+        await steerServerRun(s.activeBookId, server.id, promptText, userMsg.id)
       } catch (e) {
         // Not running any more (finished, paused, stopped): the caller sends it as a turn.
         if (!(e instanceof Error && e.message.includes('(409)'))) setErrorMsg(e instanceof Error ? e.message : String(e))
@@ -2307,7 +2307,7 @@ export function useChatLLM({
       forceSave()
       return true
     }
-    local!.steer(promptText)
+    local!.steer(promptText, userMsg.id)
     s.addMessage(userMsg)
     forceSave()
     return true

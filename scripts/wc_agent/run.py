@@ -103,6 +103,8 @@ class AgentRun:
         self.lookup_nudged = False
         #: Messages the user sent while the run was working; the next step carries them (steer).
         self.pending_steers: List[str] = []
+        #: The chat message ids of the pending steers, for the timeline mark (see run.ts takeSteer).
+        self.pending_steer_ids: List[str] = []
         self.messages: List[Dict[str, Any]] = list(initial_messages)
         #: Where this turn's own messages start (its final user message): the transcript is from here (cache_continuity.md §3.1).
         self.initial_count = len(initial_messages)
@@ -167,16 +169,21 @@ class AgentRun:
         """A step is waiting to be sent (a resume continues with it)."""
         return self._next is not None
 
-    def steer(self, text: str) -> None:
+    def steer(self, text: str, message_id: Optional[str] = None) -> None:
         """A message the user sent mid-turn: appended as a user message once the step in flight has finished."""
         if js_trim(text):
             self.pending_steers.append(text)
+            if message_id:
+                self.pending_steer_ids.append(message_id)
 
     def _take_steer(self) -> Optional[str]:
         if not self.pending_steers:
             return None
         text = "\n\n".join(self.pending_steers)
+        # Where the steer landed: the chat starts a new bubble there (display only).
+        self.timeline.append({"type": "steer", "messageIds": list(self.pending_steer_ids), "text": text})
         self.pending_steers = []
+        self.pending_steer_ids = []
         return steer_message(text)
 
     async def _loop(self) -> None:
@@ -542,7 +549,7 @@ class AgentRun:
             },
             "planNudges": self.plan_nudges, "longReasoningDue": self.long_reasoning_due,
             "htmlReadPending": self.html_read_pending, "htmlReadNudged": self.html_read_nudged, "planBaseline": run.plan_baseline,
-            "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers), "lookupNudged": self.lookup_nudged,
+            "claimNudged": self.claim_nudged, "pendingSteers": list(self.pending_steers), "pendingSteerIds": list(self.pending_steer_ids), "lookupNudged": self.lookup_nudged,
             "elidable": list(self.elidable), "lastResultsStart": self.last_results_start, "measured": self.measured,
         }
 
@@ -584,6 +591,7 @@ class AgentRun:
         run.plan_baseline = dict(snap.get("planBaseline") or {})
         self.claim_nudged = bool(snap.get("claimNudged"))
         self.pending_steers = list(snap.get("pendingSteers") or [])
+        self.pending_steer_ids = list(snap.get("pendingSteerIds") or [])
         self.lookup_nudged = bool(snap.get("lookupNudged"))
         self.elidable = list(snap.get("elidable") or [])
         self.last_results_start = int(snap.get("lastResultsStart") or 0)

@@ -132,9 +132,9 @@ export async function serverRunAction(bookId: string, runId: string, action: Ser
 }
 
 /** A message sent while the run works: the run takes it as its next user message (409 when it is not running). */
-export async function steerServerRun(bookId: string, runId: string, text: string, fetchFn: typeof fetch = fetch): Promise<void> {
+export async function steerServerRun(bookId: string, runId: string, text: string, messageId?: string, fetchFn: typeof fetch = fetch): Promise<void> {
   const res = await fetchFn(`/api/books/${encodeURIComponent(bookId)}/runs/${encodeURIComponent(runId)}/steer`, {
-    method: 'POST', headers: headers(), body: JSON.stringify({ text })
+    method: 'POST', headers: headers(), body: JSON.stringify(messageId ? { text, messageId } : { text })
   })
   await expectOk(res, 'Steering the run')
 }

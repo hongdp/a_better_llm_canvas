@@ -316,7 +316,9 @@ describe('a turn with serverRuns on', () => {
     const before = useAppStore.getState().messages.length
     await act(async () => { await h.current.handleSendMessage(undefined, '把第二段删掉') })
     await flush()
-    expect(posted.at(-1)).toEqual({ url: '/api/books/book-1/runs/run-1/steer', body: { text: '把第二段删掉' } })
+    // With the chat message's id: the run marks where it landed, for the chat to split the bubble there.
+    const steered = useAppStore.getState().messages.find(m => m.role === 'user' && m.content === '把第二段删掉')
+    expect(posted.at(-1)).toEqual({ url: '/api/books/book-1/runs/run-1/steer', body: { text: '把第二段删掉', messageId: steered?.id } })
     const messages = useAppStore.getState().messages
     expect(messages).toHaveLength(before + 1)
     expect(messages.at(-1)).toMatchObject({ role: 'user', content: '把第二段删掉' })
