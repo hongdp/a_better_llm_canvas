@@ -2,6 +2,7 @@ import { FilePenLine } from 'lucide-react'
 import { useAppStore } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
 import type { AgentTouchedChapter, AgentTurnRecord } from '../types/chat'
+import type { TimelineSegment } from './chatRows'
 
 /** A chapter still carries review markup from some turn. */
 const hasPendingDiff = (html: string) => html.includes('diff-addition') || html.includes('diff-deletion')
@@ -27,20 +28,30 @@ async function viewChapter(id: string): Promise<void> {
  * last while the turn runs. Replaces the plain `content` rendering for turns
  * that have a timeline.
  */
-export function AgentTimeline({ record }: { record: AgentTurnRecord }) {
+/**
+ * A turn's steps in order. `segment` shows one part of a turn the chat shows
+ * split at a steer (components/chatRows): the first part carries the prefix,
+ * the last the live state and the suffix.
+ */
+export function AgentTimeline({ record, segment }: { record: AgentTurnRecord; segment?: TimelineSegment }) {
   const { t } = useTranslation()
   const running = record.status === 'running'
+  const first = segment?.first ?? true
+  const last = segment?.last ?? true
+  const items = segment?.items ?? (record.timeline ?? []).filter(i => i.type !== 'steer')
   return (
     <div className="agent-timeline">
-      {record.prefix && <div className="agent-timeline-text agent-timeline-prefix">{record.prefix}</div>}
-      {(record.timeline ?? []).map((item, i) => item.type === 'text'
+      {first && record.prefix && <div className="agent-timeline-text agent-timeline-prefix">{record.prefix}</div>}
+      {items.map((item, i) => item.type === 'text'
         ? <div key={i} className="agent-timeline-text">{item.text}</div>
-        : <div key={i} className={`agent-tool-line${item.ok ? '' : ' failed'}`}>{item.line}</div>
+        : item.type === 'tool'
+        ? <div key={i} className={`agent-tool-line${item.ok ? '' : ' failed'}`}>{item.line}</div>
+        : null
       )}
-      {running && (record.live
+      {last && running && (record.live
         ? <div className="agent-timeline-text">{record.live}</div>
         : <div className="agent-tool-line pending">{t.agent.running}</div>)}
-      {record.suffix && <div className="agent-timeline-text">{record.suffix}</div>}
+      {last && record.suffix && <div className="agent-timeline-text">{record.suffix}</div>}
     </div>
   )
 }

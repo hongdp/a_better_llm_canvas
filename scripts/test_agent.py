@@ -709,6 +709,23 @@ def test_a_message_sent_during_a_step_follows_its_results():
     assert h.requests[1][-2]["role"] == "tool"
 
 
+def test_a_steer_marks_the_timeline_where_it_landed_for_the_chat_to_split_the_bubble():
+    h = Harness([])
+    def first(messages):
+        h.run.steer("把第二段删掉", "user-9")
+        return calls("读一下。", ("c", "read_chapter", '{"chapter":"1"}'))
+    h.replies = [first, text("删好了。\n<doc_status>unchanged</doc_status>")]
+    asyncio.run(h.run.start())
+    kinds = [i["type"] for i in h.summary["timeline"]]
+    # The step in flight stays before the mark; what the run did after it, after.
+    assert kinds == ["text", "tool", "steer", "text"]
+    assert h.summary["timeline"][2] == {"type": "steer", "messageIds": ["user-9"], "text": "把第二段删掉"}
+    # A snapshot between steps keeps the id with the pending text.
+    h2 = Harness([])
+    h2.run.steer("稍后", "user-10")
+    assert h2.run.snapshot()["pendingSteerIds"] == ["user-10"]
+
+
 def test_a_message_sent_during_an_ending_reply_keeps_the_turn_going():
     h = Harness([], policy={"continueAfterWrites": True, "feedBackFailedWrites": True})
     def first(messages):

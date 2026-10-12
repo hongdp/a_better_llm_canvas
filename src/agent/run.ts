@@ -213,6 +213,8 @@ export class AgentRun {
   private lookupNudged = false
   /** Messages the user sent while the run was working; the next step carries them (steer). */
   private readonly pendingSteers: string[] = []
+  /** The chat message ids of the pending steers, for the timeline mark. */
+  private readonly pendingSteerIds: string[] = []
   /** Read results in the messages that may be elided when the prompt outgrows the window. */
   private elidable: ElidableResult[] = []
   /** Where the latest step's results start in the messages: never elided. */
@@ -250,15 +252,22 @@ export class AgentRun {
    * appended as a user message once the step in flight has finished — after
    * its results, or after a reply that would otherwise have ended the turn.
    */
-  steer(text: string): void {
-    if (text.trim()) this.pendingSteers.push(text)
+  steer(text: string, messageId?: string): void {
+    if (!text.trim()) return
+    this.pendingSteers.push(text)
+    if (messageId) this.pendingSteerIds.push(messageId)
   }
 
-  /** The pending steers as one user message, cleared. */
+  /**
+   * The pending steers as one user message, cleared — and a timeline mark
+   * where they landed, so the chat can start a new bubble there.
+   */
   private takeSteer(): string | null {
     if (this.pendingSteers.length === 0) return null
     const text = this.pendingSteers.join('\n\n')
+    this.timeline.push({ type: 'steer', messageIds: [...this.pendingSteerIds], text })
     this.pendingSteers.length = 0
+    this.pendingSteerIds.length = 0
     return steerMessage(text)
   }
 

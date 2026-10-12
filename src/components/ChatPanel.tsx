@@ -12,6 +12,7 @@ import { useChatLLM } from '../hooks/useChatLLM'
 import { useRoleplayLLM } from '../hooks/useRoleplayLLM'
 import { useTranslation } from '../i18n'
 import { AgentTimeline, AgentTurnSummary } from './AgentTurnSummary'
+import { chatRows } from './chatRows'
 import { RunControls } from './RunControls'
 import { RoleplayBanner } from './RoleplayBanner'
 import { RoleplaySetupModal } from './RoleplaySetupModal'
@@ -212,7 +213,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       )}
 
       <div className="chat-messages">
-        {messages.map(msg => {
+        {chatRows(messages).map(({ key, msg, segment, steered }) => {
           // Determine RP-specific CSS classes
           const rpClass = msg.rpType === 'narration' ? 'rp-narration'
             : msg.rpType === 'action' ? 'rp-action'
@@ -220,7 +221,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             : ''
 
           return (
-            <div key={msg.id} className={`chat-message ${msg.role} ${rpClass}`}>
+            <div key={key} className={`chat-message ${msg.role} ${rpClass}`}>
               {editingMessageId === msg.id && !roleplayMode ? (
                 <div className="chat-message-edit-container">
                   <textarea
@@ -274,10 +275,10 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       </div>
                     )}
                     {msg.role === 'assistant' && msg.agent?.timeline
-                      ? <AgentTimeline record={msg.agent} />
+                      ? <AgentTimeline record={msg.agent} segment={segment} />
                       : <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>}
-                    {msg.role === 'assistant' && msg.agent && <AgentTurnSummary record={msg.agent} />}
-                    {msg.role === 'assistant' && msg.agent && (msg.agent.run || msg.agent.question) && (
+                    {msg.role === 'assistant' && msg.agent && (!segment || segment.last) && <AgentTurnSummary record={msg.agent} />}
+                    {msg.role === 'assistant' && msg.agent && (!segment || segment.last) && (msg.agent.run || msg.agent.question) && (
                       <RunControls
                         record={msg.agent}
                         onAction={chatLLM.handleRunAction}
@@ -318,7 +319,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                         {' • '}
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
-                      {msg.role === 'user' && !roleplayMode && editingMessageId !== msg.id && !isStreaming && (
+                      {msg.role === 'user' && !steered && !roleplayMode && editingMessageId !== msg.id && !isStreaming && (
                         <button
                           onClick={() => {
                             setEditingMessageId(msg.id)

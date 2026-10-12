@@ -611,6 +611,21 @@ describe('what the user says mid-turn, and what the reply claims (agentic_chat_l
     expect(h.requests[1].at(-2)?.role).toBe('tool')
   })
 
+  it('marks the timeline where the steer landed, for the chat to start a new bubble there', async () => {
+    const h = harness({
+      replies: [
+        () => { h.run.steer('把第二段删掉', 'user-9'); return calls('读一下。', ['c', 'read_chapter', '{"chapter":"1"}']) },
+        text('删好了。\n<doc_status>unchanged</doc_status>')
+      ],
+      budgets: { maxSteps: 0 }
+    })
+    await h.run.start()
+    await new Promise(r => setTimeout(r, 0))
+    const timeline = h.summary()?.timeline ?? []
+    expect(timeline.map(i => i.type)).toEqual(['text', 'tool', 'steer', 'text'])
+    expect(timeline[2]).toEqual({ type: 'steer', messageIds: ['user-9'], text: '把第二段删掉' })
+  })
+
   it('a message sent during a reply that would have ended the turn keeps it going', async () => {
     const h = harness({
       replies: [

@@ -354,7 +354,8 @@ tab before sending the answer, a server run on `/answer` with `confirm`);
 choices and pauses a server run until `/answer`; a message sent while a turn
 runs **steers** it (`AgentRun.steer`, `POST …/runs/{id}/steer`): it lands as
 a user message after the step in flight, and a reply that would have ended
-the turn continues instead; the turn after a Stop carries a reminder that the
+the turn continues instead — the timeline marks where it landed and the chat
+shows the turn split there (`components/chatRows`, display only); the turn after a Stop carries a reminder that the
 previous one was stopped; a no-action reply claiming a write that never
 happened gets the editor's facts once (`claimsOwnWrite`); `wrapReminder`
 escapes its own tag in quoted text. Both loops (`src/agent`, `wc_agent`)
