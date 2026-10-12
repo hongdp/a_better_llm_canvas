@@ -26,8 +26,12 @@ import { PROVIDERS, PROVIDER_IDS } from '../utils/providers'
  * registry row, not a hook.
  */
 
-/** The backend lists a hosted provider's models with the user's key, from the provider's host only. */
-async function listOfficialModels(provider: LLMProvider, apiKey: string, baseUrl: string): Promise<string[]> {
+/**
+ * The backend lists a hosted provider's models with the user's key, from the
+ * provider's host only — with the windows it states (Anthropic's Models API
+ * gives `max_input_tokens`), which beat the table in utils/contextWindow.ts.
+ */
+async function listOfficialModels(provider: LLMProvider, apiKey: string, baseUrl: string): Promise<Listed> {
   try {
     const res = await fetch('/api/models', {
       method: 'POST',
@@ -37,10 +41,12 @@ async function listOfficialModels(provider: LLMProvider, apiKey: string, baseUrl
       },
       body: JSON.stringify({ provider, apiKey, baseUrl })
     })
-    return res.ok ? normalizeModelList(await res.json()) : []
+    if (!res.ok) return { names: [], windows: {} }
+    const data = await res.json()
+    return { names: normalizeModelList(data), windows: normalizeContextWindows(data) }
   } catch (err) {
     console.error(`Failed to fetch ${provider} models`, err)
-    return []
+    return { names: [], windows: {} }
   }
 }
 
@@ -159,8 +165,10 @@ export function useModelFetcher(
     void Promise.all(pending.map(async id => {
       const spec = PROVIDERS[id]
       const config = configs[id]
-      const list = await listOfficialModels(id, config.apiKey, config.baseUrl)
+      const listed = await listOfficialModels(id, config.apiKey, config.baseUrl)
+      const list = listed.names
       if (cancelled) return true
+      if (Object.keys(listed.windows).length > 0) useAppStore.getState().setDiscoveredContextWindows(listed.windows)
       if (list.length === 0) {
         setAvailableModels(id, [])
         setErrorMsg(`Could not load the ${spec.label} models for this key (check the key and base URL). Using the built-in list.`)

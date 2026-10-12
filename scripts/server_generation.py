@@ -930,12 +930,17 @@ async def list_provider_models(request: Request):
             text = [n for n in names if _GEMINI_TEXT_MODEL_RE.match(n) and not _GEMINI_NON_TEXT_RE.search(n)]
             return {"models": sorted((n for n in text if not n.endswith("-latest")), reverse=True) + [n for n in text if n.endswith("-latest")]}
         ids = [m["id"] for m in data.get("data") or [] if isinstance(m, dict) and isinstance(m.get("id"), str)]
+        # Anthropic's Models API states each model's window (`max_input_tokens`): forwarded as
+        # `contextWindows`, the shape the tab already takes from a local server's listing, so
+        # the window table in utils/contextWindow.ts is only the fallback for an unlisted model.
+        windows = {m["id"]: m["max_input_tokens"] for m in data.get("data") or []
+                   if isinstance(m, dict) and isinstance(m.get("id"), str) and isinstance(m.get("max_input_tokens"), int) and m["max_input_tokens"] > 0}
         if provider == "openai":
             # Text models only, the gpt line newest first, then the o-series: the
             # account also lists audio, image and realtime models.
             text = [i for i in ids if _OPENAI_CHAT_MODEL_RE.match(i) and not _OPENAI_NON_CHAT_RE.search(i)]
             ids = sorted((i for i in text if i.startswith("gpt-")), reverse=True) + sorted((i for i in text if not i.startswith("gpt-")), reverse=True)
-        return {"models": ids}
+        return {"models": ids, "contextWindows": windows} if windows else {"models": ids}
 
     if not is_queryable_model_host(base_url):
         raise HTTPException(

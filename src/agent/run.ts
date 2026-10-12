@@ -20,7 +20,7 @@ import { appendReminders, htmlReadNudge, longReasoningReminder, lookupStreakNudg
 import { claimsOwnWrite, isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
-import { elisionTrace, planElisions, type ElidableResult, type MeasuredPrompt } from './runCompaction'
+import { elisionTrace, planElisions, promptTokens, type ElidableResult, type MeasuredPrompt } from './runCompaction'
 import { decideAfterStep, detectStepFailure, stepsLeft, type ExecutedCall, type RunBudgets, type StepDecision, type StepPolicy } from './policy'
 import type { RegisteredTool, ToolRegistry } from './registry'
 import { seenChapters, writesSoFar, type AskedQuestion, type SeenChapter, type ToolContext, type ToolInvocation, type ToolKind, type ToolResult, type WriteEffects } from './types'
@@ -78,6 +78,8 @@ export interface RunSummary {
   steps: number
   /** Chapters this run wrote, for the bubble's "changed this turn" block. */
   touched: AgentTouchedChapter[]
+  /** The provider's prompt-token count ÷ this app's estimate for the last measured step (utils/tokenCalibration); null when unmeasured. */
+  tokenRatio: number | null
   /** Chapters this run read — the next turn's continuity signal. */
   readIds: string[]
   /** The model's checklist for the turn, as it ended. */
@@ -652,8 +654,16 @@ export class AgentRun {
       readIds: [...this.o.ctx.run.readIds],
       question: end.endReason === 'asked' ? this.o.ctx.run.question : null,
       transcript: this.transcript(),
+      tokenRatio: this.tokenRatio(),
       ...end
     })
+  }
+
+  /** measured ÷ estimated for the last step the provider counted, unclamped (the consumer clamps). */
+  tokenRatio(): number | null {
+    if (!this.measured || !(this.measured.tokens > 0)) return null
+    const estimated = promptTokens(this.messages.slice(0, this.measured.length))
+    return estimated > 0 ? this.measured.tokens / estimated : null
   }
 
   /** See RunSummary.transcript. */

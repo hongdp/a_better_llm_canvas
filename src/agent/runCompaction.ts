@@ -98,6 +98,21 @@ export function planElisions(messages: LLMMessage[], elidable: ElidableResult[],
   const calibrated = calibratedPromptTokens(messages, measured)
   let tokens = calibrated.tokens
   if (tokens <= limitTokens * ELIDE_ABOVE) return untouched
+  /*
+   * Problem: a 340k-token Sonnet 5.5 prompt against a 200k figure for its
+   *   window elided the previous step's read on every step; eliding everything
+   *   would not have made it fit, so each elision bought nothing — and the
+   *   model read 大纲 ¶170–175 again after its first read was elided (2026-10-11).
+   * Fix: elide only when it can bring the prompt back under the limit. If even
+   *   every eligible result gone leaves it over, the window figure is wrong or
+   *   the rest of the prompt is the problem; the provider decides.
+   */
+  let elidableTokens = 0
+  for (const entry of elidable) {
+    const m = messages[entry.index]
+    if (m && entry.index < keepFrom) elidableTokens += Math.max(0, estimateTokens(m.content) - estimateTokens(elidedResultNote(entry.trace))) * calibrated.ratio
+  }
+  if (tokens - elidableTokens > limitTokens) return untouched
   const out = [...messages]
   const elided: string[] = []
   const remaining: ElidableResult[] = []
