@@ -8,8 +8,9 @@ Guidance for AI assistants (Claude Code and others) working in this repository.
 LLM-powered document editing workspace inspired by OpenAI/Google Canvas. A
 rich-text document editor ("the canvas") sits side-by-side with a chat
 assistant, letting writers draft, structure, and refine multi-chapter
-books/documentation collaboratively with an LLM. It also has a roleplay
-"game master" mode and an AI image-generation pipeline.
+books/documentation collaboratively with an LLM. It also has an AI
+image-generation pipeline. (The roleplay "game master" mode was removed on
+2026-10-12.)
 
 The authoritative product/engineering principles live in **`SKILL.md`** and the
 architecture/decision record in **`docs/design.md`**. This file summarizes them
@@ -62,14 +63,12 @@ src/
     AppHeader.tsx  CanvasHeader.tsx  CanvasFooter.tsx  VersionHistorySidebar.tsx
     ChatPanel.tsx  ChaptersSidebar.tsx  SettingsModal.tsx  AuthForm.tsx
     ImageGenerationModal.tsx  imageGen/   # Image-gen modal + step components
-    RoleplaySetupModal.tsx  RoleplayBanner.tsx
     AttachmentsSection.tsx  # The book's reference files in the sidebar (A1, A2…; add / remove)
   hooks/
     useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core);
                           #   with serverRuns on, posts the turn and renders run.* events
     chat/                 # Extracted chat-flow modules: streamHandlers,
                           #   dynamicContext, serverRunEvents (pure reducers), types
-    useRoleplayLLM.ts     # Roleplay game-master mode streaming
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
   agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
                           #   step policy, invocation collection, freshness (D8), reminders

@@ -11,7 +11,7 @@ describe('the edit lock while something streams (agentic_chat_loop.md §0.4)', (
     expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(false)
   })
 
-  it('locks every chapter for a streamer that names none (roleplay, whole-book batches)', () => {
+  it('locks every chapter for a streamer that names none (whole-book batches)', () => {
     useAppStore.getState().setStreaming(true)
     expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(true)
     expect(isEditLocked(useAppStore.getState(), 'doc-9')).toBe(true)

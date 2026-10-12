@@ -536,7 +536,7 @@ describe('findJobsForBubbles', () => {
     routes = [active([
       { jobId: 'gen-other-bubble', status: 'running', meta: { assistantMessageId: 'a-2' } },
       { jobId: 'gen-other-book', status: 'running', meta: { assistantMessageId: 'a-1', bookId: 'book-2' } },
-      { jobId: 'gen-roleplay', status: 'running', meta: { assistantMessageId: 'a-1', kind: 'roleplay' } }
+      { jobId: 'gen-summary', status: 'running', meta: { assistantMessageId: 'a-1', kind: 'summary' } }
     ])]
 
     const found = await findJobsForBubbles(['a-1'], 'book-1')

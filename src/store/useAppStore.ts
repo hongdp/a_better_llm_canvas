@@ -10,7 +10,7 @@ import { create } from 'zustand'
 // Re-export shared types for backward compatibility
 export type { LLMProvider, ImageGenProvider, ImageGenConfig, GeminiSafetySetting, ProviderConfig, SystemPromptTemplate } from '../types/llm'
 export { PROVIDER_MODELS } from '../types/llm'
-export type { ChatMessage, RoleplayConfig } from '../types/chat'
+export type { ChatMessage } from '../types/chat'
 export type { DocumentVersion, CanvasDocument } from '../types/document'
 
 // Re-export constants and the server bootstrap so existing import sites

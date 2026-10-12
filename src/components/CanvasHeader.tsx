@@ -43,8 +43,7 @@ export function CanvasHeader({
     serverSaveStatus,
     syncToServer,
     activeDocumentId,
-    requestPolish,
-    roleplayMode
+    requestPolish
   } = useAppStore()
 
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
@@ -174,7 +173,7 @@ export function CanvasHeader({
           className="btn-icon"
           title={t.app.polishHint}
           type="button"
-          disabled={isStreaming || roleplayMode || !activeDoc.content}
+          disabled={isStreaming || !activeDoc.content}
           style={{
             borderRadius: '7px',
             padding: '5px 10px',
@@ -184,8 +183,8 @@ export function CanvasHeader({
             fontSize: '0.78rem',
             fontWeight: 600,
             border: '1px solid var(--border-color)',
-            opacity: isStreaming || roleplayMode ? 0.5 : 1,
-            cursor: isStreaming || roleplayMode ? 'not-allowed' : 'pointer'
+            opacity: isStreaming ? 0.5 : 1,
+            cursor: isStreaming ? 'not-allowed' : 'pointer'
           }}
         >
           <Sparkles size={14} />
