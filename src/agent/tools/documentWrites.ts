@@ -381,20 +381,21 @@ const unseen = (target: Target): ToolResult => ({
 export function previewRewrite(ctx: ToolContext, chapterRef: unknown, html: string): void {
   const openBefore = ctx.document.openId()
   const target = resolveTarget(chapterRef, ctx)
+  const chars = htmlToPlainText(html).length.toLocaleString()
   if (typeof target === 'string') {
     // A reference the write will refuse (no such chapter, or a new chapter
     // whose title is taken). Show the writing as progress, not nothing.
     const name = isNewChapterRef(chapterRef) ? chapterRef.create : String(chapterRef)
-    ctx.ui.progress(`✍️ "${name}" … ${htmlToPlainText(html).length.toLocaleString()} chars`)
+    ctx.ui.progress(`✍️ "${name}" … ${chars} chars`)
     return
   }
   // A chapter the user changed meanwhile: this rewrite will be refused, so
   // it must not paint over what they wrote.
   if (!userEdited(ctx, target.id)) openIfCreated(ctx, target)
-  if (ctx.document.openId() !== target.id || userEdited(ctx, target.id)) {
-    ctx.ui.progress(`✍️ ${citeChapter(target)} … ${htmlToPlainText(html).length.toLocaleString()} chars`)
-    return
-  }
+  // The running count shows whether or not the text paints on screen
+  // (user request, 2026-10-12: it used to show only for a chapter not open).
+  ctx.ui.progress(`✍️ ${citeChapter(target)} … ${chars} chars`)
+  if (ctx.document.openId() !== target.id || userEdited(ctx, target.id)) return
   // Opened by this very chunk: the editor on screen is still the previous
   // chapter's until React renders the new one, and painting now would put
   // this chapter's text into it. The text accumulates, so the next chunk
@@ -710,6 +711,12 @@ export function trimTagLayout(text: string): string {
   return text.replace(/^[ \t]*\r?\n\s*/, '').replace(/\s*\r?\n[ \t]*$/, '')
 }
 
+/** A selection rewrite's live preview, with its running character count in the bubble. */
+export function previewSelectionWithCount(ctx: ToolContext, html: string): void {
+  ctx.ui.progress(`✍️ the selection … ${htmlToPlainText(html).length.toLocaleString()} chars`)
+  ctx.editor.previewSelection(html)
+}
+
 export const replaceSelectionTool = defineTool<{ html: string }>({
   ...schemaOf('replace_selection'),
   kind: 'write',
@@ -721,10 +728,11 @@ export const replaceSelectionTool = defineTool<{ html: string }>({
   parse: raw => ({ html: htmlArg(raw) }),
   preview: (text, ctx) => {
     const partial = partialStringArgument(text, 'html')
-    if (partial !== null) ctx.editor.previewSelection(trimIncompleteHtmlTail(partial).replace(/^[ \t]*\r?\n\s*/, ''))
+    if (partial !== null) previewSelectionWithCount(ctx, trimIncompleteHtmlTail(partial).replace(/^[ \t]*\r?\n\s*/, ''))
   },
   execute: ({ html }, ctx): ToolResult => {
     ctx.run.selectionAttempted = true
+    ctx.ui.progress(null)
     const cleaned = trimTagLayout(stripIncompleteEndTag(html))
     if (!cleaned.trim()) {
       return { ok: false, content: 'replace_selection had an empty html argument; nothing was written.', trace: '⚠️ selection rewrite: empty', effects: { producedNothing: true } }

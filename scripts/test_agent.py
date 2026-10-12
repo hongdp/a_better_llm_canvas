@@ -178,6 +178,15 @@ def test_replace_text_across_chapters_in_text_only():
     assert regex["ok"] and "[王小明→李小明]" in regex["content"]
 
 
+def test_the_running_count_shows_for_the_open_chapter_too():
+    from wc_agent.tools.document_writes import preview_rewrite, preview_selection_with_count
+    fake = FakeBook("<p>old</p>")
+    preview_rewrite(fake.ctx, None, "<p>春江潮水连海平</p>")
+    assert fake.progress[-1] == '✍️ #1 "Chapter 1" … 7 chars' and fake.previews
+    preview_selection_with_count(fake.ctx, "<p>重写后的文字</p>")
+    assert fake.progress[-1] == "✍️ the selection … 6 chars"
+
+
 def test_rewrite_guards_truncated_and_empty():
     fake = FakeBook("<p>alpha</p>")
     update = DOCUMENT_WRITE_TOOLS[0]

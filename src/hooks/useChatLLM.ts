@@ -34,7 +34,7 @@ import { resolveDiffMarkupInHtml } from '../utils/diffResolution'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
 import { AgentRun, type RunObserver } from '../agent/run'
 import { ToolRegistry, toToolSpecs } from '../agent/registry'
-import { DOCUMENT_WRITE_TOOLS, previewRewrite, editParagraphsTool, replaceTextTool } from '../agent/tools/documentWrites'
+import { DOCUMENT_WRITE_TOOLS, previewRewrite, previewSelectionWithCount, editParagraphsTool, replaceTextTool } from '../agent/tools/documentWrites'
 import { BOOK_TOOLS } from '../agent/tools/bookReads'
 import { polishChapterTool } from '../agent/tools/polishChapter'
 import { planTool } from '../agent/tools/plan'
@@ -1024,7 +1024,7 @@ export function useChatLLM({
           toolCtx.selection.relocate()
           // The tag's own line break is layout, not text (trimTagLayout).
           const cleanedText = stripIncompleteEndTag(selectionReplaceText).replace(/^[ \t]*\r?\n\s*/, '')
-          if (cleanedText) toolCtx.editor.previewSelection(cleanedText)
+          if (cleanedText) previewSelectionWithCount(toolCtx, cleanedText)
         } else if (canvasText.trim()) {
           setSaveStatus('unsaved')
           // A new chapter is created on its first chunk, so its text streams

@@ -249,14 +249,16 @@ def _unseen(target: Target) -> Dict[str, Any]:
 def preview_rewrite(ctx: ToolContext, chapter_ref: Any, html: str) -> None:
     open_before = ctx.document.open_id()
     target = resolve_target(chapter_ref, ctx)
+    chars = f"{len(html_to_plain_text(html)):,}"
     if isinstance(target, str):
         name = chapter_ref["create"] if is_new_chapter_ref(chapter_ref) else str(chapter_ref)
-        ctx.ui.progress(f'✍️ "{name}" … {len(html_to_plain_text(html)):,} chars')
+        ctx.ui.progress(f'✍️ "{name}" … {chars} chars')
         return
     if not user_edited(ctx, target["id"]):
         _open_if_created(ctx, target)
+    # The running count shows whether or not the text paints on screen (previewRewrite in documentWrites.ts).
+    ctx.ui.progress(f"✍️ {cite_chapter(target)} … {chars} chars")
     if ctx.document.open_id() != target["id"] or user_edited(ctx, target["id"]):
-        ctx.ui.progress(f"✍️ {cite_chapter(target)} … {len(html_to_plain_text(html)):,} chars")
         return
     if open_before != target["id"]:
         return
@@ -498,14 +500,21 @@ def trim_tag_layout(text: str) -> str:
     return _TRAILING_LAYOUT_RE.sub("", _LEADING_LAYOUT_RE.sub("", text, count=1), count=1)
 
 
+def preview_selection_with_count(ctx: ToolContext, html: str) -> None:
+    """A selection rewrite's live preview, with its running character count (previewSelectionWithCount)."""
+    ctx.ui.progress(f"✍️ the selection … {len(html_to_plain_text(html)):,} chars")
+    ctx.editor.preview_selection(html)
+
+
 def _selection_preview(text: str, ctx: ToolContext) -> None:
     partial = partial_string_argument(text, "html")
     if partial is not None:
-        ctx.editor.preview_selection(_LEADING_LAYOUT_RE.sub("", trim_incomplete_html_tail(partial), count=1))
+        preview_selection_with_count(ctx, _LEADING_LAYOUT_RE.sub("", trim_incomplete_html_tail(partial), count=1))
 
 
 async def _selection_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     ctx.run.selection_attempted = True
+    ctx.ui.progress(None)
     cleaned = trim_tag_layout(strip_incomplete_end_tag(args["html"]))
     if not js_trim(cleaned):
         return result(False, "replace_selection had an empty html argument; nothing was written.", "⚠️ selection rewrite: empty", effects={"producedNothing": True})
