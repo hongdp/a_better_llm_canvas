@@ -145,6 +145,8 @@ FUNCTIONS = {
     ("paragraphs", "paragraph_spans"): paragraphs.paragraph_spans,
     ("paragraphs", "numbered_paragraph_spans"): paragraphs.numbered_paragraph_spans,
     ("paragraphs", "is_plain_chapter_html"): paragraphs.is_plain_chapter_html,
+    ("paragraphs", "is_text_rewritable_html"): paragraphs.is_text_rewritable_html,
+    ("paragraphs", "strip_image_marker_paragraphs"): paragraphs.strip_image_marker_paragraphs,
     ("paragraphs", "as_blocks"): paragraphs.as_blocks,
     ("paragraphs", "apply_paragraph_edits"): paragraphs.apply_paragraph_edits,
     ("paragraphs", "paragraph_blocks"): paragraphs.paragraph_blocks,

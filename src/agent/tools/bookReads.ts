@@ -15,7 +15,7 @@ import { stripDiffMarkup } from '../../utils/diff'
 import { htmlToPlainText } from '../../utils/llmContext'
 import { sliceChars } from '../../utils/unicode'
 import { hashContent } from '../../utils/contextLedger'
-import { chapterParagraphs, isPlainChapterHtml, numberedLine, searchableText } from '../../utils/paragraphs'
+import { chapterParagraphs, isPlainChapterHtml, isTextRewritableHtml, numberedLine, searchableText } from '../../utils/paragraphs'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
 import { forgetChapter, renameChapterTool, storedContent, userEdited } from './documentWrites'
 import { ATTACHMENT_RUN_READ_CAP, LIST_SECTION_LINES, attachmentBudgetNote, findAttachmentRange, renderAttachmentPart, renderSectionList, resolveAttachmentRef, type AttachmentMeta } from '../../utils/attachments'
@@ -423,8 +423,10 @@ async function readItems(items: ReadItem[], format: 'text' | 'html', ctx: ToolCo
      * whole, was refused for not having seen its HTML, read it and wrote it
      * again — a minute of output thrown away (run-d9e54ca576dc). Say so here.
      */
-    const formatted = format === 'text' && !isPlainChapterHtml(html)
+    const formatted = format === 'text' && !isTextRewritableHtml(html)
       ? `\n[This chapter has formatting a text read does not show (lists, emphasis, images…): to rewrite it whole, read it with format="html" first; edit_paragraphs works from these ¶ numbers.]`
+      : format === 'text' && !isPlainChapterHtml(html)
+      ? `\n[Its [image] paragraphs are photos: a rewrite may leave them out — they are put back where they stood — and must not write "[image]".]`
       : ''
     parts.push(`=== ${citeChapter(chapter)} — ${paras.length} paragraphs, ${totalChars} characters${span}, ${format} ===\n${lines.join('\n')}${more}${pending ? `\n\n${pending}` : ''}${formatted}`)
     traces.push(`${citeChapter(chapter)}${whole ? '' : ` ¶${from}–${last}`} (${(used / 1000).toFixed(1)}k, ${format})`)

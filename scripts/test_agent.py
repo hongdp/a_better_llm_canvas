@@ -154,6 +154,17 @@ def test_second_edit_matches_text_the_first_wrote():
     assert "diff-deletion" in fake.last_write("doc-1")
 
 
+def test_a_chapter_with_only_a_photo_paragraph_is_rewritten_from_its_text_read():
+    photos = '<p>一。</p><p>二。</p><p><img src="data:image/png;base64,AAA" width="600" style=""> <img src="data:image/png;base64,BBB"></p>'
+    fake = FakeBook("<p>start</p>", chapters=[{"id": "doc-9", "title": "有图", "content": photos}])
+    read = run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    assert "a rewrite may leave them out" in read["content"] and 'read it with format="html" first' not in read["content"]
+    out = run_tool(DOCUMENT_WRITE_TOOLS[0], {"chapter": "2", "html": "<p>一，改。</p><p>二，改。</p><p>[image] [image]</p>"}, fake.ctx)
+    assert out["ok"], out
+    written = strip_diff_markup(fake.last_write("doc-9"))
+    assert "一，改。" in written and "[image]" not in written and "base64,AAA" in written and "base64,BBB" in written
+
+
 def test_rewrite_guards_truncated_and_empty():
     fake = FakeBook("<p>alpha</p>")
     update = DOCUMENT_WRITE_TOOLS[0]

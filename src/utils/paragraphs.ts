@@ -257,6 +257,30 @@ export function isPlainChapterHtml(html: string): boolean {
   return spans.every(s => !s.loose && PLAIN_BLOCK_RE.test(s.html.trim()))
 }
 
+/** A bare <p> holding images and nothing else (whitespace and line breaks aside). */
+const IMAGE_ONLY_BLOCK_RE = /^<p>(?:\s|<br\s*\/?>)*(?:<img\b[^>]*>(?:\s|<br\s*\/?>)*)+<\/p>$/i
+
+/**
+ * A chapter a model may rewrite whole from its text read: plain, or plain but
+ * for paragraphs that hold only images. The rewrite cannot carry those images
+ * (the text read shows them as [image]), and does not need to: the write puts
+ * back every image it dropped near where it stood (reinsertMissingImages).
+ * Problem: a text read of a chapter ending in a paragraph of three photos was
+ *   refused as "not read yet" AFTER the model had written the whole chapter
+ *   (3,654 characters thrown away), then read its HTML and wrote it again
+ *   (2026-10-12).
+ */
+export function isTextRewritableHtml(html: string): boolean {
+  const spans = paragraphSpans(html)
+  if (numberedParagraphSpans(html) === null) return false
+  return spans.every(s => !s.loose && (PLAIN_BLOCK_RE.test(s.html.trim()) || IMAGE_ONLY_BLOCK_RE.test(s.html.trim())))
+}
+
+/** Paragraphs that are only the text read's [image] markers: what a rewrite from that read may copy, never text. */
+export function stripImageMarkerParagraphs(html: string): string {
+  return html.replace(/<p>(?:\s|\[image\])*\[image\](?:\s|\[image\])*<\/p>/g, '')
+}
+
 export type ParagraphAction = 'replace' | 'insert_before' | 'insert_after' | 'delete'
 
 export interface ParagraphEdit {

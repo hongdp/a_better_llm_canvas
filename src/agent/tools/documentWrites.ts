@@ -41,7 +41,7 @@ import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { reinsertMissingImages } from '../../utils/imagePreservation'
 import { htmlToPlainText } from '../../utils/llmContext'
-import { chapterChars, isPlainChapterHtml, rewriteLoss, rewriteLossNote } from '../../utils/paragraphs'
+import { chapterChars, isTextRewritableHtml, rewriteLoss, rewriteLossNote, stripImageMarkerParagraphs } from '../../utils/paragraphs'
 import { hashContent } from '../../utils/contextLedger'
 import { contentWithRenamedHeading, leadingH1Text } from '../../utils/titleSync'
 import { nearestHint } from '../../utils/editHints'
@@ -357,7 +357,7 @@ export function withLoaded(ctx: ToolContext, target: Target, fn: () => ToolResul
 export function seenEnoughToRewrite(ctx: ToolContext, id: string, acceptedHtml: string): boolean {
   if (ctx.run.htmlShown.has(id)) return true
   const seen = ctx.run.textSeen.get(id)
-  return seen !== undefined && seen === hashContent(acceptedHtml) && isPlainChapterHtml(acceptedHtml)
+  return seen !== undefined && seen === hashContent(acceptedHtml) && isTextRewritableHtml(acceptedHtml)
 }
 
 const unseen = (target: Target): ToolResult => ({
@@ -484,7 +484,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
           ok: false,
           retryable: true,
           content: `You have not seen the whole current text of ${citeChapter(target)} in this turn, so it was not rewritten. ` +
-            (isPlainChapterHtml(st.html)
+            (isTextRewritableHtml(st.html)
               ? `Read it (read with chapters=[${target.number}]; text format is enough for this chapter), then write it.`
               : `It has formatting or images a text read does not show: read its HTML (read with chapters=[${target.number}] and format="html"), then write it.`),
           trace: `⛔ rewrite of ${citeChapter(target)} refused — not read yet`
@@ -494,7 +494,7 @@ export const updateDocumentTool = defineTool<{ html: string; chapter: unknown; a
       // Guard the destructive full-document replacement: a response that was
       // cut off, or that abbreviates unchanged regions with placeholders,
       // would silently delete content. Keep what the run has and say so.
-      const candidate = stripBlankParagraphs(ctx.images.restore(html))
+      const candidate = stripBlankParagraphs(stripImageMarkerParagraphs(ctx.images.restore(html)))
       const issue = validateCanvasReplacement(candidate, closed)
       if (issue) {
         commitDoc(ctx, target, st)

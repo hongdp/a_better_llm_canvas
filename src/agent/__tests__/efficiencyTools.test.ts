@@ -93,6 +93,23 @@ describe('a whole rewrite needs the text, not the HTML, of a plain chapter', () 
     expect(out.content).toContain('formatting or images a text read does not show')
   })
 
+  it('a chapter whose only formatting is a paragraph of photos is rewritten from its text read, and keeps the photos', async () => {
+    // 2026-10-12: refused as "not read yet" after the model had written all 3,654 characters, then written again.
+    const PHOTOS = '<p>一。</p><p>二。</p><p><img src="data:image/png;base64,AAA" width="600" style=""> <img src="data:image/png;base64,BBB" width="600" style=""></p>'
+    const f = fakeContext('<p>start</p>', { chapters: [{ id: 'doc-9', title: '有图', content: PHOTOS }] })
+    const read = await exec(readChapterTool, { chapters: ['2'] }, f.ctx)
+    expect(read.content).toContain('a rewrite may leave them out')
+    expect(read.content).not.toContain('read it with format="html" first')
+    // The model copies the [image] marker as a paragraph: dropped, and the photos come back.
+    const out = await exec(updateDocumentTool, { chapter: '2', html: '<p>一，改。</p><p>二，改。</p><p>[image] [image]</p>' }, f.ctx)
+    expect(out.ok).toBe(true)
+    const written = stripDiffMarkup(f.book()[1].content)
+    expect(written).toContain('一，改。')
+    expect(written).not.toContain('[image]')
+    expect(written).toContain('base64,AAA')
+    expect(written).toContain('base64,BBB')
+  })
+
   it('the text in context at the start counts, until the chapter changes', async () => {
     const f = book()
     f.ctx.run.textSeen.set('doc-2', (await import('../../utils/contextLedger')).hashContent(PLAIN))
