@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import { stripDiffMarkup } from '../../utils/diff'
 import { readChapterTool, grepTool } from '../tools/bookReads'
-import { updateDocumentTool, editParagraphsTool } from '../tools/documentWrites'
+import { updateDocumentTool, editParagraphsTool, replaceTextTool } from '../tools/documentWrites'
 import { planTool } from '../tools/plan'
 import { collectStep, planDoneAttributes } from '../invocations'
 import { ToolRegistry } from '../registry'
@@ -235,5 +235,53 @@ describe('a write marks plan items done', () => {
     expect(names).toEqual(['edit_document', 'update_document'])
     expect(last.args?.plan_done).toEqual(['ch3'])
     expect(step.invocations.slice(0, -1).every(i => i.args?.plan_done === undefined)).toBe(true)
+  })
+})
+
+describe('replace_text', () => {
+  const book2 = () => fakeContext('<p>小王来了。</p>', { chapters: [
+    { id: 'doc-2', title: '二', content: '<p>小王和王小明。</p><p><img alt="小王" src="data:image/png;base64,AAA"></p>' },
+    { id: 'doc-3', title: '三', content: '<p>没有他。</p>' }
+  ] })
+
+  it('replaces in the text of every chapter named, as reviewable diffs, never in markup', async () => {
+    const f = book2()
+    const out = await exec(replaceTextTool, { find: '小王', replace: '阿杰', chapters: ['all'] }, f.ctx)
+    expect(out).toMatchObject({ ok: true, trace: '🔁 replaced 小王→阿杰: 2 in 2 chapters' })
+    expect(stripDiffMarkup(f.book()[0].content)).toBe('<p>阿杰来了。</p>')
+    expect(stripDiffMarkup(f.book()[1].content)).toContain('<p>阿杰和王小明。</p>')
+    expect(f.book()[1].content).toContain('alt="小王"')
+    expect(f.book()[1].content).toMatch(/diff-(addition|deletion)/)
+    expect(out.content).toContain('[小王→阿杰]')
+  })
+
+  it('changes nothing when the count differs from expect, and lists the matches', async () => {
+    const f = book2()
+    const out = await exec(replaceTextTool, { find: '王', replace: '李', chapters: ['2'], expect: 1 }, f.ctx)
+    expect(out.ok).toBe(false)
+    expect(out.content).toContain('there are 2')
+    expect(f.book()[1].content).toBe('<p>小王和王小明。</p><p><img alt="小王" src="data:image/png;base64,AAA"></p>')
+  })
+
+  it('previews without writing, and takes a regular expression', async () => {
+    const f = book2()
+    const pre = await exec(replaceTextTool, { find: '王(小.)', replace: '李$1', chapters: ['2'], regex: true, preview: true }, f.ctx)
+    expect(pre.ok).toBe(true)
+    expect(pre.content).toContain('[王小明→李小明]')
+    expect(f.book()[1].content).not.toContain('李')
+    const bad = await exec(replaceTextTool, { find: '(', replace: 'x', chapters: ['2'], regex: true }, f.ctx)
+    expect(bad.ok).toBe(false)
+    expect(bad.content).toContain('invalid regular expression')
+  })
+
+  it("skips a chapter the user changed meanwhile, and says so", async () => {
+    const f = book2()
+    await exec(readChapterTool, { chapters: ['2'], format: 'html' }, f.ctx)
+    await exec(editParagraphsTool, { chapter: '2', edits: [{ paragraph: 1, action: 'replace', html: '<p>小王和王小明，改。</p>', starts_with: '小王' }] }, f.ctx)
+    f.userEdits('doc-2', '<p>用户改了小王。</p>')
+    const out = await exec(replaceTextTool, { find: '小王', replace: '阿杰', chapters: ['1', '2'] }, f.ctx)
+    expect(out.ok).toBe(true)
+    expect(out.content).toContain('Not searched — #2 "二": the user changed it')
+    expect(f.book()[1].content).toBe('<p>用户改了小王。</p>')
   })
 })

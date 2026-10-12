@@ -19,6 +19,7 @@ from wc_text.image_preservation import reinsert_missing_images
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
 from wc_text.context_ledger import hash_content
+from wc_text.text_replace import replace_in_html_text
 from wc_text.paragraphs import apply_paragraph_edits, chapter_chars, is_text_rewritable_html, rewrite_loss, rewrite_loss_note, strip_image_marker_paragraphs
 from wc_text.text import (apply_edit_blocks, apply_edit_blocks_locally, is_blank_content, strip_blank_paragraphs,
                           strip_incomplete_end_tag, trim_incomplete_html_tail, validate_canvas_replacement)
@@ -634,6 +635,107 @@ edit_paragraphs_tool = Tool(
         "plan_done": PLAN_DONE_PARAMETER,
     }, "required": ["edits"]},
     kind="write", parse=_paragraphs_parse, execute=_paragraphs_execute,
+)
+
+
+# ── replace_text ─────────────────────────────────────────────────────────────
+
+def _replace_parse(raw: Optional[Dict[str, Any]]) -> Union[Dict[str, Any], str]:
+    if not raw:
+        return "its arguments could not be parsed"
+    find = raw.get("find") if isinstance(raw.get("find"), str) else ""
+    if not find:
+        return "find was empty"
+    if not isinstance(raw.get("replace"), str):
+        return "replace is required (an empty string deletes the text)"
+    chapters = raw.get("chapters")
+    items = chapters if isinstance(chapters, list) else ([] if chapters is None else [chapters])
+    if not items:
+        return 'no chapters were named (pass "chapters": ["3", "4"] or ["all"])'
+    every = any(isinstance(c, str) and js_trim(c).lower() == "all" for c in items)
+    expect = raw.get("expect")
+    expect = expect if isinstance(expect, int) and not isinstance(expect, bool) and expect >= 0 else None
+    return {"find": find, "replace": raw["replace"], "chapters": "all" if every else items,
+            "regex": raw.get("regex") is True or raw.get("regex") == "true", "expect": expect,
+            "preview": raw.get("preview") is True or raw.get("preview") == "true"}
+
+
+async def _replace_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
+    """Port of replaceTextTool (documentWrites.ts): find and replace across chapters, in their text only."""
+    find, replace, regex, expect, preview = args["find"], args["replace"], args["regex"], args["expect"], args["preview"]
+    book = ctx.document.chapters()
+    refs = list(range(1, len(book) + 1)) if args["chapters"] == "all" else args["chapters"]
+    targets: List[Target] = []
+    problems: List[str] = []
+    for ref in refs:
+        t = resolve_target(ref, ctx)
+        if isinstance(t, str):
+            problems.append(t.splitlines()[0])
+        elif not any(x["id"] == t["id"] for x in targets):
+            targets.append(t)
+    if not targets:
+        return result(False, f"replace_text: {' '.join(problems) or 'no chapter matched'}", "⚠️ replace_text: no chapter", retryable=True)
+    await ctx.document.ensure_loaded([t["id"] for t in targets if not t["isStart"]])
+
+    planned: List[Dict[str, Any]] = []
+    skipped: List[str] = []
+    for target in targets:
+        if target["isStart"] and ctx.run.selection_attempted:
+            skipped.append(f"{cite_chapter(target)}: it has a selection rewrite in this turn")
+            continue
+        if next((c for c in ctx.document.chapters() if c["id"] == target["id"]), {}).get("loaded") is False:
+            skipped.append(f"{cite_chapter(target)}: could not be loaded")
+            continue
+        if user_edited(ctx, target["id"]):
+            forget_chapter(ctx, target["id"])
+            skipped.append(f"{cite_chapter(target)}: the user changed it while you worked — read it again")
+            continue
+        st = doc_state(ctx, target)
+        outcome = replace_in_html_text(st.html, find, replace, regex)
+        if outcome.get("error"):
+            return result(False, f"replace_text: {outcome['error']}. Nothing was changed.", f"⚠️ replace_text: {outcome['error']}", retryable=True)
+        if outcome["count"] > 0:
+            planned.append({"target": target, "html": outcome["html"], "count": outcome["count"], "samples": outcome["samples"]})
+    total = sum(p["count"] for p in planned)
+    report = "\n".join(f"{cite_chapter(p['target'])}: {p['count']}\n" + "\n".join(f"  {x}" for x in p["samples"]) for p in planned)
+    notes = "\n".join(f"Not searched — {x}" for x in [*problems, *skipped])
+    label = f"{find[:20] + '…' if len(find) > 20 else find}→{replace[:20] + '…' if len(replace) > 20 else replace}"
+
+    if preview or (expect is not None and expect != total):
+        why = ("Preview only: nothing was changed." if preview else
+               f"You expected {expect} replacement(s); there are {total}, so nothing was changed. Narrow find (or use regex), or pass the right expect.")
+        body = f"{why}\n{total} match(es) in {len(planned)} chapter(s)" + (f":\n{report}" if report else ".") + (f"\n{notes}" if notes else "")
+        trace = (f"🔍 replace_text preview {label}: {total} in {len(planned)} chapter(s)" if preview else
+                 f"⚠️ replace_text {label}: {total} found, {expect} expected — nothing changed")
+        return result(preview, body, trace, retryable=not preview)
+    if total == 0:
+        return result(False, f'No "{find}" in the {len(targets)} chapter(s) searched; nothing was changed.' + (f"\n{notes}" if notes else ""),
+                      f"⚠️ replace_text {label}: not found", retryable=True)
+    for p in planned:
+        st = doc_state(ctx, p["target"])
+        st.html = p["html"]
+        st.dirty = True
+        commit_doc(ctx, p["target"], st)
+        touch(ctx, p["target"], "edits", p["count"], 0)
+    not_searched = len(skipped) + len(problems)
+    return result(True, f"Replaced {total} occurrence(s) in {len(planned)} chapter(s), each a change the user reviews:\n{report}" + (f"\n{notes}" if notes else ""),
+                  f"🔁 replaced {label}: {total} in {len(planned)} chapter{'' if len(planned) == 1 else 's'}" + (f" ({not_searched} not searched)" if not_searched else ""))
+
+
+replace_text_tool = Tool(
+    name="replace_text",
+    description=("Find and replace text across chapters in one call — renaming a character, a place, a term — in the text only, never in markup, links or images. No read is needed first. "
+                 "Each chapter changed becomes a change the user reviews. A short name can sit inside longer words (王 in 王小明): run it with preview first, or pass expect (the number of replacements you intend; if the count differs nothing is changed and you get the matches). "
+                 "For changes that need judgement occurrence by occurrence, use edit_paragraphs instead."),
+    parameters={"type": "object", "properties": {
+        "find": {"type": "string", "description": "The text to find (exactly as it reads), or a regular expression when regex is true."},
+        "replace": {"type": "string", "description": "The replacement text. With regex, $1, $2… insert groups and $& the whole match."},
+        "chapters": {"type": "array", "description": 'The chapters to change: positions from the CHAPTER INDEX or exact titles; ["all"] for every chapter.', "items": {"type": "string"}},
+        "regex": {"type": "boolean", "description": "Optional: find is a regular expression (JavaScript syntax)."},
+        "expect": {"type": "integer", "description": "Optional: the total number of replacements you intend; a different count changes nothing."},
+        "preview": {"type": "boolean", "description": "Optional: only list the matches; change nothing."},
+    }, "required": ["find", "replace", "chapters"]},
+    kind="write", parse=_replace_parse, execute=_replace_execute,
 )
 
 # ── rename_chapter ───────────────────────────────────────────────────────────

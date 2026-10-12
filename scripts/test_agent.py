@@ -165,6 +165,19 @@ def test_a_chapter_with_only_a_photo_paragraph_is_rewritten_from_its_text_read()
     assert "一，改。" in written and "[image]" not in written and "base64,AAA" in written and "base64,BBB" in written
 
 
+def test_replace_text_across_chapters_in_text_only():
+    from wc_agent.tools.document_writes import replace_text_tool
+    fake = FakeBook("<p>小王来了。</p>", chapters=[{"id": "doc-2", "title": "二", "content": '<p>小王和王小明。</p><p><img alt="小王" src="x.png"></p>'}])
+    expected = run_tool(replace_text_tool, {"find": "王", "replace": "李", "chapters": ["2"], "expect": 1}, fake.ctx)
+    assert expected["ok"] is False and "there are 2" in expected["content"] and fake.writes == []
+    out = run_tool(replace_text_tool, {"find": "小王", "replace": "阿杰", "chapters": ["all"]}, fake.ctx)
+    assert out["ok"] and out["trace"] == "🔁 replaced 小王→阿杰: 2 in 2 chapters"
+    assert strip_diff_markup(fake.last_write("doc-1")) == "<p>阿杰来了。</p>"
+    assert 'alt="小王"' in fake.last_write("doc-2") and "阿杰和王小明" in strip_diff_markup(fake.last_write("doc-2"))
+    regex = run_tool(replace_text_tool, {"find": "王(小.)", "replace": "李$1", "chapters": ["2"], "regex": True, "preview": True}, fake.ctx)
+    assert regex["ok"] and "[王小明→李小明]" in regex["content"]
+
+
 def test_rewrite_guards_truncated_and_empty():
     fake = FakeBook("<p>alpha</p>")
     update = DOCUMENT_WRITE_TOOLS[0]

@@ -399,6 +399,9 @@ and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
 (`utils/paragraphs` `paragraphSpans`/`applyParagraphEdits`); writes take
 `plan_done` (an attribute on tags); eight look-up-only steps in a row get one
 reminder.
+`replace_text` replaces a word or name across chapters in one call, in the
+text only (`utils/textReplace`), each chapter a reviewable diff; `expect`
+refuses on a different count, `preview` only lists.
 
 **The CHAPTER INDEX lists chapters by position (`#n`) and title only** (with the
 open-chapter and freshness markers). Chapter summaries are not used anywhere —
