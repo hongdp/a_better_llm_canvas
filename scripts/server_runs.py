@@ -38,7 +38,7 @@ from wc_agent.registry import ToolRegistry, to_tool_specs
 from wc_agent.run import AgentRun, StepOutput, StepUnavailable, offered_tools_for
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
-from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite, replace_text_tool
+from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite, preview_selection_with_count, replace_text_tool
 from wc_agent.tools.plan import plan_tool
 from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.tools.web import WEB_TOOLS
@@ -869,7 +869,7 @@ class RunEngine:
             if split["isSelectionEdit"]:
                 cleaned = strip_incomplete_end_tag(split["selectionReplaceText"])
                 if cleaned:
-                    agent.ctx.editor.preview_selection(cleaned)
+                    preview_selection_with_count(agent.ctx, cleaned)
             elif js_trim(split["canvasText"]):
                 ref = {"create": split["canvasNewChapter"]} if split.get("canvasNewChapter") else split.get("canvasChapter")
                 preview_rewrite(agent.ctx, ref, trim_incomplete_html_tail(split["canvasText"]))

@@ -95,6 +95,22 @@ describe('update_document guards', () => {
     updateDocumentTool.preview?.('{"other": 1', f.ctx)
     expect(f.previewDocument).toHaveBeenCalledTimes(1)
   })
+
+  it('shows the running character count even when the chapter written is the one on screen', () => {
+    // User request (2026-10-12): the count used to show only for a chapter not open.
+    const f = fakeContext('<p>old</p>')
+    updateDocumentTool.preview?.('{"html": "<p>春江潮水连海平</p><p>海上', f.ctx)
+    expect(f.previewDocument).toHaveBeenCalled()
+    expect(f.progress.at(-1)).toMatch(/^✍️ #1 "Chapter 1" … \d+ chars$/)
+  })
+
+  it('shows the running count of a selection rewrite, and clears it when the rewrite lands', async () => {
+    const f = fakeContext('<p>选中的文字。</p>', { selectedText: '选中的文字。' })
+    replaceSelectionTool.preview?.('{"html": "<p>重写后的文字', f.ctx)
+    expect(f.progress.at(-1)).toBe('✍️ the selection … 6 chars')
+    await replaceSelectionTool.invoke({ id: 'c', name: 'replace_selection', args: { html: '<p>重写后的文字。</p>' }, argumentsText: '', source: 'native' } as never, f.ctx)
+    expect(f.progress).toContain(null)
+  })
 })
 
 describe('edit_document arguments', () => {
