@@ -42,6 +42,15 @@ def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]]
     tokens = calibrated["tokens"]
     if tokens <= limit_tokens * ELIDE_ABOVE:
         return untouched
+    # Elide only when it can bring the prompt back under the limit (planElisions in runCompaction.ts).
+    elidable_tokens = 0.0
+    for entry in elidable:
+        index = entry["index"]
+        m = messages[index] if 0 <= index < len(messages) else None
+        if m is not None and index < keep_from:
+            elidable_tokens += max(0, estimate_tokens(m.get("content") or "") - estimate_tokens(elided_result_note(entry["trace"]))) * calibrated["ratio"]
+    if tokens - elidable_tokens > limit_tokens:
+        return untouched
     out = list(messages)
     elided: List[str] = []
     remaining: List[Dict[str, Any]] = []

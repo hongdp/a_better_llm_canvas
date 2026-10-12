@@ -6,6 +6,8 @@ from typing import Dict, Optional
 MODEL_CONTEXT_TOKENS = [
     ("gpt-4.1", 1_047_576), ("gpt-4o", 128_000), ("gpt-4-turbo", 128_000), ("gpt-4", 8_192), ("gpt-3.5", 16_385),
     ("o1", 200_000), ("o3", 200_000),
+    ("claude-opus-5", 1_000_000), ("claude-sonnet-5", 1_000_000), ("claude-haiku-5", 1_000_000), ("claude-fable-5", 1_000_000), ("claude-mythos-5", 1_000_000),
+    ("claude-opus-4-6", 1_000_000), ("claude-opus-4-7", 1_000_000), ("claude-opus-4-8", 1_000_000), ("claude-sonnet-4-6", 1_000_000),
     ("claude-opus-4", 200_000), ("claude-sonnet-4", 200_000), ("claude-3", 200_000), ("claude-", 200_000),
     ("gemini-1.5-pro", 2_097_152), ("gemini-1.5", 1_048_576), ("gemini-2", 1_048_576), ("gemini-", 1_048_576),
     ("grok-4", 256_000), ("grok-3", 131_072), ("grok-", 131_072),

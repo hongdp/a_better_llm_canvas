@@ -591,7 +591,7 @@ const MODULES: Module[] = [
   {
     module: 'context_window',
     cases: {
-      resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0], ['moonshot', 'kimi-k3'], ['moonshot', 'kimi-k2.7-code'], ['moonshot', '']]),
+      resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0], ['moonshot', 'kimi-k3'], ['moonshot', 'kimi-k2.7-code'], ['moonshot', ''], ['anthropic', 'claude-sonnet-5-5'], ['anthropic', 'claude-opus-4-6'], ['anthropic', 'claude-opus-4-5-20251101'], ['anthropic', 'claude-haiku-4-5-20251001']]),
       estimate_tokens: run(estimateTokens, [[''], ['hello world'], ['你好世界'], ['mixed 中文 text'], ['a']]),
       tokens_to_chars: run(tokensToChars, [[1000, 0], [1000, 1], [1000, 0.5], [1000, 2], [1000, -1], [7, 0.3]]),
       history_budget_chars: run(historyBudgetChars, [[{ contextTokens: 131072, maxOutputTokens: 16384, fixedTokens: 30000, cjkRatio: 0.8 }], [{ contextTokens: 32768, maxOutputTokens: 16384, fixedTokens: 20000, cjkRatio: 0 }], [{ contextTokens: 200000, maxOutputTokens: 4096, fixedTokens: 0, cjkRatio: 0.123 }]]),

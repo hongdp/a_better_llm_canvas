@@ -1763,12 +1763,13 @@ def test_models_endpoint_lists_claude_models_only_from_anthropic(_stub_models_au
                     pass
 
                 def json(self):
-                    return {"data": [{"id": "claude-sonnet-5-5"}, {"id": "claude-opus-5-5"}]}
+                    return {"data": [{"id": "claude-sonnet-5-5", "max_input_tokens": 1000000}, {"id": "claude-opus-5-5"}]}
             return _R()
     with patch.object(server_generation.httpx, "AsyncClient", _Client):
         result = asyncio.run(server_generation.list_provider_models(
             _FakeRequest({"provider": "anthropic", "apiKey": "sk-ant", "baseUrl": "https://api.anthropic.com/v1"})))
-    assert result == {"models": ["claude-sonnet-5-5", "claude-opus-5-5"]}
+    # The Models API's max_input_tokens rides along as the window the tab should believe.
+    assert result == {"models": ["claude-sonnet-5-5", "claude-opus-5-5"], "contextWindows": {"claude-sonnet-5-5": 1000000}}
     assert seen["url"] == "https://api.anthropic.com/v1/models" and seen["headers"]["x-api-key"] == "sk-ant"
 
 

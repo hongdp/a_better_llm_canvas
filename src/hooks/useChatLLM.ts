@@ -25,6 +25,7 @@ import {
   cjkRatioOf
 } from '../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../utils/providerProfile'
+import { calibrationKey, loadTokenRatios, saveTokenRatios, tokenRatio as clampedTokenRatio } from '../utils/tokenCalibration'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings, collectTextSpans, findTextRangeInSpans, selectionNeedleFromHtml } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, diffTailParts, ledgerBlock, pinnedUpdates, type DynamicContextOptions, type SentTail } from './chat/dynamicContext'
@@ -320,6 +321,8 @@ export function useChatLLM({
     activeEditorRef.current = activeEditor
   }, [activeEditor])
 
+  /** measured ÷ estimated prompt tokens per provider|model, from finished runs (utils/tokenCalibration). */
+  const tokenRatiosRef = useRef<Record<string, number>>(loadTokenRatios(typeof localStorage === 'undefined' ? null : localStorage))
   const selectionRangeRef = useRef<{ from: number; to: number } | null>(null)
   /** The run in flight, so Stop can keep it from starting another step. */
   const currentRunRef = useRef<AgentRun | null>(null)
@@ -1192,6 +1195,15 @@ export function useChatLLM({
       // the continuity signal admits them into next turn's cached ledger,
       // instead of the model paying a read step for them again (D4, D7).
       modelReadIdsRef.current = summary.readIds
+      // What this provider counted against what the app estimated, for the
+      // next turn's history budget (utils/tokenCalibration).
+      if (summary.tokenRatio !== null) {
+        const ratio = clampedTokenRatio(summary.tokenRatio, 1)
+        if (ratio !== null) {
+          tokenRatiosRef.current[calibrationKey(s.activeProvider, s.providerConfigs[s.activeProvider]?.model ?? '')] = ratio
+          saveTokenRatios(typeof localStorage === 'undefined' ? null : localStorage, tokenRatiosRef.current)
+        }
+      }
       // The turn as sent, for the next one to replay (cache_continuity.md §3.1).
       // A rejoined run never saw the request it continues: nothing to keep.
       if (info.userMsgId && !info.rejoined && summary.transcript.length > 0) {
@@ -2055,8 +2067,13 @@ export function useChatLLM({
       s.providerConfigs[s.activeProvider]?.model ?? '',
       s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? '']
     )
+    // The budget is sized in this app's estimated tokens: a provider that
+    // counts more per character than the estimate (Sonnet 5.5: 1.14 per
+    // character on Chinese prose, measured) gets a window shrunk by that
+    // factor, as remembered from the last run on this provider|model.
+    const ratio = tokenRatiosRef.current[calibrationKey(s.activeProvider, s.providerConfigs[s.activeProvider]?.model ?? '')] ?? 1
     const historyBudget = historyBudgetChars({
-      contextTokens: targetPromptTokens(cacheProfile, windowTokens),
+      contextTokens: Math.floor(targetPromptTokens(cacheProfile, windowTokens) / ratio),
       maxOutputTokens,
       // Everything else this turn sends: system prompt, the ledger block and
       // the volatile tail. The ledger is not built yet, so its members are

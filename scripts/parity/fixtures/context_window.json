@@ -35,7 +35,7 @@
      "anthropic",
      "claude-opus-4-8"
     ],
-    "output": 200000
+    "output": 1000000
    },
    {
     "input": [
@@ -94,6 +94,34 @@
      ""
     ],
     "output": 262144
+   },
+   {
+    "input": [
+     "anthropic",
+     "claude-sonnet-5-5"
+    ],
+    "output": 1000000
+   },
+   {
+    "input": [
+     "anthropic",
+     "claude-opus-4-6"
+    ],
+    "output": 1000000
+   },
+   {
+    "input": [
+     "anthropic",
+     "claude-opus-4-5-20251101"
+    ],
+    "output": 200000
+   },
+   {
+    "input": [
+     "anthropic",
+     "claude-haiku-4-5-20251001"
+    ],
+    "output": 200000
    }
   ],
   "estimate_tokens": [

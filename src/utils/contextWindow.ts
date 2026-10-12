@@ -32,7 +32,21 @@ const MODEL_CONTEXT_TOKENS: Array<[string, number]> = [
   ['gpt-3.5', 16_385],
   ['o1', 200_000],
   ['o3', 200_000],
-  // Anthropic
+  // Anthropic: 1M at standard pricing from the 4.6 generation on (platform.claude.com
+  // models overview and pricing, 2026-10-11; Haiku 5.5 prices prompts over 100k higher).
+  // The Models API's max_input_tokens, when a key has listed the models, wins over this.
+  // Problem: every Claude was 200k here, so a 333k-token Sonnet 5.5 request was "over
+  //   the window": the run elided one read result per step, pointlessly, and the
+  //   bubble warned about a full re-read each time (2026-10-11).
+  ['claude-opus-5', 1_000_000],
+  ['claude-sonnet-5', 1_000_000],
+  ['claude-haiku-5', 1_000_000],
+  ['claude-fable-5', 1_000_000],
+  ['claude-mythos-5', 1_000_000],
+  ['claude-opus-4-6', 1_000_000],
+  ['claude-opus-4-7', 1_000_000],
+  ['claude-opus-4-8', 1_000_000],
+  ['claude-sonnet-4-6', 1_000_000],
   ['claude-opus-4', 200_000],
   ['claude-sonnet-4', 200_000],
   ['claude-3', 200_000],

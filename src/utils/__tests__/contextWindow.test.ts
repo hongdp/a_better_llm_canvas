@@ -16,6 +16,15 @@ describe('resolveContextWindowTokens', () => {
     expect(resolveContextWindowTokens('grok', 'grok-4.6', 8_192)).toBe(8_192)
   })
 
+  it('knows Claude 4.6+ and 5.x have 1M, earlier Claudes 200k', () => {
+    expect(resolveContextWindowTokens('anthropic', 'claude-sonnet-5-5')).toBe(1_000_000)
+    expect(resolveContextWindowTokens('anthropic', 'claude-opus-4-6')).toBe(1_000_000)
+    expect(resolveContextWindowTokens('anthropic', 'claude-opus-4-5-20251101')).toBe(200_000)
+    expect(resolveContextWindowTokens('anthropic', 'claude-haiku-4-5-20251001')).toBe(200_000)
+    // What the key's own listing reported wins over the table.
+    expect(resolveContextWindowTokens('anthropic', 'claude-sonnet-5-5', 1_048_576)).toBe(1_048_576)
+  })
+
   it('knows the Kimi line: kimi-k3 at 1M, the K2 models at 262k', () => {
     expect(resolveContextWindowTokens('moonshot', 'kimi-k3')).toBe(1_048_576)
     expect(resolveContextWindowTokens('moonshot', 'kimi-k2.7-code-highspeed')).toBe(262_144)
