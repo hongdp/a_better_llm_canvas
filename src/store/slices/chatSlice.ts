@@ -10,7 +10,7 @@ export interface ChatSlice {
   /**
    * While streaming: the chapters the user may not edit — the ones the
    * assistant is writing into right now. null = all of them, which is what
-   * any streamer that does not say otherwise gets (roleplay, whole-book
+   * any streamer that does not say otherwise gets (whole-book
    * batches). Cleared when streaming stops. Read it through isEditLocked.
    */
   editLockedIds: string[] | null

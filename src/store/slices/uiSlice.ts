@@ -1,6 +1,5 @@
 import type { StateCreator } from 'zustand'
 import type { Editor } from '@tiptap/react'
-import type { RoleplayConfig } from '../../types/chat'
 import type { AppState } from '../types'
 import { localStorage } from '../persistence'
 import { setCookie, loadSavedSidebarOpen } from '../settingsPersistence'
@@ -9,11 +8,6 @@ export interface UiSlice {
   isSidebarOpen: boolean
   toggleSidebar: () => void
 
-  // Roleplay game mode state
-  roleplayMode: boolean
-  roleplayConfig: RoleplayConfig | null
-  setRoleplayMode: (active: boolean) => void
-  setRoleplayConfig: (config: RoleplayConfig | null) => void
 
   /**
    * Tail of the reasoning the model is streaming right now, or ''.
@@ -59,11 +53,6 @@ export const createUiSlice: StateCreator<AppState, [], [], UiSlice> = (set) => (
     })
   },
 
-  // Roleplay game mode state
-  roleplayMode: false,
-  roleplayConfig: null,
-  setRoleplayMode: (active) => set({ roleplayMode: active }),
-  setRoleplayConfig: (config) => set({ roleplayConfig: config }),
 
   // Selection & editor state implementation
   selectedText: '',

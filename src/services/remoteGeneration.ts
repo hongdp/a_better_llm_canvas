@@ -23,7 +23,7 @@ export interface RemoteJobMeta {
   documentId?: string
   /** Chat bubble this job streams into — the anchor a rejoin needs. */
   assistantMessageId?: string
-  kind?: 'chat' | 'roleplay' | 'summary' | 'batch'
+  kind?: 'chat' | 'summary' | 'batch'
   /**
    * The text the user had selected when the turn started, for a
    * <selection_replace> edit. Positions cannot survive a reload — the range

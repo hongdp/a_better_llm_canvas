@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react'
+import React, { useState, useEffect } from 'react'
 import { 
-  Send, Trash2, AlertCircle, X, SquarePen, ChevronDown, ChevronUp, Image, Square, Clipboard, Swords
+  Send, Trash2, AlertCircle, X, SquarePen, ChevronDown, ChevronUp, Image, Square, Clipboard
 } from 'lucide-react'
 import { StreamingStatus } from './StreamingStatus'
 import { ASSISTANT_PLACEHOLDER } from '../hooks/chat/streamHandlers'
@@ -9,13 +9,10 @@ import { providerDisplayName } from '../utils/providers'
 import { convertBlobUrlToDataUrl, convertGifToJpegIfNeeded } from '../utils/text'
 import { useImageUpload } from '../hooks/useImageUpload'
 import { useChatLLM } from '../hooks/useChatLLM'
-import { useRoleplayLLM } from '../hooks/useRoleplayLLM'
 import { useTranslation } from '../i18n'
 import { AgentTimeline, AgentTurnSummary } from './AgentTurnSummary'
 import { chatRows } from './chatRows'
 import { RunControls } from './RunControls'
-import { RoleplayBanner } from './RoleplayBanner'
-import { RoleplaySetupModal } from './RoleplaySetupModal'
 
 interface ChatPanelProps {
   chatWidth: number
@@ -42,19 +39,13 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     isStreaming,
     streamingReasoning,
     selectedText,
-    activeEditor,
-    roleplayMode,
-    roleplayConfig,
-    setRoleplayMode,
-    setRoleplayConfig
+    activeEditor
   } = useAppStore()
 
   const [isChatExpanded, setIsChatExpanded] = useState(false)
-  const [isRpSetupOpen, setIsRpSetupOpen] = useState(false)
   const activeConfig = providerConfigs[activeProvider]
   // A message typed while a chat turn streams steers it (useChatLLM
-  // steerRunningTurn); roleplay keeps its turn-by-turn gate.
-  const inputBlocked = isStreaming && roleplayMode
+  // steerRunningTurn), so the input stays open while streaming.
 
   const {
     uploadedImages,
@@ -76,37 +67,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
     setSaveStatus
   })
 
-  const rpLLM = useRoleplayLLM({
-    uploadedImages,
-    setUploadedImages: (imgs: string[]) => setUploadedImages(imgs),
-    layoutMode,
-    setIsChatExpanded,
-  })
-
-  // Route to the right hook based on mode
-  const chatInput = roleplayMode ? rpLLM.rpChatInput : chatLLM.chatInput
-  const setChatInput = roleplayMode ? rpLLM.setRpChatInput : chatLLM.setChatInput
-  const chatInputRef = roleplayMode ? rpLLM.rpChatInputRef : chatLLM.chatInputRef
-  const chatEndRef = roleplayMode ? rpLLM.rpChatEndRef : chatLLM.chatEndRef
-  const errorMsg = roleplayMode ? rpLLM.rpErrorMsg : chatLLM.errorMsg
-  const setErrorMsg = roleplayMode ? rpLLM.setRpErrorMsg : chatLLM.setErrorMsg
-  const handleSendMessage = roleplayMode ? rpLLM.handleRpSendMessage : chatLLM.handleSendMessage
-  const handleStopGeneration = roleplayMode ? rpLLM.handleRpStopGeneration : chatLLM.handleStopGeneration
+  const { chatInput, setChatInput, chatInputRef, chatEndRef, errorMsg, setErrorMsg, handleSendMessage, handleStopGeneration } = chatLLM
   const { editingMessageId, setEditingMessageId, editingMessageText, setEditingMessageText, handleResubmitMessage } = chatLLM
 
-  // Handle starting a new RP game
-  const handleStartRpGame = useCallback(async (config: { characterName: string; genre: string; difficulty: 'easy' | 'normal' | 'hard'; customWorldDesc?: string }) => {
-    setIsRpSetupOpen(false)
-    await rpLLM.handleInitializeGame(config)
-  }, [rpLLM])
-
-  // Handle ending the RP game
-  const handleEndRpGame = useCallback(() => {
-    if (window.confirm('End the current roleplay session? Your game documents will be preserved.')) {
-      setRoleplayMode(false)
-      setRoleplayConfig(null)
-    }
-  }, [setRoleplayMode, setRoleplayConfig])
 
   const getProviderLabel = (prov: string) => {
     return providerDisplayName(prov)
@@ -153,7 +116,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
   return (
     <>
     <section 
-      className={`chat-panel ${isChatExpanded ? 'expanded' : ''} ${isHistoryOpen ? 'open' : ''} ${roleplayMode ? 'rp-active' : ''}`} 
+      className={`chat-panel ${isChatExpanded ? 'expanded' : ''} ${isHistoryOpen ? 'open' : ''}`} 
       style={{ 
         width: layoutMode === 'portrait' 
           ? '100%' 
@@ -176,26 +139,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               <ChevronDown size={18} />
             </button>
           )}
-          <h2>{roleplayMode ? '⚔️ Roleplay' : t.app.chatTitle} ({getProviderLabel(activeProvider)})</h2>
+          <h2>{t.app.chatTitle} ({getProviderLabel(activeProvider)})</h2>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
-          {/* Roleplay Toggle Button */}
-          <button
-            onClick={() => {
-              if (roleplayMode) {
-                handleEndRpGame()
-              } else {
-                setIsRpSetupOpen(true)
-              }
-            }}
-            className={`rp-toggle-btn ${roleplayMode ? 'active' : ''}`}
-            title={roleplayMode ? 'End roleplay session' : 'Start a roleplay game'}
-            type="button"
-            disabled={isStreaming}
-          >
-            <Swords size={13} />
-            {roleplayMode ? 'RP On' : 'RP'}
-          </button>
           <button 
             onClick={handleClearChat} 
             className="btn-icon" 
@@ -207,22 +153,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
         </div>
       </div>
 
-      {/* Roleplay Banner — shows game stats when RP is active */}
-      {roleplayMode && roleplayConfig && (
-        <RoleplayBanner onEndGame={handleEndRpGame} />
-      )}
-
       <div className="chat-messages">
         {chatRows(messages).map(({ key, msg, segment, steered }) => {
-          // Determine RP-specific CSS classes
-          const rpClass = msg.rpType === 'narration' ? 'rp-narration'
-            : msg.rpType === 'action' ? 'rp-action'
-            : msg.rpType === 'system_event' ? 'rp-system-event'
-            : ''
-
           return (
-            <div key={key} className={`chat-message ${msg.role} ${rpClass}`}>
-              {editingMessageId === msg.id && !roleplayMode ? (
+            <div key={key} className={`chat-message ${msg.role}`}>
+              {editingMessageId === msg.id ? (
                 <div className="chat-message-edit-container">
                   <textarea
                     value={editingMessageText}
@@ -249,13 +184,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               ) : (
                 <>
                   <div className="chat-message-bubble">
-                    {/* RP Action Prefix for user messages */}
-                    {msg.rpType === 'action' && roleplayConfig && (
-                      <div className="rp-action-prefix">
-                        <Swords size={11} />
-                        {roleplayConfig.characterName}
-                      </div>
-                    )}
                     {msg.images && msg.images.length > 0 && (
                       <div className="chat-message-images" style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', marginBottom: '6px' }}>
                         {msg.images.map((img, idx) => (
@@ -293,33 +221,15 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                       />
                     )}
 
-                    {/* RP Choices — clickable action buttons */}
-                    {msg.rpChoices && msg.rpChoices.length > 0 && !isStreaming && (
-                      <div className="rp-choices-container">
-                        <div className="rp-choices-label">Choose your path:</div>
-                        {msg.rpChoices.map((choice, idx) => (
-                          <button
-                            key={idx}
-                            className="rp-choice-btn"
-                            type="button"
-                            onClick={() => handleSendMessage(undefined, choice)}
-                            disabled={isStreaming}
-                          >
-                            <span className="rp-choice-number">{idx + 1}</span>
-                            {choice}
-                          </button>
-                        ))}
-                      </div>
-                    )}
                   </div>
-                  {msg.rpType !== 'system_event' && (
+                  {(
                     <span className="chat-message-info" style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', flexWrap: 'wrap' }}>
                       <span>
-                        {msg.rpType === 'narration' ? '🎲 Game Master' : msg.rpType === 'action' ? `⚔️ ${roleplayConfig?.characterName || 'Player'}` : getResponderName(msg)}
+                        {getResponderName(msg)}
                         {' • '}
                         {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                       </span>
-                      {msg.role === 'user' && !steered && !roleplayMode && editingMessageId !== msg.id && !isStreaming && (
+                      {msg.role === 'user' && !steered && editingMessageId !== msg.id && !isStreaming && (
                         <button
                           onClick={() => {
                             setEditingMessageId(msg.id)
@@ -346,12 +256,8 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <StreamingStatus
             waiting={waitingForFirstToken}
             reasoning={streamingReasoning}
-            waitingLabel={roleplayMode
-              ? `🎲 ${t.app.waitingFirstToken}`
-              : `${getProviderLabel(activeProvider)} ${t.app.waitingFirstToken}`}
-            label={roleplayMode
-              ? '🎲 Game Master is narrating...'
-              : `${getProviderLabel(activeProvider)} ${t.app.streamingChanges}`}
+            waitingLabel={`${getProviderLabel(activeProvider)} ${t.app.waitingFirstToken}`}
+            label={`${getProviderLabel(activeProvider)} ${t.app.streamingChanges}`}
           />
         )}
         <div ref={chatEndRef} />
@@ -455,7 +361,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
           <div style={{ position: 'relative', flex: 1, display: 'flex' }}>
             <div
               ref={chatInputRef}
-              contentEditable={!inputBlocked}
+              contentEditable
               onInput={async e => {
                 const container = e.currentTarget
                 const imgs = Array.from(container.getElementsByTagName('img'))
@@ -532,12 +438,9 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
                   width: '100%'
                 }}
               >
-                {roleplayMode && roleplayConfig
-                  ? `What do you do, ${roleplayConfig.characterName}?`
-                  : t.app.instructPlaceholder
-                    .replace('{provider}', providerDisplayName(activeProvider))
-                    .replace('{model}', activeConfig.model)
-                }
+                {t.app.instructPlaceholder
+                  .replace('{provider}', providerDisplayName(activeProvider))
+                  .replace('{model}', activeConfig.model)}
               </span>
             )}
           </div>
@@ -546,7 +449,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className="btn-icon"
             title={t.app.uploadImage}
             onClick={() => fileInputRef.current?.click()}
-            disabled={inputBlocked}
             style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
           >
             <Image size={18} />
@@ -556,7 +458,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
             className="btn-icon"
             title={t.app.pasteImage}
             onClick={handlePasteFromClipboard}
-            disabled={inputBlocked}
             style={{ padding: '0.5rem', color: 'var(--text-secondary)' }}
           >
             <Clipboard size={18} />
@@ -585,7 +486,7 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
               <Square size={16} fill="#ef4444" />
             </button>
           )}
-          {(!isStreaming || !roleplayMode) && (
+          {(
             <button 
               type="submit" 
               className="btn-icon" 
@@ -603,12 +504,6 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({
       </form>
     </section>
 
-    {/* Roleplay Setup Modal */}
-    <RoleplaySetupModal
-      isOpen={isRpSetupOpen}
-      onClose={() => setIsRpSetupOpen(false)}
-      onStartGame={handleStartRpGame}
-    />
     </>
   )
 }

@@ -726,7 +726,7 @@ describe('reconciling unfinished bubbles with the server', () => {
   })
 
   it('falls back to the server when the local record names a non-chat job', async () => {
-    findResumableJob.mockResolvedValue({ jobId: 'gen-rp', meta: { kind: 'roleplay' }, offset: 0 })
+    findResumableJob.mockResolvedValue({ jobId: 'gen-summary', meta: { kind: 'summary' }, offset: 0 })
     findJobsForBubbles.mockResolvedValue(serverKnows({
       'a-1': { jobId: 'gen-chat', meta: { assistantMessageId: 'a-1', kind: 'chat' } }
     }))

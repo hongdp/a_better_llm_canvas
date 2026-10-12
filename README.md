@@ -88,7 +88,7 @@ for HTTPS, other devices and the server options.
 | **Context** | Pinned chapters · cache-continuous requests (transcripts replayed, context as differences, frozen ledger) · conversation summaries from the live conversation · reasoning carried across turns (Grok, OpenAI) |
 | **Sources** | Attach long `.txt` files (a source novel, notes) and read them in sections · web search, page reading and image fetching through a headless browser (optional) — "load this post into a chapter" is a chat request · import `.md`, `.html`, `.txt` files |
 | **Books** | Many books per account · chapters sidebar with drag ordering · version history and snapshots · export to Markdown / HTML / text · each book remembers its model, effort and prompt preset |
-| **Workspace** | Accounts with secure sessions · settings and keys per user · light and dark themes · desktop, tablet and phone layouts · installable PWA · a roleplay game-master mode · image generation |
+| **Workspace** | Accounts with secure sessions · settings and keys per user · light and dark themes · desktop, tablet and phone layouts · installable PWA · image generation |
 
 ## Supported models
 
