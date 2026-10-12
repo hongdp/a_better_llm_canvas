@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path'
 import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
 import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
 import type { LLMMessage } from '../../types/llm'
-import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, searchableText, blockImages, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
+import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, searchableText, blockImages, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, isTextRewritableHtml, stripImageMarkerParagraphs, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
 import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
@@ -388,6 +388,8 @@ const MODULES: Module[] = [
       paragraph_spans: run(paragraphSpans, [[CHAPTER], [ENGLISH], [''], [SPANNED], ['loose <p>a</p> tail'], ['<!-- c --><p>a</p></p><div><div>x</div></div><br/><p class="x>y">q</p>'], ['<p>never closed'], ['<p>a<p>b</p>']]),
       numbered_paragraph_spans: run(numberedParagraphSpans, [[CHAPTER], [ENGLISH], [SPANNED], ['<p>a<p>b</p>'], ['<p>x &#8217; y</p>'], ['']]),
       is_plain_chapter_html: run(isPlainChapterHtml, [[CHAPTER], [ENGLISH], [SPANNED], ['<h1>标题</h1><p>一。</p><p>二<br>三</p><p></p>'], ['<p class="a">x</p>'], ['<p>x</p><ul><li>a</li></ul>'], ['loose'], ['']]),
+      is_text_rewritable_html: run(isTextRewritableHtml, [[CHAPTER], ['<p>一。</p><p><img src="a" width="600" style=""> <img src="b"></p>'], ['<p>一。</p><p><img src="a">图</p>'], ['<p><br><img src="a"><br></p>'], ['<p class="x"><img src="a"></p>'], ['<p>x</p><ul><li>a</li></ul>'], ['']]),
+      strip_image_marker_paragraphs: run(stripImageMarkerParagraphs, [['<p>一。</p><p>[image]</p><p>[image] [image]</p><p>见[image]</p>'], ['<p>[image]x</p>'], ['']]),
       as_blocks: run(asBlocks, [['<p>x</p>'], ['  <h2>t</h2> '], ['one\n\ntwo\nlines'], ['plain'], ['  ']]),
       paragraph_blocks: run(paragraphBlocks, [[CARD], ['<ol><li>a</li>x<li>b</li></ol><p>c</p>'], ['<ul></ul>']]),
       anchor_matches: run(anchorMatches, [['身份：缥缈宗太上长老，炼虚期', '身份：缆缈宗太上长老'], ['身份：缥缈宗太上长老', '身份：缆缆宗太上长老'], ['abc', 'abd'], ['整理范围：原作第1–87章，人物', '整理范围：原作第1–94章，人物状态'], ['The quick brown fox jumps', 'The quikc brown fox'], ['短', '短']]),

@@ -219,6 +219,24 @@ def is_plain_chapter_html(html: str) -> bool:
     return all(not s["loose"] and _PLAIN_BLOCK.match(_js_trim(s["html"])) for s in spans)
 
 
+_BR = "<br" + _WS_CLASS + r"*/?>"
+_IMAGE_ONLY_BLOCK = re.compile(r"^<p>(?:" + _WS_CLASS + "|" + _BR + r")*(?:<img\b[^>]*>(?:" + _WS_CLASS + "|" + _BR + r")*)+</p>$", re.I)
+_IMAGE_MARKER_PARAGRAPH = re.compile(r"<p>(?:" + _WS_CLASS + r"|\[image\])*\[image\](?:" + _WS_CLASS + r"|\[image\])*</p>")
+
+
+def is_text_rewritable_html(html: str) -> bool:
+    """Port of isTextRewritableHtml: plain, or plain but for paragraphs that hold only images."""
+    spans = paragraph_spans(html)
+    if numbered_paragraph_spans(html) is None:
+        return False
+    return all(not s["loose"] and (_PLAIN_BLOCK.match(_js_trim(s["html"])) or _IMAGE_ONLY_BLOCK.match(_js_trim(s["html"]))) for s in spans)
+
+
+def strip_image_marker_paragraphs(html: str) -> str:
+    """Port of stripImageMarkerParagraphs."""
+    return _IMAGE_MARKER_PARAGRAPH.sub("", html)
+
+
 def _squash(s: str) -> str:
     return _js_trim(_WS_RUN.sub(" ", s))
 

@@ -11,7 +11,7 @@ from wc_text.context_ledger import hash_content
 from wc_text.diff import strip_diff_markup
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
-from wc_text.paragraphs import chapter_paragraphs, is_plain_chapter_html, numbered_line, searchable_text
+from wc_text.paragraphs import chapter_paragraphs, is_plain_chapter_html, is_text_rewritable_html, numbered_line, searchable_text
 from wc_text.pending_changes import pending_changes, render_pending_changes
 from wc_text.text import is_blank_content
 
@@ -335,6 +335,8 @@ async def _read_items(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -
         pending = render_pending_changes(pending_changes(stored))
         # A text read hides formatting; a whole rewrite of this chapter needs its HTML (run-d9e54ca576dc).
         formatted = ("\n[This chapter has formatting a text read does not show (lists, emphasis, images…): to rewrite it whole, read it with format=\"html\" first; edit_paragraphs works from these ¶ numbers.]"
+                     if fmt == "text" and not is_text_rewritable_html(html) else
+                     "\n[Its [image] paragraphs are photos: a rewrite may leave them out — they are put back where they stood — and must not write \"[image]\".]"
                      if fmt == "text" and not is_plain_chapter_html(html) else "")
         parts.append(f"=== {cite_chapter(chapter)} — {len(paras)} paragraphs, {total_chars} characters{span}, {fmt} ===\n" + "\n".join(lines) + more + (f"\n\n{pending}" if pending else "") + formatted)
         traces.append(f"{cite_chapter(chapter)}{'' if whole else f' ¶{start}–{last}'} ({used / 1000:.1f}k, {fmt})")

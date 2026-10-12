@@ -19,7 +19,7 @@ from wc_text.image_preservation import reinsert_missing_images
 from wc_text.jsstr import js_trim
 from wc_text.llm_context import html_to_plain_text
 from wc_text.context_ledger import hash_content
-from wc_text.paragraphs import apply_paragraph_edits, chapter_chars, is_plain_chapter_html, rewrite_loss, rewrite_loss_note
+from wc_text.paragraphs import apply_paragraph_edits, chapter_chars, is_text_rewritable_html, rewrite_loss, rewrite_loss_note, strip_image_marker_paragraphs
 from wc_text.text import (apply_edit_blocks, apply_edit_blocks_locally, is_blank_content, strip_blank_paragraphs,
                           strip_incomplete_end_tag, trim_incomplete_html_tail, validate_canvas_replacement)
 from wc_text.title_sync import content_with_renamed_heading, leading_h1_text
@@ -235,7 +235,7 @@ def seen_enough_to_rewrite(ctx: ToolContext, doc_id: str, accepted_html: str) ->
     if doc_id in ctx.run.html_shown:
         return True
     seen = ctx.run.text_seen.get(doc_id)
-    return seen is not None and seen == hash_content(accepted_html) and is_plain_chapter_html(accepted_html)
+    return seen is not None and seen == hash_content(accepted_html) and is_text_rewritable_html(accepted_html)
 
 
 def _unseen(target: Target) -> Dict[str, Any]:
@@ -342,11 +342,11 @@ async def _update_write(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, 
                               f"To rewrite it, read it first (read with chapters=[{target['number']}]); to add a new chapter, give it a title no chapter has.",
                               f'⛔ new_chapter "{target["title"]}" is #{target["number"]}, not read — not overwritten', retryable=True)
             how = (f"Read it (read with chapters=[{target['number']}]; text format is enough for this chapter), then write it."
-                   if is_plain_chapter_html(st.html) else
+                   if is_text_rewritable_html(st.html) else
                    f'It has formatting or images a text read does not show: read its HTML (read with chapters=[{target["number"]}] and format="html"), then write it.')
             return result(False, f"You have not seen the whole current text of {cite_chapter(target)} in this turn, so it was not rewritten. " + how,
                           f"⛔ rewrite of {cite_chapter(target)} refused — not read yet", retryable=True)
-        candidate = strip_blank_paragraphs(ctx.images.restore(html))
+        candidate = strip_blank_paragraphs(strip_image_marker_paragraphs(ctx.images.restore(html)))
         issue = validate_canvas_replacement(candidate, closed)
         if issue:
             commit_doc(ctx, target, st)
