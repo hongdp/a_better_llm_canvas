@@ -259,7 +259,12 @@ def _levenshtein(a: str, b: str) -> int:
 
 def anchor_matches(text: str, anchor: str) -> bool:
     """Port of anchorMatches: the paragraph starts with the anchor, a slip or two allowed in a long one."""
-    t = _squash(text)
+    own = _squash(text)
+    # A paragraph whose own text starts with "•" is compared without it too (anchorMatches in paragraphs.ts).
+    bare = re.sub(r"^•" + _WS_CLASS + "*", "", own, count=1)
+    if bare != own and anchor_matches(bare, anchor):
+        return True
+    t = own
     if t.startswith(anchor):
         return True
     k = 2 if len(anchor) >= 16 else 1 if len(anchor) >= 6 else 0

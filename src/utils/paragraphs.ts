@@ -322,7 +322,15 @@ function levenshtein(a: string, b: string): number {
  * paragraph that MOVED, which a one-character difference does not mean.
  */
 export function anchorMatches(text: string, anchor: string): boolean {
-  const t = squash(text)
+  // The anchor loses a leading "•" (anchorOf: the text read's list marker), so
+  // a paragraph whose own text starts with one is compared without it too.
+  // Problem: an outline whose list entries begin with a typed "•" read as
+  //   "¶33 • • 第八章 借条…"; every anchor the model gave lost its "•" and none
+  //   matched "• 第八章…" — four edits refused in a row (2026-10-13).
+  const own = squash(text)
+  const bare = own.replace(/^•\s*/, '')
+  if (bare !== own && anchorMatches(bare, anchor)) return true
+  const t = own
   if (t.startsWith(anchor)) return true
   const k = anchor.length >= 16 ? 2 : anchor.length >= 6 ? 1 : 0
   for (let len = anchor.length - k; k > 0 && len <= anchor.length + k; len++) {

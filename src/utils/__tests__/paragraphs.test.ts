@@ -61,3 +61,15 @@ describe('applyParagraphEdits keeps an inline image', () => {
     expect(out.ok && out.html).toBe('<p>Intro.</p><p>End.</p>')
   })
 })
+
+describe('anchors on list entries whose own text starts with "•"', () => {
+  it('apply with the anchor as the model copies it from "¶33 • • 第八章…"', () => {
+    // 2026-10-13: four edits of an outline entry refused in a row.
+    const html = '<ul><li><p>• 第七章 第一份零工：…</p></li><li><p>• 第八章 借条：夏夏为请假给他买生日礼物。</p></li></ul>'
+    for (const startsWith of ['• 第八章 借条', '• • 第八章 借条', '第八章 借条']) {
+      const out = applyParagraphEdits(html, [{ paragraph: 2, action: 'replace', startsWith, html: '<p>• 第八章 借条（已写）</p>' }])
+      expect(out.ok).toBe(true)
+    }
+    expect(applyParagraphEdits(html, [{ paragraph: 2, action: 'replace', startsWith: '第九章', html: '<p>x</p>' }]).ok).toBe(false)
+  })
+})
