@@ -17,7 +17,7 @@ from wc_text.policy import decide_after_step, detect_step_failure, steps_left
 from wc_text.run_compaction import elision_trace, plan_elisions
 from wc_text.reminders import (LOOKUP_NUDGE_STEPS, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge,
                                long_reasoning_reminder, lookup_streak_nudge, plan_reminder, plan_unfinished_nudge, repeat_nudge,
-                               steer_message, unbacked_claim_nudge, wrap_reminder)
+                               steer_message, unbacked_claim_nudge, wrap_reminder, carried_plan_reminder)
 from wc_text.stream_handlers import NO_ACTION_RETRY_INSTRUCTION, STEP_LIMIT_NOTE
 from wc_text.text import claims_own_write, is_blank_content
 from wc_text.tool_call_stream import call_signature
@@ -65,13 +65,27 @@ def offered_tools_for(registry: ToolRegistry, ctx: ToolContext, write_protocol: 
                               and (agent_tools or t.markup_form))
 
 
+def _with_carried_plan(messages: List[Dict[str, Any]], ctx: ToolContext, carried: Optional[List[Dict[str, str]]]) -> List[Dict[str, Any]]:
+    """Port of withCarriedPlan (run.ts): the previous turn's unfinished plan becomes the run's, said on the last user message."""
+    if not carried or not unfinished_plan_items(carried):
+        return messages
+    ctx.run.plan = [dict(i) for i in carried]
+    for i in carried:
+        if i.get("status") == "in_progress":
+            ctx.run.plan_baseline[i["id"]] = 0
+    if not messages or messages[-1].get("role") != "user":
+        return messages
+    last = messages[-1]
+    return [*messages[:-1], {**last, "content": f"{last.get('content') or ''}\n\n{wrap_reminder(carried_plan_reminder(carried))}"}]
+
+
 class AgentRun:
     def __init__(self, *, registry: ToolRegistry, ctx: ToolContext, write_protocol: str,
                  driver: Callable[[List[Dict[str, Any]], int, bool], Awaitable[StepOutput]], observer: Any,
                  budgets: Dict[str, Any], policy: Dict[str, Any], can_continue: bool, initial_messages: List[Dict[str, Any]],
                  agent_tools: bool = True, guard: Optional[Callable[["AgentRun"], Optional[Dict[str, Any]]]] = None,
                  long_reasoning_tokens: int = 0, reminders: Optional[Callable[["AgentRun"], List[str]]] = None,
-                 prompt_token_limit: int = 0) -> None:
+                 prompt_token_limit: int = 0, carried_plan: Optional[List[Dict[str, str]]] = None) -> None:
         self.registry = registry
         self.ctx = ctx
         self.write_protocol = write_protocol
@@ -105,7 +119,7 @@ class AgentRun:
         self.pending_steers: List[str] = []
         #: The chat message ids of the pending steers, for the timeline mark (see run.ts takeSteer).
         self.pending_steer_ids: List[str] = []
-        self.messages: List[Dict[str, Any]] = list(initial_messages)
+        self.messages: List[Dict[str, Any]] = _with_carried_plan(list(initial_messages), ctx, carried_plan)
         #: Where this turn's own messages start (its final user message): the transcript is from here (cache_continuity.md §3.1).
         self.initial_count = len(initial_messages)
         #: The step that ended the run, not appended to the messages: the transcript's last messages.

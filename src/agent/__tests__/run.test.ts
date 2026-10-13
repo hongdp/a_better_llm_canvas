@@ -15,6 +15,7 @@ import { DEFAULT_BUDGETS, DEFAULT_POLICY, type RunBudgets, type StepPolicy } fro
 import { NO_ACTION_RETRY_INSTRUCTION } from '../../hooks/chat/streamHandlers'
 import { stripDiffMarkup } from '../../utils/diff'
 import type { ToolResult } from '../types'
+import type { PlanItem } from '../../utils/plan'
 import { fakeContext } from './fakeContext'
 
 type Reply = StepOutput | ((messages: LLMMessage[]) => StepOutput)
@@ -45,6 +46,7 @@ function harness(opts: {
   read?: ReturnType<typeof readTool>
   /** More tools for the registry. */
   extra?: RegisteredTool[]
+  carriedPlan?: PlanItem[]
   /** The fake book's further chapters. */
   chapters?: Parameters<typeof fakeContext>[1] extends infer O ? O extends { chapters?: infer C } ? C : never : never
 }) {
@@ -76,7 +78,8 @@ function harness(opts: {
     canContinue: opts.canContinue ?? true,
     initialMessages: [{ role: 'system', content: 'sys' }, { role: 'user', content: 'request' }],
     longReasoningTokens: opts.longReasoningTokens,
-    promptTokenLimit: opts.promptTokenLimit
+    promptTokenLimit: opts.promptTokenLimit,
+    carriedPlan: opts.carriedPlan
   })
   return { run, fake, requests, corrective, summary: () => summary as RunSummary | null }
 }
@@ -672,5 +675,26 @@ describe('what the user says mid-turn, and what the reply claims (agentic_chat_l
     await h.run.start()
     expect(h.requests).toHaveLength(2)
     expect(h.summary()?.endReason).toBe('answered')
+  })
+})
+
+describe('a plan the previous turn left unfinished', () => {
+  it('starts the run, is said on its first message, and nudges an early end', async () => {
+    // 2026-10-13: "continue" after a stopped turn had no plan; one chapter in, the model asked the user to say "continue".
+    const plan: PlanItem[] = [{ id: 'c5', title: '写第五章', status: 'done' }, { id: 'c6', title: '写第六章', status: 'in_progress' }, { id: 'c7', title: '写第七章', status: 'pending' }]
+    const done = text('done\n<doc_status>unchanged</doc_status>')
+    const h = harness({ carriedPlan: plan, replies: [text('你回复「继续」我就写。\n<doc_status>unchanged</doc_status>'), done, done] })
+    await h.run.start()
+    await new Promise(r => setTimeout(r, 0))
+    const first = h.requests[0].at(-1)!.content
+    expect(first.startsWith('request\n\n<system-reminder>')).toBe(true)
+    expect(first).toContain('Your plan from the previous turn is not finished')
+    expect(h.requests[1].at(-1)?.content).toContain('Your plan still has 2 unfinished items')
+  })
+
+  it('carries nothing from a finished plan', async () => {
+    const h = harness({ carriedPlan: [{ id: 'a', title: 'x', status: 'done' }], replies: [text('done\n<doc_status>unchanged</doc_status>')] })
+    await h.run.start()
+    expect(h.requests[0].at(-1)?.content).toBe('request')
   })
 })

@@ -49,6 +49,13 @@ def plan_reminder(plan: List[Dict[str, str]]) -> str:
     return render_plan(plan)
 
 
+def carried_plan_reminder(plan: List[Dict[str, str]]) -> str:
+    """Port of carriedPlanReminder: the previous turn's unfinished plan, on the next turn's first message."""
+    return (f"Your plan from the previous turn is not finished:\n{render_plan(plan)}\n"
+            "If this message continues that work, carry on with the next item and keep the plan up to date. "
+            "If it asks for something else, mark the items that no longer apply dropped with the plan tool.")
+
+
 def plan_unfinished_nudge(plan: List[Dict[str, str]]) -> str:
     left = unfinished_plan_items(plan)
     return (f"Your plan still has {len(left)} unfinished item{'' if len(left) == 1 else 's'}:\n" + "\n".join(f"- {i['title']}" for i in left) + "\n"

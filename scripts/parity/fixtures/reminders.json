@@ -269,6 +269,30 @@
     "output": "Your plan still has 1 unfinished item:\n- one\nContinue with the next one in your next reply. If an item no longer applies, mark it dropped with the plan tool and say why; a reply with no action ends the turn only once every item is done or dropped."
    }
   ],
+  "carried_plan_reminder": [
+   {
+    "input": [
+     [
+      {
+       "id": "a",
+       "title": "第一章",
+       "status": "done"
+      },
+      {
+       "id": "b",
+       "title": "第二章",
+       "status": "in_progress"
+      },
+      {
+       "id": "c",
+       "title": "第三章",
+       "status": "pending"
+      }
+     ]
+    ],
+    "output": "Your plan from the previous turn is not finished:\nPLAN (1/3 done):\n☑ 第一章\n▶ 第二章\n☐ 第三章\nNext: 第二章\nIf this message continues that work, carry on with the next item and keep the plan up to date. If it asks for something else, mark the items that no longer apply dropped with the plan tool."
+   }
+  ],
   "user_edited_reminder": [
    {
     "input": [

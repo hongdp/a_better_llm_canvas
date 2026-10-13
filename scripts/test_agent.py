@@ -439,7 +439,7 @@ def read_tool(execute=None):
 
 class Harness:
     def __init__(self, replies, *, write_protocol="markup", budgets=None, policy=None, can_continue=True, original="<p>alpha</p>",
-                 extra=None, guard=None, chapters=None):
+                 extra=None, guard=None, chapters=None, carried_plan=None):
         self.fake = FakeBook(original, chapters=chapters)
         self.registry = ToolRegistry([*DOCUMENT_WRITE_TOOLS, read_tool(), *(extra or [])])
         self.requests: List[List[Dict[str, Any]]] = []
@@ -475,7 +475,7 @@ class Harness:
         self.run = AgentRun(registry=self.registry, ctx=self.fake.ctx, write_protocol=write_protocol, driver=driver, observer=Observer(),
                             budgets={**DEFAULT_BUDGETS, **(budgets or {})}, policy={**DEFAULT_POLICY, **(policy or {})},
                             can_continue=can_continue, initial_messages=[{"role": "system", "content": "sys"}, {"role": "user", "content": "request"}],
-                            guard=guard)
+                            guard=guard, carried_plan=carried_plan)
 
 
 def text(t: str) -> StepOutput:
@@ -637,6 +637,21 @@ def test_plan_reminds_and_nudges_an_early_ending():
     assert "Your plan still has 2 unfinished items" in nudge and h.requests[2][-2]["content"] == "写完了。\n<doc_status>unchanged</doc_status>"
     assert h.summary["endReason"] == "answered" and h.summary["steps"] == 4
     assert [i["status"] for i in h.summary["plan"]] == ["dropped", "dropped"]
+
+
+def test_a_turn_picks_up_the_previous_turns_unfinished_plan_and_is_nudged_to_go_on():
+    # 2026-10-13: "continue" after a stopped turn had no plan; one chapter in, the model asked the user to say "continue".
+    plan = [{"id": "c5", "title": "写第五章", "status": "done"}, {"id": "c6", "title": "写第六章", "status": "in_progress"}, {"id": "c7", "title": "写第七章", "status": "pending"}]
+    h = Harness([text("你回复「继续」我就写。\n<doc_status>unchanged</doc_status>"), DONE, DONE], carried_plan=plan)
+    asyncio.run(h.run.start())
+    first = h.requests[0][-1]["content"]
+    assert first.startswith("request\n\n<system-reminder>") and "Your plan from the previous turn is not finished" in first and "写第七章" in first
+    assert "Your plan still has 2 unfinished items" in h.requests[1][-1]["content"]
+    assert h.run.ctx.run.plan_baseline == {"c6": 0}
+    # A finished plan carries nothing.
+    h2 = Harness([DONE], carried_plan=[{"id": "a", "title": "x", "status": "done"}])
+    asyncio.run(h2.run.start())
+    assert h2.requests[0][-1]["content"] == "request" and h2.run.ctx.run.plan == []
 
 
 def test_plan_says_when_a_done_chapter_is_still_empty():

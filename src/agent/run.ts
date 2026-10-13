@@ -16,7 +16,7 @@ import type { LLMMessage, StreamUsage, ThinkingBlock } from '../types/llm'
 import { callSignature, type FinishedToolCall } from '../utils/toolCallStream'
 import type { PlanItem } from '../utils/plan'
 import { unfinishedPlanItems } from '../utils/plan'
-import { appendReminders, htmlReadNudge, longReasoningReminder, lookupStreakNudge, planReminder, planUnfinishedNudge, repeatNudge, steerMessage, unbackedClaimNudge, LOOKUP_NUDGE_STEPS, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
+import { appendReminders, carriedPlanReminder, htmlReadNudge, longReasoningReminder, lookupStreakNudge, planReminder, planUnfinishedNudge, repeatNudge, steerMessage, unbackedClaimNudge, LOOKUP_NUDGE_STEPS, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, wrapReminder } from './reminders'
 import { claimsOwnWrite, isBlankContent, type DocumentUpdateFailure } from '../utils/text'
 import { NO_ACTION_RETRY_INSTRUCTION } from '../hooks/chat/streamHandlers'
 import { collectStep, planWrites, type CollectedStep } from './invocations'
@@ -145,9 +145,25 @@ export interface AgentRunOptions {
    * are elided before the next step (agent/runCompaction). Absent = never.
    */
   promptTokenLimit?: number
+  /** The previous turn's plan, when it has items left: the run starts with it (reminders carriedPlanReminder). */
+  carriedPlan?: PlanItem[]
 }
 
 const UNKNOWN_TOOL_KIND: ToolKind = 'read'
+
+/**
+ * Start the run with the previous turn's unfinished plan: it becomes the
+ * run's plan (an item already in progress counts as started now, so it is
+ * marked done after this run writes) and the last user message says so.
+ */
+function withCarriedPlan(messages: LLMMessage[], ctx: ToolContext, carried: PlanItem[] | undefined): LLMMessage[] {
+  if (!carried || unfinishedPlanItems(carried).length === 0) return messages
+  ctx.run.plan = carried.map(i => ({ ...i }))
+  for (const i of carried) if (i.status === 'in_progress') ctx.run.planBaseline.set(i.id, 0)
+  const last = messages[messages.length - 1]
+  if (!last || last.role !== 'user') return messages
+  return [...messages.slice(0, -1), { ...last, content: `${last.content}\n\n${wrapReminder(carriedPlanReminder(carried))}` }]
+}
 
 /** Run `fn` over `items` in order; synchronous until the first promise. */
 function runSequential<T, R>(items: T[], fn: (item: T) => R | Promise<R>): R[] | Promise<R[]> {
@@ -231,7 +247,7 @@ export class AgentRun {
 
   constructor(options: AgentRunOptions) {
     this.o = options
-    this.messages = options.initialMessages
+    this.messages = withCarriedPlan(options.initialMessages, options.ctx, options.carriedPlan)
     this.initialCount = options.initialMessages.length
     options.ctx.run.writeProtocol = options.writeProtocol
     options.ctx.run.continuesAfterWrites = options.policy.continueAfterWrites

@@ -36,17 +36,30 @@ def apply_plan_update(current: List[Dict[str, str]], raw_items: Any, merge: Opti
     by_id = {i["id"]: i for i in current}
     status_only = bool(current) and all(i["id"] in by_id and not i["title"] for i in items)
     if merge or status_only:
+        # A new id with a title is appended (applyPlanUpdate in plan.ts).
         for item in items:
-            if item["id"] not in by_id:
-                return f'item "{item["id"]}" is not in the plan; send the whole list to add items'
+            if item["id"] not in by_id and not item["title"]:
+                return f'item "{item["id"]}" is not in the plan; give it a title to add it, or send the whole list'
         out = []
         for i in current:
             update = next((u for u in items if u["id"] == i["id"]), None)
             out.append({**i, "status": update["status"], **({"title": update["title"]} if update["title"] else {})} if update else i)
-        return out
+        return out + [i for i in items if i["id"] not in by_id]
     if any(not i["title"] for i in items):
         return "an item has no title"
     return items
+
+
+def previous_turn_plan(messages: List[Dict[str, Any]], assistant_message_id: str) -> Optional[List[Dict[str, str]]]:
+    """Port of previousTurnPlan: the plan the turn before this one left unfinished, or None."""
+    at = next((n for n, m in enumerate(messages) if m.get("id") == assistant_message_id), -1)
+    before = messages if at == -1 else messages[:at]
+    prev = next((m for m in reversed(before) if m.get("role") == "assistant"), None)
+    agent = (prev or {}).get("agent")
+    plan = agent.get("plan") if isinstance(agent, dict) else None
+    if not isinstance(plan, list) or not unfinished_plan_items(plan):
+        return None
+    return [{"id": i["id"], "title": i["title"], "status": i["status"]} for i in plan]
 
 
 def next_plan_item(items: List[Dict[str, str]]) -> Optional[Dict[str, str]]:

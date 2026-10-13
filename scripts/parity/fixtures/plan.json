@@ -105,7 +105,7 @@
      ],
      true
     ],
-    "output": "item \"zz\" is not in the plan; send the whole list to add items"
+    "output": "item \"zz\" is not in the plan; give it a title to add it, or send the whole list"
    },
    {
     "input": [
@@ -272,6 +272,233 @@
      null
     ],
     "output": "no items were given (each needs a title; a status update needs an id)"
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a",
+       "title": "第一章",
+       "status": "done"
+      },
+      {
+       "id": "b",
+       "title": "第二章",
+       "status": "in_progress"
+      },
+      {
+       "id": "c",
+       "title": "第三章",
+       "status": "pending"
+      }
+     ],
+     [
+      {
+       "id": "c6",
+       "title": "第六章",
+       "status": "in_progress"
+      },
+      {
+       "id": "a",
+       "status": "done"
+      }
+     ],
+     true
+    ],
+    "output": [
+     {
+      "id": "a",
+      "title": "第一章",
+      "status": "done"
+     },
+     {
+      "id": "b",
+      "title": "第二章",
+      "status": "in_progress"
+     },
+     {
+      "id": "c",
+      "title": "第三章",
+      "status": "pending"
+     },
+     {
+      "id": "c6",
+      "title": "第六章",
+      "status": "in_progress"
+     }
+    ]
+   }
+  ],
+  "previous_turn_plan": [
+   {
+    "input": [
+     [
+      {
+       "id": "u1",
+       "role": "user"
+      },
+      {
+       "id": "a1",
+       "role": "assistant",
+       "agent": {
+        "plan": [
+         {
+          "id": "a",
+          "title": "第一章",
+          "status": "done"
+         },
+         {
+          "id": "b",
+          "title": "第二章",
+          "status": "in_progress"
+         },
+         {
+          "id": "c",
+          "title": "第三章",
+          "status": "pending"
+         }
+        ]
+       }
+      },
+      {
+       "id": "u2",
+       "role": "user"
+      },
+      {
+       "id": "a2",
+       "role": "assistant"
+      }
+     ],
+     "a2"
+    ],
+    "output": [
+     {
+      "id": "a",
+      "title": "第一章",
+      "status": "done"
+     },
+     {
+      "id": "b",
+      "title": "第二章",
+      "status": "in_progress"
+     },
+     {
+      "id": "c",
+      "title": "第三章",
+      "status": "pending"
+     }
+    ]
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a1",
+       "role": "assistant",
+       "agent": {
+        "plan": [
+         {
+          "id": "x",
+          "title": "done",
+          "status": "done"
+         }
+        ]
+       }
+      },
+      {
+       "id": "a2",
+       "role": "assistant"
+      }
+     ],
+     "a2"
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a1",
+       "role": "assistant",
+       "agent": {
+        "plan": [
+         {
+          "id": "a",
+          "title": "第一章",
+          "status": "done"
+         },
+         {
+          "id": "b",
+          "title": "第二章",
+          "status": "in_progress"
+         },
+         {
+          "id": "c",
+          "title": "第三章",
+          "status": "pending"
+         }
+        ]
+       }
+      },
+      {
+       "id": "a0",
+       "role": "assistant"
+      },
+      {
+       "id": "a2",
+       "role": "assistant"
+      }
+     ],
+     "a2"
+    ],
+    "output": null
+   },
+   {
+    "input": [
+     [
+      {
+       "id": "a1",
+       "role": "assistant",
+       "agent": {
+        "plan": [
+         {
+          "id": "a",
+          "title": "第一章",
+          "status": "done"
+         },
+         {
+          "id": "b",
+          "title": "第二章",
+          "status": "in_progress"
+         },
+         {
+          "id": "c",
+          "title": "第三章",
+          "status": "pending"
+         }
+        ]
+       }
+      }
+     ],
+     "new"
+    ],
+    "output": [
+     {
+      "id": "a",
+      "title": "第一章",
+      "status": "done"
+     },
+     {
+      "id": "b",
+      "title": "第二章",
+      "status": "in_progress"
+     },
+     {
+      "id": "c",
+      "title": "第三章",
+      "status": "pending"
+     }
+    ]
    }
   ],
   "render_plan": [
