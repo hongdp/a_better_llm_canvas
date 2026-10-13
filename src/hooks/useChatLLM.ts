@@ -26,6 +26,7 @@ import {
 } from '../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../utils/providerProfile'
 import { calibrationKey, loadTokenRatios, saveTokenRatios, tokenRatio as clampedTokenRatio } from '../utils/tokenCalibration'
+import { previousTurnPlan } from '../utils/plan'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection, splitStreamingResponse, buildCompletionWarnings, collectTextSpans, findTextRangeInSpans, selectionNeedleFromHtml } from './chat/streamHandlers'
 import { buildLedgerMessages, buildVolatileTail, diffTailParts, ledgerBlock, pinnedUpdates, type DynamicContextOptions, type SentTail } from './chat/dynamicContext'
@@ -1775,7 +1776,9 @@ export function useChatLLM({
       promptTokenLimit: targetPromptTokens(
         getCacheProfile(s.activeProvider),
         resolveContextWindowTokens(s.activeProvider, s.providerConfigs[s.activeProvider]?.model ?? '', s.discoveredContextWindows[s.providerConfigs[s.activeProvider]?.model ?? ''])
-      ) - (s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384)
+      ) - (s.providerConfigs[s.activeProvider]?.maxOutputTokens ?? 16_384),
+      // A new turn picks up the plan the previous one left unfinished (agent/reminders carriedPlanReminder).
+      carriedPlan: canContinue && !info.rejoined ? previousTurnPlan(s.messages, info.assistantMsgId) ?? undefined : undefined
     })
     rcRef.current = { ...info, run, toolCtx }
     currentRunRef.current = run

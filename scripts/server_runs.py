@@ -44,6 +44,7 @@ from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.tools.web import WEB_TOOLS
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
 from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder, wrap_reminder
+from wc_text.plan import previous_turn_plan
 from wc_text.context_window import resolve_context_window_tokens
 from wc_text.policy import resolve_run_settings
 from wc_text.protocol_choice import resolve_document_protocol
@@ -694,7 +695,9 @@ class RunEngine:
             can_continue=True, agent_tools=settings["agentTools"], initial_messages=assembled["apiMessages"],
             guard=lambda agent: self._guard(run, agent),
             long_reasoning_tokens=int(long_reasoning) if isinstance(long_reasoning, (int, float)) and long_reasoning > 0 else 0,
-            reminders=lambda agent: self._reminders(run, agent), prompt_token_limit=max(0, prompt_limit))
+            reminders=lambda agent: self._reminders(run, agent), prompt_token_limit=max(0, prompt_limit),
+            # A new turn picks up the plan the previous one left unfinished (wc_text.reminders.carried_plan_reminder).
+            carried_plan=previous_turn_plan(history, str(req.get("assistantMessageId") or "")))
 
     def _history_for(self, run: Run) -> List[Dict[str, Any]]:
         """The conversation before this turn.

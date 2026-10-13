@@ -65,6 +65,21 @@ export function planReminder(plan: PlanItem[]): string {
   return renderPlan(plan)
 }
 
+/**
+ * The plan a previous turn left unfinished, on the first message of the next.
+ * Problem: a turn writing a novel chapter by chapter was stopped (a reload)
+ *   with 1 of 10 items done; the user said "continue", the new run had no
+ *   plan, wrote one chapter, and ended "reply continue and I'll write the
+ *   next" — nothing nudged it, because the nudges come from the plan
+ *   (2026-10-13).
+ * Fix: a run starts with the previous turn's plan when it has items left,
+ *   and its first message says so; the usual plan reminders and nudges apply.
+ */
+export function carriedPlanReminder(plan: PlanItem[]): string {
+  return `Your plan from the previous turn is not finished:\n${renderPlan(plan)}\n` +
+    'If this message continues that work, carry on with the next item and keep the plan up to date. If it asks for something else, mark the items that no longer apply dropped with the plan tool.'
+}
+
 /** A reply with no action while the plan has work left. */
 export function planUnfinishedNudge(plan: PlanItem[]): string {
   const left = unfinishedPlanItems(plan)

@@ -46,19 +46,37 @@ export function applyPlanUpdate(current: PlanItem[], rawItems: unknown, merge: b
   const byId = new Map(current.map(i => [i.id, i]))
   const statusOnly = current.length > 0 && items.every(i => byId.has(i.id) && !i.title)
   if (merge || statusOnly) {
+    // A new id with a title is appended (the model added "c6" by merge, 2026-10-13); without one it is a mistake.
     for (const item of items) {
-      if (!byId.has(item.id)) return `item "${item.id}" is not in the plan; send the whole list to add items`
+      if (!byId.has(item.id) && !item.title) return `item "${item.id}" is not in the plan; give it a title to add it, or send the whole list`
     }
-    return current.map(i => {
-      const update = items.find(u => u.id === i.id)
-      return update ? { ...i, status: update.status, ...(update.title ? { title: update.title } : {}) } : i
-    })
+    return [
+      ...current.map(i => {
+        const update = items.find(u => u.id === i.id)
+        return update ? { ...i, status: update.status, ...(update.title ? { title: update.title } : {}) } : i
+      }),
+      ...items.filter(i => !byId.has(i.id))
+    ]
   }
   if (items.some(i => !i.title)) return 'an item has no title'
   return items
 }
 
 const MARK: Record<PlanStatus, string> = { pending: '☐', in_progress: '▶', done: '☑', dropped: '✕' }
+
+/**
+ * The plan the turn before this one left unfinished: the latest assistant
+ * message before `assistantMessageId` (the new turn's bubble), when its plan
+ * has items still pending or in progress. Null otherwise — a finished plan,
+ * or a turn without one, carries nothing.
+ */
+export function previousTurnPlan(messages: Array<{ id: string; role: string; agent?: { plan?: PlanItem[] } }>, assistantMessageId: string): PlanItem[] | null {
+  const at = messages.findIndex(m => m.id === assistantMessageId)
+  const before = at === -1 ? messages : messages.slice(0, at)
+  const prev = [...before].reverse().find(m => m.role === 'assistant')
+  const plan = prev?.agent?.plan
+  return plan && unfinishedPlanItems(plan).length > 0 ? plan.map(i => ({ id: i.id, title: i.title, status: i.status })) : null
+}
 
 /** The plan as the model and the bubble see it. */
 export function renderPlan(items: PlanItem[]): string {

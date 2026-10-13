@@ -48,8 +48,8 @@ import { citeChapter, resolveChapter } from '../../agent/chapters'
 import { collectStep, planWrites, planDoneAttributes } from '../../agent/invocations'
 import { ToolRegistry, defineTool } from '../../agent/registry'
 import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
-import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, type PlanItem } from '../../utils/plan'
-import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
+import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, previousTurnPlan, type PlanItem } from '../../utils/plan'
+import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, carriedPlanReminder, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
 import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
 import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
@@ -734,7 +734,14 @@ const MODULES: Module[] = [
         [PLAN, [{ id: 'b', status: 'done' }, { id: 'c', status: 'in_progress' }], undefined],
         [PLAN, [{ id: 'zz', status: 'done' }], true], [PLAN, [{ id: 'a', title: '第一章（改）', status: 'completed' }], true],
         [PLAN, [{ title: 'x' }, { title: 'x' }], undefined], [PLAN, [{ id: 1, title: 'num', status: 'cancelled' }, { id: 1, title: 'dup' }], undefined],
-        [[], [], undefined], [[], [{ status: 'done' }], undefined], [PLAN, 'junk', undefined]
+        [[], [], undefined], [[], [{ status: 'done' }], undefined], [PLAN, 'junk', undefined],
+        [PLAN, [{ id: 'c6', title: '第六章', status: 'in_progress' }, { id: 'a', status: 'done' }], true]
+      ]),
+      previous_turn_plan: run(previousTurnPlan, [
+        [[{ id: 'u1', role: 'user' }, { id: 'a1', role: 'assistant', agent: { plan: PLAN } }, { id: 'u2', role: 'user' }, { id: 'a2', role: 'assistant' }], 'a2'],
+        [[{ id: 'a1', role: 'assistant', agent: { plan: [{ id: 'x', title: 'done', status: 'done' }] } }, { id: 'a2', role: 'assistant' }], 'a2'],
+        [[{ id: 'a1', role: 'assistant', agent: { plan: PLAN } }, { id: 'a0', role: 'assistant' }, { id: 'a2', role: 'assistant' }], 'a2'],
+        [[{ id: 'a1', role: 'assistant', agent: { plan: PLAN } }], 'new']
       ]),
       render_plan: run(renderPlan, [[PLAN], [[{ id: 'a', title: 'only', status: 'done' }]], [[]]]),
       next_plan_item: run(nextPlanItem, [[PLAN], [[{ id: 'a', title: 'x', status: 'done' }]]]),
@@ -759,6 +766,7 @@ const MODULES: Module[] = [
       repeat_nudge: run(repeatNudge, [[['list_chapters'], 3], [['read_chapter', 'grep'], 5], [['x'], 6]]),
       long_reasoning_reminder: run(longReasoningReminder, [[12345], [900]]),
       plan_unfinished_nudge: run(planUnfinishedNudge, [[PLAN], [[{ id: 'a', title: 'one', status: 'pending' }]]]),
+      carried_plan_reminder: run(carriedPlanReminder, [[PLAN]]),
       user_edited_reminder: run(userEditedReminder, [[[{ number: 2, title: '第二章' }]], [[{ number: 1, title: 'A' }, { number: 3, title: 'C' }]]]),
       structure_changed_reminder: run(structureChangedReminder, [['1. "A"\n2. "B"']]),
       queued_request_reminder: run(queuedRequestReminder, [[1], [3]]),

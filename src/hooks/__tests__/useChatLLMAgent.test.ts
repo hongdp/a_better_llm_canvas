@@ -568,7 +568,7 @@ describe('writing a series of chapters (one per reply)', () => {
     await send(h, '根据大纲写前两章')
 
     expect(calls).toHaveLength(3)
-    expect(calls[0][0].content).toContain('ONE chapter per reply — you continue after each')
+    expect(calls[0][0].content).toContain('ONE chapter per reply — after each, the result comes back to you and you write the next one yourself, in this same turn. Never ask the user to say "continue"')
     // Step 2 saw step 1's result.
     expect(calls[1].at(-1)?.content).toContain('RESULT OF YOUR DOCUMENT CHANGES')
     const docs = useAppStore.getState().documents

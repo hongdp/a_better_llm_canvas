@@ -144,7 +144,7 @@ describe('agent rules: writing several chapters', () => {
   it('with writes continuing the turn (the default): one chapter per reply, no workaround', async () => {
     const { buildChatSystemPrompt } = await import('../systemPrompt')
     const prompt = buildChatSystemPrompt({ protocol: 'markup', agentTools: true, continueAfterWrites: true })
-    expect(prompt).toContain('ONE chapter per reply — you continue after each')
+    expect(prompt).toContain('ONE chapter per reply — after each, the result comes back to you and you write the next one yourself, in this same turn. Never ask the user to say "continue"')
     expect(prompt).not.toContain('also ask for what the next one needs')
     // A tip that saves a step, not a rule (user decision 2026-10-06).
     expect(prompt).toContain('save a step')
