@@ -393,7 +393,7 @@ const MODULES: Module[] = [
       strip_image_marker_paragraphs: run(stripImageMarkerParagraphs, [['<p>一。</p><p>[image]</p><p>[image] [image]</p><p>见[image]</p>'], ['<p>[image]x</p>'], ['']]),
       as_blocks: run(asBlocks, [['<p>x</p>'], ['  <h2>t</h2> '], ['one\n\ntwo\nlines'], ['plain'], ['  ']]),
       paragraph_blocks: run(paragraphBlocks, [[CARD], ['<ol><li>a</li>x<li>b</li></ol><p>c</p>'], ['<ul></ul>']]),
-      anchor_matches: run(anchorMatches, [['身份：缥缈宗太上长老，炼虚期', '身份：缆缈宗太上长老'], ['身份：缥缈宗太上长老', '身份：缆缆宗太上长老'], ['abc', 'abd'], ['整理范围：原作第1–87章，人物', '整理范围：原作第1–94章，人物状态'], ['The quick brown fox jumps', 'The quikc brown fox'], ['短', '短']]),
+      anchor_matches: run(anchorMatches, [['身份：缥缈宗太上长老，炼虚期', '身份：缆缈宗太上长老'], ['身份：缥缈宗太上长老', '身份：缆缆宗太上长老'], ['abc', 'abd'], ['整理范围：原作第1–87章，人物', '整理范围：原作第1–94章，人物状态'], ['The quick brown fox jumps', 'The quikc brown fox'], ['短', '短'], ['• 第八章 借条：夏夏为请假', '第八章 借条'], ['• 第八章 借条：夏夏为请假', '• 第八章 借条'], ['•  第八章', '第八章'], ['第八章 借条', '第九章']]),
       as_items: run(asItems, [['<p>x</p>'], ['<li>y</li>'], ['plain']]),
       apply_paragraph_edits: run(applyParagraphEdits, [
         [SPANNED, [{ paragraph: 2, action: 'replace', html: '<p>Uno</p>', startsWith: 'One' }, { paragraph: 5, action: 'insert_after', html: 'Four\n\nFive', startsWith: '¶5 Three' }, { paragraph: 4, action: 'delete', startsWith: '[image]' }]],
