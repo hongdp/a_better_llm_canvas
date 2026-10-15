@@ -1122,7 +1122,7 @@ after executing its invocations:
 | only writes, all succeeded, `continueAfterWrites` off | **end**; the step's chat text is the reply |
 | writes **and** any read / navigate call | **continue**. "Edit chapter 3 + read chapter 4" in one step is how the model says "there is more" |
 | any read / navigate call | **continue** (the model asked for information) |
-| any write that failed (unmatched SEARCH, truncated, elided, bad args, seen-content rule) | **continue** with the error as the tool result (§5.3), counted against the corrective budget |
+| any write that failed (unmatched SEARCH, truncated, elided, bad args, seen-content rule) | **continue** with the error as the tool result (§5.3), counted against the corrective budget (reset by a write that lands) |
 | a markup protocol failure (`undeclared` / `claimed` / `malformed`) | **continue** with `NO_ACTION_RETRY_INSTRUCTION` as a corrective step |
 
 With D2, the usual multi-chapter flow takes **two steps**, with no
@@ -1197,6 +1197,9 @@ replayed as tool output.
   `settingsPersistence` and asserts the default.
 - `maxCorrectiveSteps` = `MAX_NO_ACTION_RETRIES` (3) — shared by markup
   failures and failed writes, so the measured recovery curve is preserved.
+  It counts failures **in a row**: every write that lands resets it
+  (2026-10-15: a 31-step turn ended "done" at plan 4/9 on its fourth failed
+  write, each earlier one already fixed by the next step).
 - **Prompt-token ceiling — dropped (user decision, 2026-10-06).** The plan:
   as grok's context nears its 200k price cliff, send the next step with
   `tool_choice: "none"` and an "answer now" note, i.e. end the turn. The
