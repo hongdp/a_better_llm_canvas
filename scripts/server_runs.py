@@ -38,7 +38,7 @@ from wc_agent.registry import ToolRegistry, to_tool_specs
 from wc_agent.run import AgentRun, StepOutput, StepUnavailable, offered_tools_for
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
-from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite, preview_selection_with_count, replace_text_tool
+from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite, preview_selection_with_count, replace_text_tool, user_edited
 from wc_agent.tools.plan import plan_tool
 from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.tools.web import WEB_TOOLS
@@ -900,6 +900,10 @@ class RunEngine:
                 continue
             if now["revision"] > seen:
                 ports.watched[doc_id] = now["revision"]
+                # Accepting the run's diff saves the chapter too; it is not an
+                # edit to read again (user_edited adopts it).
+                if doc_id in agent.ctx.run.known and not user_edited(agent.ctx, doc_id):
+                    continue
                 edited.append({"number": chapters.index(now) + 1, "title": now["title"]})
         if edited:
             out.append(user_edited_reminder(edited))

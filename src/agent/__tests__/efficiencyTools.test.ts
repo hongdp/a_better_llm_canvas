@@ -193,6 +193,30 @@ describe('edit_paragraphs', () => {
     expect(out.trace).toContain('edited by the user meanwhile')
   })
 
+  it('keeps writing a chapter whose review diff the user accepted meanwhile', async () => {
+    const f = book()
+    await exec(readChapterTool, { chapters: ['4'], format: 'html' }, f.ctx)
+    expect((await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 1, action: 'replace', starts_with: '一', html: '<p>壹。</p>' }] }, f.ctx)).ok).toBe(true)
+    // Accept all: the editor writes back its own serialization, markup gone.
+    f.userEdits('doc-4', '<p>壹。</p>\n<p>二。</p><p>三。</p><p>四。</p><p>五。</p>')
+    const out = await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 2, action: 'replace', starts_with: '二', html: '<p>贰。</p>' }] }, f.ctx)
+    expect(out.ok).toBe(true)
+    const written = f.lastWrite('doc-4')!
+    expect(stripDiffMarkup(written)).toBe('<p>壹。</p><p>贰。</p><p>三。</p><p>四。</p><p>五。</p>')
+    // The accepted change is confirmed: only the new one is under review.
+    expect(written).not.toContain('一。')
+    expect(written).toContain('二。')
+  })
+
+  it('still refuses a chapter whose review diff the user rejected meanwhile', async () => {
+    const f = book()
+    await exec(readChapterTool, { chapters: ['4'], format: 'html' }, f.ctx)
+    await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 1, action: 'replace', starts_with: '一', html: '<p>壹。</p>' }] }, f.ctx)
+    f.userEdits('doc-4', '<p>一。</p><p>二。</p><p>三。</p><p>四。</p><p>五。</p>')
+    const out = await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 2, action: 'delete', starts_with: '二' }] }, f.ctx)
+    expect(out.trace).toContain('edited by the user meanwhile')
+  })
+
   it('takes numbers written as ¶3 and rejects an unknown action', async () => {
     const f = book()
     expect((await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: '¶3', action: 'delete', starts_with: '三' }] }, f.ctx)).ok).toBe(true)
