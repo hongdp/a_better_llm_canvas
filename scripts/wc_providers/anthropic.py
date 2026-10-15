@@ -58,6 +58,25 @@ ADAPTIVE_THINKING_HEADROOM = 32768
 MAX_ADAPTIVE_OUTPUT_TOKENS = 65536
 
 
+
+def _mark_cache_breakpoint(message: Dict[str, Any]) -> None:
+    """Put `cache_control` on a message's last block that may carry one.
+
+    Thinking blocks may not (the API refuses them), so a message that ends in
+    one is marked on the block before it; an empty message is left alone.
+    """
+    content = message.get("content")
+    if isinstance(content, str):
+        if content:
+            message["content"] = [{"type": "text", "text": content, "cache_control": {"type": "ephemeral"}}]
+        return
+    if not isinstance(content, list):
+        return
+    for block in reversed(content):
+        if block.get("type") not in ("thinking", "redacted_thinking"):
+            block["cache_control"] = {"type": "ephemeral"}
+            return
+
 def build_anthropic_request(
     config: Dict[str, Any],
     messages: List[Dict[str, Any]],
@@ -180,26 +199,34 @@ def build_anthropic_request(
             "cache_control": {"type": "ephemeral"},
         }]
 
-    # Place cache breakpoints where the caller marked the end of a stable
-    # prefix (`cacheHint`, e.g. the last history message before the volatile
-    # document context). Anthropic looks back from each breakpoint for hits,
-    # so a breakpoint that advances turn-by-turn still reads last turn's cache.
-    # Max 3 message-level breakpoints (the system block uses the 4th slot).
-    cache_breakpoints = 0
+    # Cache breakpoints: the END of the request, plus the two latest places the
+    # caller marked as the end of a stable prefix (`cacheHint`: the ledger, the
+    # summary, the last history message). Anthropic looks back from each
+    # breakpoint for an earlier write, so a breakpoint that advances step by
+    # step reads the previous step's cache. Max 3 message-level breakpoints
+    # (the system block uses the 4th slot).
+    # Problem: only the hinted messages were marked, and they all sit before
+    #   the turn. Every step of an agent turn re-sent the turn so far at the
+    #   full input price: on 2026-10-14 cache reads stayed at 136,411 tokens
+    #   per step while the prompt grew to 252k (68% hit rate over 181 steps,
+    #   ~$19 of input where caching each step's tail comes to ~$6.4).
+    # Fix: the last message always carries a breakpoint, so each step writes
+    #   its tail once and the next step reads it. The hints that fit go to
+    #   the latest ones: a later breakpoint covers the prefix of an earlier.
+    # A request ends with the user's side (a prefilled assistant reply is
+    # refused by every current model), so that is where the tail goes.
+    tail = len(anthropic_messages) - 1
+    if tail >= 0 and anthropic_messages[tail].get("role") != "user":
+        tail = -1
+    hinted: List[int] = []
     for idx, source in enumerate(non_system):
-        if not source.get("cacheHint") or cache_breakpoints >= 3 or not source.get("content"):
+        target_index = source_index[idx]
+        if source.get("cacheHint") and source.get("content") and target_index != tail and target_index not in hinted:
+            hinted.append(target_index)
+    for target_index in [*hinted[-2:], tail]:
+        if target_index < 0:
             continue
-        target = anthropic_messages[source_index[idx]]
-        if isinstance(target["content"], str):
-            target["content"] = [{
-                "type": "text",
-                "text": target["content"],
-                "cache_control": {"type": "ephemeral"},
-            }]
-            cache_breakpoints += 1
-        elif isinstance(target["content"], list) and target["content"]:
-            target["content"][-1]["cache_control"] = {"type": "ephemeral"}
-            cache_breakpoints += 1
+        _mark_cache_breakpoint(anthropic_messages[target_index])
 
     # Opt in to cache diagnostics for every request of a conversation: null on
     # its first, the previous response's id after that (see DIAGNOSTICS_MEMORY).

@@ -1248,9 +1248,10 @@ def test_generation_anthropic_cache_breakpoints_capped_at_three():
         messages,
     )
     marked = [m for m in body["messages"] if isinstance(m["content"], list)]
-    # The system block takes the 4th slot, so only 3 message-level ones remain.
+    # The system block takes the 4th slot, so only 3 message-level ones remain:
+    # the last message, and the two latest hints before it.
     assert len(marked) == 3
-    assert [m["content"][0]["text"] for m in marked] == ["m0", "m1", "m2"]
+    assert [m["content"][0]["text"] for m in marked] == ["m2", "m3", "m4"]
 
 
 def test_generation_provider_http_error_becomes_error_event():
