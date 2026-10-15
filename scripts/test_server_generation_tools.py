@@ -20,6 +20,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server_generation  # noqa: E402
 import wc_providers.common  # noqa: E402
+import wc_providers.anthropic as anthropic_provider  # noqa: E402
 
 
 # Deliberately unusual spacing and non-ASCII: a builder that parses and
@@ -257,7 +258,10 @@ def test_anthropic_cache_hint_after_merged_tool_results_lands_on_its_own_message
         {"type": "text", "text": "Go on.", "cache_control": {"type": "ephemeral"}},
     ]
     assert messages[4]["content"] == "Done."
-    assert messages[5]["content"] == "<document context>"
+    # The request's end carries its own breakpoint, so the next step reads it.
+    assert messages[5]["content"] == [
+        {"type": "text", "text": "<document context>", "cache_control": {"type": "ephemeral"}},
+    ]
     for earlier in messages[:3]:
         content = earlier["content"]
         blocks = content if isinstance(content, list) else []
@@ -277,7 +281,48 @@ def test_anthropic_cache_hint_on_a_merged_tool_result_marks_that_merged_message(
     results = body["messages"][2]["content"]
     assert "cache_control" not in results[0]
     assert results[1]["cache_control"] == {"type": "ephemeral"}
-    assert body["messages"][3]["content"] == "Go on."
+    assert body["messages"][3]["content"] == [
+        {"type": "text", "text": "Go on.", "cache_control": {"type": "ephemeral"}},
+    ]
+
+
+def test_anthropic_step_tail_carries_a_breakpoint_so_the_next_step_reads_it():
+    # An agent step: the turn's history (hinted), then the run's own steps.
+    # Every step re-sends the turn so far; without a breakpoint at its end it
+    # was billed at the full input price on every step (2026-10-14).
+    step_one = _tool_history() + [
+        {"role": "assistant", "content": "", "toolCalls": [{"id": "call_3", "name": "update_document", "argumentsText": "{}"}]},
+        {"role": "tool", "toolCallId": "call_3", "name": "update_document", "content": "written"},
+    ]
+    step_two = step_one + [
+        {"role": "assistant", "content": "", "toolCalls": [{"id": "call_4", "name": "read_chapter", "argumentsText": "{}"}]},
+        {"role": "tool", "toolCallId": "call_4", "name": "read_chapter", "content": "<p>five</p>"},
+    ]
+    config = {"model": "claude", "baseUrl": "https://api.anthropic.com/v1", "apiKey": "k"}
+
+    def marked(body):
+        return [
+            (i, block.get("text") or block.get("content") or block.get("tool_use_id"))
+            for i, message in enumerate(body["messages"])
+            if isinstance(message["content"], list)
+            for block in message["content"]
+            if "cache_control" in block
+        ]
+
+    _, _, first = server_generation.build_anthropic_request(config, step_one)
+    _, _, second = server_generation.build_anthropic_request(config, step_two)
+    assert marked(first) == [(3, "Go on."), (5, "written")]
+    assert marked(second) == [(3, "Go on."), (7, "<p>five</p>")]
+    # Apart from where the breakpoints sit, the second request extends the first.
+    strip = lambda body: json.loads(json.dumps(body["messages"]).replace(', "cache_control": {"type": "ephemeral"}', ""))  # noqa: E731
+    assert strip(second)[:len(first["messages"])] == strip(first)
+
+
+def test_anthropic_breakpoint_skips_a_thinking_block():
+    message = {"role": "user", "content": [{"type": "text", "text": "a"}, {"type": "thinking", "thinking": "", "signature": "s"}]}
+    anthropic_provider._mark_cache_breakpoint(message)
+    assert message["content"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in message["content"][1]
 
 
 def test_anthropic_cache_hints_still_cap_at_three():

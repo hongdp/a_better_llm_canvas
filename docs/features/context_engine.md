@@ -177,9 +177,15 @@ Strategy:
 
 Sketched now so the interface is not shaped by two providers alone:
 
-- **anthropic**: `explicit`, up to 4 breakpoints, 5-minute TTL. The breakpoints
-  fall out of the block list — system │ ledger │ compaction │ history — which
-  is exactly 4. Worth a keepalive ping (aider's `--cache-keepalive-pings`)
+- **anthropic**: `explicit`, up to 4 breakpoints, 5-minute TTL. As built
+  (`wc_providers/anthropic.py`): the system block, the **end of the request**,
+  and the two latest `cacheHint` messages (of ledger │ summary │ history).
+  The end matters most: an agent step re-sends the turn so far, and without a
+  breakpoint there every step paid the full input price for it (2026-10-14:
+  cache reads stuck at 136k per step while the prompt grew to 252k; ~$19 of
+  input over 181 steps against ~$6.4 with each step's tail cached). Each
+  step's breakpoint is read by the next through the API's lookback (up to 20
+  blocks back). Worth a keepalive ping (aider's `--cache-keepalive-pings`)
   if it ever becomes the main provider.
 - **openai**: automatic prefix caching, `prompt_cache_key` for routing, a
   minimum cacheable prefix.
