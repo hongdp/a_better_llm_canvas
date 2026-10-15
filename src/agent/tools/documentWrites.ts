@@ -264,11 +264,55 @@ const selectionTurn = (ctx: ToolContext) => !!ctx.selection.originalText()
  * the model reads the chapter again. The start chapter of a selection turn
  * is never edited by the user (it is locked) but is written by the
  * selection preview, so it is not checked.
+ *
+ * Accepting a pending diff is not an edit (reviewResolved).
  */
 export function userEdited(ctx: ToolContext, id: string): boolean {
   if (id === ctx.document.startId && selectionTurn(ctx)) return false
   const known = ctx.run.known.get(id)
-  return known !== undefined && storedContent(ctx, id) !== known
+  if (known === undefined) return false
+  const stored = storedContent(ctx, id)
+  if (stored === known) return false
+  if (!reviewResolved(known, stored)) return true
+  adoptReviewed(ctx, id, stored)
+  return false
+}
+
+/** A chapter's accepted reading as text alone: what the user reads, whatever HTML spelled it. */
+const acceptedTextKey = (html: string) => htmlToPlainText(stripDiffMarkup(html)).replace(/\s+/g, '')
+
+/**
+ * Did the stored chapter change only by the user resolving its review diff?
+ *
+ * Problem: "Accept all" while a turn was writing a book (2026-10-14) made
+ *   every next write to those chapters refuse "the user edited chapter N
+ *   while you were working": accepting rewrites the stored HTML (markup
+ *   gone, re-serialized by the editor), so it differed from the run's copy.
+ *   The model re-read each chapter, found nothing changed, and redid its
+ *   writes — five refused in one step.
+ * Fix: a change that leaves the accepted reading's text as it was is a
+ *   review decision, not an edit. Accepting (all, or one change) keeps it;
+ *   rejecting changes it, and stays an edit the model must read. Text is
+ *   compared, not HTML: the editor writes back its own serialization.
+ */
+function reviewResolved(known: string, stored: string): boolean {
+  if (stripDiffMarkup(known) === known) return false
+  return acceptedTextKey(known) === acceptedTextKey(stored)
+}
+
+/**
+ * The run's copy follows what the user accepted: what they accepted is the
+ * confirmed text now, so the next write's review diff is drawn from it and
+ * does not show the accepted changes again.
+ */
+function adoptReviewed(ctx: ToolContext, id: string, stored: string): void {
+  ctx.run.known.set(id, stored)
+  const st = ctx.run.docs.get(id)
+  if (!st) return
+  st.original = stored
+  st.base = stripDiffMarkup(stored)
+  st.reviewBase = st.base === stored ? stored : resolveDiffMarkupInHtml(stored, 'reject')
+  st.html = st.base
 }
 
 /** Forget the run's copy of a chapter: the next write starts from what is stored now. */

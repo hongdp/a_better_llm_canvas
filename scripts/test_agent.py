@@ -219,6 +219,29 @@ def test_user_edit_meanwhile_refuses_the_write_and_keeps_their_text():
     assert fake.last_write("doc-2") is None
 
 
+def test_accepting_the_review_diff_meanwhile_is_not_a_user_edit():
+    fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "Chapter 2", "content": "<p>one</p><p>two</p>"}])
+    edit = DOCUMENT_WRITE_TOOLS[1]
+    run_tool(read_chapter_tool, {"chapters": ["2"], "format": "html"}, fake.ctx)
+    assert run_tool(edit, {"chapter": "2", "edits": [{"search": "<p>one</p>", "replace": "<p>ONE</p>"}]}, fake.ctx)["ok"]
+    fake.user_edits("doc-2", "<p>ONE</p>\n<p>two</p>")
+    out = run_tool(edit, {"chapter": "2", "edits": [{"search": "<p>two</p>", "replace": "<p>TWO</p>"}]}, fake.ctx)
+    assert out["ok"], out
+    written = fake.last_write("doc-2")
+    assert strip_diff_markup(written) == "<p>ONE</p><p>TWO</p>"
+    assert "one" not in written
+
+
+def test_rejecting_the_review_diff_meanwhile_is_still_a_user_edit():
+    fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "Chapter 2", "content": "<p>one</p><p>two</p>"}])
+    edit = DOCUMENT_WRITE_TOOLS[1]
+    run_tool(read_chapter_tool, {"chapters": ["2"], "format": "html"}, fake.ctx)
+    run_tool(edit, {"chapter": "2", "edits": [{"search": "<p>one</p>", "replace": "<p>ONE</p>"}]}, fake.ctx)
+    fake.user_edits("doc-2", "<p>one</p><p>two</p>")
+    out = run_tool(edit, {"chapter": "2", "edits": [{"search": "<p>two</p>", "replace": "<p>TWO</p>"}]}, fake.ctx)
+    assert out["ok"] is False and "edited by the user meanwhile" in out["trace"]
+
+
 def test_new_chapter_is_created_by_the_write_and_rewrite_answers_differently():
     fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "第二章 进城", "content": "<p>two</p>"}])
     update = DOCUMENT_WRITE_TOOLS[0]

@@ -171,7 +171,37 @@ def user_edited(ctx: ToolContext, doc_id: str) -> bool:
     if doc_id == ctx.document.start_id and _selection_turn(ctx):
         return False
     known = ctx.run.known.get(doc_id)
-    return known is not None and _stored_content(ctx, doc_id) != known
+    if known is None:
+        return False
+    stored = _stored_content(ctx, doc_id)
+    if stored == known:
+        return False
+    if not _review_resolved(known, stored):
+        return True
+    _adopt_reviewed(ctx, doc_id, stored)
+    return False
+
+
+def _accepted_text_key(html: str) -> str:
+    return re.sub(r"\s+", "", html_to_plain_text(strip_diff_markup(html)))
+
+
+def _review_resolved(known: str, stored: str) -> bool:
+    """Accepting a pending diff is not an edit (documentWrites.ts reviewResolved)."""
+    if strip_diff_markup(known) == known:
+        return False
+    return _accepted_text_key(known) == _accepted_text_key(stored)
+
+
+def _adopt_reviewed(ctx: ToolContext, doc_id: str, stored: str) -> None:
+    ctx.run.known[doc_id] = stored
+    st = ctx.run.docs.get(doc_id)
+    if st is None:
+        return
+    st.original = stored
+    st.base = strip_diff_markup(stored)
+    st.review_base = stored if st.base == stored else resolve_diff_markup_in_html(stored, "reject")
+    st.html = st.base
 
 
 def forget_chapter(ctx: ToolContext, doc_id: str) -> None:

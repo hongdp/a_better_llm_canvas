@@ -171,6 +171,13 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
     and the run's copy is forgotten. The model reads the chapter again and
     redoes the change on the user's text. A polish whose chapter moved is
     discarded. A read returns what is stored now.
+    Resolving the review diff is not an edit (2026-10-14: "Accept all"
+    mid-turn got five writes refused in one step): a change that leaves
+    the accepted reading's text as it was — accepting all, or one change —
+    is adopted instead (`known`, and the run's copy with `reviewBase` set to
+    the accepted text, so the next diff shows only new changes). Rejecting
+    changes that text and stays an edit. Server runs skip such a change in
+    the "the user changed …" reminder too.
   - **No preview over a user edit.** A rewrite of a chapter the user
     changed shows as a progress line, never painted.
   - **The view is the user's once they move.** After the user opens
