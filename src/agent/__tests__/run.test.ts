@@ -243,6 +243,32 @@ describe('a markup-protocol turn (what every grok turn was before the loop)', ()
     expect(h.summary()).toMatchObject({ failedUpdate: 'undeclared', exhaustedCorrective: true, endReason: 'protocol_failure' })
   })
 
+  it('counts failed writes in a row: a write that lands starts the count again', async () => {
+    const miss = (id: string) => calls('', [id, 'edit_document', JSON.stringify({ edits: [{ search: `<p>nowhere ${id}</p>`, replace: '<p>x</p>' }] })])
+    const hit = calls('', ['ok', 'edit_document', JSON.stringify({ edits: [{ search: '<p>alpha</p>', replace: '<p>beta</p>' }] })])
+    const h = harness({
+      writeProtocol: 'tools',
+      budgets: { maxSteps: 0 },
+      policy: { continueAfterWrites: true, feedBackFailedWrites: true },
+      replies: [miss('m1'), miss('m2'), hit, miss('m3'), miss('m4'), miss('m5'), text('好了。')]
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(7)
+    expect(h.summary()).toMatchObject({ endReason: 'answered' })
+  })
+
+  it('still ends a turn stuck on failed writes', async () => {
+    const miss = (id: string) => calls('', [id, 'edit_document', JSON.stringify({ edits: [{ search: `<p>nowhere ${id}</p>`, replace: '<p>x</p>' }] })])
+    const h = harness({
+      writeProtocol: 'tools',
+      policy: { continueAfterWrites: true, feedBackFailedWrites: true },
+      replies: [miss('m1'), miss('m2'), miss('m3'), miss('m4'), text('unused')]
+    })
+    await h.run.start()
+    expect(h.requests).toHaveLength(4)
+    expect(h.summary()).toMatchObject({ endReason: 'corrective_exhausted' })
+  })
+
   it('cannot retry a rejoined stream, and says so only when content was lost', async () => {
     const h = harness({ canContinue: false, replies: [text('I rewrote it.\n<doc_status>updated</doc_status>')] })
     await h.run.start()

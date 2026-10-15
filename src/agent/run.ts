@@ -425,6 +425,14 @@ export class AgentRun {
     const executed: ExecutedCall[] = ran.map((inv, i) => ({ kind: this.kindOf(inv), result: results[i] }))
     const wroteNow = executed.some(e => e.kind === 'write' && e.result.ok)
     if (wroteNow) this.wrote = true
+    // The corrective budget bounds failures IN A ROW: a write that landed is
+    // progress, and the count starts again.
+    // Problem: it was spent across the whole turn. A 31-step turn expanding
+    //   nine chapters (2026-10-14) had three failed writes, each fixed by the
+    //   next step, and its fourth — at plan 4/9 — ended the turn as "done".
+    // Fix: reset on every successful write, so only a model stuck on the
+    //   same failure is stopped.
+    if (wroteNow) this.correctiveUsed = 0
     this.stepLog.push({
       signature: ran.map(inv => callSignature(inv.name, inv.args, inv.argumentsText)).sort().join('\n'),
       names: [...new Set(ran.map(inv => inv.name))],

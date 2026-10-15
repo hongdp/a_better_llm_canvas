@@ -535,6 +535,25 @@ def test_protocol_failure_is_retried_by_appending():
     assert h.summary["endReason"] == "writes_done"
 
 
+def _miss(i):
+    return calls("", (i, "edit_document", json.dumps({"edits": [{"search": f"<p>nowhere {i}</p>", "replace": "<p>x</p>"}]})))
+
+
+def test_failed_writes_are_counted_in_a_row():
+    hit = calls("", ("ok", "edit_document", json.dumps({"edits": [{"search": "<p>alpha</p>", "replace": "<p>beta</p>"}]})))
+    h = Harness([_miss("m1"), _miss("m2"), hit, _miss("m3"), _miss("m4"), _miss("m5"), text("好了。")], write_protocol="tools",
+                budgets={"maxSteps": 0}, policy={"continueAfterWrites": True, "feedBackFailedWrites": True})
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 7 and h.summary["endReason"] == "answered"
+
+
+def test_a_turn_stuck_on_failed_writes_still_ends():
+    h = Harness([_miss("m1"), _miss("m2"), _miss("m3"), _miss("m4"), text("unused")], write_protocol="tools",
+                policy={"continueAfterWrites": True, "feedBackFailedWrites": True})
+    asyncio.run(h.run.start())
+    assert len(h.requests) == 4 and h.summary["endReason"] == "corrective_exhausted"
+
+
 def test_read_is_answered_under_its_call_id_with_exact_bytes():
     h = Harness([calls("Reading.", ("c1", "read_chapter", '{"chapter":  "2"}')), text("Answer.\n<doc_status>unchanged</doc_status>")])
     asyncio.run(h.run.start())

@@ -317,6 +317,8 @@ class AgentRun:
         wrote_now = any(e["kind"] == "write" and e["result"]["ok"] for e in executed)
         if wrote_now:
             self.wrote = True
+            # Failures in a row, not per turn (run.ts afterExecute).
+            self.corrective_used = 0
         for e in executed:
             self.trace.append(e["result"]["trace"])
             self.timeline.append({"type": "tool", "line": e["result"]["trace"], "ok": e["result"]["ok"]})
