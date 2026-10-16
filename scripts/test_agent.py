@@ -9,7 +9,7 @@ import pytest
 from wc_agent.registry import Tool, ToolRegistry
 from wc_agent.run import AgentRun, StepOutput
 from wc_agent.tools.book_reads import BOOK_TOOLS, read_chapter_tool
-from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, similar_chapters
+from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, similar_chapters, user_edited
 from wc_agent.types import ToolContext, create_run_state
 from wc_text.diff import strip_diff_markup
 from wc_text.policy import DEFAULT_BUDGETS, DEFAULT_POLICY
@@ -230,6 +230,19 @@ def test_accepting_the_review_diff_meanwhile_is_not_a_user_edit():
     written = fake.last_write("doc-2")
     assert strip_diff_markup(written) == "<p>ONE</p><p>TWO</p>"
     assert "one" not in written
+
+
+def test_an_accepted_copy_re_spelled_by_the_editor_is_not_a_user_edit():
+    fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "Chapter 2", "content": "<p>one</p><ul><li>two</li></ul>"}])
+    edit = DOCUMENT_WRITE_TOOLS[1]
+    run_tool(read_chapter_tool, {"chapters": ["2"], "format": "html"}, fake.ctx)
+    assert run_tool(edit, {"chapter": "2", "edits": [{"search": "<p>one</p>", "replace": "<p>ONE</p>"}]}, fake.ctx)["ok"]
+    fake.user_edits("doc-2", "<p>ONE</p><ul><li>two</li></ul>")
+    assert user_edited(fake.ctx, "doc-2") is False
+    fake.user_edits("doc-2", "<p>ONE</p><ul><li><p>two</p></li></ul><p></p>")
+    assert user_edited(fake.ctx, "doc-2") is False
+    fake.user_edits("doc-2", "<p><strong>ONE</strong></p><ul><li><p>two</p></li></ul><p></p>")
+    assert user_edited(fake.ctx, "doc-2") is True
 
 
 def test_rejecting_the_review_diff_meanwhile_is_still_a_user_edit():

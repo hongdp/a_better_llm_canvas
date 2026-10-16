@@ -281,8 +281,15 @@ export function userEdited(ctx: ToolContext, id: string): boolean {
 /** A chapter's accepted reading as text alone: what the user reads, whatever HTML spelled it. */
 const acceptedTextKey = (html: string) => htmlToPlainText(stripDiffMarkup(html)).replace(/\s+/g, '')
 
+/** The inline formatting of the accepted reading, in order: a bold or italic the user added is an edit. */
+const INLINE_TAG = /<(strong|b|em|i|u|s|code|a|mark)\b/gi
+const INLINE_ALIAS: Record<string, string> = { b: 'strong', i: 'em' }
+const inlineKey = (html: string) =>
+  [...stripDiffMarkup(html).matchAll(INLINE_TAG)].map(m => INLINE_ALIAS[m[1].toLowerCase()] ?? m[1].toLowerCase()).join(',')
+
 /**
- * Did the stored chapter change only by the user resolving its review diff?
+ * Did the stored chapter change only by the user resolving its review diff,
+ * or by the editor spelling the same reading in its own HTML?
  *
  * Problem: "Accept all" while a turn was writing a book (2026-10-14) made
  *   every next write to those chapters refuse "the user edited chapter N
@@ -294,10 +301,16 @@ const acceptedTextKey = (html: string) => htmlToPlainText(stripDiffMarkup(html))
  *   review decision, not an edit. Accepting (all, or one change) keeps it;
  *   rejecting changes it, and stays an edit the model must read. Text is
  *   compared, not HTML: the editor writes back its own serialization.
+ * Problem (2026-10-16): the same refusal after accepting a chapter the run
+ *   had just created. Once the run adopted the accepted copy it had no
+ *   markup, and this check answered "edited" for any later HTML change —
+ *   the editor's next save re-spelled it (`<li><p>`, a trailing `<p></p>`)
+ *   with not a character changed.
+ * Fix: the rule holds whether or not the run's copy carries markup: the
+ *   same text with the same inline formatting is the same chapter.
  */
 function reviewResolved(known: string, stored: string): boolean {
-  if (stripDiffMarkup(known) === known) return false
-  return acceptedTextKey(known) === acceptedTextKey(stored)
+  return acceptedTextKey(known) === acceptedTextKey(stored) && inlineKey(known) === inlineKey(stored)
 }
 
 /**

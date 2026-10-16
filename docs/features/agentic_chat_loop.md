@@ -177,7 +177,12 @@ module, then one entry in `CHAT_TOOLS` (`useChatLLM.ts`).
     is adopted instead (`known`, and the run's copy with `reviewBase` set to
     the accepted text, so the next diff shows only new changes). Rejecting
     changes that text and stays an edit. Server runs skip such a change in
-    the "the user changed …" reminder too.
+    the "the user changed …" reminder too. The rule holds whether or not
+    the run's copy still carries markup (2026-10-16: a created chapter,
+    accepted and adopted, was refused after the editor's next save
+    re-spelled it as `<li><p>` plus a trailing `<p></p>`): the same text
+    with the same inline formatting (bold, italic, links …) is the same
+    chapter; added formatting is an edit.
   - **No preview over a user edit.** A rewrite of a chapter the user
     changed shows as a progress line, never painted.
   - **The view is the user's once they move.** After the user opens
