@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 import { stripDiffMarkup } from '../../utils/diff'
 import { readChapterTool, grepTool } from '../tools/bookReads'
-import { updateDocumentTool, editParagraphsTool, replaceTextTool } from '../tools/documentWrites'
+import { updateDocumentTool, editParagraphsTool, replaceTextTool, userEdited } from '../tools/documentWrites'
 import { planTool } from '../tools/plan'
 import { collectStep, planDoneAttributes } from '../invocations'
 import { ToolRegistry } from '../registry'
@@ -206,6 +206,29 @@ describe('edit_paragraphs', () => {
     // The accepted change is confirmed: only the new one is under review.
     expect(written).not.toContain('一。')
     expect(written).toContain('二。')
+  })
+
+  it('keeps writing a created chapter accepted and then re-spelled by the editor', async () => {
+    // 2026-10-16: a new outline accepted mid-turn; the run adopted the
+    // accepted copy, the editor's next save re-spelled it, and the next
+    // write was refused as a user edit.
+    const f = book()
+    await exec(updateDocumentTool, { new_chapter: '大纲', html: '<h1>大纲</h1><ul><li>类型</li></ul><p>2023年春' }, f.ctx)
+    const id = f.ctx.document.chapters().at(-1)!.id
+    const accepted = '<h1>大纲</h1><ul><li>类型</li></ul><p>2023年春</p>'
+    f.userEdits(id, accepted)
+    expect(userEdited(f.ctx as never, id)).toBe(false)
+    f.userEdits(id, '<h1>大纲</h1><ul><li><p>类型</p></li></ul><p>2023年春</p><p></p>')
+    expect((await exec(updateDocumentTool, { chapter: '5', html: '<h1>大纲</h1><p>全文。</p>' }, f.ctx)).ok).toBe(true)
+  })
+
+  it('still refuses a chapter the user only formatted meanwhile', async () => {
+    const f = book()
+    await exec(readChapterTool, { chapters: ['4'], format: 'html' }, f.ctx)
+    await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 1, action: 'replace', starts_with: '一', html: '<p>壹。</p>' }] }, f.ctx)
+    f.userEdits('doc-4', '<p><strong>壹</strong>。</p><p>二。</p><p>三。</p><p>四。</p><p>五。</p>')
+    const out = await exec(editParagraphsTool, { chapter: '4', edits: [{ paragraph: 2, action: 'delete', starts_with: '二' }] }, f.ctx)
+    expect(out.trace).toContain('edited by the user meanwhile')
   })
 
   it('still refuses a chapter whose review diff the user rejected meanwhile', async () => {

@@ -186,11 +186,22 @@ def _accepted_text_key(html: str) -> str:
     return re.sub(r"\s+", "", html_to_plain_text(strip_diff_markup(html)))
 
 
+_INLINE_TAG = re.compile(r"<(strong|b|em|i|u|s|code|a|mark)\b", re.IGNORECASE)
+_INLINE_ALIAS = {"b": "strong", "i": "em"}
+
+
+def _inline_key(html: str) -> str:
+    return ",".join(
+        _INLINE_ALIAS.get(m.group(1).lower(), m.group(1).lower())
+        for m in _INLINE_TAG.finditer(strip_diff_markup(html))
+    )
+
+
 def _review_resolved(known: str, stored: str) -> bool:
-    """Accepting a pending diff is not an edit (documentWrites.ts reviewResolved)."""
-    if strip_diff_markup(known) == known:
-        return False
-    return _accepted_text_key(known) == _accepted_text_key(stored)
+    """Accepting a pending diff, or the editor re-spelling the same reading,
+    is not an edit (documentWrites.ts reviewResolved): same text, same inline
+    formatting."""
+    return _accepted_text_key(known) == _accepted_text_key(stored) and _inline_key(known) == _inline_key(stored)
 
 
 def _adopt_reviewed(ctx: ToolContext, doc_id: str, stored: str) -> None:
