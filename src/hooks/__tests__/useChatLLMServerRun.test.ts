@@ -108,6 +108,21 @@ afterEach(() => {
 })
 
 describe('a turn with serverRuns on', () => {
+  it('posts the Polish button as a server run of its own', async () => {
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { useAppStore.getState().requestPolish('doc-2') })
+    await flush()
+    expect(posted).toHaveLength(1)
+    const body = posted[0].body as { prompt: string; activeDocumentId: string; history: unknown[]; polish?: { documentId: string } }
+    expect(body.polish?.documentId).toBe('doc-2')
+    expect(body.activeDocumentId).toBe('doc-2')
+    expect(body.history).toEqual([])
+    // The server snapshots and writes; the tab only renders the run.
+    expect(useAppStore.getState().versions).toEqual([])
+    expect(bubble().agent?.run).toEqual({ id: 'run-1', status: 'running' })
+    h.unmount()
+  })
+
   it('runs on the server when the setting was never touched (on by default, 2026-10-17)', async () => {
     const s = useAppStore.getState()
     const { serverRuns: _unset, ...grok } = s.providerConfigs.grok

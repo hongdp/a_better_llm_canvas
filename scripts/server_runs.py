@@ -38,7 +38,8 @@ from wc_agent.registry import ToolRegistry, to_tool_specs
 from wc_agent.run import AgentRun, StepOutput, StepUnavailable, offered_tools_for
 from wc_agent.tools.ask_user import ask_user_tool
 from wc_agent.tools.book_reads import BOOK_TOOLS
-from wc_agent.tools.document_writes import DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, preview_rewrite, preview_selection_with_count, replace_text_tool, user_edited
+from wc_agent.tools.document_writes import (DOCUMENT_WRITE_TOOLS, commit_doc, doc_state, edit_paragraphs_tool, preview_rewrite, preview_selection_with_count,
+                                            replace_text_tool, user_edited)
 from wc_agent.tools.plan import plan_tool
 from wc_agent.tools.polish_chapter import polish_chapter_tool
 from wc_agent.tools.web import WEB_TOOLS
@@ -51,9 +52,10 @@ from wc_text.protocol_choice import resolve_document_protocol
 from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
 from wc_text.document_tools import to_openai_tools
 from wc_text.image_preservation import register_image, replace_images_with_placeholders, restore_image_placeholders
+from wc_text.chapters import cite_chapter
 from wc_text.jsstr import js_trim
 from wc_text.stream_handlers import ASSISTANT_PLACEHOLDER, build_completion_warnings, split_streaming_response
-from wc_text.text import strip_incomplete_end_tag, trim_incomplete_html_tail
+from wc_text.text import is_blank_content, strip_incomplete_end_tag, trim_incomplete_html_tail
 from wc_text.tool_call_stream import finish_tool_calls
 
 logger = logging.getLogger("web_canvas.runs")
@@ -219,6 +221,10 @@ class Run:
         self.last_response_items: List[Any] = []
         self.finished_monotonic: Optional[float] = None
         self.stop_requested = False
+        #: Set by Stop: a polish (the button's run, or the polish_chapter tool) checks it between chunks.
+        self.stop_event = asyncio.Event()
+        #: Side calls in flight (polish chunks, analysis batches): Stop aborts them too.
+        self.side_jobs: set = set()
 
     def summary(self) -> Dict[str, Any]:
         return {
@@ -542,6 +548,7 @@ class RunEngine:
     def _launch(self, run: Run) -> None:
         run.status = "running"
         run.stop_requested = False
+        run.stop_event = asyncio.Event()
         run.persist()
         run.task = asyncio.create_task(self._execute(run))
 
@@ -557,6 +564,9 @@ class RunEngine:
             return
         self.set_queue_held(run.username, run.book_id, True)
         run.stop_requested = True
+        run.stop_event.set()
+        for side in list(run.side_jobs):
+            side.abort()
         if run.agent:
             run.agent.cancel()
         if run.job is not None:
@@ -605,6 +615,9 @@ class RunEngine:
     # ── execution ─────────────────────────────────────────────────────────
     async def _execute(self, run: Run, resuming: bool = False) -> None:
         try:
+            if run.request.get("polish"):
+                await self._execute_polish(run)
+                return
             if run.agent is None:
                 await self._build(run)
             agent = run.agent
@@ -636,6 +649,62 @@ class RunEngine:
             self._finalize(run, "error")
         finally:
             run.job = None
+
+    async def _execute_polish(self, run: Run) -> None:
+        """The Polish button's run: one chapter through the polish model, no agent loop.
+
+        It was the one turn left in the tab (backend_authority.md phase 4): the
+        button called the model from the browser, so closing the page lost it.
+        Here it is a run like any other — queued behind a running turn, stopped
+        by Stop, rejoined by a reload — whose record is the one the tab built:
+        a user line, one tool line, the chapter in "changed this turn".
+        """
+        doc_id = run.request["polish"]["documentId"]
+        zh = run.request["polish"].get("language") == "zh"
+        ports = ServerPorts(self, run)
+        run.ports = ports
+        chapters = ports.chapters()
+        index = next((i for i, c in enumerate(chapters) if c["id"] == doc_id), -1)
+        if index < 0:
+            raise RunFailed("The chapter to polish is gone.")
+        ports.start_id = ports.view = ports.expected = doc_id
+        ports.original = chapters[index]["content"]
+        ctx = ToolContext(ports, ports, ports, ports, _Ui(ports), create_run_state(doc_id), polish=_PolishPort(self, run))
+        # Not the start chapter for commit_doc: the polish takes its version snapshot here, before the change.
+        target = {"id": doc_id, "title": chapters[index]["title"], "number": index + 1, "isStart": False}
+        self.publish(run, "started", {"run": run.summary()})
+        st = doc_state(ctx, target)
+        if is_blank_content(st.html):
+            raise RunFailed("The chapter is empty.")
+        cite = cite_chapter(target)
+        ctx.ui.writing(doc_id)
+        try:
+            outcome = await ctx.polish.run(ctx.images.preserve(st.html), lambda done, total: ports.progress(
+                f"✨ 润色中 {done}/{total}…" if zh else f"✨ Polishing {done}/{total}…"))
+        finally:
+            ctx.ui.writing(None)
+            ports.progress(None)
+        discarded = user_edited(ctx, doc_id)
+        if outcome["polished"] > 0 and not discarded:
+            st.html = ctx.images.restore(outcome["html"])
+            st.dirty = True
+            commit_doc(ctx, target, st)
+        polished = 0 if discarded else outcome["polished"]
+        line = f"✨ polished {cite} ({polished} of {outcome['chunks']} chunk(s) rewritten)"
+        notes = "\n\n".join(n for n in [
+            ((f"保留初稿的段落：{'；'.join(outcome['kept'])}" if zh else f"Kept as drafted — {'; '.join(outcome['kept'])}") if outcome["kept"] else ""),
+            (("⏹️ 已停止，未完成的段落保留初稿。" if zh else "⏹️ Stopped; unfinished chunks kept their draft.") if outcome["stopped"] else ""),
+            (("你在润色期间改动了这一章，润色结果已丢弃。" if zh else "You edited the chapter while it was being polished, so the polish was discarded.") if discarded else ""),
+        ] if n)
+        status = "stopped" if outcome["stopped"] else "done"
+        run.record = {"status": status, "steps": 1, "trace": [line],
+                      "touched": [{"documentId": doc_id, "titleAtRun": target["title"], "kind": "polished",
+                                   "changes": polished, "failed": outcome["chunks"] - polished}],
+                      "timeline": [{"type": "tool", "line": line, "ok": polished > 0}],
+                      "prefix": None, "suffix": notes or None, "plan": []}
+        run.result = {"content": _join(line, notes), "record": run.record, "reasoningItems": [], "readIds": [],
+                      "usage": None, "snapshots": run.snapshots}
+        self._finalize(run, status)
 
     async def _build(self, run: Run) -> None:
         req = run.request
@@ -1057,6 +1126,10 @@ class RunEngine:
         scope = f"{req['provider']}|{(req.get('config') or {}).get('model') or ''}"
         state = server_context.load_state(run.username, run.book_id, scope)
         state["modelReadIds"] = list(summary["readIds"])
+        # How far this provider|model counts from the estimate, for the next turn's history budget
+        # (utils/tokenCalibration: below 1 is taken as 1, above 3 as 3).
+        if isinstance(summary.get("tokenRatio"), (int, float)) and summary["tokenRatio"] > 0:
+            state["tokenRatio"] = min(3.0, max(1.0, float(summary["tokenRatio"])))
         if run.ports:
             chapters = {c["id"]: c for c in run.ports.chapters()}
             for doc_id in [*summary["readIds"], *[t["documentId"] for t in summary["touched"]]]:
@@ -1184,7 +1257,13 @@ class _ModelCall:
         job = server_generation.registry.create(self.run.username, {"kind": "batch", "runId": self.run.id, "bookId": self.run.book_id})
         job.conversation = self.conversation
         job.model = config.get("model")
-        await server_generation.run_job(job, req["provider"], config, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+        if self.run.stop_event.is_set():
+            raise RunFailed("stopped")
+        self.run.side_jobs.add(job)
+        try:
+            await server_generation.run_job(job, req["provider"], config, [{"role": "system", "content": system}, {"role": "user", "content": user}])
+        finally:
+            self.run.side_jobs.discard(job)
         job.result_delivered = True
         if job.status != "done":
             raise RunFailed(job.error or "stopped")
@@ -1229,7 +1308,7 @@ class _PolishPort:
         model = js_trim(cfg.get("polishModel") or "") or default_polish_model(req["provider"], cfg.get("model") or "")
         transport = _ModelCall(self.engine, self.owner, model, "default", f"{self.owner.book_id}:polish")
         prompt = req.get("polishPrompt") or {"system": "", "template": "{part}"}
-        return await polish_html(html, transport, prompt, req.get("customInstructions"), None, on_progress)
+        return await polish_html(html, transport, prompt, req.get("customInstructions"), self.owner.stop_event, on_progress)
 
 
 class _AnalyzePort:
@@ -1312,7 +1391,15 @@ def _validate_request(body: Any) -> Dict[str, Any]:
         "polishPrompt": body.get("polishPrompt") if isinstance(body.get("polishPrompt"), dict) else None,
         "contextWindowTokens": body.get("contextWindowTokens") if isinstance(body.get("contextWindowTokens"), int) else None,
         "clientId": body.get("clientId") if isinstance(body.get("clientId"), str) else None,
+        "polish": _polish_request(body.get("polish")),
     }
+
+
+def _polish_request(value: Any) -> Optional[Dict[str, Any]]:
+    """The Polish button's chapter (and the bubble's language), or None for a chat turn."""
+    if not isinstance(value, dict) or not isinstance(value.get("documentId"), str) or not value["documentId"]:
+        return None
+    return {"documentId": sanitize_id(value["documentId"], "docId"), "language": "zh" if value.get("language") == "zh" else "en"}
 
 
 @router.post("/api/books/{book_id}/runs")

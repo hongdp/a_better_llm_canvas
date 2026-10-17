@@ -215,6 +215,11 @@ def _chapter_names(documents: List[Dict[str, Any]], ledger: List[Dict[str, Any]]
     return names
 
 
+def _token_ratio(state: Dict[str, Any]) -> float:
+    ratio = state.get("tokenRatio")
+    return min(3.0, max(1.0, float(ratio))) if isinstance(ratio, (int, float)) and ratio > 0 else 1.0
+
+
 async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text: str, images: Optional[List[str]], history: List[Dict[str, Any]],
                            documents: List[Dict[str, Any]], active_document_id: str, selected_text: str, custom_instructions: Optional[str],
                            context_window_tokens: Optional[int], state: Dict[str, Any], image_registry: List[Dict[str, str]],
@@ -282,7 +287,9 @@ async def assemble_request(*, provider: str, config: Dict[str, Any], prompt_text
     window_tokens = resolve_context_window_tokens(provider, config.get("model") or "", context_window_tokens)
     max_output = config.get("maxOutputTokens") or 16_384
     budget = history_budget_chars({
-        "contextTokens": target_prompt_tokens(profile, window_tokens),
+        # Sized in this app's estimated tokens: a provider that counts more per character (Sonnet 5.5:
+        # 1.14 on Chinese prose) gets a window shrunk by the ratio its last run measured (tokenCalibration.ts).
+        "contextTokens": math.floor(target_prompt_tokens(profile, window_tokens) / _token_ratio(state)),
         "maxOutputTokens": max_output,
         "fixedTokens": estimate_tokens(system_prompt["content"]) + estimate_tokens(active_content)
         + sum(math.ceil(e["chars"] * 0.9) for e in state["ledger"]["entries"]),

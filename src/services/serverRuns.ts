@@ -61,6 +61,8 @@ export interface ServerRunRequest {
   polishPrompt?: { system: string; template: string }
   contextWindowTokens?: number
   clientId?: string
+  /** The Polish button's run: this chapter through the polish model, no agent loop. */
+  polish?: { documentId: string; language: 'zh' | 'en' }
 }
 
 /** One `run.*` event as the book's event stream carries it. */
