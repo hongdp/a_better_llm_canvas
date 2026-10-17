@@ -49,8 +49,6 @@ export const en = {
     agentMaxSteps: 'Steps per reply',
     agentMaxStepsHint: (fallback: number) => `How many model calls one reply may take (reading, then writing). 0 = no limit. Default ${fallback}.`,
     continueAfterWrites: 'Continue after editing',
-    serverRuns: 'Run turns on the server',
-    serverRunsHint: 'The assistant works in the server process instead of this tab: a turn survives a reload, a closed tab and a server restart, and a request sent mid-turn waits its turn. A run that repeats itself, runs unattended too long or passes its token budget is paused for you to look at, never killed.',
     runTokenBudget: 'Token budget per run',
     longReasoningReminder: 'Reasoning limit between steps (tokens)',
     longReasoningReminderHint: 'When a step that wrote nothing reasoned past this many hidden tokens, the step after next is told to read the result, decide one action and act, instead of thinking at length. Measured on grok-4.7 as what makes it loop. Empty = off.',
@@ -128,7 +126,8 @@ export const en = {
     keepChapter: 'Keep',
     deletedAnswer: (number: number, title: string) => `Delete #${number} "${title}".`,
     keptAnswer: (number: number, title: string) => `Keep #${number} "${title}".`,
-    deleteChanged: 'That chapter changed after the question was asked, so it was not deleted. Ask again if it should go.'
+    deleteChanged: 'That chapter changed after the question was asked, so it was not deleted. Ask again if it should go.',
+    signInToChat: 'Sign in to chat: every turn runs on the server.',
   },
   sidebar: {
     collapse: 'Collapse Sidebar',

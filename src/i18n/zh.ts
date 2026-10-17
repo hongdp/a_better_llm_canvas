@@ -51,8 +51,6 @@ export const zh: TranslationDictionary = {
     agentMaxSteps: '每次回复的步数上限',
     agentMaxStepsHint: (fallback: number) => `一次回复最多调用模型几次（先读、再写）。0 表示不限。默认 ${fallback}。`,
     continueAfterWrites: '修改后继续',
-    serverRuns: '在服务端运行回合',
-    serverRunsHint: '助手在服务端进程里工作，而不是在这个标签页：刷新、关掉标签页、服务重启都不会中断一轮；进行中再发的请求会排队等候。反复做同样事情、长时间无人查看、或超出 token 预算的运行会被暂停等你处理，不会被直接杀掉。',
     runTokenBudget: '每次运行的 token 预算',
     longReasoningReminder: '步骤间推理上限（token）',
     longReasoningReminderHint: '某一步没有写入却推理超过这个数量的隐藏 token 时，再下一步会被提醒：读结果、定一个动作、立刻执行，不要长时间思考。这是在 grok-4.7 上测到的循环成因。留空＝关闭。',
@@ -130,7 +128,8 @@ export const zh: TranslationDictionary = {
     keepChapter: '保留',
     deletedAnswer: (number: number, title: string) => `删除 #${number}「${title}」。`,
     keptAnswer: (number: number, title: string) => `保留 #${number}「${title}」。`,
-    deleteChanged: '这一章在提问之后又被改过，所以没有删除。如果仍要删，请重新让它删。'
+    deleteChanged: '这一章在提问之后又被改过，所以没有删除。如果仍要删，请重新让它删。',
+    signInToChat: '请先登录：每一轮对话都在服务端运行。',
   },
   sidebar: {
     collapse: '收起侧边栏',
