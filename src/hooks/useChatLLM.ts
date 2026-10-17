@@ -1296,10 +1296,14 @@ export function useChatLLM({
   // bubble through chat/serverRunEvents, the editor through the same ports a
   // local run uses (previews, locks, opening chapters).
 
-  /** On for this provider, and there is a server to run turns. */
+  /**
+   * On for this provider, and there is a server to run turns. On unless the
+   * writer turned it off (user decision, 2026-10-17): a turn run in the tab
+   * died with the tab — a closed page stopped "写完本文" after its first step.
+   */
   const serverRunsEnabled = useCallback(() => {
     const s = useAppStore.getState()
-    return !!s.user && !!s.activeBookId && s.providerConfigs[s.activeProvider]?.serverRuns === true
+    return !!s.user && !!s.activeBookId && s.providerConfigs[s.activeProvider]?.serverRuns !== false
   }, [])
 
   /** This tab renders `run` from now on: ports for its previews, the streaming flag, the lock. */

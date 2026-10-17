@@ -309,8 +309,9 @@ real request once it owns the run.
 
 ### 4.3 Phase 3 as built
 
-**The switch.** `ProviderConfig.serverRuns` (Settings, per provider; off
-by default). With it on and the user logged in, a chat turn is posted to
+**The switch.** `ProviderConfig.serverRuns` (Settings, per provider; on unless the writer
+turns it off — off by default until 2026-10-17, when a closed page stopped a
+tab-run turn after its first step). With it on and the user logged in, a chat turn is posted to
 `POST /api/books/{id}/runs` and the loop runs in the API process. Off, the
 turn runs in the tab exactly as before. Roleplay, the Polish button,
 summaries and imports are untouched.
