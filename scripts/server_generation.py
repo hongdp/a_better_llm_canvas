@@ -70,7 +70,7 @@ from wc_providers.common import (HTTP_READ_TIMEOUT, IDLE_TIMEOUT_SECONDS, Provid
 from wc_providers.gemini import build_gemini_request  # noqa: F401
 from wc_providers.openai_compat import build_openai_request  # noqa: F401
 from wc_providers.responses import _stream_responses, build_responses_request  # noqa: F401
-from wc_text.retry_policy import (MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, retry_delay_ms, with_jitter)
+from wc_text.retry_policy import (MAX_RETRY_DELAY_MS, MAX_TRANSPORT_RETRIES, is_context_length_error, is_retryable_status, retry_delay_ms, with_jitter)
 
 logger = logging.getLogger("web_canvas.generation")
 
@@ -441,6 +441,9 @@ class GenerationJob:
         cached_tokens = (usage or {}).get("cachedPromptTokens")
         if cached_tokens is not None and prompt_tokens:
             cache_note = f"cache {cached_tokens}/{prompt_tokens} ({100 * cached_tokens / prompt_tokens:.0f}%)"
+            written = (usage or {}).get("cacheWriteTokens") or 0
+            if written:
+                cache_note += f", wrote {written}"
         elif prompt_tokens:
             cache_note = f"cache n/a, {prompt_tokens} prompt tokens"
         else:
@@ -624,11 +627,14 @@ async def _dispatch_with_retries(job: GenerationJob, provider: str, config: Dict
             raise
         except Exception as exc:  # noqa: BLE001 — classified, then retried or re-raised
             kind = classify_failure(exc, job)
-            if kind != "transient" or job.has_output or attempt >= MAX_TRANSPORT_RETRIES or job.abort_requested:
+            retry_after = getattr(exc, "retry_after", None)
+            # A provider that names a wait far past what a retry may sleep (a daily quota: Gemini said
+            # "retryDelay": "10830s") will refuse every retry too: fail now, with its message.
+            too_long = retry_after is not None and retry_after * 1000 > MAX_RETRY_DELAY_MS
+            if kind != "transient" or too_long or job.has_output or attempt >= MAX_TRANSPORT_RETRIES or job.abort_requested:
                 raise
             attempt += 1
             job.retries = attempt
-            retry_after = getattr(exc, "retry_after", None)
             delay = with_jitter(retry_delay_ms(attempt, retry_after), random.random()) / 1000
             logger.info("Job %s: %s; retry %d/%d in %.1fs", job.job_id, str(exc)[:200] or type(exc).__name__, attempt, MAX_TRANSPORT_RETRIES, delay)
             job.reset_for_retry()

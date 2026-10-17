@@ -198,6 +198,8 @@ async def _stream_responses(
                     "promptTokens": u.get("input_tokens") or 0,
                     "completionTokens": u.get("output_tokens") or 0,
                     "cachedPromptTokens": (u.get("input_tokens_details") or {}).get("cached_tokens") or 0,
+                    # GPT-5.6 and later bill a cache write at 1.25x the input rate: worth seeing in the log.
+                    "cacheWriteTokens": (u.get("input_tokens_details") or {}).get("cache_write_tokens") or 0,
                     "reasoningTokens": (u.get("output_tokens_details") or {}).get("reasoning_tokens") or 0,
                 }
             elif kind in ("response.failed", "error"):

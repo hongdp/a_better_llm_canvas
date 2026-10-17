@@ -35,7 +35,7 @@ def test_a_step_streams_text_reasoning_calls_and_keeps_its_output_items():
     assert job.reasoning_text == "先读第二章。"
     assert job.tool_calls[1] == {"id": "call-1", "name": "read_chapter", "arguments": '{"chapter":2}'}
     assert job.response_items == [REASONING, CALL]
-    assert job.usage == {"promptTokens": 100, "completionTokens": 30, "cachedPromptTokens": 80, "reasoningTokens": 20}
+    assert job.usage == {"promptTokens": 100, "completionTokens": 30, "cachedPromptTokens": 80, "cacheWriteTokens": 0, "reasoningTokens": 20}
 
 
 def test_visible_text_goes_to_the_buffer():

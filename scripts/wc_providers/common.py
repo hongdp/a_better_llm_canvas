@@ -61,11 +61,40 @@ class ProviderError(Exception):
         self.transient = transient
 
 
+_RETRY_DELAY_RE = re.compile(r'"retryDelay"\s*:\s*"(\d+(?:\.\d+)?)s"')
+
+
+def _error_summary(text: str) -> Tuple[str, Optional[float]]:
+    """The provider's own error message from a JSON error body, and Google's RetryInfo delay.
+
+    Problem: a Gemini free-tier quota error put 60 lines of JSON into the log
+      and the run's pause, and its RetryInfo ("retryDelay": "10830s", three
+      hours) went unread — the job retried four times in 17 s for nothing.
+    Fix: the message is `error.message` when the body has one, and the delay
+      is read so the retry loop can see it is not worth waiting for.
+    """
+    delay = None
+    m = _RETRY_DELAY_RE.search(text or "")
+    if m:
+        delay = float(m.group(1))
+    try:
+        parsed = json.loads(text)
+    except (TypeError, ValueError):
+        return text, delay
+    error = parsed.get("error") if isinstance(parsed, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    return (message.strip() if isinstance(message, str) and message.strip() else text), delay
+
+
 def _http_error(provider_label: str, response: Any, text: str) -> ProviderError:
     """The error for a response that failed before streaming, with what the retry policy needs."""
     headers = getattr(response, "headers", None) or {}
     retry_after = parse_retry_after(headers.get("retry-after") if hasattr(headers, "get") else None)
-    return ProviderError(f"{provider_label} API error ({response.status_code}): {text or 'request failed'}",
+    message, body_delay = _error_summary(text)
+    if retry_after is None:
+        retry_after = body_delay
+    note = f" (retry after {retry_after:.0f}s)" if retry_after and retry_after >= 60 else ""
+    return ProviderError(f"{provider_label} API error ({response.status_code}): {message or 'request failed'}{note}",
                          status=response.status_code, retry_after=retry_after)
 
 
@@ -266,7 +295,10 @@ def _fingerprint(value: Any) -> str:
 def describe_prefix(conversation: str, body: Dict[str, Any], now: Optional[float] = None) -> str:
     """How this request's prefix relates to the conversation's previous one."""
     now = time.monotonic() if now is None else now
-    messages = body.get("messages") or body.get("input") or []
+    messages = list(body.get("messages") or body.get("input") or body.get("contents") or [])
+    if body.get("systemInstruction"):
+        # Gemini sends the system prompt beside the contents; it is the prefix's first part all the same.
+        messages.insert(0, {"role": "system", "parts": body["systemInstruction"].get("parts")})
     hashes = [_fingerprint(m) for m in messages]
     tools = _fingerprint(body.get("tools") or [])
     model = str(body.get("model") or "")
@@ -290,6 +322,8 @@ def describe_prefix(conversation: str, body: Dict[str, Any], now: Optional[float
     else:
         differing = messages[same] if same < len(messages) else {}
         content = differing.get("content") if isinstance(differing, dict) else None
+        if content is None and isinstance(differing, dict) and isinstance(differing.get("parts"), list):
+            content = "".join(p.get("text") or "" for p in differing["parts"] if isinstance(p, dict))
         parts.append(
             f"first {same} of its {len(prev_hashes)} messages identical; "
             f"message #{same} ({differing.get('role') if isinstance(differing, dict) else '?'}, "

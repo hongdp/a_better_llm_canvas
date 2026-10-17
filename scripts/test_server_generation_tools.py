@@ -509,7 +509,7 @@ def test_anthropic_stream_reports_tool_use_by_block_index():
         1: {"id": "toolu_1", "name": "update_document", "arguments": '{"html": "<p>新</p>"}'},
     }
     assert captured[0]["body"]["tools"][0]["name"] == "update_document"
-    assert job.usage == {"promptTokens": 10, "completionTokens": 20, "cachedPromptTokens": 0}
+    assert job.usage == {"promptTokens": 10, "completionTokens": 20, "cachedPromptTokens": 0, "cacheWriteTokens": 0}
 
 
 def test_gemini_stream_reports_function_call_like_streamGemini():

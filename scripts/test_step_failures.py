@@ -140,3 +140,27 @@ def test_a_completed_response_with_a_trigger_is_kept():
     job = _new_job()
     _run_job(job, "grok", {**GROK, "loopCheck": True}, [{"role": "user", "content": "q"}], response, captured)
     assert job.status == "done" and job.buffer == "refrain, refrain" and job.loop_triggers == ["exact_repetition:64x3@response"]
+
+
+GEMINI_QUOTA = json.dumps({"error": {"code": 429, "message": "You exceeded your current quota, please check your plan and billing details.",
+                                     "status": "RESOURCE_EXHAUSTED",
+                                     "details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "10830s"}]}}, indent=2)
+
+
+def test_a_json_error_body_becomes_its_message_and_googles_retry_delay_is_read():
+    class Response:
+        status_code = 429
+        headers = {}
+    err = wc_providers.common._http_error("Gemini", Response(), GEMINI_QUOTA)
+    assert str(err) == "Gemini API error (429): You exceeded your current quota, please check your plan and billing details. (retry after 10830s)"
+    assert err.retry_after == 10830.0
+    plain = wc_providers.common._http_error("xAI", Response(), "upstream busy")
+    assert str(plain) == "xAI API error (429): upstream busy" and plain.retry_after is None
+
+
+def test_a_wait_longer_than_a_retry_may_sleep_is_not_retried():
+    """2026-10-17: a three-hour daily quota was retried four times in 17 s, then the run paused anyway."""
+    job = _new_job()
+    calls, events = _drive(job, [gen.ProviderError("Gemini API error (429): quota", status=429, retry_after=10830)] * 5, provider="gemini")
+    assert len(calls) == 1 and job.status == "error" and job.error_kind == "transient"
+    assert not [e for e in events if e["type"] == "retry"]
