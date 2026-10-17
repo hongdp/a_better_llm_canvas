@@ -360,11 +360,47 @@ async def _update_execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str
     return with_plan_done(ctx, await _update_write(args, ctx, call), args.get("planDone") or [])
 
 
+_MISSING_CHAPTER = ("There is no chapter #", "No chapter is titled ")
+
+
+def _hold_missing(ctx: ToolContext, chapter: Any, html: str, refusal: str, closed: bool) -> Optional[Dict[str, Any]]:
+    """Keep a whole rewrite written for a chapter that does not exist (backend_authority.md §6.2).
+
+    Problem: a model that wrote a whole chapter under a number or title the
+      book does not have (#7 of 6, a title it misremembered) lost all of it to
+      the refusal, and wrote it again — thousands of tokens for one wrong name.
+    Fix: the text is kept on the run; the model is told so, and confirms where
+      it goes with an empty-html update_document — new_chapter="title" for a
+      new chapter, or a chapter's number — which writes the kept text there.
+    """
+    if is_new_chapter_ref(chapter) or not closed or not js_trim(html) or not refusal.startswith(_MISSING_CHAPTER):
+        return None
+    ctx.run.held_text = {"ref": str(chapter), "html": html}
+    chars = chapter_chars(html)
+    return result(False,
+                  f"{refusal.splitlines()[0]} Your text ({chars} characters) is KEPT — do not send it again. "
+                  'To put it in a new chapter, call update_document with new_chapter="<its title>" and html=""; '
+                  'to put it in an existing chapter, call update_document with chapter="<its number>" and html="". The kept text is written there.',
+                  f'📥 kept {chars} chars written for missing chapter "{chapter}"', retryable=True)
+
+
 async def _update_write(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any]) -> Dict[str, Any]:
     html, chapter, arguments_lost = args["html"], args["chapter"], args["argumentsLost"]
     target = resolve_target(chapter, ctx)
     if isinstance(target, str):
-        return result(False, target, f"⚠️ rewrite: {target.splitlines()[0]}", retryable=True)
+        held = _hold_missing(ctx, chapter, html, target, not arguments_lost and call.get("unclosed") is not True)
+        return held or result(False, target, f"⚠️ rewrite: {target.splitlines()[0]}", retryable=True)
+    kept = ctx.run.held_text if not js_trim(html) and not arguments_lost else None
+    if kept:
+        # The confirmation of §6.2: the text written for the missing chapter goes here.
+        out = await _update_body(kept["html"], chapter, False, ctx, call, target)
+        if out["ok"]:
+            ctx.run.held_text = None
+        return out
+    return await _update_body(html, chapter, arguments_lost, ctx, call, target)
+
+
+async def _update_body(html: str, chapter: Any, arguments_lost: bool, ctx: ToolContext, call: Dict[str, Any], target: Target) -> Dict[str, Any]:
     ctx.ui.progress(None)
     if ctx.document.open_id() != target["id"]:
         ctx.editor.discard_preview()

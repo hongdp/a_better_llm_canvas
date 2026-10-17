@@ -303,6 +303,21 @@ def test_a_finished_run_remembers_its_token_ratio_for_the_next_budget(book, monk
     assert server_context._token_ratio({}) == 1.0 and server_context._token_ratio({"tokenRatio": 0.5}) == 1.0
 
 
+def test_text_kept_for_a_missing_chapter_and_never_placed_is_noted_in_the_bubble(book, monkeypatch):
+    call = {"text": "", "calls": [("c1", "update_document", json.dumps({"chapter": "9", "html": "<p>迷路的正文。</p>"}, ensure_ascii=False))]}
+    provider = Scripted([call, "好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run
+    run = asyncio.run(main())
+    assert run.status == "done", run.error
+    assert "KEPT" in json.dumps(provider.requests[1]["messages"], ensure_ascii=False)
+    assert "was never placed, so it was discarded" in message_row("a-写第一章")["content"]
+
+
 # ── a step that fails (agentic_chat_loop.md §0.10) ────────────────────────────
 
 def test_a_step_that_broke_mid_reply_is_written_again(book, monkeypatch):
