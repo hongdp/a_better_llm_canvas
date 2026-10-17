@@ -53,6 +53,7 @@ from wc_text.provider_profile import get_cache_profile, target_prompt_tokens
 from wc_text.document_tools import to_openai_tools
 from wc_text.image_preservation import register_image, replace_images_with_placeholders, restore_image_placeholders
 from wc_text.chapters import cite_chapter
+from wc_text.paragraphs import chapter_chars
 from wc_text.jsstr import js_trim
 from wc_text.stream_handlers import ASSISTANT_PLACEHOLDER, build_completion_warnings, split_streaming_response
 from wc_text.text import is_blank_content, strip_incomplete_end_tag, trim_incomplete_html_tail
@@ -1100,6 +1101,11 @@ class RunEngine:
         })
         limit_note = (f"\n\nℹ️ This turn stopped at its step limit ({summary['steps']} steps). Reply \"continue\" to let it go on, or raise the limit in Settings."
                       if end == "step_limit" else "")
+        # Text kept for a chapter that does not exist and never placed (backend_authority.md §6.2) is discarded, and said so.
+        held = run.agent.ctx.run.held_text if run.agent else None
+        if held:
+            limit_note += (f"\n\nℹ️ Text written for a chapter that does not exist (\"{held['ref']}\", "
+                           f"{chapter_chars(held['html'])} characters) was never placed, so it was discarded.")
         chat_text = summary["chatText"] or "Document updated successfully."
         if end == "cancelled":
             chat_text = _join(summary["chatText"], "⏹️ Stopped.")

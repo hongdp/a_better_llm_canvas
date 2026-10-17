@@ -60,6 +60,9 @@ class RunState:
     attachment_chars: int = 0
     #: Chapters whose shrinking rewrite was held back once (wc_text.paragraphs.rewrite_loss); a second send applies.
     rewrite_loss_warned: Set[str] = field(default_factory=set)
+    #: A whole rewrite written for a chapter that does not exist (backend_authority.md §6.2):
+    #: {"ref", "html"}. The next update_document with an empty html writes it, unsent again.
+    held_text: Optional[Dict[str, str]] = None
 
 
 def writes_so_far(run: RunState) -> int:

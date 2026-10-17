@@ -532,9 +532,8 @@ single undo step) lives in the hook itself, with no tool context behind it.
   writes them; `python3 scripts/test_parity.py --rewrite-python-owned`
   recomputes their outputs after an intended Python change. The other
   fixtures are still written from `src/utils` and `src/hooks/chat`.
-- **Still to do (§6):** keeping text written for a chapter that does not
-  exist (6.2), and removing the tab's "refuse while a turn streams" path in
-  favour of the server queue alone (6.3) — part C.
+- **§6 is done:** the tab's "refuse while a turn streams" path went with the
+  loop (6.3), and part C built 6.2 server-side.
 
 ## 5. Risks
 
@@ -567,23 +566,32 @@ behaviour as is: the write's first bytes create the chapter and the
 
 ### 6.2 Keeping text written for a chapter that does not exist
 
-A full rewrite (`<canvas chapter="X">`, `update_document`) naming a chapter
-that does not exist, with no `create_chapter("X")` in the same reply, is
-held rather than refused. The model is told: "No chapter 'X' exists. Your
-text is kept: call create_chapter("X") and it will be written there; do not
-send the text again."
+**Built server-side, 2026-10-17** (phase 4, part C), redefined for a book
+with no `create_chapter`: a whole rewrite (`<canvas chapter="X">`,
+`update_document`) naming a chapter that does not exist — "There is no
+chapter #7", "No chapter is titled …" — is kept on the run
+(`RunState.held_text`, `_hold_missing`) instead of being lost to the
+refusal. The model is told its text is KEPT and not to send it again.
 
-- Calling `create_chapter("X")` is the confirmation: the held text is
-  written without being generated again.
-- Titles match ignoring whitespace differences (ASCII vs ideographic
-  space).
-- Numbered references match the new chapter's number.
-- Text still held when the run ends is discarded, with a note in the
-  bubble.
-- Partial edits (`<edit>`) to a missing chapter have nothing to hold and
-  are refused as today.
+- **The confirmation** is an `update_document` with an empty `html`:
+  `new_chapter="title"` writes the kept text into a new chapter, a chapter's
+  number into that chapter — under every rule a rewrite has (the seen-text
+  rule, the user-edit rule, a reviewable diff). A refused confirmation keeps
+  the text.
+- A cut-off rewrite (unclosed, arguments lost) is not kept: it is not the
+  text the model meant.
+- Text still kept when the run ends is discarded, with a note in the bubble.
+- Partial edits (`<edit>`, `edit_paragraphs`) to a missing chapter have
+  nothing to keep and are refused as before.
+- Kept text lives in the run's memory: a server restart between the refusal
+  and the confirmation loses it (the model is then refused an empty html and
+  writes the text again).
 
 ### 6.3 Queueing requests
+
+**Done** (phase 3 server-side; phase 4 removed the tab's refusal): a message
+sent while a run works steers it, or — with images, or when the run will not
+take it — is posted as a turn and queues.
 
 A request sent while a run is active joins the book's queue and is shown
 as queued (cancelable).

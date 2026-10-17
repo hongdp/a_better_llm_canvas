@@ -265,6 +265,42 @@ def test_new_chapter_is_created_by_the_write_and_rewrite_answers_differently():
     assert "Rewrote the EXISTING chapter" in out["content"] and "No chapter was added" in out["content"]
 
 
+def test_a_rewrite_for_a_missing_chapter_is_kept_and_placed_by_an_empty_new_chapter_write():
+    """backend_authority.md §6.2: the text is not lost to a wrong number; an empty-html write confirms where it goes."""
+    fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "第二章", "content": "<p>two</p>"}])
+    update = DOCUMENT_WRITE_TOOLS[0]
+    out = run_tool(update, {"chapter": "7", "html": "<h1>第七章</h1><p>很长的正文。</p>"}, fake.ctx)
+    assert out["ok"] is False and "There is no chapter #7" in out["content"] and "KEPT" in out["content"]
+    assert out["trace"].startswith("📥 kept")
+    assert fake.ctx.run.held_text["ref"] == "7"
+    out = run_tool(update, {"new_chapter": "第七章", "html": ""}, fake.ctx)
+    assert out["ok"], out
+    assert strip_diff_markup(fake.last_write("new-1")) == "<h1>第七章</h1><p>很长的正文。</p>"
+    assert fake.ctx.run.held_text is None
+    # Nothing kept any more: an empty html is the old refusal.
+    out = run_tool(update, {"new_chapter": "第八章", "html": ""}, fake.ctx)
+    assert out["ok"] is False and "empty html" in out["content"]
+
+
+def test_kept_text_can_go_to_an_existing_chapter_under_the_usual_rules():
+    fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "第二章", "content": "<p>two</p>"}])
+    update = DOCUMENT_WRITE_TOOLS[0]
+    run_tool(update, {"chapter": "第九章", "html": "<p>kept</p>"}, fake.ctx)
+    assert fake.ctx.run.held_text is not None
+    out = run_tool(update, {"chapter": "2", "html": ""}, fake.ctx)
+    assert out["ok"] is False and "not rewritten" in out["content"]   # not read: refused, and still kept
+    assert fake.ctx.run.held_text is not None
+    run_tool(read_chapter_tool, {"chapters": ["2"]}, fake.ctx)
+    assert run_tool(update, {"chapter": "2", "html": ""}, fake.ctx)["ok"]
+    assert strip_diff_markup(fake.last_write("doc-2")) == "<p>kept</p>"
+
+
+def test_a_cut_off_rewrite_for_a_missing_chapter_is_not_kept():
+    fake = FakeBook("<p>alpha</p>")
+    out = run_tool(DOCUMENT_WRITE_TOOLS[0], {"chapter": "5", "html": "<p>half"}, fake.ctx, {"unclosed": True})
+    assert "KEPT" not in out["content"] and fake.ctx.run.held_text is None
+
+
 def test_new_chapter_title_of_an_unread_chapter_is_refused():
     fake = FakeBook("<p>alpha</p>", chapters=[{"id": "doc-2", "title": "Chapter 2", "content": "<p>two</p>"}])
     out = run_tool(DOCUMENT_WRITE_TOOLS[0], {"new_chapter": "Chapter 2", "html": "<p>x</p>"}, fake.ctx)
