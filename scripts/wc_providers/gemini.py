@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from wc_text.reasoning_effort import gemini_thinking, resolve_reasoning_effort
 
 from . import common
-from .common import (ProviderError, _assistant_tool_calls, _check_abort, _debug_log, _gemini_tools, _http_error, _parsed_arguments,
+from .common import (ProviderError, _assistant_tool_calls, _check_abort, _debug_log, _gemini_tools, _http_error, _parsed_arguments, describe_prefix,
                      _read_error_text, _split_data_url)
 
 if TYPE_CHECKING:
@@ -189,6 +189,10 @@ async def _stream_gemini(
 ) -> Optional[Dict[str, Any]]:
     url, headers, body = build_gemini_request(config, messages)
     _debug_log("Gemini", url, headers, body, config)
+    if config.get("conversationId"):
+        # Gemini's cache is implicit (no key to route by): the prefix diagnostic is the only way to tell
+        # our request changing from the provider missing (2026-10-17; the other providers had it already).
+        logger.info("Job %s prefix: %s", job.job_id, describe_prefix(f"gemini:{config['conversationId']}", body))
 
     usage: Optional[Dict[str, Any]] = None
     async with common._http_stream(url, headers, body) as response:

@@ -47,3 +47,15 @@ def test_memory_is_bounded():
     for i in range(wc_providers.common.PREFIX_MEMORY + 5):
         gen.describe_prefix(f"grok:{i}", _body("a"), now=i)
     assert len(wc_providers.common._last_requests) == wc_providers.common.PREFIX_MEMORY
+
+
+def _gemini(*texts, system="sys"):
+    return {"systemInstruction": {"parts": [{"text": system}]}, "contents": [{"role": "user", "parts": [{"text": t}]} for t in texts]}
+
+
+def test_a_gemini_request_is_compared_by_its_system_instruction_and_contents():
+    gen.describe_prefix("gemini:b", _gemini("q"), now=0)
+    assert gen.describe_prefix("gemini:b", _gemini("q", "more"), now=3) == \
+        "3s after the previous request; extends it (all 2 earlier messages identical)"
+    line = gen.describe_prefix("gemini:b", _gemini("q", "more", system="sys v2"), now=4)
+    assert "first 0 of its 3 messages identical; message #0 (system, 6 chars) differs" in line

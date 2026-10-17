@@ -137,7 +137,8 @@ npm run parity:fixtures     # regenerate scripts/parity/fixtures from the TypeSc
 
 **Logs**: `app.log` holds the orchestrator + Vite output; the Python API
 server's own output (including `web_canvas.*` log lines — job starts,
-time-to-first-token, per-job summaries with prompt-cache hits, a
+time-to-first-token, per-job summaries with prompt-cache hits (and `wrote N`,
+the cache-write tokens OpenAI GPT-5.6+ and Anthropic bill above input), a
 `prefix:` line saying where a request departs from the conversation's
 previous one, and for Anthropic a `cache diagnostics:` line — the API's own
 verdict on where the two requests diverged, threaded by `previous_message_id`

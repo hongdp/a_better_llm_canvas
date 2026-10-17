@@ -264,6 +264,7 @@ async def _stream_anthropic(
     input_tokens = 0
     output_tokens = 0
     cached_prompt_tokens = 0
+    cache_write_tokens = 0
     # Reasoning blocks being assembled, by content-block index (streamAnthropic's
     # `openThinking`): thinking_delta text plus the signature_delta that comes
     # just before content_block_stop. redacted_thinking arrives whole in its
@@ -348,6 +349,7 @@ async def _stream_anthropic(
                 )
                 output_tokens = u.get("output_tokens") or 0
                 cached_prompt_tokens = u.get("cache_read_input_tokens") or 0
+                cache_write_tokens = u.get("cache_creation_input_tokens") or 0
             elif event_type == "message_delta" and (parsed.get("usage") or {}).get("output_tokens"):
                 # Assignment, not +=: this field is a running total.
                 output_tokens = parsed["usage"]["output_tokens"]
@@ -371,5 +373,6 @@ async def _stream_anthropic(
             "promptTokens": input_tokens,
             "completionTokens": output_tokens,
             "cachedPromptTokens": cached_prompt_tokens,
+            "cacheWriteTokens": cache_write_tokens,
         }
     return None

@@ -1236,6 +1236,7 @@ def test_generation_anthropic_request_caching_and_usage():
         "promptTokens": 115,
         "completionTokens": 11,
         "cachedPromptTokens": 100,
+        "cacheWriteTokens": 5,
     }
 
 
@@ -1871,7 +1872,7 @@ def test_openai_responses_job_streams_text_reasoning_and_calls():
     assert captured[0]["url"] == "https://api.openai.com/v1/responses"
     assert job.status == "done" and job.buffer == "Ok" and "Plan." in job.reasoning_text
     assert job.response_items == [{"type": "reasoning", "id": "rs_1", "encrypted_content": "C=="}]
-    assert job.usage == {"promptTokens": 20, "completionTokens": 4, "cachedPromptTokens": 16, "reasoningTokens": 2}
+    assert job.usage == {"promptTokens": 20, "completionTokens": 4, "cachedPromptTokens": 16, "cacheWriteTokens": 0, "reasoningTokens": 2}
 
 
 def test_models_endpoint_lists_gemini_text_models_without_closed_or_media_ones(_stub_models_auth):
