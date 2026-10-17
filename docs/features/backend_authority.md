@@ -313,8 +313,21 @@ real request once it owns the run.
 turns it off — off by default until 2026-10-17, when a closed page stopped a
 tab-run turn after its first step). With it on and the user logged in, a chat turn is posted to
 `POST /api/books/{id}/runs` and the loop runs in the API process. Off, the
-turn runs in the tab exactly as before. Roleplay, the Polish button,
-summaries and imports are untouched.
+turn runs in the tab exactly as before. Roleplay (removed 2026-10-12) and
+imports were never runs.
+
+**The Polish button is a run too** (2026-10-17, phase 4): the request
+carries `polish: {documentId, language}`, and `_execute_polish` runs the
+chapter through the polish model with no agent loop — queued like a turn,
+locked, snapshotted and written by the server, its record the one the tab
+built (one tool line, the chapter in "changed this turn"). Stop sets the
+run's `stop_event` and aborts its side jobs (`_ModelCall`), so a chunk in
+flight keeps its draft — the agent's `polish_chapter` tool stops the same way.
+
+**The history budget is calibrated** as the tab's is (`tokenCalibration.ts`):
+a finished run stores measured ÷ estimated prompt tokens (`AgentRun.token_ratio`,
+clamped to [1, 3]) in its provider|model `run_context` state, and the next
+turn's budget divides the window by it (`server_context._token_ratio`).
 
 **Server** (`scripts/server_runs.py`, `server_context.py`,
 `server_documents.py`, the `wc_agent/` package):

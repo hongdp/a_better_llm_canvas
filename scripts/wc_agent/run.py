@@ -14,7 +14,7 @@ from wc_text.invocations import arguments_text_of, collect_step, plan_writes
 from wc_text.jsstr import js_trim
 from wc_text.plan import unfinished_plan_items
 from wc_text.policy import decide_after_step, detect_step_failure, steps_left
-from wc_text.run_compaction import elision_trace, plan_elisions
+from wc_text.run_compaction import elision_trace, plan_elisions, prompt_tokens
 from wc_text.reminders import (LOOKUP_NUDGE_STEPS, PLAN_NUDGE_BUDGET, REPEAT_NUDGE_STEPS, append_reminders, html_read_nudge,
                                long_reasoning_reminder, lookup_streak_nudge, plan_reminder, plan_unfinished_nudge, repeat_nudge,
                                steer_message, unbacked_claim_nudge, wrap_reminder, carried_plan_reminder)
@@ -519,8 +519,15 @@ class AgentRun:
         if end["endReason"] != "cancelled":
             self._drop_empty_created()
         summary = {"strayMarkup": self.stray, "effects": dict(self.effects), **self.progress(), "question": None, **end,
-                   "transcript": self.transcript()}
+                   "transcript": self.transcript(), "tokenRatio": self.token_ratio()}
         await _maybe_await(self.observer.on_finish(summary))
+
+    def token_ratio(self) -> Optional[float]:
+        """measured ÷ estimated for the last step the provider counted, unclamped (run.ts tokenRatio)."""
+        if not self.measured or not self.measured.get("tokens", 0) > 0:
+            return None
+        estimated = prompt_tokens(self.messages[: self.measured["length"]])
+        return self.measured["tokens"] / estimated if estimated > 0 else None
 
     def transcript(self) -> List[Dict[str, Any]]:
         """What this turn added after the prefix it shared with the conversation — its final user message as

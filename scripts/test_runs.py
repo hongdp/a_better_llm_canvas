@@ -232,6 +232,77 @@ def test_analyze_book_runs_on_a_server_run(book, monkeypatch):
     assert "NOTES: 两章都在。" in json.dumps(provider.requests[2]["messages"], ensure_ascii=False)
 
 
+def _polish_request(language="zh"):
+    return request("润色《Chapter 1》", polish={"documentId": "doc-1", "language": language})
+
+
+def test_the_polish_button_runs_on_the_server(book, monkeypatch):
+    """Phase 4: the Polish button is a run — no agent loop, one polish call per chunk, the tab's record."""
+    server_content.save_document_content("alice", "book-1", "doc-1", "<p>她推开门，屋里没有人。</p>")
+    provider = Scripted(["<p>她推开了门，屋里空无一人。</p>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        queue = server_events.hub.subscribe("alice", "book-1")
+        run = book.submit("alice", "book-1", _polish_request())
+        await settle(run)
+        return run, events_of(queue)
+    run, events = asyncio.run(main())
+    assert run.status == "done", run.error
+    assert strip_diff_markup(content_of("doc-1")) == "<p>她推开了门，屋里空无一人。</p>"
+    assert "diff-addition" in content_of("doc-1")
+    assert len(provider.requests) == 1 and provider.requests[0]["config"]["model"] == "grok-4.20-0309-reasoning"
+    assert run.record["trace"] == ['✨ polished #1 "Chapter 1" (1 of 1 chunk(s) rewritten)']
+    assert run.record["touched"][0]["kind"] == "polished"
+    runs = [e for e in events if e.get("type") == "run"]
+    assert any(e["kind"] == "progress" and "润色中" in (e.get("line") or "") for e in runs)
+    assert any(e["kind"] == "lock" and e.get("documentIds") == ["doc-1"] for e in runs)
+    row = message_row("a-润色《Chapter 1》")
+    assert row["content"].startswith("✨ polished") and json.loads(row["agent"])["status"] == "done"
+    assert message_row("u-润色《Chapter 1》")["content"] == "润色《Chapter 1》"
+    assert run.snapshots, "a version snapshot before the change"
+
+
+def test_stop_ends_a_polish_and_keeps_the_draft(book, monkeypatch):
+    server_content.save_document_content("alice", "book-1", "doc-1", "<p>她推开门，屋里没有人。</p>")
+    provider = Scripted(["<p>她推开了门，屋里空无一人。</p>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        provider.gate = asyncio.Event()
+        run = book.submit("alice", "book-1", _polish_request("en"))
+        await asyncio.sleep(0.01)
+        book.stop(run)
+        provider.gate.set()
+        await settle(run)
+        return run
+    run = asyncio.run(main())
+    assert run.status == "stopped"
+    assert content_of("doc-1") == "<p>她推开门，屋里没有人。</p>"
+    assert "Stopped" in message_row("a-润色《Chapter 1》")["content"]
+
+
+def test_a_finished_run_remembers_its_token_ratio_for_the_next_budget(book, monkeypatch):
+    """tokenCalibration.ts on the server: measured ÷ estimated per provider|model, clamped to [1, 3]."""
+    class Counting(Scripted):
+        async def __call__(self, job, provider, config, messages):
+            usage = await super().__call__(job, provider, config, messages)
+            return {**usage, "promptTokens": 10_000_000}
+    provider = Counting(["好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run
+    run = asyncio.run(main())
+    assert run.status == "done", run.error
+    state = server_context.load_state("alice", "book-1", "grok|grok-4.6")
+    assert state["tokenRatio"] == 3.0
+    assert server_context._token_ratio(state) == 3.0
+    assert server_context._token_ratio({}) == 1.0 and server_context._token_ratio({"tokenRatio": 0.5}) == 1.0
+
+
 # ── a step that fails (agentic_chat_loop.md §0.10) ────────────────────────────
 
 def test_a_step_that_broke_mid_reply_is_written_again(book, monkeypatch):

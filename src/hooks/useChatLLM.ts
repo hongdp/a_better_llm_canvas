@@ -1337,6 +1337,7 @@ export function useChatLLM({
     historySource: HistorySourceMessage[]
     userMsgId: string
     assistantMsgId: string
+    polish?: { documentId: string; language: 'zh' | 'en' }
   }) => {
     const s = useAppStore.getState()
     const cfg = s.providerConfigs[s.activeProvider]
@@ -1361,8 +1362,8 @@ export function useChatLLM({
           polishModel: cfg.polishModel, runTokenBudget: cfg.runTokenBudget, longReasoningReminderTokens: cfg.longReasoningReminderTokens,
           webAccess: cfg.webAccess
         },
-        activeDocumentId: s.activeDocumentId,
-        selectedText: selectedText || undefined,
+        activeDocumentId: opts.polish?.documentId ?? s.activeDocumentId,
+        selectedText: opts.polish ? undefined : selectedText || undefined,
         history: opts.historySource.filter(m => m.id !== 'welcome').map(m => ({
           id: m.id, role: m.role, content: m.content, images: m.images, agent: m.agent, reasoningItems: m.reasoningItems
         })),
@@ -1371,7 +1372,8 @@ export function useChatLLM({
         customInstructions: preset?.content,
         polishPrompt: s.polishPrompt,
         contextWindowTokens: s.discoveredContextWindows[cfg.model],
-        clientId: CLIENT_ID
+        clientId: CLIENT_ID,
+        ...(opts.polish ? { polish: opts.polish } : {})
       })
       const latest = useAppStore.getState()
       latest.setMessages(applyRunEvent(latest.messages, { type: 'run', kind: run.status === 'queued' ? 'queued' : 'started', runId: run.id, run, position }, serverLiveRef.current))
@@ -2503,8 +2505,9 @@ export function useChatLLM({
 
     const zh = s.language === 'zh'
     imagePlaceholdersRef.current = []
+    const userMsgId = getTimestampId('user')
     s.addMessage({
-      id: getTimestampId('user'),
+      id: userMsgId,
       role: 'user',
       content: zh ? `润色《${doc.title}》` : `Polish "${doc.title}"`,
       timestamp: new Date().toISOString()
@@ -2519,6 +2522,15 @@ export function useChatLLM({
       model: s.providerConfigs[s.activeProvider].polishModel?.trim() ||
         defaultPolishModel(s.activeProvider, s.providerConfigs[s.activeProvider].model)
     })
+    if (serverRunsEnabled()) {
+      // A run like any turn (it queues, Stop stops it, a closed tab does not):
+      // the server locks the chapter, snapshots it and writes the polish.
+      await startServerTurn({
+        promptText: zh ? `润色《${doc.title}》` : `Polish "${doc.title}"`, historySource: [],
+        userMsgId, assistantMsgId, polish: { documentId, language: zh ? 'zh' : 'en' }
+      })
+      return
+    }
     s.setStreaming(true)
     // Only the chapter being polished is locked; the rest stay editable.
     s.setEditLockedIds([documentId])
@@ -2575,7 +2587,7 @@ export function useChatLLM({
     }))
     st.setStreaming(false)
     forceSave()
-  }, [polishTransport, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave])
+  }, [polishTransport, preserveImagesWithPlaceholders, restoreImagesFromPlaceholders, forceSave, serverRunsEnabled, startServerTurn])
 
   // The Polish button asks through the store (it lives in the canvas header);
   // run the request once, through a ref so the effect depends on nothing but
