@@ -15,6 +15,14 @@
   flex-shrink: 0;
 }
 
+/* Problem: dragging the resize handle, the sidebar trailed the cursor and
+   kept growing after the pointer stopped — every pointermove started a new
+   width transition. Fix: no transition while a drag is in progress; the
+   collapse/expand animation keeps it. */
+.chapters-sidebar.resizing {
+  transition: none;
+}
+
 .chapters-sidebar.collapsed {
   width: 0;
   opacity: 0;

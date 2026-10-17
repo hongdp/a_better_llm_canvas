@@ -250,14 +250,25 @@ export const ChaptersSidebar: React.FC = () => {
     reader.readAsText(file)
   }
 
+  const endSidebarResize = () => {
+    if (!sidebarDrag.current) return
+    sidebarDrag.current = null
+    setIsResizingSidebar(false)
+    setSidebarWidth(current => {
+      savePersistedSize(SIDEBAR_WIDTH.key, current, SIDEBAR_WIDTH.bounds)
+      return current
+    })
+  }
+
   return (
     <aside
-      className={`chapters-sidebar ${isSidebarOpen ? '' : 'collapsed'}`}
+      className={`chapters-sidebar ${isSidebarOpen ? '' : 'collapsed'} ${isResizingSidebar ? 'resizing' : ''}`}
       style={{ ['--chapters-width' as string]: `${sidebarWidth}px` }}
     >
       <div
         className={`sidebar-resize-handle ${isResizingSidebar ? 'active' : ''}`}
         onPointerDown={(e) => {
+          e.preventDefault()
           sidebarDrag.current = { startX: e.clientX, startWidth: sidebarWidth }
           setIsResizingSidebar(true)
           ;(e.target as HTMLElement).setPointerCapture(e.pointerId)
@@ -269,15 +280,8 @@ export const ChaptersSidebar: React.FC = () => {
             SIDEBAR_WIDTH.bounds
           ))
         }}
-        onPointerUp={() => {
-          if (!sidebarDrag.current) return
-          sidebarDrag.current = null
-          setIsResizingSidebar(false)
-          setSidebarWidth(current => {
-            savePersistedSize(SIDEBAR_WIDTH.key, current, SIDEBAR_WIDTH.bounds)
-            return current
-          })
-        }}
+        onPointerUp={endSidebarResize}
+        onPointerCancel={endSidebarResize}
       />
       <div className="sidebar-header">
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
