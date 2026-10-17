@@ -65,22 +65,11 @@ src/
     ImageGenerationModal.tsx  imageGen/   # Image-gen modal + step components
     AttachmentsSection.tsx  # The book's reference files in the sidebar (A1, A2…; add / remove)
   hooks/
-    useChatLLM.ts         # Chat → LLM streaming orchestrator (ref-coupled core);
-                          #   with serverRuns on, posts the turn and renders run.* events
+    useChatLLM.ts         # The chat as a renderer of server runs: posts each turn (and the
+                          #   Polish button) to /api/books/{id}/runs, renders run.* events
     chat/                 # Extracted chat-flow modules: streamHandlers,
                           #   dynamicContext, serverRunEvents (pure reducers), types
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
-  agent/                  # Agentic chat loop: tool registry, AgentRun (one turn = steps),
-                          #   step policy, invocation collection, freshness (D8), reminders
-                          #   (what the loop tells the model between steps: repeat nudge,
-                          #   long-reasoning reminder, the plan, what moved under the run),
-                          #   tools/documentWrites (3 writes), tools/bookReads (read / grep /
-                          #   list / open / delete; read_chapter, analyze_book and list_chapters
-                          #   are aliases — docs/features/read_and_list.md; a write creates a new
-                          #   chapter; rename_chapter in documentWrites), tools/analyzeBook (read
-                          #   with a task: batches outside the conversation), tools/polishChapter, tools/plan (checklist),
-                          #   tools/askUser (a question the turn waits on), tools/web
-                          #   (web_search / web_read / web_images through the server's browser)
   services/
     llm.ts                # streamLLM: every generation is a backend job (no in-browser transport)
     serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
@@ -113,7 +102,7 @@ scripts/
                         #   Completions with a Dialect row per provider), responses, anthropic, gemini
   server_static.py      # --serve-dist: the built frontend from the API process (installable release)
   release.sh            # npm run release (see Releases below)
-  wc_agent/             # Python port of src/agent: async run loop, registry, every tool
+  wc_agent/             # The agent loop (the only one since phase 4): async run, registry, every tool
   test_api_server.py      # pytest — patch state on the OWNING module (see docstring)
   test_agent.py  test_runs.py   # pytest — the tools/loop on a fake book; the engine on a scripted provider
   wc_text/                # Python port of the pure text logic (backend_authority.md §4.2):
@@ -244,10 +233,10 @@ there ends as "the selection is gone" — never an insert at the cursor. Never d
 inserted range's end from `slice.size`: ProseMirror wraps an open slice
 inserted at document level (Ctrl+A selects from position 0), so the real
 insert is longer — read the end from `tr.mapping.map(to, 1)`. Its
-transactions reach the store through `onUpdate` on purpose (a tab-local run
-commits what it previewed); a **server** run's preview is flagged silent
-(`SILENT_PREVIEW_META`) and skipped there, or the chapter goes unsynced, the
-run's own write event is ignored and the tab's next save is a 409.
+transactions are flagged silent (`SILENT_PREVIEW_META`) and skipped by
+`onUpdate`: the server commits the rewrite, and a preview that reached the
+store would leave the chapter unsynced, the run's own write event ignored
+and the tab's next save a 409.
 
 ### LLM integration
 `services/llm.ts` exposes `streamLLM(messages, config, callbacks)`; every call
@@ -293,12 +282,12 @@ Safety failures (403)
 trigger a self-healing retry with local sensitive-word censorship, then an
 interactive Prompt Editor UI (`status === 'prompt_edit'`).
 
-**A turn is a run of steps** (`src/agent/run.ts`; the design as built is
+**A turn is a run of steps** (`scripts/wc_agent/run.py`; the design as built is
 §0 of `docs/features/agentic_chat_loop.md`). Each step is one model call; native
 tool calls and markup blocks are normalized into the same tool invocations and
-executed from one registry — add a tool with `defineTool` and register it in
-`useChatLLM`'s `CHAT_TOOLS`. Tools reach the editor and store only through the
-ports in `src/agent/types.ts`. A run never rebuilds an earlier message: each
+executed from one registry — add a tool as a `Tool` in `wc_agent/tools/` and
+register it in `server_runs.py`'s `CHAT_TOOLS`. Tools reach the book only through
+the ports in `wc_agent/types.py` (`ServerPorts` in `server_runs.py`). A run never rebuilds an earlier message: each
 step appends, so follow-up steps hit grok's exact-prefix cache, and tool-call
 arguments are replayed byte-for-byte (`argumentsText`). The same goes for
 Anthropic thinking blocks (replayed where they streamed — one that came
@@ -313,18 +302,19 @@ it worked out across turns too (grok and OpenAI: `usesResponsesApi`). The tools 
 fixed at a run's first step. Writes reach any chapter through `chapter` (a
 `chapter="…"` attribute on grok's markup). An edit on a chapter whose HTML the
 model has not seen this run is refused, and a live preview must never paint
-another chapter's text into the open editor (`previewRewrite`). Per-provider
+another chapter's text into the open editor (`preview_rewrite`). Per-provider
 settings: `agentTools`, `agentMaxSteps` (0 = unlimited), `continueAfterWrites`
 (default on: a write's result goes back to the model like any tool result,
 and only a reply with no action ends the turn).
 
-**A turn can run on the server** (`ProviderConfig.serverRuns`, on unless
-turned off, 2026-10-17; `docs/features/backend_authority.md` §4.3). Then `useChatLLM` posts
-the request to `POST /api/books/{id}/runs` and the loop — `scripts/wc_agent/`,
-the port of `src/agent` — runs in the API process against the document store,
-with each step a generation job. The tab renders the run's `run.*` events from
-the book stream (`hooks/chat/serverRunEvents.ts` for the bubble, the local
-run's editor ports for previews and locks); a reload or another device lists
+**Every turn runs on the server** (`docs/features/backend_authority.md` §4.3;
+phase 4, 2026-10-17, removed the tab's loop and the `serverRuns` switch).
+`useChatLLM` posts the request to `POST /api/books/{id}/runs` and the loop —
+`scripts/wc_agent/` — runs in the API process against the document store,
+with each step a generation job. The tab only renders the run's `run.*` events
+from the book stream (`hooks/chat/serverRunEvents.ts` for the bubble, the
+hook's preview for the editor and the locks); the Polish button is a run too
+(`polish: {documentId}`, `_execute_polish`, no agent loop); a reload or another device lists
 the book's runs and rejoins — and so does a tab whose stream reconnected or
 that came back to the foreground (`emitRunCatchUp`), or a run that finished
 while a phone slept keeps its bubble "working". The run's state is persisted
@@ -332,8 +322,9 @@ after every step and a restart resumes it; its stored request holds the
 provider key only sealed and only while the run can continue
 (`server_secrets`); one run per book, later requests queue; Stop holds the
 queue; a run that repeats itself, runs unattended or passes its token budget is
-**paused, never killed**, and `/resume` continues it. Editing the loop means
-editing both `src/agent` and `wc_agent` until phase 4 retires the client loop.
+**paused, never killed**, and `/resume` continues it. The loop has one
+implementation: edit `wc_agent` (and `server_runs.py`); there is nothing to
+mirror in the frontend.
 
 **Between steps the loop talks back** (agentic_chat_loop.md §0.8, after
 Grok Build's harness): `<system-reminder>` blocks appended to a step's last
@@ -348,18 +339,16 @@ something was written since it started); a plan the previous turn left
 unfinished starts the next turn (`previousTurnPlan`, `carriedPlanReminder`); a no-action ending after an HTML
 read that no edit followed is nudged once; `delete_chapter` on a chapter
 with text asks with Delete / Keep buttons and only the button deletes (the
-tab before sending the answer, a server run on `/answer` with `confirm`);
+run on `/answer` with `confirm`);
 `rename_chapter` carries a leading `<h1>` that read the old title along;
-`ask_user` ends a tab-run with
-choices and pauses a server run until `/answer`; a message sent while a turn
+`ask_user` pauses the run with choices until `/answer`; a message sent while a turn
 runs **steers** it (`AgentRun.steer`, `POST …/runs/{id}/steer`): it lands as
 a user message after the step in flight, and a reply that would have ended
 the turn continues instead — the timeline marks where it landed and the chat
 shows the turn split there (`components/chatRows`, display only); the turn after a Stop carries a reminder that the
 previous one was stopped; a no-action reply claiming a write that never
 happened gets the editor's facts once (`claimsOwnWrite`); `wrapReminder`
-escapes its own tag in quoted text. Both loops (`src/agent`, `wc_agent`)
-carry every one of these. History past the budget is **summarized**, not
+escapes its own tag in quoted text. History past the budget is **summarized**, not
 cut (`utils/conversationSummary`, agentic_chat_loop.md §0.9): the dropped
 prefix becomes a fixed-section note placed after the ledger, refreshed only
 when the cut moves past it; each transport keeps its own copy.
@@ -536,11 +525,9 @@ localStorage pointer — a new device must land in the book last worked in.
   the code; name them `<module>.test.ts`.
 - Priority: pure logic (transformations, parsing, diffing, serialization,
   migrations) → store actions → persistence/migrations → component behavior.
-- **Hook flow tests**: `useChatLLM` has re-entrant paths (lookup continuation,
-  no-action retry, normal completion) that share one assistant bubble and can
-  only be covered end-to-end. `src/hooks/__tests__/useChatLLM.test.ts` drives
-  the real hook against a scripted `streamLLM` mock and asserts on the store,
-  using a ~20-line `createRoot` + `act` harness — there is no
+- **Hook flow tests**: `src/hooks/__tests__/useChatLLMServerRun.test.ts` drives
+  the real hook against a mocked `fetch` and run events from the emitter, and
+  asserts on the store, using a ~20-line `createRoot` + `act` harness — there is no
   `@testing-library/react` dependency, and adding one is not required. Keep
   such tests in `.ts` (no JSX) so the runner's `include` pattern picks them up.
 - Tests must be deterministic and isolated; reset store/mocks/storage in
@@ -563,6 +550,11 @@ localStorage pointer — a new device must land in the book last worked in.
   vitest check fails on stale fixtures, so a one-sided change cannot pass
   `npm test`. The prompt texts live in `scripts/wc_text/data/prompt_texts.json`
   as data written from `systemPrompt.ts` — never edit that file by hand.
+  Six fixtures are **Python-owned** since phase 4 (`freshness`, `policy`,
+  `chapters`, `invocations`, `reminders`, `run_compaction`: their TypeScript
+  went with the tab's loop) — golden files; after an intended change to that
+  Python, `python3 scripts/test_parity.py --rewrite-python-owned` and review
+  the diff. The loop itself is tested in `scripts/test_agent.py` / `test_runs.py`.
 
 ## Git Workflow
 

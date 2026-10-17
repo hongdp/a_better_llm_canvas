@@ -3,8 +3,7 @@ import { X, Key, Shield, HelpCircle, Save, Plus, Trash2, Edit, AlertCircle, Shie
 import { useAppStore, type LLMProvider } from '../store/useAppStore'
 import { PROVIDERS, PROVIDER_IDS, modelsFor } from '../utils/providers'
 import { useTranslation } from '../i18n'
-import { defaultMaxSteps, defaultContinueAfterWrites } from '../agent/policy'
-import { defaultPolishModel } from '../agent/polish'
+import { defaultMaxSteps, defaultContinueAfterWrites, defaultPolishModel } from '../utils/runDefaults'
 import { DEFAULT_POLISH_PROMPT } from '../store/defaults'
 import { useModelFetcher } from '../hooks/useModelFetcher'
 import { supportsReasoningEffort, supportedReasoningEfforts, DEFAULT_REASONING_EFFORT } from '../utils/reasoningEffort'
@@ -409,41 +408,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 </div>
               )}
 
-              {/* Server-side runs (backend_authority.md §4.3), per provider. */}
+              {/* Every turn runs on the server (backend_authority.md phase 4): its token budget. */}
               <div className="form-group">
-                <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
-                  <input
-                    type="checkbox"
-                    checked={currentConfig.serverRuns !== false}
-                    onChange={(e) => updateProviderConfig(activeTab, { serverRuns: e.target.checked })}
-                  />
-                  {t.settings.serverRuns}
-                </label>
+                <label htmlFor="run-token-budget-input">{t.settings.runTokenBudget}</label>
+                <input
+                  id="run-token-budget-input"
+                  type="number"
+                  min={0}
+                  step={1000}
+                  className="form-input"
+                  value={currentConfig.runTokenBudget ?? ''}
+                  onChange={(e) => {
+                    const raw = e.target.value
+                    const n = Number(raw)
+                    updateProviderConfig(activeTab, { runTokenBudget: raw === '' || !Number.isFinite(n) || n <= 0 ? undefined : Math.floor(n) })
+                  }}
+                />
                 <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
-                  {t.settings.serverRunsHint}
+                  {t.settings.runTokenBudgetHint}
                 </p>
               </div>
-              {currentConfig.serverRuns !== false && (
-                <div className="form-group">
-                  <label htmlFor="run-token-budget-input">{t.settings.runTokenBudget}</label>
-                  <input
-                    id="run-token-budget-input"
-                    type="number"
-                    min={0}
-                    step={1000}
-                    className="form-input"
-                    value={currentConfig.runTokenBudget ?? ''}
-                    onChange={(e) => {
-                      const raw = e.target.value
-                      const n = Number(raw)
-                      updateProviderConfig(activeTab, { runTokenBudget: raw === '' || !Number.isFinite(n) || n <= 0 ? undefined : Math.floor(n) })
-                    }}
-                  />
-                  <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: '0.35rem 0 0' }}>
-                    {t.settings.runTokenBudgetHint}
-                  </p>
-                </div>
-              )}
 
               {/* Debug Mode Checkbox */}
               <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.25rem' }}>

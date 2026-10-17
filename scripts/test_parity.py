@@ -3,6 +3,13 @@
 scripts/parity/fixtures/*.json are written by src/parity/__tests__/parity.test.ts
 from the TypeScript implementation. Each case here must reproduce its output
 byte for byte. A failure means the port differs from the specification.
+
+PYTHON_OWNED fixtures are the exception (phase 4, 2026-10-17): their
+TypeScript went with the browser's agent loop, so the Python is the
+specification and the files are golden. After an intended change to one of
+those modules, rewrite their outputs with
+    python3 scripts/test_parity.py --rewrite-python-owned
+and review the diff.
 """
 import json
 import os
@@ -16,6 +23,8 @@ from wc_text import (attachments, web_text, chapter_index, chapters, context_led
                      title_sync, tool_call_stream, turn_transcripts, reasoning_effort, text_replace)
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
+#: Fixtures with no TypeScript left to write them (src/parity PYTHON_OWNED).
+PYTHON_OWNED = ("freshness", "policy", "chapters", "invocations", "reminders", "run_compaction")
 
 
 def normalize_diff_ids(html: str) -> str:
@@ -334,3 +343,25 @@ def test_every_fixture_function_has_a_port():
             if (fixture["module"], fn) not in FUNCTIONS:
                 missing.append(f"{fixture['module']}.{fn}")
     assert missing == []
+
+
+def rewrite_python_owned() -> None:
+    """Recompute every PYTHON_OWNED case's output from the Python, inputs unchanged."""
+    for module in PYTHON_OWNED:
+        path = os.path.join(FIXTURES, f"{module}.json")
+        with open(path, encoding="utf-8") as fh:
+            fixture = json.load(fh)
+        for fn, cases in fixture["cases"].items():
+            for case in cases:
+                case["output"] = json.loads(json.dumps(FUNCTIONS[(module, fn)](*case["input"])))
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(fixture, ensure_ascii=False, indent=1) + "\n")
+        print(f"rewrote {path}")
+
+
+if __name__ == "__main__":
+    import sys
+    if "--rewrite-python-owned" in sys.argv:
+        rewrite_python_owned()
+    else:
+        print("usage: python3 scripts/test_parity.py --rewrite-python-owned")

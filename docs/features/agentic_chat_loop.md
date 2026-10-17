@@ -5,6 +5,11 @@ Status: **phases 0–2 implemented** (2026-10-05/06); phases 2b–4 proposed.
 with the server as the single source of truth —
 [backend_authority.md](backend_authority.md). This spec stays the
 behavioral specification the port must match.
+**Phase 4 (2026-10-17):** the browser's loop (`src/agent`) is gone; the
+loop is `scripts/wc_agent/` alone, run by `scripts/server_runs.py`. Where
+this spec names a TypeScript file under `src/agent/`, read the Python module
+of the same name (`run.ts` → `wc_agent/run.py`, `tools/documentWrites.ts` →
+`wc_agent/tools/document_writes.py`, `reminders.ts` → `wc_text/reminders.py`, …).
 §0 is the design as it stands. §4 records why each part is the way it is,
 and the implementation history below records how it got there.
 

@@ -506,6 +506,36 @@ runs again), a money budget, approval for destructive tools, retiring
 `src/agent` (phase 4). The `PUT /documents/{id}` route keeps its own copy
 of the revision check beside `server_documents.write_document`.
 
+### 4.4 Phase 4 as built (2026-10-17)
+
+The tab's loop is gone. `src/agent/` (the TypeScript loop, its tools and
+13 test files) was deleted, and `useChatLLM` went from 2,650 lines to about
+600: it posts every turn, and the Polish button, to `POST /api/books/{id}/runs`
+and renders the run's `run.*` events. The editor side of those events (the
+live chapter preview, the silent selection preview, the edit locks, Stop's
+single undo step) lives in the hook itself, with no tool context behind it.
+
+- **No switch.** `ProviderConfig.serverRuns` and its Settings checkbox are
+  removed; a stored `serverRuns: false` is ignored. Signed out, the chat says
+  to sign in (generation needed a session already).
+- **Done before the cut** (part A, #123): the Polish button became a run
+  (`polish: {documentId, language}`, `_execute_polish`), and the history
+  budget's per-model token ratio (`tokenCalibration.ts`, now deleted) moved
+  to the server's `run_context` state.
+- **Old bubbles.** A bubble a closed tab-run left at "Thinking..." is retired
+  to the interrupted notice once `/api/generate/active` confirms no job fills
+  it (`retireOrphanedBubbles`); a tab-run's Delete/Keep question keeps its
+  local delete (`confirmChapterDeletion`).
+- **Parity.** Six fixtures had their TypeScript in `src/agent` (`freshness`,
+  `policy`, `chapters`, `invocations`, `reminders`, `run_compaction`). They are
+  now Python-owned golden files: `src/parity` checks they exist and no longer
+  writes them; `python3 scripts/test_parity.py --rewrite-python-owned`
+  recomputes their outputs after an intended Python change. The other
+  fixtures are still written from `src/utils` and `src/hooks/chat`.
+- **Still to do (§6):** keeping text written for a chapter that does not
+  exist (6.2), and removing the tab's "refuse while a turn streams" path in
+  favour of the server queue alone (6.3) — part C.
+
 ## 5. Risks
 
 - **Size.** About 7,000 lines and their tests are rewritten. Mitigation:

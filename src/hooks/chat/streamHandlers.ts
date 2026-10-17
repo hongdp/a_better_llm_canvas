@@ -322,3 +322,7 @@ export function buildCompletionWarnings(params: {
   }
   return warningNote
 }
+
+/** Sent with the final step when the budget, not the model, ends the run (wc_agent/run.py; the Python is the loop of record). */
+export const STEP_LIMIT_NOTE =
+  'This turn has used its step budget. Do not call any more tools: answer the user now with what you have, and say what is left undone.'

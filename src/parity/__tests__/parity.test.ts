@@ -35,29 +35,19 @@ import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStabili
 import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
 import { buildChatSystemPrompt, promptTexts } from '../../utils/systemPrompt'
 import { DOCUMENT_TOOLS, toOpenAITools, toAnthropicTools, toGeminiTools, fromOpenAITools, type ToolSpec } from '../../utils/documentTools'
-import { acceptedHash, freshnessMarkers, type SeenRecord, type MarkableDoc } from '../../agent/freshness'
 import { resolveContextWindowTokens, estimateTokens, tokensToChars, historyBudgetChars, cjkRatioOf } from '../../utils/contextWindow'
 import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../../utils/providerProfile'
 import { resolveDocumentProtocol, type DocumentProtocol } from '../../utils/protocolChoice'
 import { leadingH1Text, contentWithRenamedHeading } from '../../utils/titleSync'
-import { partialStringArgument, applyToolCallDelta, finishToolCalls, type ToolCallAccumulator, type FinishedToolCall } from '../../utils/toolCallStream'
-import { splitStreamingResponse, buildCompletionWarnings, NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE } from '../../hooks/chat/streamHandlers'
-import { STEP_LIMIT_NOTE } from '../../agent/run'
-import { resolveRunSettings, detectStepFailure, decideAfterStep, defaultMaxSteps, type ExecutedCall, type RunBudgets, type StepPolicy } from '../../agent/policy'
-import { citeChapter, resolveChapter } from '../../agent/chapters'
-import { collectStep, planWrites, planDoneAttributes } from '../../agent/invocations'
-import { ToolRegistry, defineTool } from '../../agent/registry'
+import { partialStringArgument, applyToolCallDelta, finishToolCalls, type ToolCallAccumulator } from '../../utils/toolCallStream'
+import { splitStreamingResponse, buildCompletionWarnings, NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, STEP_LIMIT_NOTE } from '../../hooks/chat/streamHandlers'
 import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
 import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, previousTurnPlan, type PlanItem } from '../../utils/plan'
-import { wrapReminder, escapeReminderTags, appendReminders, repeatNudge, longReasoningReminder, planUnfinishedNudge, carriedPlanReminder, planNotWrittenNote, htmlReadNudge, userEditedReminder, structureChangedReminder, queuedRequestReminder, interruptedTurnReminder, steerMessage, unbackedClaimNudge, lookupStreakNudge, LOOKUP_NUDGE_STEPS, REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET } from '../../agent/reminders'
-import { callSignature } from '../../utils/toolCallStream'
 import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
 import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
 import { renderSearchResults, renderWebPage, renderWebImages, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
-import { planElisions, promptTokens, calibratedPromptTokens, elidedResultNote, elisionTrace, ELIDE_ABOVE, ELIDE_TO } from '../../agent/runCompaction'
 import { replaceInHtmlText, expandReplacement, escapeHtmlText } from '../../utils/textReplace'
 import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
-import type { ToolInvocation, ToolKind } from '../../agent/types'
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/parity/fixtures')
 const PROMPT_TEXTS = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/wc_text/data/prompt_texts.json')
@@ -99,18 +89,6 @@ const CARD = '<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬�
 
 /** A chapter with a heading, inline markup and an image, for the paragraph-span cases. */
 const SPANNED = '<h1>T</h1>\n<p>One a</p><p>Two <em>b</em></p> <p><img src="x.png"></p><p>Three</p>'
-
-/** A run's messages after three reads (sys, user, then assistant/tool pairs) for the run-compaction cases. */
-const RUN_MESSAGES: LLMMessage[] = [
-  { role: 'system', content: 'sys' }, { role: 'user', content: 'request' },
-  { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read_chapter', argumentsText: '{"chapter":"1"}' }] },
-  { role: 'tool', toolCallId: 'c1', name: 'read_chapter', content: 'TEXT OF 1 ' + 'word '.repeat(400) },
-  { role: 'assistant', content: '', toolCalls: [{ id: 'c2', name: 'read_chapter', argumentsText: '{"chapter":"2"}' }] },
-  { role: 'tool', toolCallId: 'c2', name: 'read_chapter', content: '第二章 ' + '字'.repeat(900) },
-  { role: 'assistant', content: '', toolCalls: [{ id: 'c3', name: 'read_chapter', argumentsText: '{"chapter":"3"}' }] },
-  { role: 'tool', toolCallId: 'c3', name: 'read_chapter', content: 'TEXT OF 3 ' + 'word '.repeat(400) }
-]
-const RUN_ELIDABLE = [{ index: 3, trace: 'read 1' }, { index: 5, trace: 'read 2' }, { index: 7, trace: 'read 3' }]
 
 /** n turns of `chars` chars each (u0 a0 u1 a1 …) for the conversation-summary cases. */
 const SUMMARY_TURNS = (n: number, chars = 1000): SummarizableMessage[] =>
@@ -275,44 +253,11 @@ const POLISH_PARA = (n: number, i = 0) => `<p>${`第${i}段，她说：“我们
 const POLISH_HTML = `<h2>第一章</h2>${POLISH_PARA(600, 1)}${POLISH_PARA(600, 2)}<p><img src="x.png"></p>${POLISH_PARA(100, 3)}<p>{{IMAGE_PLACEHOLDER_0}}</p><p>  </p>${POLISH_PARA(300, 4)}<p>她<strong>没有</strong>回头 &amp; 走了。</p>`
 const POLISH_SEGS: PolishSegment[] = splitForPolish(POLISH_HTML)
 
-const SEEN_DOCS: MarkableDoc[] = [
-  { id: 'a', content: '<p>alpha</p>' }, { id: 'b', content: '<p>beta <ins class="diff-addition" data-diff-id="x">new</ins></p>' },
-  { id: 'c', content: '', contentLoaded: false }, { id: 'd', content: '<p>delta</p>' }, { id: 'e', content: '<p>eps</p>' }
-]
-/** freshnessMarkers mutates the record: both sides return it with the markers. */
-const freshness = (docs: MarkableDoc[], active: string | null, inContext: string[], seen: Record<string, { hash: string; turn: number }>, turn: number) => {
-  const record: SeenRecord = new Map(Object.entries(seen))
-  const markers = freshnessMarkers(docs, active, inContext, record, turn)
-  return { markers, seen: Object.fromEntries(record) }
-}
 const applyDeltas = (deltas: Array<Parameters<typeof applyToolCallDelta>[1]>) => {
   const acc = new Map<number, ToolCallAccumulator>()
   for (const d of deltas) applyToolCallDelta(acc, d)
   return { accumulators: Object.fromEntries(acc), finished: finishToolCalls(acc) }
 }
-const CALL = (name: string, args: Record<string, unknown> | null, id?: string) => ({ id, name, args, argumentsText: args ? JSON.stringify(args) : '{bad' })
-const RESULT = (ok: boolean, retryable?: boolean) => ({ ok, content: ok ? 'done' : 'failed', trace: 't', ...(retryable === undefined ? {} : { retryable }) })
-const EXEC = (kind: ToolKind, ok: boolean, retryable?: boolean): ExecutedCall => ({ kind, result: RESULT(ok, retryable) })
-const B = (maxSteps: number, maxCorrective = 3): RunBudgets => ({ maxSteps, maxCorrective })
-const P = (continueAfterWrites: boolean, feedBackFailedWrites: boolean): StepPolicy => ({ continueAfterWrites, feedBackFailedWrites })
-const DECIDE = (executed: ExecutedCall[], stepsTaken: number, correctiveUsed: number, budgets: RunBudgets, policy: StepPolicy) =>
-  decideAfterStep({ executed, stepsTaken, correctiveUsed, budgets, policy })
-const TOOL_DESCRIPTORS = [
-  { name: 'update_document', kind: 'write', markupForm: true }, { name: 'edit_document', kind: 'write', markupForm: true },
-  { name: 'replace_selection', kind: 'write', markupForm: true }, { name: 'polish_chapter', kind: 'write' },
-  { name: 'read_chapter', kind: 'read' }, { name: 'open_chapter', kind: 'navigate' }
-] as const
-/** collectStep over a registry built from plain descriptors, which the JSON can carry. */
-const collect = (text: string, nativeCalls: FinishedToolCall[], step: number, opts?: { markupProtocol?: boolean }) => {
-  const registry = new ToolRegistry(TOOL_DESCRIPTORS.map(d => defineTool<Record<string, unknown>>({
-    name: d.name, description: '', parameters: { type: 'object' }, kind: d.kind, markupForm: 'markupForm' in d ? d.markupForm : undefined,
-    isAvailable: () => true, parse: raw => raw ?? 'none', execute: () => RESULT(true)
-  })))
-  return collectStep(text, nativeCalls, registry, step, opts)
-}
-const INV = (name: string, args: Record<string, unknown> | null): ToolInvocation => ({ id: name, name, args, source: 'native' })
-const CHAPTERS = [{ id: 'c1', title: '第一章 启程' }, { id: 'c2', title: 'Chapter 2: The Road' }, { id: 'c3', title: '大纲' }, { id: 'c4', title: '第二章 进城' }, { id: 'c5', title: '第二章 入城' }]
-const MANY = Array.from({ length: 15 }, (_, i) => ({ id: `m${i}`, title: `Part ${i + 1}` }))
 
 const HINT_HTML = '<h1>第三章</h1><p class="x">她说：“我们走吧。”他没有回头，<em>风</em>从巷口灌进来&nbsp;——&nbsp;冷得很。</p><p>第二段很普通。</p><p><img src="a"></p>'
 const PLAN: PlanItem[] = [{ id: 'a', title: '第一章', status: 'done' }, { id: 'b', title: '第二章', status: 'in_progress' }, { id: 'c', title: '第三章', status: 'pending' }]
@@ -580,18 +525,6 @@ const MODULES: Module[] = [
     }
   },
   {
-    module: 'freshness',
-    cases: {
-      accepted_hash: run(acceptedHash, [[SEEN_DOCS[1].content], [''], ['<p>x</p>']]),
-      freshness_markers: run(freshness, [
-        [SEEN_DOCS, 'a', ['b'], {}, 1],
-        [SEEN_DOCS, 'a', ['b', 'c'], { b: { hash: 'old', turn: 0 }, c: { hash: 'old', turn: 0 }, d: { hash: acceptedHash('<p>delta</p>'), turn: 0 }, e: { hash: 'old', turn: 0 } }, 2],
-        [SEEN_DOCS, null, [], { c: { hash: 'x', turn: 0 }, a: { hash: acceptedHash('<p>alpha</p>'), turn: 0 } }, 3],
-        [SEEN_DOCS, 'a', ['b'], { b: { hash: acceptedHash('<p>beta new</p>'), turn: 0 } }, 4]
-      ])
-    }
-  },
-  {
     module: 'context_window',
     cases: {
       resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0], ['moonshot', 'kimi-k3'], ['moonshot', 'kimi-k2.7-code'], ['moonshot', ''], ['anthropic', 'claude-sonnet-5-5'], ['anthropic', 'claude-opus-4-6'], ['anthropic', 'claude-opus-4-5-20251101'], ['anthropic', 'claude-haiku-4-5-20251001']]),
@@ -651,67 +584,6 @@ const MODULES: Module[] = [
     }
   },
   {
-    module: 'policy',
-    cases: {
-      default_max_steps: run(defaultMaxSteps, [['grok'], ['ollama'], ['runpod'], ['openai']]),
-      resolve_run_settings: run(resolveRunSettings, [['grok', undefined], ['grok', { agentTools: false }], ['ollama', { agentMaxSteps: 0 }], ['grok', { agentMaxSteps: 2.7, continueAfterWrites: false }], ['grok', { agentMaxSteps: -1 }], ['grok', { agentMaxSteps: 4 }, false], ['openai', { agentTools: true, continueAfterWrites: true }]]),
-      detect_step_failure: run(detectStepFailure, [
-        [{ text: 'chat only', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat' }],
-        [{ text: 'chat only', writeProtocol: 'tools', hadNativeCalls: false, markupKind: 'chat' }],
-        [{ text: 'x', writeProtocol: 'markup', hadNativeCalls: true, markupKind: 'chat' }],
-        [{ text: 'x', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'canvas' }],
-        [{ text: 'Done.\n<doc_status>updated</doc_status>', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat' }],
-        [{ text: 'Done.\n<doc_status>updated</doc_status>', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat', wroteThisRun: true }],
-        [{ text: '<edit>broken', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat', wroteThisRun: true }],
-        [{ text: '我已经写好了。\n<doc_status>unchanged</doc_status>', writeProtocol: 'markup', hadNativeCalls: false, markupKind: 'chat' }]
-      ]),
-      decide_after_step: run(DECIDE, [
-        [[], 1, 0, B(6), P(true, true)],
-        [[EXEC('read', true)], 1, 0, B(6), P(true, true)],
-        [[EXEC('read', true)], 6, 0, B(6), P(true, true)],
-        [[EXEC('read', true)], 5, 0, B(6), P(true, true)],
-        [[EXEC('write', true)], 1, 0, B(6), P(true, true)],
-        [[EXEC('write', true)], 1, 0, B(6), P(false, true)],
-        [[EXEC('write', false)], 1, 0, B(6), P(true, true)],
-        [[EXEC('write', false)], 1, 3, B(6), P(true, true)],
-        [[EXEC('write', false, false)], 1, 0, B(6), P(true, true)],
-        [[EXEC('write', false)], 1, 0, B(6), P(true, false)],
-        [[EXEC('write', false)], 6, 0, B(6), P(true, true)],
-        [[EXEC('write', true)], 6, 0, B(6), P(true, true)],
-        [[EXEC('navigate', true), EXEC('write', false)], 2, 0, B(0), P(true, true)],
-        [[EXEC('read', true)], 99, 0, B(0), P(false, false)]
-      ])
-    }
-  },
-  {
-    module: 'chapters',
-    cases: {
-      cite_chapter: run(citeChapter, [[{ id: 'x', title: 'T "q"', number: 3 }]]),
-      resolve_chapter: run(resolveChapter, [[3, CHAPTERS], ['3', CHAPTERS], [' #2 ', CHAPTERS], [0, CHAPTERS], ['9', CHAPTERS], [2.5, CHAPTERS], ['大纲', CHAPTERS], ['  chapter 2: the road ', CHAPTERS], ['启程', CHAPTERS], ['第二章', CHAPTERS], ['nothing', CHAPTERS], ['', CHAPTERS], [null, CHAPTERS], [{ x: 1 }, CHAPTERS], ['   ', CHAPTERS], ['missing', MANY], ['Part', MANY], [true, CHAPTERS]])
-    }
-  },
-  {
-    module: 'invocations',
-    cases: {
-      plan_done_attributes: run(planDoneAttributes, [['<canvas chapter="2" plan_done="ch2, ch3">x</canvas><edit plan_done=\'ch3，ch4\'>'], ['<canvas>no</canvas>'], ['<CANVAS PLAN_DONE="a">'], ['<p plan_done="x">']]),
-      collect_step: run(collect, [
-        ['Just chat', [], 0], [RESPONSES[1], [], 1], [RESPONSES[6], [], 2], [RESPONSES[8], [], 3], [RESPONSES[12], [], 4],
-        ['Reading.', [CALL('read_chapter', { chapters: ['2'] }, 'c1'), CALL('nope', null)], 5],
-        [`With tags beside a native write.\n<canvas><p>tag</p></canvas>`, [CALL('update_document', { html: '<p>native</p>' }, 'w1')], 6],
-        [`With tags beside a native write.\n<canvas><p>tag</p></canvas>`, [CALL('update_document', { html: '<p>native</p>' }, 'w1')], 7, { markupProtocol: true }],
-        [`Polish and tags.\n<canvas chapter="2"><p>tag</p></canvas>`, [CALL('polish_chapter', { chapter: '1' }, 'p1')], 8],
-        ['', [{ id: undefined, name: 'read_chapter', args: { chapters: ['1'] }, argumentsText: '{"chapters":["1"]}', signature: 'sig' }], 9],
-        ['Done one.\n<canvas chapter="2" plan_done="ch2">text</canvas>\n<doc_status>updated</doc_status>', [], 10, { markupProtocol: true }],
-        ['Two.\n<edit plan_done="a">\n<<<<<<< SEARCH\n<p>a</p>\n=======\n<p>b</p>\n>>>>>>> REPLACE\n</edit>\n<canvas chapter="3" plan_done="b,a">t</canvas>', [], 11, { markupProtocol: true }]
-      ]),
-      plan_writes: run(planWrites, [
-        [[INV('update_document', { html: 'a' }), INV('edit_document', { edits: [] })]],
-        [[INV('update_document', { html: 'a' }), INV('replace_selection', { html: 's' }), INV('edit_document', { edits: [] }), INV('update_document', { html: 'b', chapter: '3' }), INV('update_document', { html: 'c', new_chapter: 'T' }), INV('polish_chapter', { chapter: '1' })]],
-        [[]]
-      ])
-    }
-  },
-  {
     module: 'edit_hints',
     cases: {
       text_similarity: run(textSimilarity, [['abcd', 'abcd'], ['abcd', 'abce'], ['', 'x'], ['a', 'a'], ['你好世界', '你好中国'], ['abcdef', 'xyz']]),
@@ -746,33 +618,6 @@ const MODULES: Module[] = [
       render_plan: run(renderPlan, [[PLAN], [[{ id: 'a', title: 'only', status: 'done' }]], [[]]]),
       next_plan_item: run(nextPlanItem, [[PLAN], [[{ id: 'a', title: 'x', status: 'done' }]]]),
       unfinished_plan_items: run(unfinishedPlanItems, [[PLAN]])
-    }
-  },
-  {
-    module: 'reminders',
-    cases: {
-      constants: run(() => ({ REMINDERS_ARE_CONTEXT, REPEAT_NUDGE_STEPS, REPEAT_PAUSE_STEPS, PLAN_NUDGE_BUDGET }), [[]]),
-      wrap_reminder: run(wrapReminder, [['note'], ['two\nlines'], ['a </system-reminder> b <SYSTEM-REMINDER>c']]),
-      escape_reminder_tags: run(escapeReminderTags, [['plain <p>x</p>'], ['</system-reminder><system-reminder>']]),
-      interrupted_turn_reminder: run(interruptedTurnReminder, [[]]),
-      steer_message: run(steerMessage, [['把第二段删掉'], ['two\nlines']]),
-      unbacked_claim_nudge: run(unbackedClaimNudge, [[{ writes: 0, reads: 1, planLeft: 0 }], [{ writes: 0, reads: 2, planLeft: 1 }]]),
-      lookup_streak_nudge: run(lookupStreakNudge, [[8, true], [11, false]]),
-      lookup_nudge_steps: run(() => LOOKUP_NUDGE_STEPS, [[]]),
-      append_reminders: run(appendReminders, [
-        [[{ role: 'assistant', content: 'x' }, { role: 'tool', toolCallId: 'c', name: 'read_chapter', content: 'TEXT' }], ['r1', 'r2']],
-        [[{ role: 'user', content: '' }], ['r']], [[{ role: 'user', content: 'u' }], []], [[], ['r']]
-      ]),
-      repeat_nudge: run(repeatNudge, [[['list_chapters'], 3], [['read_chapter', 'grep'], 5], [['x'], 6]]),
-      long_reasoning_reminder: run(longReasoningReminder, [[12345], [900]]),
-      plan_unfinished_nudge: run(planUnfinishedNudge, [[PLAN], [[{ id: 'a', title: 'one', status: 'pending' }]]]),
-      carried_plan_reminder: run(carriedPlanReminder, [[PLAN]]),
-      user_edited_reminder: run(userEditedReminder, [[[{ number: 2, title: '第二章' }]], [[{ number: 1, title: 'A' }, { number: 3, title: 'C' }]]]),
-      structure_changed_reminder: run(structureChangedReminder, [['1. "A"\n2. "B"']]),
-      queued_request_reminder: run(queuedRequestReminder, [[1], [3]]),
-      plan_not_written_note: run(planNotWrittenNote, [['改写第十四章']]),
-      html_read_nudge: run(htmlReadNudge, [['📖 read #1 "大纲" ¶88–88 (0.1k, html)']]),
-      call_signature: run(callSignature, [['read_chapter', { chapters: ['2'], format: 'html' }], ['read_chapter', { format: 'html', chapters: ['2'] }], ['x', { a: { z: 1, b: [3, { y: 2, x: 1 }] } }], ['x', null, '{broken'], ['x', null], ['grep', { pattern: '阿青|阿红', n: 1.5, ok: true }]])
     }
   },
   {
@@ -849,25 +694,6 @@ const MODULES: Module[] = [
         ['<p>abc</p>', '', 'x'],
         ['<p>' + '前'.repeat(20) + '小王' + '后'.repeat(20) + '小王小王小王</p>', '小王', '阿杰'],
         ['<p>老王<strong>家</strong>的</p>', '王家', '李家']
-      ])
-    }
-  },
-  {
-    module: 'run_compaction',
-    cases: {
-      constants: run(() => ({ ELIDE_ABOVE, ELIDE_TO }), [[]]),
-      elided_result_note: run(elidedResultNote, [['read #1 "A" ¶1–40 (12.3k, html)']]),
-      elision_trace: run(elisionTrace, [[['a']], [['a', 'b']], [['a', 'b'], 61_400], [['a'], 499]]),
-      prompt_tokens: run(promptTokens, [[RUN_MESSAGES], [[]], [[{ role: 'assistant', content: '', toolCalls: [{ id: 'c', name: 'read_chapter', argumentsText: '{"chapter":"1"}' }] }]]]),
-      plan_elisions: run(planElisions, [
-        [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 100_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 2],
-        [RUN_MESSAGES, [], 1_000, 5], [RUN_MESSAGES, RUN_ELIDABLE, 0, 5], [RUN_MESSAGES, [{ index: 40, trace: 'gone' }], 10, 5],
-        [RUN_MESSAGES, RUN_ELIDABLE, 3_000, 7, { tokens: 3_100, length: 6 }], [RUN_MESSAGES, RUN_ELIDABLE, 3_000, 7, { tokens: 100, length: 6 }],
-        [RUN_MESSAGES, RUN_ELIDABLE, 3_000, 7, { tokens: 900_000, length: 6 }], [RUN_MESSAGES, RUN_ELIDABLE, 1_000, 7, { tokens: 5, length: 40 }]
-      ]),
-      calibrated_prompt_tokens: run(calibratedPromptTokens, [
-        [RUN_MESSAGES, null], [RUN_MESSAGES, { tokens: 1_234, length: 4 }], [RUN_MESSAGES, { tokens: 0, length: 4 }], [RUN_MESSAGES, { tokens: 10, length: 99 }],
-        [[{ role: 'user', content: '' }, { role: 'user', content: 'abc' }], { tokens: 7, length: 1 }]
       ])
     }
   },
@@ -960,6 +786,24 @@ describe('prompt texts', () => {
     expect(existsSync(PROMPT_TEXTS), `${PROMPT_TEXTS} missing — run: npm run parity:fixtures`).toBe(true)
     expect(JSON.parse(readFileSync(PROMPT_TEXTS, 'utf8'))).toEqual(texts)
   })
+})
+
+/**
+ * Fixtures whose TypeScript is gone (backend_authority.md phase 4, 2026-10-17):
+ * the agent loop lives only in Python now, so wc_agent / wc_text are the
+ * specification for these modules. Their fixtures stay as golden files that
+ * scripts/test_parity.py checks; an intended change to the Python rewrites
+ * them with `python3 scripts/test_parity.py --rewrite-python-owned`.
+ */
+const PYTHON_OWNED = ['freshness', 'policy', 'chapters', 'invocations', 'reminders', 'run_compaction']
+
+describe('python-owned fixtures', () => {
+  for (const module of PYTHON_OWNED) {
+    it(`${module}: the golden file is present`, () => {
+      expect(existsSync(resolve(FIXTURES, `${module}.json`))).toBe(true)
+      expect(MODULES.some(m => m.module === module)).toBe(false)
+    })
+  }
 })
 
 describe('parity fixtures', () => {

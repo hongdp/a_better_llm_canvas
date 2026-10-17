@@ -48,13 +48,6 @@ export interface ProviderConfig {
    */
   polishModel?: string
   /**
-   * Run chat turns on the server (backend_authority.md §4.3): the loop, the
-   * tools and the document writes happen in the API process, so a turn
-   * survives a reload, a closed tab and an API restart, and a request sent
-   * mid-turn queues. Absent = on (2026-10-17); false runs the turn in this tab.
-   */
-  serverRuns?: boolean
-  /**
    * Server runs only: prompt + completion tokens one run may spend before it
    * is paused for the user to look at (0 or absent = no budget).
    */

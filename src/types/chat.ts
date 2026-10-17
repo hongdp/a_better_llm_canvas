@@ -101,7 +101,7 @@ export interface AgentTurnRecord {
    * restoreSeen). Dropped when the turn ends.
    */
   seen?: Array<{ id: string; hash: string }>
-  /** The server-side run this turn is (serverRuns on), with its queue or pause state. */
+  /** The server-side run this turn is, with its queue or pause state. */
   run?: AgentRunLink
   /** The model's checklist for the turn (the `plan` tool), shown under the bubble. */
   plan?: AgentPlanItem[]

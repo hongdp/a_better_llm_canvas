@@ -1,6 +1,6 @@
 /**
- * The chat hook with `serverRuns` on: a turn is posted to the server and the
- * bubble and editor follow the run's events (backend_authority.md §4.3).
+ * The chat hook: every turn is posted to the server and the bubble and editor
+ * follow the run's events (backend_authority.md §4.3, phase 4).
  * The API is a mocked fetch; the events come straight from the emitter.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -53,6 +53,8 @@ const summary = (over: Partial<ServerRunSummary> = {}): ServerRunSummary => ({
 
 const posted: Array<{ url: string; body: unknown }> = []
 let steerRefused = false
+/** What /api/generate/active answers: the jobs running, or 'down' when the server cannot be asked. */
+let activeJobs: unknown[] | 'down' = []
 /** The images attached to the next send (the hook's uploadedImages prop). */
 const images: string[] = []
 /** Every request, in order: "<METHOD> <url>". */
@@ -66,6 +68,7 @@ beforeEach(() => {
   posted.length = 0
   calls.length = 0
   steerRefused = false
+  activeJobs = []
   images.length = 0
   serverCopies.clear()
   listed = { runs: [], queueHeld: false }
@@ -74,7 +77,7 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     const json = (data: unknown, status = 200) => ({ ok: status < 300, status, statusText: 'OK', json: async () => data }) as Response
     calls.push(`${init?.method ?? 'GET'} ${url}`)
-    if (url === '/api/generate/active') return json([])
+    if (url === '/api/generate/active') return activeJobs === 'down' ? json({}, 503) : json(activeJobs)
     if (url === '/api/books/book-1/runs' && init?.method === 'POST') {
       const body = JSON.parse(String(init.body))
       posted.push({ url, body })
@@ -97,7 +100,7 @@ beforeEach(() => {
     activeDocumentId: 'doc-1',
     messages: [{ id: 'welcome', role: 'assistant', content: 'hi', timestamp: 't' }],
     isStreaming: false, editLockedIds: null, versions: [],
-    providerConfigs: { ...s.providerConfigs, grok: { ...s.providerConfigs.grok, apiKey: 'k', model: 'grok-4.6', serverRuns: true } },
+    providerConfigs: { ...s.providerConfigs, grok: { ...s.providerConfigs.grok, apiKey: 'k', model: 'grok-4.6' } },
     activeProvider: 'grok'
   })
 })
@@ -107,7 +110,44 @@ afterEach(() => {
   useAppStore.setState({ user: null, activeProvider: savedProvider as never, isStreaming: false, editLockedIds: null })
 })
 
-describe('a turn with serverRuns on', () => {
+describe('a bubble a closed tab-run left waiting (before phase 4)', () => {
+  const waiting = () => useAppStore.setState({
+    messages: [{ id: 'u-1', role: 'user', content: '写完本文', timestamp: 't' }, { id: 'a-1', role: 'assistant', content: 'Thinking...', timestamp: 't' }]
+  })
+
+  it('is retired once the server confirms no job fills it', async () => {
+    // 2026-10-16: the page closed after the turn's first step; the bubble said "Thinking..." for good.
+    waiting()
+    const h = renderChatHook()
+    await flush()
+    expect(useAppStore.getState().messages.find(m => m.id === 'a-1')?.content).toContain('Interrupted')
+    h.unmount()
+  })
+
+  it('is left alone when the server cannot be asked', async () => {
+    waiting()
+    activeJobs = 'down'
+    const h = renderChatHook()
+    await flush()
+    expect(useAppStore.getState().messages.find(m => m.id === 'a-1')?.content).toBe('Thinking...')
+    h.unmount()
+  })
+})
+
+describe('signed out', () => {
+  it('says to sign in instead of sending', async () => {
+    useAppStore.setState({ user: null })
+    const h = renderChatHook()
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    expect(posted).toHaveLength(0)
+    expect(bubble().content).toContain('Sign in')
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    h.unmount()
+  })
+})
+
+describe('a turn', () => {
   it('posts the Polish button as a server run of its own', async () => {
     const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
     await act(async () => { useAppStore.getState().requestPolish('doc-2') })
@@ -120,18 +160,6 @@ describe('a turn with serverRuns on', () => {
     // The server snapshots and writes; the tab only renders the run.
     expect(useAppStore.getState().versions).toEqual([])
     expect(bubble().agent?.run).toEqual({ id: 'run-1', status: 'running' })
-    h.unmount()
-  })
-
-  it('runs on the server when the setting was never touched (on by default, 2026-10-17)', async () => {
-    const s = useAppStore.getState()
-    const { serverRuns: _unset, ...grok } = s.providerConfigs.grok
-    void _unset
-    useAppStore.setState({ providerConfigs: { ...s.providerConfigs, grok } })
-    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
-    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
-    await flush()
-    expect(posted).toHaveLength(1)
     h.unmount()
   })
 
