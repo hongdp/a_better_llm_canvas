@@ -130,6 +130,7 @@
 .resize-handle {
   width: 6px;
   cursor: col-resize;
+  touch-action: none;
   background-color: transparent;
   transition: background-color var(--transition-fast);
   position: relative;

@@ -4,7 +4,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { ChaptersSidebar } from './components/ChaptersSidebar'
 import { AppHeader } from './components/AppHeader'
 import { CanvasHeader } from './components/CanvasHeader'
-import { CHAT_WIDTH, loadPersistedSize, savePersistedSize } from './utils/layoutPrefs'
+import { CHAT_WIDTH, clampSize, loadPersistedSize, savePersistedSize } from './utils/layoutPrefs'
 import { CanvasFooter } from './components/CanvasFooter'
 import { VersionHistorySidebar } from './components/VersionHistorySidebar'
 import { useAppStore, isEditLocked } from './store/useAppStore'
@@ -257,8 +257,6 @@ function App() {
     return connectBookEvents(activeBookId)
   }, [user, isStoreInitialized, activeBookId])
 
-  const isResizingRef = useRef(false)
-
   // Retrieve active document
   const activeDoc = documents.find(d => d.id === activeDocumentId) || documents[0] || {
     id: 'default',
@@ -283,44 +281,49 @@ function App() {
   }, [theme])
 
   // Horizontal resizing handlers
-  const startResizing = (e: React.MouseEvent) => {
-    e.preventDefault()
-    setIsResizing(true)
-    isResizingRef.current = true
-    
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
+  /*
+   * Problem: the chat panel jumped wider on the first mousemove and then ran
+   *   ahead of the cursor — its width was set to `e.clientX`, the cursor's
+   *   distance from the WINDOW's left edge, while the panel starts after the
+   *   chapters sidebar (240px by default).
+   * Root cause: absolute position used as a width.
+   * Fix: the width moves by the cursor's delta from where the drag began,
+   *   like the chapters sidebar's handle; pointer capture keeps the drag
+   *   alive over the editor and outside the window.
+   */
+  const chatDrag = useRef<{ startX: number; startWidth: number } | null>(null)
+
+  const endChatResize = () => {
+    if (!chatDrag.current) return
+    chatDrag.current = null
+    setIsResizing(false)
+    document.body.style.removeProperty('cursor')
+    document.body.style.removeProperty('user-select')
+    setChatWidth(current => {
+      savePersistedSize(CHAT_WIDTH.key, current, CHAT_WIDTH.bounds)
+      return current
+    })
   }
 
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizingRef.current) return
-      
-      const newWidth = Math.max(280, Math.min(600, e.clientX))
-      setChatWidth(newWidth)
-    }
-
-    const handleMouseUp = () => {
-      if (isResizingRef.current) {
-        setIsResizing(false)
-        isResizingRef.current = false
-        document.body.style.removeProperty('cursor')
-        document.body.style.removeProperty('user-select')
-        setChatWidth(current => {
-          savePersistedSize(CHAT_WIDTH.key, current, CHAT_WIDTH.bounds)
-          return current
-        })
-      }
-    }
-
-    window.addEventListener('mousemove', handleMouseMove)
-    window.addEventListener('mouseup', handleMouseUp)
-
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove)
-      window.removeEventListener('mouseup', handleMouseUp)
-    }
-  }, [])
+  const chatResizeHandlers = {
+    onPointerDown: (e: React.PointerEvent<HTMLDivElement>) => {
+      e.preventDefault()
+      chatDrag.current = { startX: e.clientX, startWidth: chatWidth }
+      setIsResizing(true)
+      e.currentTarget.setPointerCapture(e.pointerId)
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+    },
+    onPointerMove: (e: React.PointerEvent<HTMLDivElement>) => {
+      if (!chatDrag.current) return
+      setChatWidth(clampSize(
+        chatDrag.current.startWidth + (e.clientX - chatDrag.current.startX),
+        CHAT_WIDTH.bounds
+      ))
+    },
+    onPointerUp: endChatResize,
+    onPointerCancel: endChatResize,
+  }
 
   const { handleAcceptAllDiffs, handleRejectAllDiffs } = useDiffHandlers(
     activeEditor,
@@ -481,7 +484,7 @@ function App() {
         {layoutMode === 'desktop' && (
           <div 
             className={`resize-handle ${isResizing ? 'active' : ''}`}
-            onMouseDown={startResizing}
+            {...chatResizeHandlers}
           />
         )}
 
