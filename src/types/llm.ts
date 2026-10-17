@@ -51,7 +51,7 @@ export interface ProviderConfig {
    * Run chat turns on the server (backend_authority.md §4.3): the loop, the
    * tools and the document writes happen in the API process, so a turn
    * survives a reload, a closed tab and an API restart, and a request sent
-   * mid-turn queues. Absent = off: the turn runs in this tab as before.
+   * mid-turn queues. Absent = on (2026-10-17); false runs the turn in this tab.
    */
   serverRuns?: boolean
   /**

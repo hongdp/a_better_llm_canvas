@@ -108,6 +108,18 @@ afterEach(() => {
 })
 
 describe('a turn with serverRuns on', () => {
+  it('runs on the server when the setting was never touched (on by default, 2026-10-17)', async () => {
+    const s = useAppStore.getState()
+    const { serverRuns: _unset, ...grok } = s.providerConfigs.grok
+    void _unset
+    useAppStore.setState({ providerConfigs: { ...s.providerConfigs, grok } })
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    expect(posted).toHaveLength(1)
+    h.unmount()
+  })
+
   it('posts the request, then renders the run: preview, record, finish', async () => {
     const stub = stubEditor('<p>原文。</p>')
     const h = renderChatHook(stub.editor)

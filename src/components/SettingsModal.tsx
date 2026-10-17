@@ -414,7 +414,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                 <label style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', cursor: 'pointer' }}>
                   <input
                     type="checkbox"
-                    checked={currentConfig.serverRuns === true}
+                    checked={currentConfig.serverRuns !== false}
                     onChange={(e) => updateProviderConfig(activeTab, { serverRuns: e.target.checked })}
                   />
                   {t.settings.serverRuns}
@@ -423,7 +423,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose })
                   {t.settings.serverRunsHint}
                 </p>
               </div>
-              {currentConfig.serverRuns === true && (
+              {currentConfig.serverRuns !== false && (
                 <div className="form-group">
                   <label htmlFor="run-token-budget-input">{t.settings.runTokenBudget}</label>
                   <input

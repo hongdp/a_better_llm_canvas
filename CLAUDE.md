@@ -318,8 +318,8 @@ settings: `agentTools`, `agentMaxSteps` (0 = unlimited), `continueAfterWrites`
 (default on: a write's result goes back to the model like any tool result,
 and only a reply with no action ends the turn).
 
-**A turn can run on the server** (`ProviderConfig.serverRuns`, off by
-default; `docs/features/backend_authority.md` §4.3). Then `useChatLLM` posts
+**A turn can run on the server** (`ProviderConfig.serverRuns`, on unless
+turned off, 2026-10-17; `docs/features/backend_authority.md` §4.3). Then `useChatLLM` posts
 the request to `POST /api/books/{id}/runs` and the loop — `scripts/wc_agent/`,
 the port of `src/agent` — runs in the API process against the document store,
 with each step a generation job. The tab renders the run's `run.*` events from
