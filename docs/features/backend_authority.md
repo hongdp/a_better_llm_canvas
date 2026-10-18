@@ -532,6 +532,18 @@ single undo step) lives in the hook itself, with no tool context behind it.
   writes them; `python3 scripts/test_parity.py --rewrite-python-owned`
   recomputes their outputs after an intended Python change. The other
   fixtures are still written from `src/utils` and `src/hooks/chat`.
+- **The rest of the dead TypeScript** (2026-10-18): 20 more modules nothing
+  in the frontend ran — request assembly (`llmContext`, `dynamicContext`,
+  `contextSelection`, `contextWindow`, `chapterIndex`, `providerProfile`),
+  prompts (`systemPrompt`, `documentTools`), summaries and transcripts,
+  `toolCallStream`, `imagePreservation`, `polish`, `retryPolicy`,
+  `pendingChanges`, `plan`, `editHints`, `textReplace`, `webText`,
+  `attachments` — were deleted with their unit tests (178), as were the
+  tab's conversation-summary copy (`chatSummaryStore`), the attachment/web
+  read ports and the job-rejoin functions of `remoteGeneration`. Their 20
+  fixtures joined `PYTHON_OWNED`; `--rewrite-python-owned` now rewrites only
+  outputs that changed, with JS-style integers, so a no-op run leaves every
+  file byte-identical. `prompt_texts.json` is edited directly.
 - **§6 is done:** the tab's "refuse while a turn streams" path went with the
   loop (6.3), and part C built 6.2 server-side.
 

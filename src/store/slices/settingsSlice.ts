@@ -1,5 +1,5 @@
 import type { StateCreator } from 'zustand'
-import type { PolishPrompt } from '../../utils/polish'
+import type { PolishPrompt } from '../../types/llm'
 import type { LLMProvider, ImageGenConfig, ProviderConfig, SystemPromptTemplate } from '../../types/llm'
 import type { AppState } from '../types'
 import { localStorage } from '../persistence'

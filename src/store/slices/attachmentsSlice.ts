@@ -8,7 +8,7 @@
  */
 import type { StateCreator } from 'zustand'
 import type { AppState } from '../types'
-import type { AttachmentMeta } from '../../utils/attachments'
+import type { AttachmentMeta } from '../../types/document'
 import { deleteAttachment, listAttachments, uploadAttachment } from '../../services/attachments'
 
 export interface AttachmentsSlice {

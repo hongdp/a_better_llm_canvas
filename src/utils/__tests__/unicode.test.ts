@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { sliceChars, headChars, tailChars } from '../unicode'
-import { truncateWithNotice } from '../llmContext'
 
 describe('sliceChars', () => {
   // "a😀b": the emoji is two code units (1 and 2).
@@ -17,10 +16,5 @@ describe('sliceChars', () => {
     expect(sliceChars('hello', 1, 3)).toBe('el')
     expect(headChars('hello', 10)).toBe('hello')
     expect(sliceChars('hello', 4, 2)).toBe('')
-  })
-  it('keeps truncateWithNotice from leaving half an emoji', () => {
-    const out = truncateWithNotice('xx😀yy', 3)
-    expect(out.startsWith('xx\n')).toBe(true)
-    expect(out).not.toMatch(/[\ud800-\udfff]/)
   })
 })
