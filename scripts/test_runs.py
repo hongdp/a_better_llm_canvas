@@ -523,6 +523,35 @@ def test_ask_user_pauses_the_run_and_the_answer_continues_it(book, monkeypatch):
     assert any(e.get("kind") == "paused" and e["pause"]["reason"] == "question" for e in events if e.get("type") == "run")
 
 
+def test_a_question_asked_before_a_restart_can_still_be_answered(book, monkeypatch):
+    """2026-10-18: a deploy restarted the API three seconds after the run asked; every answer got 409."""
+    provider = Scripted([{"text": "", "calls": [("q1", "ask_user", '{"question":"继续哪一章？","options":["第二章","第五章"]}')]},
+                         "好，写第五章。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def first():
+        run = book.submit("alice", "book-1", request())
+        await settle(run)
+        return run.id, run.status
+    run_id, status = asyncio.run(first())
+    assert status == "paused"
+    fresh = server_runs.RunEngine()
+    monkeypatch.setattr(server_runs, "engine", fresh)
+
+    async def second():
+        await fresh.recover()
+        run = fresh.get("alice", run_id)
+        assert run is not None and run.status == "paused" and run.agent is None
+        assert fresh.answer(run, "第五章")
+        await settle(run)
+        return run
+    run = asyncio.run(second())
+    assert run.status == "done", run.error
+    answered = provider.requests[-1]["messages"]
+    assert answered[-1] == {"role": "user", "content": "The user answered: 第五章"}
+    assert any(m.get("role") == "tool" and m.get("toolCallId") == "q1" for m in answered)
+
+
 def test_a_chapter_with_text_is_deleted_only_by_the_delete_button(book, monkeypatch):
     import server_documents
 
