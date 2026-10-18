@@ -33,11 +33,21 @@ def build_gemini_request(
 
     contents: List[Dict[str, Any]] = []
     previous_was_tool = False
+    # view_images: a result's pictures go after ALL of the turn's functionResponse parts (one user content).
+    pending_images: List[Dict[str, Any]] = []
+
+    def flush_images() -> None:
+        if pending_images and contents:
+            contents[-1]["parts"].extend(pending_images)
+        pending_images.clear()
+
     for message in messages:
         role = message.get("role")
         if role == "system":
             continue
         content = message.get("content") or ""
+        if role != "tool":
+            flush_images()
         if role == "tool":
             response_part = {
                 "functionResponse": {
@@ -50,6 +60,11 @@ def build_gemini_request(
                 contents[-1]["parts"].append(response_part)
             else:
                 contents.append({"role": "user", "parts": [response_part]})
+            for idx, img in enumerate(message.get("images") or []):
+                split = _split_data_url(img)
+                if split:
+                    pending_images.append({"text": f"[Image {idx + 1}] of the {response_part['functionResponse']['name']} result:"})
+                    pending_images.append({"inlineData": {"mimeType": split[0], "data": split[1]}})
             previous_was_tool = True
             continue
         previous_was_tool = False
@@ -86,6 +101,7 @@ def build_gemini_request(
             "parts": parts,
         })
 
+    flush_images()
     body: Dict[str, Any] = {"contents": contents}
     if system_message:
         body["systemInstruction"] = {"parts": [{"text": system_message.get("content") or ""}]}

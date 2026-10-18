@@ -63,6 +63,8 @@ class RunState:
     #: A whole rewrite written for a chapter that does not exist (backend_authority.md §6.2):
     #: {"ref", "html"}. The next update_document with an empty html writes it, unsent again.
     held_text: Optional[Dict[str, str]] = None
+    #: Images view_images has shown this run (capped: view_images.VIEW_PER_RUN).
+    images_viewed: int = 0
 
 
 def writes_so_far(run: RunState) -> int:
@@ -113,9 +115,10 @@ class ToolContext:
     attachments: optional, list() -> [meta with ref A1…], paragraphs(id) -> [str] [async]
     web:      optional, search(query, max) -> [{title, url, snippet}] [async], read(url) -> {url, title, paragraphs, images} [async],
               images(url, numbers) -> [{n, alt, dataUrl, bytes} | {n, error}] [async]
+    vision:   optional — the run's model takes image input: view(srcs) -> [{dataUrl, bytes} | {error}] [async]
     """
 
-    def __init__(self, document, editor, selection, images, ui, run: RunState, polish=None, analyze=None, attachments=None, web=None) -> None:
+    def __init__(self, document, editor, selection, images, ui, run: RunState, polish=None, analyze=None, attachments=None, web=None, vision=None) -> None:
         self.document = document
         self.editor = editor
         self.selection = selection
@@ -126,3 +129,4 @@ class ToolContext:
         self.analyze = analyze
         self.attachments = attachments
         self.web = web
+        self.vision = vision

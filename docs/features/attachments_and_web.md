@@ -138,6 +138,36 @@ provider's `webAccess` setting is on (default on) and the server has a browser.
   call the same functions directly. At most two browser pages per user at a
   time.
 
+## 2b. Seeing a chapter's pictures (`view_images`, 2026-10-18)
+
+A text read shows a picture as `[image]` and an HTML read as a placeholder
+token, so a model writing around a chapter's photos (describing one, the
+scene it illustrates, a caption) had to guess. `view_images`
+(`wc_agent/tools/view_images.py`) sends them to the model itself.
+
+- **What it shows**: a chapter's `<img>` in order of its accepted reading,
+  numbered 1… and placed by the ¶ number a read gives their paragraph
+  (`chapter_images`). Chosen by `paragraphs` ("12-30"), by `images` ([3, 4]),
+  or the first ones; at most 6 per call and 30 per run (`VIEW_PER_CALL`,
+  `VIEW_PER_RUN`, `RunState.images_viewed`).
+- **How they are fetched** (`server_web.view_images`): an inline image (a
+  data URL) is shrunk on the server; a linked one is fetched through the
+  browser's request channel like `web_images` — public addresses only, its
+  own origin as the referrer. Both become JPEG at most 1,024 px on the
+  longest side (`VIEW_IMAGE_MAX_SIDE`, ~1,000 tokens).
+- **How they reach the model**: on the tool's result message as `images`.
+  Anthropic puts them inside the `tool_result`; the Responses API (OpenAI,
+  grok), Gemini and Chat Completions follow the turn's results with the
+  pictures (a user message, or parts after the `functionResponse` parts).
+- **Offered** only when the run's model takes images (`supports_vision`:
+  Anthropic, OpenAI, grok, Gemini); local and Kimi models are not offered it.
+- **Cost control**: compaction counts an image as `IMAGE_TOKENS` (1,000) and
+  an elided result drops its pictures with its text.
+- Measured 2026-10-18 on neutral generated pictures (a red rectangle, a blue
+  circle) through the run engine: grok-4.6, claude-sonnet-5-5 and gpt-6-luna
+  each called it once and named both. Gemini was not measured (the key's
+  free-tier quota was spent); its format is unit-tested.
+
 ## 3. Not built
 
 PDF, EPUB and DOCX attachments (plain text and Markdown only); writing to

@@ -42,6 +42,7 @@ from wc_agent.tools.document_writes import (DOCUMENT_WRITE_TOOLS, commit_doc, do
                                             replace_text_tool, user_edited)
 from wc_agent.tools.plan import plan_tool
 from wc_agent.tools.polish_chapter import polish_chapter_tool
+from wc_agent.tools.view_images import supports_vision, view_images_tool
 from wc_agent.tools.web import WEB_TOOLS
 from wc_agent.types import ToolContext, chapter_outline, create_run_state
 from wc_text.reminders import REPEAT_PAUSE_STEPS, queued_request_reminder, structure_changed_reminder, user_edited_reminder, wrap_reminder
@@ -62,7 +63,7 @@ from wc_text.tool_call_stream import finish_tool_calls
 logger = logging.getLogger("web_canvas.runs")
 router = APIRouter()
 
-CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, replace_text_tool, *BOOK_TOOLS, polish_chapter_tool, *WEB_TOOLS, plan_tool, ask_user_tool])
+CHAT_TOOLS = ToolRegistry([*DOCUMENT_WRITE_TOOLS, edit_paragraphs_tool, replace_text_tool, *BOOK_TOOLS, view_images_tool, polish_chapter_tool, *WEB_TOOLS, plan_tool, ask_user_tool])
 
 # ── Limits (the "Runaway runs" decision) ─────────────────────────────────────
 #: Steps that repeated the same calls and wrote nothing before the run is
@@ -725,7 +726,8 @@ class RunEngine:
         ctx = ToolContext(ports, ports, ports, ports, _Ui(ports), create_run_state(ports.start_id),
                           polish=_PolishPort(self, run), analyze=_AnalyzePort(self, run),
                           attachments=_AttachmentsPort(run.username, run.book_id),
-                          web=_WebPort(run.username) if config.get("webAccess") is not False and server_web.available() else None)
+                          web=_WebPort(run.username) if config.get("webAccess") is not False and server_web.available() else None,
+                          vision=_VisionPort(run.username) if supports_vision(provider, config.get("model") or "") else None)
         history = self._history_for(run)
         # A summary asked for at the end of the live conversation offers the turn's tools, as the turn's steps
         # do: the tools are part of the cached prefix (cache_continuity.md §3.4).
@@ -1343,6 +1345,16 @@ class _AttachmentsPort:
 
     async def paragraphs(self, attachment_id: str):
         return await asyncio.to_thread(server_attachments.attachment_paragraphs, self.username, self.book_id, attachment_id)
+
+
+class _VisionPort:
+    """A chapter's images for view_images: inline ones shrunk, linked ones fetched like a page's (server_web.view_images)."""
+
+    def __init__(self, username: str) -> None:
+        self.username = username
+
+    async def view(self, srcs):
+        return await server_web.view_images(self.username, srcs)
 
 
 class _WebPort:

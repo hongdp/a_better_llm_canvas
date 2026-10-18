@@ -336,7 +336,8 @@ async def _read_items(items: List[Dict[str, Any]], fmt: str, ctx: ToolContext) -
         # A text read hides formatting; a whole rewrite of this chapter needs its HTML (run-d9e54ca576dc).
         formatted = ("\n[This chapter has formatting a text read does not show (lists, emphasis, images…): to rewrite it whole, read it with format=\"html\" first; edit_paragraphs works from these ¶ numbers.]"
                      if fmt == "text" and not is_text_rewritable_html(html) else
-                     "\n[Its [image] paragraphs are photos: a rewrite may leave them out — they are put back where they stood — and must not write \"[image]\".]"
+                     "\n[Its [image] paragraphs are photos: a rewrite may leave them out — they are put back where they stood — and must not write \"[image]\". "
+                     "To see what a photo shows, call view_images with its ¶ numbers, when that tool is offered.]"
                      if fmt == "text" and not is_plain_chapter_html(html) else "")
         parts.append(f"=== {cite_chapter(chapter)} — {len(paras)} paragraphs, {total_chars} characters{span}, {fmt} ===\n" + "\n".join(lines) + more + (f"\n\n{pending}" if pending else "") + formatted)
         traces.append(f"{cite_chapter(chapter)}{'' if whole else f' ¶{start}–{last}'} ({used / 1000:.1f}k, {fmt})")
