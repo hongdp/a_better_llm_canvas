@@ -67,12 +67,24 @@ def build_responses_request(
         headers["x-grok-conv-id"] = str(config["conversationId"])
 
     items: List[Dict[str, Any]] = []
+    # view_images: the pictures of a turn's results follow its function_call_output items, as one user message.
+    pending_images: List[Dict[str, Any]] = []
+
+    def flush_images() -> None:
+        if pending_images:
+            items.append({"role": "user", "content": list(pending_images)})
+        pending_images.clear()
+
     for message in messages:
         role = message.get("role")
         content = message.get("content") or ""
         if role == "tool":
             items.append({"type": "function_call_output", "call_id": message.get("toolCallId") or "", "output": content})
+            for idx, img in enumerate(message.get("images") or []):
+                pending_images.append({"type": "input_text", "text": f"[Image {idx + 1}] of the {message.get('name') or 'tool'} result:"})
+                pending_images.append({"type": "input_image", "image_url": img})
             continue
+        flush_images()
         if role == "assistant":
             # Items the reply kept go back verbatim; whatever they do not
             # cover (a history message keeps only its reasoning) is rebuilt
@@ -102,6 +114,7 @@ def build_responses_request(
         else:
             items.append({"role": role, "content": content})
 
+    flush_images()
     body: Dict[str, Any] = {
         "model": config.get("model"),
         "input": items,

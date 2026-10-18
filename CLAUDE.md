@@ -464,7 +464,9 @@ and one turn at 100,000 (`ATTACHMENT_RUN_READ_CAP`). `web_search` /
 that refuses private addresses; a bot check is reported, never bypassed.
 `web_images` brings a page's pictures into the book: fetched and shrunk on
 the server, registered in the run's image registry, placed by the model as
-`{{IMAGE_PLACEHOLDER_n}}` tokens. The Import-from-URL modal and its pipeline
+`{{IMAGE_PLACEHOLDER_n}}` tokens. `view_images` shows a chapter's own pictures to a
+vision model (by ¶ or number; 6 per call, 30 per run; inline or fetched like
+`web_images`, carried on the tool result as `images`). The Import-from-URL modal and its pipeline
 are gone (2026-10-11): loading a page into a chapter is a chat request.
 
 ### Backend API (`scripts/api_server.py`)

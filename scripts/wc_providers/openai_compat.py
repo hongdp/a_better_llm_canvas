@@ -136,6 +136,14 @@ def build_openai_request(
     url = f"{base_url}/chat/completions"
 
     openai_messages: List[Dict[str, Any]] = []
+    # view_images: a tool message carries text only here, so a turn's pictures follow its tool messages as one user message.
+    pending_images: List[Dict[str, Any]] = []
+
+    def flush_images() -> None:
+        if pending_images:
+            openai_messages.append({"role": "user", "content": list(pending_images)})
+        pending_images.clear()
+
     for message in messages:
         images = message.get("images") or []
         content = message.get("content") or ""
@@ -145,7 +153,11 @@ def build_openai_request(
                 "tool_call_id": message.get("toolCallId") or "",
                 "content": content,
             })
+            for idx, img in enumerate(images):
+                pending_images.append({"type": "text", "text": f"[Image {idx + 1}] of the {message.get('name') or 'tool'} result:"})
+                pending_images.append({"type": "image_url", "image_url": {"url": img}})
             continue
+        flush_images()
         tool_calls = _assistant_tool_calls(message)
         replayed = dialect.replay_fields(message) if message.get("role") == "assistant" else {}
         if tool_calls:
@@ -177,6 +189,7 @@ def build_openai_request(
         else:
             openai_messages.append({"role": message.get("role"), **replayed, "content": content})
 
+    flush_images()
     body: Dict[str, Any] = {
         "model": config.get("model"),
         "messages": openai_messages,
