@@ -896,7 +896,8 @@ if server_config.args.serve_dist is not None:
     server_static.mount_frontend(app, server_config.args.serve_dist or server_static.DEFAULT_DIST_DIR)
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the server with the parsed arguments (server_config.args); the Windows launcher calls this too."""
     import uvicorn
     _configure_app_logging()
     scheme = "https" if server_config.args.ssl_certfile else "http"
@@ -906,3 +907,7 @@ if __name__ == "__main__":
     print(f"[Storage Server] Database: {server_db.DB_PATH}")
     uvicorn.run(app, host=server_config.args.host, port=server_config.args.port, log_level="warning",
                 ssl_certfile=server_config.args.ssl_certfile, ssl_keyfile=server_config.args.ssl_keyfile)
+
+
+if __name__ == "__main__":
+    main()

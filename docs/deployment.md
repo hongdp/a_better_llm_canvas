@@ -13,6 +13,14 @@ HTTPS, logs and troubleshooting.
 | Frontend changes | Rebuild (`npm run build`) | Hot reload |
 | Backend changes | Restart the API | Restart the API (it does not reload itself) |
 
+On Windows the installer (`WebCanvas-Setup-<version>.exe`, README "On
+Windows") is the production shape: `WebCanvas.exe` is the frozen API server
+(`packaging/windows/web_canvas_launcher.py`) serving the bundled app on
+`127.0.0.1:3000` or the next free port, with its data in
+`%LOCALAPPDATA%\WebCanvas` (`--storage-dir …\storage`, `WEB_CANVAS_DB_DIR=…\db`).
+It is built and smoke-tested by `.github/workflows/windows-installer.yml` for
+every published release and attached to it.
+
 ## As a systemd user service (production)
 
 `~/.config/systemd/user/web-canvas.service`:

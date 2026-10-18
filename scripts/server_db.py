@@ -15,7 +15,9 @@ from typing import Optional
 # The DB file is placed in a local directory that mirrors the storage dir name.
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
-_LOCAL_DB_DIR = os.path.join(_PROJECT_DIR, ".local_db")
+# WEB_CANVAS_DB_DIR moves the metadata DB, its key and the step journal out of the program's folder:
+# an installed app (the Windows installer) keeps them in the user's profile, where it may write.
+_LOCAL_DB_DIR = os.environ.get("WEB_CANVAS_DB_DIR") or os.path.join(_PROJECT_DIR, ".local_db")
 if not os.path.exists(_LOCAL_DB_DIR):
     os.makedirs(_LOCAL_DB_DIR, exist_ok=True)
 DB_PATH = os.path.join(_LOCAL_DB_DIR, "metadata.db")
