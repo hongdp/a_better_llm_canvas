@@ -216,3 +216,35 @@ describe('resolveDiffMarkupInHtml (no editor mounted)', () => {
     expect(resolveDiffMarkupInHtml(html, 'reject')).toBe(html)
   })
 })
+
+describe('pictures under review (2026-10-18)', () => {
+  const PIC = '<img src="https://pics.example/1.jpg">'
+
+  it('marks a placed picture so Reject takes it out and Accept keeps it', () => {
+    const original = '<p>Chapter one.</p>'
+    const updated = `<p>Chapter one.</p><p>${PIC}</p><p>New text.</p>`
+    const diffed = diffHtml(original, updated)
+    expect(diffed).toMatch(/<ins class="diff-addition" data-diff-id="[^"]+"><img src="https:\/\/pics\.example\/1\.jpg"><\/ins>/)
+    expect(resolveDiffMarkupInHtml(diffed, 'reject')).toBe(original)
+    expect(resolveDiffMarkupInHtml(diffed, 'accept')).toBe(updated)
+    expect(resolve(makeEditor(diffed), 'reject')).toBe(original)
+  })
+
+  it('keeps a picture placed by the editor until Accept', () => {
+    const updated = `<p>Chapter one.</p><p>${PIC}</p>`
+    const html = resolve(makeEditor(diffHtml('<p>Chapter one.</p>', updated)), 'accept')
+    expect(html).toBe(updated)
+  })
+
+  it('shows a removed picture as a deletion that Reject brings back', () => {
+    const original = `<p>She opened the door. ${PIC}</p>`
+    const updated = '<p>She opened the door.</p>'
+    const diffed = diffHtml(original, updated)
+    expect(diffed).toContain(`<del class="diff-deletion"`)
+    expect(diffed).toContain(PIC)
+    expect(resolveDiffMarkupInHtml(diffed, 'accept')).not.toContain('<img')
+    expect(resolveDiffMarkupInHtml(diffed, 'reject')).toContain(PIC)
+    expect(resolve(makeEditor(diffed), 'reject')).toContain('<img src="https://pics.example/1.jpg">')
+    expect(resolve(makeEditor(diffed), 'accept')).not.toContain('<img')
+  })
+})

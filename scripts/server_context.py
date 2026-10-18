@@ -171,6 +171,63 @@ def save_chat_summary(username: str, book_id: str, summary: Dict[str, str], now:
     save_state(username, book_id, CHAT_SUMMARY_SCOPE, summary, now)
 
 
+# ── a book's image numbers ────────────────────────────────────────────────────
+# Problem: {{IMAGE_PLACEHOLDER_n}} was numbered afresh by every run, in the
+#   order its context and reads met the images. A token the model carried from
+#   an earlier turn (its transcript is replayed) could name another picture
+#   this turn, or none — a picture copied into another chapter came out wrong
+#   or silently missing (2026-10-18).
+# Fix: the numbers belong to the book. Each image is keyed by its src, the
+#   keys are kept in token order, and every run starts its registry from them;
+#   an image the book never showed before takes the next number.
+IMAGE_NUMBERS_SCOPE = "image-numbers"
+_IMG_TAG_RE = re.compile(r"<img[^>]+>")
+_IMG_SRC_RE = re.compile(r"""\bsrc\s*=\s*("([^"]*)"|'([^']*)')""", re.I)
+
+
+def image_key(tag: str) -> str:
+    """What identifies an image across runs: its src (a data URL hashed short), else the whole tag."""
+    import hashlib
+    m = _IMG_SRC_RE.search(tag or "")
+    src = (m.group(2) if m.group(2) is not None else m.group(3)) if m else tag
+    return hashlib.sha1((src or "").encode("utf-8")).hexdigest()[:16]
+
+
+def load_image_numbers(username: str, book_id: str) -> List[str]:
+    state = load_state(username, book_id, IMAGE_NUMBERS_SCOPE)
+    keys = state.get("keys") if isinstance(state, dict) else None
+    return [k for k in keys if isinstance(k, str)] if isinstance(keys, list) else []
+
+
+def save_image_numbers(username: str, book_id: str, keys: List[str], now: str) -> None:
+    save_state(username, book_id, IMAGE_NUMBERS_SCOPE, {"keys": keys}, now)
+
+
+def stable_image_registry(keys: List[str], documents: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """A run's image registry ({placeholder, tag} by token number) from the book's numbers.
+
+    A number whose image is in no chapter now keeps its slot with no tag (its token restores to nothing);
+    an image no number names yet is appended, in book order.
+    """
+    registry = [{"placeholder": f"{{{{IMAGE_PLACEHOLDER_{i}}}}}", "tag": ""} for i in range(len(keys))]
+    index = {k: i for i, k in enumerate(keys)}
+    for doc in documents:
+        for tag in _IMG_TAG_RE.findall(doc.get("content") or ""):
+            key = image_key(tag)
+            if key in index:
+                if not registry[index[key]]["tag"]:
+                    registry[index[key]]["tag"] = tag
+                continue
+            index[key] = len(registry)
+            registry.append({"placeholder": f"{{{{IMAGE_PLACEHOLDER_{len(registry)}}}}}", "tag": tag})
+    return registry
+
+
+def registry_keys(registry: List[Dict[str, str]], previous: List[str]) -> List[str]:
+    """The keys to keep for a registry: an empty slot keeps the key it had."""
+    return [image_key(e["tag"]) if e.get("tag") else (previous[i] if i < len(previous) else "") for i, e in enumerate(registry)]
+
+
 def text_seen_in_context(documents: List[Dict[str, Any]], in_context_ids: List[str]) -> Dict[str, str]:
     """Port of useChatLLM's textSeenInContext: the chapters whose whole current text the request carries (§0.11)."""
     out: Dict[str, str] = {}

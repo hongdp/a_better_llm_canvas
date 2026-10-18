@@ -28,6 +28,18 @@ del.diff-deletion:hover {
   background-color: rgba(239, 68, 68, 0.25);
 }
 
+/* A picture under review (diffHtml marks an <img> like text): a frame, so it reads as a change. */
+ins.diff-addition img {
+  outline: 3px solid var(--diff-add-text);
+  outline-offset: 2px;
+}
+
+del.diff-deletion img {
+  outline: 3px solid var(--diff-remove-text);
+  outline-offset: 2px;
+  opacity: 0.45;
+}
+
 /* Bulk Diff Review Banner styling */
 .diff-review-banner {
   display: flex;

@@ -365,7 +365,8 @@ read_tool = Tool(
     description=(
         "Read chapters of the book, or attachments. Find chapters in the CHAPTER INDEX and pass their numbers. "
         'Format "text" (default) returns numbered paragraphs ("¶12 …"), for reading content and consistency — an image is "[image]", on its own line or at the end of the paragraph that carries it (grep finds it by that word, and a replaced paragraph keeps its image); '
-        '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen. '
+        '"html" returns the chapter\'s HTML without numbers, for SEARCH edits — not needed for edit_paragraphs, nor to rewrite a chapter of plain paragraphs whose whole text you have seen; '
+        'its images are {{IMAGE_PLACEHOLDER_n}} tokens, and a token written into any chapter puts that picture there too (a copy — the original stays). '
         'Pass paragraphs (e.g. "40-60", or "81-" for the rest) to read only part of a chapter — after grep found a ¶ number, read around it instead of the whole chapter. '
         f'To look at several places at once, pass parts (up to {MAX_READ_PARTS}), e.g. [{{"chapter":"3","paragraphs":"10-16"}},{{"chapter":"8","paragraphs":"30-36"}}]: one call, one step. '
         f"A long chapter comes back in parts of at most {READ_CHAPTER_CAP} characters, ending at a whole paragraph, with the range to continue from. "

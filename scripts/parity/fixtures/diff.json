@@ -109,6 +109,27 @@
    },
    {
     "input": [
+     "<p>one</p>",
+     "<p>one</p><p><img src=\"https://p/1.jpg\"></p><p>two</p>"
+    ],
+    "output": "<p>one</p><p><ins class=\"diff-addition\" data-diff-id=\"diff-1\"><img src=\"https://p/1.jpg\"></ins></p><p><ins class=\"diff-addition\" data-diff-id=\"diff-1\">two</ins></p>"
+   },
+   {
+    "input": [
+     "<p>a <img src=\"x\"> b</p>",
+     "<p>a b</p>"
+    ],
+    "output": "<p>a <del class=\"diff-deletion\" data-diff-id=\"diff-1\"><img src=\"x\"> </del>b</p>"
+   },
+   {
+    "input": [
+     "<p><img src=\"x\"></p><p>t</p>",
+     "<p>t</p><p><img src=\"x\" alt=\"m\"></p>"
+    ],
+    "output": "<del class=\"diff-deletion\" data-diff-id=\"diff-1\"><img src=\"x\"></del><p>t</p><p><ins class=\"diff-addition\" data-diff-id=\"diff-2\"><img src=\"x\" alt=\"m\"></ins></p>"
+   },
+   {
+    "input": [
      "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>一</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>",
      "<h1>第三章 风起</h1><p>阿青推开门，<strong>风</strong>从巷口灌进来。</p><p>她想：&ldquo;该走了。&rdquo;</p><blockquote><p>门外无人。</p></blockquote><ul><li>壹</li><li>二 &amp; 三</li></ul><p><img src=\"data:image/png;base64,AAAA\" alt=\"x\"></p><p>{{IMAGE_PLACEHOLDER_0}}</p><p></p>   loose text here <hr><p>a&nbsp;b<br>c</p>"
     ],

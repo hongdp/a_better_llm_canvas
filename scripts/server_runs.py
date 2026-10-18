@@ -14,6 +14,7 @@ Exposes `engine` (the per-process RunEngine) and `router` (/api/books/{id}/runs*
 """
 import asyncio
 import json
+import re
 import logging
 import secrets
 import time
@@ -291,6 +292,8 @@ class ServerPorts:
         self.previewing: Optional[str] = None
         self.writing: Optional[str] = None
         self.image_registry: List[Dict[str, str]] = []
+        #: The book's image numbers as loaded (server_context.stable_image_registry), to save back.
+        self.image_keys: List[str] = []
         self.selected_text: str = run.request.get("selectedText") or ""
         # For the reminders the model gets when the book moves under it: the
         # revision of each chapter as the model last saw or wrote it, the
@@ -412,13 +415,33 @@ class ServerPorts:
 
     # ImagePort
     def preserve(self, html: str) -> str:
-        return replace_images_with_placeholders(html, self.image_registry)
+        # By the image, not its spelling: a tag re-spelled on the way (view_images reads it out of a split
+        # paragraph, quotes normalized) is the picture the book already numbered, not a new one.
+        def same_image(m) -> str:
+            tag = m.group(0)
+            if any(e["tag"] == tag for e in self.image_registry):
+                return tag
+            key = server_context.image_key(tag)
+            known = next((e for e in self.image_registry if e["tag"] and server_context.image_key(e["tag"]) == key), None)
+            return known["placeholder"] if known else tag
+        return replace_images_with_placeholders(re.sub(r"<img[^>]+>", same_image, html), self.image_registry)
 
     def restore(self, html: str) -> str:
         return restore_image_placeholders(html, self.image_registry)
 
     def register(self, data_url: str, alt: str = "") -> str:
         return register_image(self.image_registry, data_url, alt)
+
+    def load_image_numbers(self, chapters: List[Dict[str, Any]]) -> None:
+        """Start the registry from the book's own image numbers, so a token means the same picture in every turn."""
+        self.image_keys = server_context.load_image_numbers(self.username, self.book_id)
+        self.image_registry[:] = server_context.stable_image_registry(self.image_keys, chapters)
+
+    def save_image_numbers(self) -> None:
+        keys = server_context.registry_keys(self.image_registry, self.image_keys)
+        if keys != self.image_keys:
+            server_context.save_image_numbers(self.username, self.book_id, keys, _now_iso())
+            self.image_keys = keys
 
     # UiPort
     def progress(self, line: Optional[str]) -> None:
@@ -671,6 +694,7 @@ class RunEngine:
             raise RunFailed("The chapter to polish is gone.")
         ports.start_id = ports.view = ports.expected = doc_id
         ports.original = chapters[index]["content"]
+        ports.load_image_numbers(chapters)
         ctx = ToolContext(ports, ports, ports, ports, _Ui(ports), create_run_state(doc_id), polish=_PolishPort(self, run))
         # Not the start chapter for commit_doc: the polish takes its version snapshot here, before the change.
         target = {"id": doc_id, "title": chapters[index]["title"], "number": index + 1, "isStart": False}
@@ -719,6 +743,7 @@ class RunEngine:
             ports.start_id = chapters[0]["id"]
             ports.view = ports.expected = ports.start_id
         ports.original = next(c["content"] for c in chapters if c["id"] == ports.start_id)
+        ports.load_image_numbers(chapters)
         provider = req["provider"]
         config = req.get("config") or {}
         scope = f"{provider}|{config.get('model') or ''}"
@@ -1033,6 +1058,8 @@ class RunEngine:
         if run.ports:
             run.ports.progress(None)
             run.ports.settle_preview()
+            # A restart rebuilds the registry from the saved numbers: a number given this step must be among them.
+            run.ports.save_image_numbers()
         run.record = {**run.record, "status": "running", "steps": progress["steps"], "trace": progress["trace"], "touched": progress["touched"],
                       "timeline": progress["timeline"], "seen": progress["seen"], "plan": progress.get("plan") or []}
         run.snapshot = run.agent.snapshot() if run.agent else None
@@ -1146,6 +1173,8 @@ class RunEngine:
         server_context.save_state(run.username, run.book_id, scope, state, _now_iso())
 
     def _finalize(self, run: Run, status: str, content_note: Optional[str] = None) -> None:
+        if run.ports:
+            run.ports.save_image_numbers()
         run.status = status
         run.finished_at = _now_iso()
         run.finished_monotonic = time.monotonic()

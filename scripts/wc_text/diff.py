@@ -121,7 +121,8 @@ def diff_html(old_html: str, new_html: str, next_id: Optional[Callable[[], str]]
             k, v = full[idx]
             (deleted if k == "delete" else inserted).append(v)
             idx += 1
-        deleted_text = "".join(t for t in deleted if not _is_tag(t))
+        # An <img> is content, not structure: marked like text (diff.ts isMarkedContent).
+        deleted_text = "".join(t for t in deleted if _is_marked_content(t))
         inserted_html: List[str] = []
         current_text: List[str] = []
 
@@ -131,7 +132,7 @@ def diff_html(old_html: str, new_html: str, next_id: Optional[Callable[[], str]]
                 current_text.clear()
 
         for token in inserted:
-            if _is_tag(token):
+            if not _is_marked_content(token):
                 flush_insert(); inserted_html.append(token)
             else:
                 current_text.append(token)
@@ -140,6 +141,11 @@ def diff_html(old_html: str, new_html: str, next_id: Optional[Callable[[], str]]
             out.append(f'<del class="diff-deletion" data-diff-id="{diff_id}">{deleted_text}</del>')
         out.extend(inserted_html)
     return "".join(out)
+
+
+def _is_marked_content(token: str) -> bool:
+    """isMarkedContent: text, or an image — what the review markup carries."""
+    return not _is_tag(token) or bool(re.match(r"<img\b", token, re.I))
 
 
 def strip_diff_markup(html: str) -> str:

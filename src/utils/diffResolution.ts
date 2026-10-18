@@ -40,6 +40,12 @@ function hasDiffMark(node: ProseMirrorNode, mark: DiffMarkName, diffId?: string)
   )
 }
 
+/**
+ * Text, or an inline image: what diffHtml marks (an `<img>` goes inside the
+ * `<ins>` / `<del>` like a word, so its node carries the diff mark).
+ */
+const isMarkable = (node: ProseMirrorNode): boolean => node.isText || (node.isInline && node.isLeaf && node.type.name === 'image')
+
 function otherMark(mark: DiffMarkName): DiffMarkName {
   return mark === 'diffAddition' ? 'diffDeletion' : 'diffAddition'
 }
@@ -65,14 +71,15 @@ function isBlockEntirelyMarked(
 
   block.forEach(child => {
     if (!onlyMarked) return
-    if (!child.isText) {
-      // An image or other inline node is real content the diff did not add.
+    if (!isMarkable(child)) {
+      // Another inline node is real content the diff did not add.
       onlyMarked = false
       return
     }
     if (hasDiffMark(child, mark, diffId)) {
       sawMarked = true
-    } else if (hasDiffMark(child, kept) || (child.text || '').trim().length > 0) {
+    } else if (hasDiffMark(child, kept) || !child.isText || (child.text || '').trim().length > 0) {
+      // An unmarked image is content the block must survive to hold.
       onlyMarked = false
     }
   })
@@ -133,7 +140,7 @@ export function collectDiffRanges(
   const textRanges: DiffRange[] = []
 
   doc.descendants((node, pos) => {
-    if (!node.isText) return true
+    if (!isMarkable(node)) return true
     const from = pos
     const to = pos + node.nodeSize
     if (covered(from, to)) return false
