@@ -41,8 +41,8 @@ long-form work — multi-chapter novels, documentation, anything with structure:
 A release archive contains the built app, so it needs **Python 3.10+** only.
 
 ```bash
-curl -LO https://github.com/hongdp/a_better_llm_canvas/releases/download/v1.1.0/web_canvas-1.1.0.tar.gz
-tar xzf web_canvas-1.1.0.tar.gz && cd web_canvas-1.1.0
+curl -LO https://github.com/hongdp/a_better_llm_canvas/releases/download/v1.2.0/web_canvas-1.2.0.tar.gz
+tar xzf web_canvas-1.2.0.tar.gz && cd web_canvas-1.2.0
 python3 -m venv .venv && . .venv/bin/activate && pip install -r requirements.txt
 python3 scripts/api_server.py --serve-dist --port 8080 --storage-dir ./storage
 ```
@@ -50,6 +50,10 @@ python3 scripts/api_server.py --serve-dist --port 8080 --storage-dir ./storage
 Open <http://localhost:8080>, create an account, and add an API key under
 **Settings**. That is the whole install — see [Install from a release](#install-from-a-release)
 for HTTPS, other devices and the server options.
+
+**On Windows**, download `WebCanvas-Setup-<version>.exe` from
+[Releases](https://github.com/hongdp/a_better_llm_canvas/releases) and run it —
+no Python, no administrator rights. See [On Windows](#on-windows).
 
 ## How it works
 
@@ -109,8 +113,8 @@ Generation always runs on the server, never from the browser.
 1. Download `web_canvas-<version>.tar.gz` and its `.sha256` from
    [Releases](https://github.com/hongdp/a_better_llm_canvas/releases):
    ```bash
-   sha256sum -c web_canvas-1.1.0.tar.gz.sha256
-   tar xzf web_canvas-1.1.0.tar.gz && cd web_canvas-1.1.0
+   sha256sum -c web_canvas-1.2.0.tar.gz.sha256
+   tar xzf web_canvas-1.2.0.tar.gz && cd web_canvas-1.2.0
    ```
 2. Install the server's dependencies (a virtual environment is recommended):
    ```bash
@@ -126,6 +130,24 @@ Generation always runs on the server, never from the browser.
 
 Optional, for the model's web search and page reading:
 `pip install playwright && python -m playwright install chromium`.
+
+### On Windows
+
+1. Download `WebCanvas-Setup-<version>.exe` (and its `.sha256`, to check it
+   with `Get-FileHash`) from
+   [Releases](https://github.com/hongdp/a_better_llm_canvas/releases) and run it.
+   It installs for your user only, under `%LOCALAPPDATA%\Programs\WebCanvas`;
+   no administrator rights are needed. Windows SmartScreen may warn that the
+   installer is unsigned: choose **More info → Run anyway**.
+2. Start **Web Canvas** from the Start menu. A console window opens (it is the
+   server: close it to stop Web Canvas) and the app opens in your browser at
+   `http://127.0.0.1:3000` (or the next free port).
+3. Create an account and add your API keys under **Settings**.
+
+Your books, accounts and settings live in `%LOCALAPPDATA%\WebCanvas`
+(`storage\` and `db\`). Uninstalling leaves them there; delete the folder to
+remove them too. The model's web search and page reading are not available in
+the Windows build (they need Playwright's Chromium); everything else is.
 
 ### From other devices
 

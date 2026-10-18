@@ -1,5 +1,76 @@
 # Changelog
 
+## 1.2.0 — 2026-10-18
+
+Every chat turn now runs on the server, so closing the page, a phone going
+to sleep or an API restart no longer stops one. The assistant can look at a
+chapter's pictures and reuse them in other chapters. Moonshot's Kimi joins
+the providers, and roleplay mode is removed. Download
+`web_canvas-1.2.0.tar.gz` from the GitHub release (it needs Python only), or
+on Windows run `WebCanvas-Setup-1.2.0.exe` (it needs nothing); see the README.
+
+### Windows
+
+- A Windows installer (`WebCanvas-Setup-<version>.exe`, built on GitHub Actions
+  for every release): a per-user install with no administrator rights. It puts
+  Web Canvas in the Start menu, opens it in the browser, and keeps the books in
+  `%LOCALAPPDATA%\WebCanvas`, which uninstalling leaves in place. The web search
+  and page-reading tools are not included (they need Playwright's Chromium).
+- `WEB_CANVAS_DB_DIR` moves the metadata DB, its key and the step journal out
+  of the program's folder (the installer uses it).
+
+### The assistant
+
+- **Server-only turns.** The browser's agent loop is gone. Every turn,
+  including the Polish button, runs in the API process, and the tab only
+  renders it. A reload or another device rejoins the turn in progress. The
+  "Run turns on the server" setting is gone, because there is nothing else.
+- **Pictures.**
+  - `view_images` shows a vision model (Claude, OpenAI, grok, Gemini) a
+    chapter's pictures, chosen by ¶ or number: inline images, or linked ones
+    fetched through the server's browser.
+  - Each picture comes with its token. Writing the token into another chapter
+    copies the picture there.
+  - Tokens are numbered per book, so a token means the same picture in every
+    turn.
+  - A placed or removed picture is part of the review diff, framed in the
+    editor, and Reject undoes it.
+- **New tools and behaviors.**
+  - `replace_text` finds and replaces across chapters in one call.
+  - Deleting a chapter that has text asks first.
+  - A rename carries the chapter's heading.
+  - A plan left unfinished carries into the next turn.
+  - A whole rewrite aimed at a chapter that does not exist is kept, and
+    placed once the model names where it goes.
+  - A message sent mid-turn is shown splitting the turn.
+- **Providers.**
+  - Moonshot Kimi (`moonshot`) is added.
+  - Claude gets 1M windows, headroom for adaptive thinking, and cache
+    diagnostics on every request.
+  - Gemini safety thresholds default to `BLOCK_NONE`.
+  - Prompt caching was measured on grok, OpenAI and Gemini, and the log now
+    shows cache writes.
+  - A provider quota that asks for hours is no longer retried in a tight
+    loop.
+
+### Fixes
+
+- A selection rewrite lands on the selected text, never at the cursor, and
+  drops its tag's line breaks.
+- Chapters are named by position (`#n`) in the index and in listings.
+- Accepting the review diff mid-turn, or the editor re-spelling a chapter,
+  no longer counts as a user edit that refuses the next write.
+- A paragraph anchor matches a list entry that starts with "•".
+- The history budget is calibrated to each model's token count, and old
+  results are elided only when that makes the prompt fit.
+- Resize dividers track the cursor.
+
+### Removed
+
+- The roleplay ("game master") mode.
+- The TypeScript copies of the agent loop and of the text logic only it
+  used. Python is now the specification for those modules.
+
 ## 1.1.0 — 2026-10-11
 
 The assistant can now bring a web page's pictures into the book, the

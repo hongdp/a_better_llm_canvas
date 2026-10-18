@@ -85,7 +85,8 @@ router = APIRouter()
 #   its visible text and its tool calls. One JSON line per step, one file per
 #   day, kept JOURNAL_KEEP_DAYS days, beside the metadata DB (local disk,
 #   git-ignored, like the stories themselves).
-JOURNAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".local_db", "step-journal")
+JOURNAL_DIR = os.path.join(os.environ.get("WEB_CANVAS_DB_DIR") or os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".local_db"),
+                           "step-journal")
 JOURNAL_KEEP_DAYS = 7
 JOURNAL_MAX_CHARS = 200_000
 _journal_pruned_on: Optional[str] = None
