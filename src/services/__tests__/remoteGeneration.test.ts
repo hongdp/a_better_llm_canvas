@@ -10,9 +10,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
   startRemoteGeneration,
-  resumeRemoteGeneration,
-  abortRemoteGeneration,
-  findResumableJob,
   findJobsForBubbles,
   readPersistedJob,
   clearPersistedJob,
@@ -453,57 +450,6 @@ describe('persisted job record', () => {
   })
 })
 
-describe('resumeRemoteGeneration', () => {
-  it('reattaches at the stored offset with no duplicate and no gap', async () => {
-    // The server buffer is "Hello world"; the tab dies after "Hello". Within a
-    // live page the client would now self-heal, so the tab's death is modelled
-    // by failing the in-page reconnect too — only then is this a cold reload.
-    let fromFiveHits = 0
-    routes = [
-      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-6' }) : undefined,
-      url => url.includes('from=0')
-        ? streamingResponse(sse([{ type: 'delta', text: 'Hello', offset: 5 }]))
-        : undefined,
-      url => {
-        if (!url.includes('from=5')) return undefined
-        fromFiveHits++
-        return fromFiveHits === 1
-          ? jsonResponse({ detail: 'Generation job not found.' }, false, 404)  // the page is gone
-          : streamingResponse(sse([
-              { type: 'delta', text: ' world', offset: 11 },
-              { type: 'done', offset: 11 }
-            ]))
-      }
-    ]
-    const first = recorder()
-    await startRemoteGeneration(messages, config, { assistantMessageId: 'a-6' }, first.callbacks)
-
-    const stored = readPersistedJob()!
-    expect(stored.offset).toBe(5)
-
-    const second = recorder()
-    await resumeRemoteGeneration(stored.jobId, stored.offset, second.callbacks)
-
-    expect(calls()[3]).toContain('/api/generate/gen-6/stream?from=5')
-    expect(first.chunks.join('') + second.chunks.join('')).toBe('Hello world')
-    expect(second.done[0].text).toBe(' world')
-    expect(readPersistedJob()).toBeNull()
-  })
-})
-
-describe('adopting a job this browser holds no record of', () => {
-  it('writes a record from the adopted meta so Stop and the next reload can find it', async () => {
-    routes = [url => url.includes('/stream')
-      ? streamingResponse(sse([{ type: 'delta', text: 'Hi', offset: 2 }]))   // still running
-      : undefined]
-    const rec = recorder()
-
-    await resumeRemoteGeneration('gen-adopt', 0, rec.callbacks, undefined, { assistantMessageId: 'a-9', kind: 'chat' })
-
-    expect(readPersistedJob()).toEqual({ jobId: 'gen-adopt', meta: { assistantMessageId: 'a-9', kind: 'chat' }, offset: 2 })
-  })
-})
-
 describe('findJobsForBubbles', () => {
   const active = (jobs: unknown[]): Route => url => url.endsWith('/api/generate/active') ? jsonResponse(jobs) : undefined
 
@@ -573,90 +519,6 @@ describe('findJobsForBubbles', () => {
   it('makes no request when there is nothing to look up', async () => {
     const found = await findJobsForBubbles([])
     expect(found.known).toBe(true)
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-})
-
-describe('findResumableJob', () => {
-  const persist = (offset: number) =>
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify({ jobId: 'gen-7', meta: { assistantMessageId: 'a-7' }, offset }))
-
-  it('resumes a job that is still running', async () => {
-    persist(4)
-    routes = [url => url.endsWith('/api/generate/active')
-      ? jsonResponse([{ jobId: 'gen-7', status: 'running', length: 4, meta: {} }])
-      : undefined]
-
-    expect(await findResumableJob()).toEqual({ jobId: 'gen-7', meta: { assistantMessageId: 'a-7' }, offset: 4 })
-  })
-
-  it('resumes a finished job whose buffer is longer than what was rendered', async () => {
-    persist(4)
-    routes = [url => url.endsWith('/api/generate/active')
-      ? jsonResponse([{ jobId: 'gen-7', status: 'done', length: 40 }])
-      : undefined]
-
-    expect((await findResumableJob())?.offset).toBe(4)
-  })
-
-  it('resumes a finished job even when every character was already rendered', async () => {
-    // The record is cleared by the terminal event, BEFORE the completion path
-    // runs. One that survived proves this client never completed the turn: no
-    // document edit applied, no final bubble. "Fully rendered" used to be
-    // forgotten here, which dropped a finished <canvas> rewrite whenever the
-    // tab died between the last chunk and `done`.
-    persist(40)
-    routes = [url => url.endsWith('/api/generate/active')
-      ? jsonResponse([{ jobId: 'gen-7', status: 'done', length: 40 }])
-      : undefined]
-
-    expect((await findResumableJob())?.jobId).toBe('gen-7')
-    expect(readPersistedJob()?.jobId).toBe('gen-7')
-  })
-
-  it('forgets a job the server no longer knows about', async () => {
-    persist(4)
-    routes = [url => url.endsWith('/api/generate/active') ? jsonResponse([]) : undefined]
-
-    expect(await findResumableJob()).toBeNull()
-    expect(readPersistedJob()).toBeNull()
-  })
-
-  it('keeps the record when the lookup itself fails (backend still booting)', async () => {
-    persist(4)
-    routes = [url => url.endsWith('/api/generate/active') ? jsonResponse({}, false, 503) : undefined]
-
-    expect(await findResumableJob()).toBeNull()
-    expect(readPersistedJob()?.jobId).toBe('gen-7')
-  })
-
-  it('makes no request at all without a persisted job', async () => {
-    expect(await findResumableJob()).toBeNull()
-    expect(fetchMock).not.toHaveBeenCalled()
-  })
-})
-
-describe('abortRemoteGeneration', () => {
-  it('posts to the abort endpoint for the running job and forgets it', async () => {
-    routes = [
-      url => url.endsWith('/api/generate') ? jsonResponse({ jobId: 'gen-8' }) : undefined,
-      url => url.includes('/stream') ? streamingResponse(sse([{ type: 'delta', text: 'x', offset: 1 }])) : undefined,
-      url => url.endsWith('/api/generate/gen-8/abort') ? jsonResponse({ success: true }) : undefined
-    ]
-    await startRemoteGeneration(messages, config, {}, recorder().callbacks)
-
-    // No job id: the stop button aborts whatever this tab is reading.
-    await abortRemoteGeneration()
-
-    const abortCall = fetchMock.mock.calls.find(c => String(c[0]).endsWith('/abort'))!
-    expect(abortCall).toBeDefined()
-    expect((abortCall[1] as RequestInit).method).toBe('POST')
-    expect(((abortCall[1] as RequestInit).headers as Record<string, string>)['X-CSRF-Token']).toBe('csrf-123')
-    expect(readPersistedJob()).toBeNull()
-  })
-
-  it('is a no-op when nothing is running', async () => {
-    await abortRemoteGeneration()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 })
@@ -852,23 +714,6 @@ describe('reasoning artifacts over the backend transport', () => {
     expect(streamCalls).toHaveLength(2)
     expect(rec.errors).toEqual([])
     expect(items).toEqual([R1, R2])
-  })
-
-  it('gives a fresh resume every block from the start', async () => {
-    routes = [
-      url => url.includes('/api/generate/gen-resume/stream')
-        ? streamingResponse(sse([
-            { type: 'thinking_block', index: 0, block: THINKING },
-            { type: 'thinking_block', index: 1, block: REDACTED },
-            { type: 'done', offset: 4 }
-          ]))
-        : undefined
-    ]
-    const rec = artifactRecorder()
-
-    await resumeRemoteGeneration('gen-resume', 4, rec.callbacks)
-
-    expect(rec.blocks).toEqual([THINKING, REDACTED])
   })
 
   it('drops a malformed block instead of handing it to the replay', async () => {

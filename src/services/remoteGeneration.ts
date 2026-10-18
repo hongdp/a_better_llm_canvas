@@ -384,57 +384,6 @@ export async function startRemoteGeneration(
   await attachToJob(jobId, 0, callbacks, signal)
 }
 
-/**
- * Re-attach to an existing job (page reload, second device) from the offset
- * the client already rendered.
- */
-export async function resumeRemoteGeneration(
-  jobId: string,
-  fromOffset: number,
-  callbacks: StreamCallbacks,
-  signal?: AbortSignal,
-  /** Job description for a job found on the server rather than in localStorage. */
-  adoptedMeta?: RemoteJobMeta
-): Promise<void> {
-  activeJobId = jobId
-  const persisted = readPersistedJob()
-  // Keep the record in sync so the offset keeps advancing from the right base
-  // even when the resume was driven by a caller-supplied offset. An adopted
-  // job gets a record of its own here, so Stop and the next reload can find it.
-  writePersistedJob({
-    jobId,
-    meta: persisted?.jobId === jobId ? persisted.meta : (adoptedMeta ?? {}),
-    offset: fromOffset
-  })
-  await attachToJob(jobId, fromOffset, callbacks, signal)
-}
-
-/**
- * Cancel the provider request behind a job. Called by the stop button in
- * addition to dropping the local reader — otherwise the backend would keep
- * burning tokens for a stream nobody reads.
- *
- * Defaults to the job this tab is reading (or the persisted one), so callers
- * that know nothing about jobs can call it unconditionally.
- */
-export async function abortRemoteGeneration(jobId?: string): Promise<void> {
-  const target = jobId ?? activeJobId ?? readPersistedJob()?.jobId
-  if (!target) return
-
-  // Forget it locally first: the user asked to stop, so a failed abort call
-  // must not leave the job around to be rejoined on the next load.
-  clearActiveJob(target)
-
-  try {
-    await fetch(`/api/generate/${encodeURIComponent(target)}/abort`, {
-      method: 'POST',
-      headers: apiHeaders()
-    })
-  } catch (e) {
-    console.warn('[RemoteGeneration] Failed to abort remote job', e)
-  }
-}
-
 /** Jobs the backend still knows about for this session (running or retained). */
 export async function fetchActiveGenerations(): Promise<RemoteJobInfo[]> {
   const response = await fetch('/api/generate/active')
@@ -443,43 +392,6 @@ export async function fetchActiveGenerations(): Promise<RemoteJobInfo[]> {
   }
   const data = await response.json()
   return Array.isArray(data) ? (data as RemoteJobInfo[]) : []
-}
-
-/**
- * Decide whether the persisted job is still worth re-attaching to.
- *
- * Resumable whenever the server still has it — running or finished. The record
- * is cleared by the terminal event and BEFORE the completion path runs (see
- * attachToJob), so a record that survived proves this client never completed
- * the turn: no document edit applied, no final bubble, no usage. That holds
- * even when every character had already been rendered; "fully rendered" used
- * to be forgotten here, which dropped a finished <canvas> rewrite whenever the
- * tab died between the last chunk and the `done` event. A failed lookup leaves
- * the record alone — the backend may just be starting up.
- */
-export async function findResumableJob(): Promise<PersistedGenerationJob | null> {
-  const persisted = readPersistedJob()
-  if (!persisted) return null
-
-  let jobs: RemoteJobInfo[]
-  try {
-    jobs = await fetchActiveGenerations()
-  } catch {
-    return null
-  }
-
-  const job = jobs.find(j => j.jobId === persisted.jobId)
-  if (!job) {
-    // Server restart or retention expiry: nothing to come back to.
-    clearPersistedJob()
-    return null
-  }
-
-  return {
-    jobId: job.jobId,
-    meta: persisted.meta && Object.keys(persisted.meta).length > 0 ? persisted.meta : (job.meta || {}),
-    offset: persisted.offset
-  }
 }
 
 /**

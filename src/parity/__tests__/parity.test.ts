@@ -15,42 +15,20 @@ import { describe, it, expect } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
-import { htmlToPlainText, stripChatDisplayArtifacts, truncateWithNotice, detectReferencedDocIds, buildAttachmentsLabel, trimHistoryForContext, wasTurnInterrupted } from '../../utils/llmContext'
-import { bare, splitForPolish, buildPolishPrompt, parsePolished, validatePolished, assemblePolished, type PolishSegment } from '../../utils/polish'
-import type { LLMMessage } from '../../types/llm'
 import { paragraphBlocks, anchorMatches, asItems, rewriteLoss, rewriteLossNote, blockText, topLevelBlocks, chapterParagraphs, chapterChars, numberedLine, searchableText, blockImages, paragraphSpans, numberedParagraphSpans, isPlainChapterHtml, isTextRewritableHtml, stripImageMarkerParagraphs, asBlocks, applyParagraphEdits, type ParagraphEdit } from '../../utils/paragraphs'
 import { diffHtml, stripDiffMarkup } from '../../utils/diff'
 import { resolveDiffMarkupInHtml } from '../../utils/diffResolution'
-import { pendingChanges, renderPendingChanges } from '../../utils/pendingChanges'
-import { replaceImagesWithPlaceholders, restoreImagePlaceholders, registerImage, reinsertMissingImages, type ImagePlaceholderEntry } from '../../utils/imagePreservation'
 import {
   stripIncompleteEndTag, chapterAttribute, newChapterAttribute, extractTaggedBlock, hasElisionMarkers, validateCanvasReplacement,
   parseEditBlocks, stripStrayDocumentMarkup, parseAssistantResponse, applyEditBlocks, applyEditBlocksLocally, stripBlankParagraphs,
   parseDocStatus, stripDocStatus, detectFailedDocumentUpdate, trimIncompleteHtmlTail, isBlankContent, type EditBlock, claimsOwnWrite } from '../../utils/text'
-import { buildChapterIndex, packChaptersIntoBatches, ANALYZE_BATCH_TOKENS, analyzeBatchChars, type IndexableDoc } from '../../utils/chapterIndex'
-import { renderLedgerChapter, ledgerBlock, buildLedgerMessages, buildVolatileTail, diffTailParts, pinnedUpdates, type RenderableDoc, type DynamicContextOptions, type TailParts, type SentTail } from '../../hooks/chat/dynamicContext'
 import { supportedReasoningEfforts, resolveReasoningEffort, reasoningBudgetTokens, anthropicThinking, geminiThinking, moonshotThinking } from '../../utils/reasoningEffort'
-import { planHistoryUnits, summarizableHistory, historyWindow, transcriptWeight, type HistoryEntry, type TurnTranscript } from '../../utils/turnTranscripts'
 import { hashContent, planLedgerTurn, ledgerChapterIds, orderAdmissionsByStability, type ContextLedger, type LedgerDocLike, type LedgerEntry } from '../../utils/contextLedger'
-import { extractKeywords, selectReferenceChapters, pinnedContextIds, PINNED_CONTEXT_CHARS, type SelectableDoc, type SelectionInput, type SelectionOptions } from '../../utils/contextSelection'
-import { buildChatSystemPrompt, promptTexts } from '../../utils/systemPrompt'
-import { DOCUMENT_TOOLS, toOpenAITools, toAnthropicTools, toGeminiTools, fromOpenAITools, type ToolSpec } from '../../utils/documentTools'
-import { resolveContextWindowTokens, estimateTokens, tokensToChars, historyBudgetChars, cjkRatioOf } from '../../utils/contextWindow'
-import { getCacheProfile, targetPromptTokens, usesResponsesApi } from '../../utils/providerProfile'
 import { resolveDocumentProtocol, type DocumentProtocol } from '../../utils/protocolChoice'
 import { leadingH1Text, contentWithRenamedHeading } from '../../utils/titleSync'
-import { partialStringArgument, applyToolCallDelta, finishToolCalls, type ToolCallAccumulator } from '../../utils/toolCallStream'
 import { splitStreamingResponse, buildCompletionWarnings, NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, STEP_LIMIT_NOTE } from '../../hooks/chat/streamHandlers'
-import { nearestParagraph, nearestHint, describeDifferences, textSimilarity } from '../../utils/editHints'
-import { applyPlanUpdate, renderPlan, nextPlanItem, unfinishedPlanItems, previousTurnPlan, type PlanItem } from '../../utils/plan'
-import { planConversationSummary, buildSummaryRequest, buildSummaryInstruction, parseSummaryReply, summaryMessages, SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP, type SummarizableMessage } from '../../utils/conversationSummary'
-import { normalizeAttachmentText, attachmentParagraphs, splitLongParagraph, attachmentSections, resolveAttachmentRef, renderAttachmentIndex, attachmentChunks, renderAttachmentPart, attachmentBudgetNote, parseChapterNumber, sectionNumberOf, findAttachmentSection, findAttachmentRange, renderSectionList, LIST_SECTION_LINES, ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP } from '../../utils/attachments'
-import { renderSearchResults, renderWebPage, renderWebImages, UNTRUSTED_WEB_NOTE, WEB_READ_CAP } from '../../utils/webText'
-import { replaceInHtmlText, expandReplacement, escapeHtmlText } from '../../utils/textReplace'
-import { isRetryableStatus, isContextLengthError, parseRetryAfter, retryDelayMs, withJitter, MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES } from '../../utils/retryPolicy'
 
 const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/parity/fixtures')
-const PROMPT_TEXTS = resolve(dirname(fileURLToPath(import.meta.url)), '../../../scripts/wc_text/data/prompt_texts.json')
 const WRITE = process.env.WRITE_FIXTURES === '1'
 
 /** Diff group ids are random; both sides compare them renumbered in order of appearance. */
@@ -72,17 +50,6 @@ const paras = (changed: boolean) => Array.from({ length: 40 }, (_, i) => `<p>Par
 interface Case { input: unknown[]; output: unknown }
 interface Module { module: string; cases: Record<string, Case[]> }
 
-/** A novel .txt the way Chinese ones come: one paragraph per line, full-width indents, chapter headings. */
-const NOVEL_TXT = '\uFEFF书名\r\n\r\n第一章 初见\r\n　　阿青推开门。\r\n　　屋里没有人。\r\n\r\n第二章 再见\r\n　　她回来了。\r\n番外\r\n　　后来。'
-/** A hard-wrapped English text: paragraphs are blank-line blocks. */
-const WRAPPED_TXT = 'CHAPTER I\n\nIt was a dark\nand stormy night.\n\nThe rain fell\nin torrents.\n\nExcept at\noccasional intervals.\n\nChapter II\n\nNext morning\ncame.'
-const SECTIONS = [
-  { title: '(opening)', from: 1, to: 2 }, { title: '第二章 起程', from: 3, to: 9 }, { title: '第30章 归来', from: 10, to: 20 }, { title: '番外 后来', from: 21, to: 25 }
-]
-const ATTACH_LIST = [
-  { id: 'x1', ref: 'A1', name: '原著.txt', chars: 120, paragraphs: 9, sections: [{ title: '(opening)', from: 1, to: 1 }, { title: '第一章 初见', from: 2, to: 4 }, { title: '第二章 再见', from: 5, to: 6 }] },
-  { id: 'x2', ref: 'A2', name: 'notes.md', chars: 30, paragraphs: 3, sections: [] }
-]
 
 /** A character card: fields as list entries under each heading (run-d9e54ca576dc). */
 const CARD = '<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬雪</h2><ul><li><p>身份：缥缈宗太上长老，炼虚期。</p></li><li><p>气运：SSS级。</p></li></ul><h2>独孤灵</h2><ul>\n<li><p>身份：缥缈宗掌门。</p><ul><li>嵌套</li></ul></li>\n</ul>'
@@ -90,35 +57,7 @@ const CARD = '<h1>人物卡</h1><p>整理范围：原作第1–87章</p><h2>姬�
 /** A chapter with a heading, inline markup and an image, for the paragraph-span cases. */
 const SPANNED = '<h1>T</h1>\n<p>One a</p><p>Two <em>b</em></p> <p><img src="x.png"></p><p>Three</p>'
 
-/** n turns of `chars` chars each (u0 a0 u1 a1 …) for the conversation-summary cases. */
-const SUMMARY_TURNS = (n: number, chars = 1000): SummarizableMessage[] =>
-  Array.from({ length: n * 2 }, (_, i) => {
-    const id = `${i % 2 === 0 ? 'u' : 'a'}${Math.floor(i / 2)}`
-    return { id, role: i % 2 === 0 ? 'user' : 'assistant', content: `${id}:` + 'x'.repeat(Math.max(0, chars - id.length - 1)) }
-  })
 
-/** A history with transcripts for three of its turns: one matching, one naming another user message, one with images. */
-const TT_ENTRIES: HistoryEntry[] = [
-  { id: 'u0', role: 'user', content: 'hi' }, { id: 'a0', role: 'assistant', content: 'reply0', responseItems: [{ type: 'reasoning', id: 'r0' }] },
-  { id: 'u1', role: 'user', content: 'two' }, { id: 'a1', role: 'assistant', content: 'reply1' },
-  { id: 'u2', role: 'user', content: 'three', images: ['data:image/png;base64,AAAA'] }, { id: 'a2', role: 'assistant', content: 'r2' },
-  { id: 'a3', role: 'assistant', content: 'extra' }, { id: 'u4', role: 'user', content: 'four' }, { id: 'a4', role: 'assistant', content: 'reply4 ' + 'z'.repeat(300) }
-]
-const TT: Record<string, TurnTranscript> = {
-  a0: { userMessageId: 'u0', messages: [
-    { role: 'user', content: 'TAIL0\n\nUSER REQUEST:\nhi', cacheHint: true },
-    { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read', argumentsText: '{"chapters":["1"]}' }], responseItems: [{ type: 'reasoning', id: 'r0' }] },
-    { role: 'tool', toolCallId: 'c1', name: 'read', content: 'TEXT ' + 'w'.repeat(200) },
-    { role: 'assistant', content: 'reply0 full' }
-  ] },
-  a1: { userMessageId: 'zz', messages: [{ role: 'user', content: 'other' }, { role: 'assistant', content: 'x' }] },
-  a2: { userMessageId: 'u2', messages: [{ role: 'user', content: 'TAIL2\n\nUSER REQUEST:\nthree', images: ['data:image/png;base64,AAAA'] }, { role: 'user', content: 'steer' }, { role: 'assistant', content: 'r2 done' }] },
-  a4: { userMessageId: 'u4', messages: [] }
-}
-const TT_UNITS = planHistoryUnits(TT_ENTRIES, TT)
-const TAIL_FULL: TailParts = { index: 'CHAPTER INDEX:\n#1 A', attachments: 'ATTACHMENTS:\nA1 x.txt', active: { id: 'd2', number: 2, title: '第二章', hash: 'h2' } }
-const SENT_T1: SentTail = { index: { hash: hashContent('CHAPTER INDEX:\n#1 A'), turn: 't1' }, attachments: { hash: hashContent('ATTACHMENTS:\nA1 x.txt'), turn: 't1' }, active: { id: 'd2', hash: 'h2', turn: 't1' } }
-const PIN = (id: string, n: number, content: string) => ({ id, number: n, title: `Ch${n}`, content, hash: hashContent(content) })
 
 const run = <A extends unknown[]>(fn: (...a: A) => unknown, inputs: A[], post: (out: unknown) => unknown = o => o): Case[] =>
   // `undefined` would vanish from the JSON; Python's None is JSON null.
@@ -205,14 +144,6 @@ const APPLY_EDITS: Array<[string, EditBlock[]]> = [
 ]
 
 // Books. Fields the index, the ledger and the selector read; the same rows feed all three.
-const BOOK: Array<IndexableDoc & RenderableDoc & SelectableDoc> = [
-  { id: 'd1', title: '大纲', content: '<h1>大纲</h1><p>全书 outline 简述。</p>' },
-  { id: 'd2', title: '第一章 启程', content: CHAPTER },
-  { id: 'd3', title: 'Chapter 3: The Cat', content: ENGLISH },
-  { id: 'd4', title: '空章节', content: '', contentLoaded: false },
-  { id: 'd5', title: 'Long', content: `<p>${'x'.repeat(600)}</p>` }
-]
-const BIG_BOOK: IndexableDoc[] = Array.from({ length: 41 }, (_, i) => ({ id: `b${i}`, title: `Ch ${i}`, content: `<p>${'c'.repeat(200)} ${i}</p>` }))
 const RENDER = (id: string, kind: string) => `[${kind}:${id}]`
 const LDOCS: LedgerDocLike[] = [{ id: 'd1', chars: 100, hash: 'h1' }, { id: 'd2', chars: 2000, hash: 'h2' }, { id: 'd3', chars: 300, hash: 'h3' }, { id: 'd4', chars: 400, hash: 'h4' }]
 const L = (id: string, hash: string, chars: number, extra: Partial<LedgerEntry> = {}): LedgerEntry => ({ id, hash, chars, ...extra })
@@ -220,47 +151,9 @@ const LEDGER_123: ContextLedger = { entries: [L('d1', 'h1', 100), L('d2', 'h2', 
 /** planLedgerTurn with a deterministic renderer in place of a function the JSON cannot carry. */
 const planLedger = (current: ContextLedger, desired: string[], docs: LedgerDocLike[], active: string | null, o?: { render?: boolean; maxStaleChars?: number; keepIds?: string[] }) =>
   planLedgerTurn(current, desired, docs, active, { ...(o?.render ? { render: RENDER } : {}), ...(o?.maxStaleChars !== undefined ? { maxStaleChars: o.maxStaleChars } : {}), ...(o?.keepIds ? { keepIds: o.keepIds } : {}) })
-/** buildVolatileTail with one image registry per call, as a turn has. */
-const volatileTail = (docs: RenderableDoc[], active: string | null, selected: string, opts?: DynamicContextOptions) => {
-  const registry: ImagePlaceholderEntry[] = []
-  return buildVolatileTail(docs, active, selected, html => replaceImagesWithPlaceholders(html, registry), opts)
-}
-const SDOCS: SelectableDoc[] = [
-  { id: 'o', title: '大纲', content: '<p>outline</p>' },
-  { id: 'c1', title: '第一章', content: `<p>${'a'.repeat(30000)}</p>` },
-  { id: 'c2', title: '第二章', content: '<p>two</p>' },
-  { id: 'c3', title: 'Chapter 3: Dragon', content: '', contentLoaded: false },
-  { id: 'c4', title: '第四章', content: '<p>four</p>', contentLoaded: true },
-  { id: 'c5', title: 'Notes', content: '<p>n</p>' }
-]
-const SEL = (over: Partial<SelectionInput>): SelectionInput => ({ promptText: '', recentHistory: [], documents: SDOCS, activeDocumentId: 'c2', ...over })
-const PROMPT_OPTIONS = (['tools', 'markup'] as const).flatMap(protocol => [false, true].flatMap(agentTools => [false, true].flatMap(continueAfterWrites =>
-  ['', '  ', ' 写武侠。 \n', '\ufeffbom'].map(customInstructions => [{ protocol, agentTools, continueAfterWrites, customInstructions }] as [Parameters<typeof buildChatSystemPrompt>[0]]))))
-const OTHER_TOOL: ToolSpec = { name: 'x', description: '', parameters: { type: 'object' } }
 
-const HISTORY: LLMMessage[] = [
-  { role: 'assistant', content: 'leading assistant' },
-  { role: 'user', content: '  ' },
-  { role: 'user', content: 'first', images: ['data:image/png;base64,AAAA'] },
-  { role: 'user', content: '', images: ['data:image/png;base64,BBBB'] },
-  { role: 'assistant', content: 'reply one', responseItems: [{ type: 'reasoning', encrypted_content: 'r1' }] },
-  { role: 'assistant', content: '\n', responseItems: [] },
-  { role: 'assistant', content: 'reply two', responseItems: [{ type: 'reasoning', encrypted_content: 'r2' }] },
-  { role: 'user', content: '第二个问题，长一点的中文内容在这里。' },
-  { role: 'assistant', content: 'final reply with ${marker} and $& text' }
-]
-const POLISH_PARA = (n: number, i = 0) => `<p>${`第${i}段，她说：“我们走吧。”他没有回头。`.repeat(Math.ceil(n / 20)).slice(0, n)}</p>`
-const POLISH_HTML = `<h2>第一章</h2>${POLISH_PARA(600, 1)}${POLISH_PARA(600, 2)}<p><img src="x.png"></p>${POLISH_PARA(100, 3)}<p>{{IMAGE_PLACEHOLDER_0}}</p><p>  </p>${POLISH_PARA(300, 4)}<p>她<strong>没有</strong>回头 &amp; 走了。</p>`
-const POLISH_SEGS: PolishSegment[] = splitForPolish(POLISH_HTML)
 
-const applyDeltas = (deltas: Array<Parameters<typeof applyToolCallDelta>[1]>) => {
-  const acc = new Map<number, ToolCallAccumulator>()
-  for (const d of deltas) applyToolCallDelta(acc, d)
-  return { accumulators: Object.fromEntries(acc), finished: finishToolCalls(acc) }
-}
 
-const HINT_HTML = '<h1>第三章</h1><p class="x">她说：“我们走吧。”他没有回头，<em>风</em>从巷口灌进来&nbsp;——&nbsp;冷得很。</p><p>第二段很普通。</p><p><img src="a"></p>'
-const PLAN: PlanItem[] = [{ id: 'a', title: '第一章', status: 'done' }, { id: 'b', title: '第二章', status: 'in_progress' }, { id: 'c', title: '第三章', status: 'pending' }]
 
 const MODULES: Module[] = [
   {
@@ -285,29 +178,6 @@ const MODULES: Module[] = [
       claims_own_write: run(claimsOwnWrite, [['I have rewritten chapter 1.'], ['我已经把第三章改好了'], ['你已经把第二章改好了'], ['Here is the updated text'], ['Does this read well?'], ['']]),
       trim_incomplete_html_tail: run(trimIncompleteHtmlTail, [['<p>The sleek ta'], ['<p>a</p><h'], ['<p>a &nbs'], ['<p>a</p><p>unclosed'], ['<p>fish & chips are good today</p>'], [''], ['<p>a &amp</p>']]),
       is_blank_content: run(isBlankContent, [[''], ['<p></p>'], ['<p>&nbsp; </p>'], ['<p>x</p>'], ['<p><img src="a"></p>'], ['<h1></h1><p>\n</p>']])
-    }
-  },
-  {
-    module: 'llm_context',
-    cases: {
-      html_to_plain_text: run(htmlToPlainText, [[CHAPTER], [ENGLISH], [''], ['<p>a</p>\n\n\n<p>b</p>'], ['&amp;lt; stays &amp;lt;'], ['<div>x<br/>y</div><pre>z</pre>'], ['<p>tail   \n</p>'], ['<ol><li class="a">one</li><li>two</li></ol>']]),
-      strip_chat_display_artifacts: run(stripChatDisplayArtifacts, [
-        ['[Attached Context: 大纲 (auto)]\n[Attached Context: 第一章]\n\n写好了。'],
-        ['写好了。\n\n⚠️ The response was cut off before it finished.'],
-        ['📚 analyzing…\n写好了。\n🔁 retrying…\n完。'],
-        ['只有正文。'], ['⚠️ Error: boom'], ['写好了。\n\n⚠️ 2 suggested changes could not be located\nmore'], ['']
-      ]),
-      truncate_with_notice: run(truncateWithNotice, [['短', 10], ['一二三四五六七八九十', 4], ['abcdef', 6]]),
-      detect_referenced_doc_ids: run(detectReferencedDocIds, [
-        ['对照大纲和第一章改写', [{ id: 'a', title: '大纲' }, { id: 'b', title: 'Chapter 1: 第一章' }, { id: 'c', title: 'x' }, { id: 'd', title: '第一章' }], 'd'],
-        ['nothing here', [{ id: 'a', title: 'Outline' }], null]
-      ]),
-      trim_history_for_context: run(trimHistoryForContext, [
-        [HISTORY, { maxChars: 100000 }], [HISTORY, { maxChars: 30 }], [HISTORY, { maxChars: 30, minKeepMessages: 4 }], [HISTORY, { maxChars: 100000, keepImages: true }],
-        [HISTORY, { maxChars: 0, minKeepMessages: 0 }], [[{ role: 'assistant', content: 'only' }], { maxChars: 10 }], [[], { maxChars: 10 }]
-      ]),
-      build_attachments_label: run(buildAttachmentsLabel, [[['a', 'zz', 'b'], [{ id: 'a', title: '大纲' }, { id: 'b', title: '人物卡' }], ['b']], [[], [], []]]),
-      was_turn_interrupted: run(wasTurnInterrupted, [[[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b', agent: { status: 'stopped' } }]], [[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'x\n\n⏹️ Stopped.' }, { role: 'user', content: 'again' }]], [[{ role: 'user', content: 'a' }, { role: 'assistant', content: 'done', agent: { status: 'done' } }]], [[]]])
     }
   },
   {
@@ -383,96 +253,6 @@ const MODULES: Module[] = [
     }
   },
   {
-    module: 'pending_changes',
-    cases: {
-      pending_changes: run(pendingChanges, [[DIFFED], ['<p>plain</p>'], ['']]),
-      render_pending_changes: run(renderPendingChanges, [[pendingChanges(DIFFED)], [[]], [[{ was: 'x'.repeat(1600), now: 'y\ny' }, { was: '', now: 'added' }, { was: 'removed', now: '' }]],
-        [Array.from({ length: 30 }, (_, i) => ({ was: `was ${i} ${'w'.repeat(300)}`, now: `now ${i} ${'n'.repeat(300)}` }))]])
-    }
-  },
-  {
-    module: 'image_preservation',
-    cases: {
-      replace_images_with_placeholders: run((html: string, registry: ImagePlaceholderEntry[]) => ({ html: replaceImagesWithPlaceholders(html, registry), registry }), [
-        [CHAPTER, []], ['<p><img src="a"><img src="b"><img src="a"></p>', [{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="b">' }]], ['<p>none</p>', []]
-      ]),
-      register_image: run((registry: ImagePlaceholderEntry[], dataUrl: string, alt: string) => ({ placeholder: registerImage(registry, dataUrl, alt), registry }), [
-        [[], 'data:image/jpeg;base64,AAAA', '封面 "A" <b>&'], [[{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="x">' }], 'data:image/jpeg;base64,BBBB', ''],
-        [[{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="data:image/jpeg;base64,BBBB">' }], 'data:image/jpeg;base64,BBBB', '']
-      ]),
-      restore_image_placeholders: run(restoreImagePlaceholders, [
-        ['<p>{{IMAGE_PLACEHOLDER_0}} and {{ IMAGE_PLACEHOLDER_1 }} and {IMAGE-PLACEHOLDER-0} and image_placeholder 1</p>', [{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="a">' }, { placeholder: '{{IMAGE_PLACEHOLDER_1}}', tag: '<img src="b">' }]],
-        ['<p><img src="{{IMAGE_PLACEHOLDER_0}}" alt="x"> {{IMAGE_PLACEHOLDER_9}}</p>', [{ placeholder: '{{IMAGE_PLACEHOLDER_0}}', tag: '<img src="a">' }]]
-      ]),
-      reinsert_missing_images: run(reinsertMissingImages, [
-        ['<p>Intro paragraph text, edited.</p><p>Second paragraph.</p><p>Third.</p>', '<p>Intro paragraph text.</p><p><img src="a.png" alt="A"></p><p>Second paragraph.</p><img src="b.png"><p>Third.</p>'],
-        ['<p>Intro paragraph text.</p><p><img src="a.png" alt="A"></p><p>Nothing matches here.</p><p>Nor here.</p>', '<p>Intro paragraph text.</p><p><img src="a.png" alt="A"></p><p>Second paragraph.</p><img src="b.png"><p>Third.</p>'],
-        ['<p>All new text.</p>', '<img src="first.png"><p>one</p><p>two</p><p>three</p><p><img src="late.png"></p>'],
-        ['<p>No images &ldquo;here&rdquo; <br/></p>', '<p>plain original</p>'],
-        ['', '<p>t</p><p><img src="only.png"></p>'],
-        ["<p class='x'>a &amp; b &ldquo;q&rdquo;</p><p>second &nbsp; para</p>", '<p>a &amp; b “q”</p><p><img src="k.png"></p><p>second   para</p>'],
-        ['<p>kept</p><img src="same.png"><p>after</p>', '<p>kept</p><img src="same.png"><p>after</p><img src="">']
-      ])
-    }
-  },
-  {
-    module: 'polish',
-    cases: {
-      bare: run(bare, [['她说：“我们走吧。”他，没有 回头… — ·,.!?'], [''], ['plain words']]),
-      split_for_polish: run(splitForPolish, [[POLISH_HTML], [POLISH_HTML, 100], ['<p>她<strong>没有</strong>回头。</p>'], [''], ['<p>a</p> loose <p></p><h1>t</h1>'], [CHAPTER]]),
-      build_polish_prompt: run(buildPolishPrompt, [
-        ['n={n}|prev={prev}|part={part}', ['他来了。她走了。'], ['前面一句。最后一句！']], ['n={n}|prev={prev}|part={part}', ['开头。'], null],
-        ['{part} {part} {n}', ['含 $& 和 $$ 和 $1 的段落'], ['无标点的前文']], ['{prev}', ['x'], ['一句话。“带引号的结尾。”']], ['{prev}', ['x'], []]
-      ]),
-      parse_polished: run(parsePolished, [['说明\n<p>一</p>\n<p class="x">二</p>'], ['一\n\n二'], ['<p> </p><p>&nbsp;</p>'], [''], ['<P>caps</P>\n<p>multi\nline</p>']]),
-      validate_polished: run(validatePolished, [
-        [['她说：“我们走吧。”他没有回头。'], ['她说：“我们走吧。”他并没有回头。']], [['她说：“我们走吧。”他没有回头。'], []],
-        [['她说：“我们走吧。”他没有回头。'], ['她说：“我们不走了。”他没有回头，' + '一'.repeat(40) + '。']], [['a', 'b', 'c', 'd'], ['a']],
-        [['短。'], ['短短短短短短短短短短。']], [[''], ['x']], [['他没有回头。'], ['他没有回头']]
-      ]),
-      assemble_polished: run(assemblePolished, [[POLISH_SEGS, [['A'], null, ['B', 'C']]], [POLISH_SEGS, []], [[], []]])
-    }
-  },
-  {
-    module: 'chapter_index',
-    cases: {
-      build_chapter_index: run(buildChapterIndex, [[BOOK, 'd2'], [BOOK, 'd2', { agentTools: true, markers: { d1: 'in context', d3: 'read this turn' } }], [BOOK, null], [[BOOK[0]], 'd1'], [BIG_BOOK, 'b0', { agentTools: true }], [BIG_BOOK, 'b40']]),
-      pack_chapters_into_batches: run(packChaptersIntoBatches, [[BOOK, 100], [BOOK, 10], [[], 50], [BOOK, 100000]]),
-      analyze_batch_tokens: run(() => ANALYZE_BATCH_TOKENS, [[]]),
-      analyze_batch_chars: run(analyzeBatchChars, [['grok', 1], ['grok', 0], ['anthropic', 0.5], ['nope', 0.9], ['ollama', 1.5], ['moonshot', 1]])
-    }
-  },
-  {
-    module: 'dynamic_context',
-    cases: {
-      render_ledger_chapter: run(renderLedgerChapter, [['T', CHAPTER, 20000], ['T', CHAPTER, 10], ['', '', 5]]),
-      ledger_block: run(ledgerBlock, [[BOOK[1]], [BOOK[1], 'update'], [{ ...BOOK[1], content: DIFFED }, 'fresh', 30]]),
-      build_ledger_messages: run(buildLedgerMessages, [[BOOK, ['d1', 'd3']], [BOOK, []], [BOOK, ['zz']], [BOOK, [{ id: 'd1', text: 'FROZEN\n' }, 'd3', { id: 'd4' }], 50, { agentTools: true }], [BOOK, ['d5'], 20]]),
-      build_volatile_tail: run(volatileTail, [
-        [BOOK, 'd2', ''], [BOOK, 'd2', '<p>选中 <img src="s"> 文本</p>', { agentTools: true, markers: { d1: 'in context' } }], [[BOOK[1]], 'd2', ''], [BOOK, 'zz', ''],
-        [[{ ...BOOK[1], content: DIFFED }, BOOK[0]], 'd2', '', { agentTools: true }], [BOOK, 'd3', 'sel only'],
-        [BOOK, 'd2', '', { agentTools: true, activeCopyOlder: true }], [BOOK, 'd2', '', { activeCopyOlder: true }],
-        [BOOK, 'd2', '', { agentTools: true, indexOverride: 'CHAPTER INDEX: unchanged', activeOverride: 'ACTIVE LINE', pinnedBlock: 'PINS' }],
-        [BOOK, 'd2', 'sel', { agentTools: true, indexOverride: '', activeOverride: 'ignored', pinnedBlock: 'PINS' }]
-      ]),
-      diff_tail_parts: run(diffTailParts, [
-        [TAIL_FULL, null, [], 't2'], [TAIL_FULL, SENT_T1, ['t1'], 't2'], [TAIL_FULL, SENT_T1, [], 't2'],
-        [{ ...TAIL_FULL, index: 'CHAPTER INDEX:\n#1 B' }, SENT_T1, ['t1'], 't2'], [{ ...TAIL_FULL, active: { ...TAIL_FULL.active!, hash: 'h2b' } }, SENT_T1, ['t1'], 't2'],
-        [{ ...TAIL_FULL, active: { ...TAIL_FULL.active!, id: 'd3' } }, SENT_T1, ['t1'], 't2'], [{ index: '', attachments: '', active: null }, SENT_T1, ['t1'], 't2']
-      ]),
-      pinned_updates: run(pinnedUpdates, [
-        [[PIN('p1', 1, '<p>one</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], null, [], 't2', {}, []],
-        [[PIN('p1', 1, '<p>one, edited</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], null, [], 't2', {}, []],
-        [[PIN('p1', 1, '<p>one, edited</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], { p1: { hash: hashContent('<p>one, edited</p>'), turn: 't1' } }, ['t1'], 't2', {}, []],
-        [[PIN('p1', 1, '<p>one, edited</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], { p1: { hash: hashContent('<p>one, edited</p>'), turn: 't1' } }, [], 't2', {}, []],
-        [[PIN('p3', 3, '<p>new pin</p>')], [{ id: 'p1', hash: 'h' }, { id: 'p2', hash: 'h' }], null, [], 't2', { p1: '#1 "Ch1"' }, ['p2']],
-        [[], [{ id: 'p1', hash: 'h' }], { p1: { hash: 'unpinned', turn: 't1' } }, ['t1'], 't2', { p1: '#1 "Ch1"' }, []],
-        [[PIN('p1', 1, '<p>one</p>')], [{ id: 'p1', hash: hashContent('<p>one</p>') }], { p1: { hash: 'unpinned', turn: 't1' } }, ['t1'], 't2', {}, []],
-        [[], [], { p5: { hash: 'x', turn: 't1' } }, ['t1'], 't2', {}, []]
-      ])
-    }
-  },
-  {
     module: 'context_ledger',
     cases: {
       hash_content: run(hashContent, [[''], ['abc'], [CHAPTER], ['😀 emoji'], ['x'.repeat(5000)]]),
@@ -503,47 +283,6 @@ const MODULES: Module[] = [
     }
   },
   {
-    module: 'context_selection',
-    cases: {
-      extract_keywords: run(extractKeywords, [['Please write about the Dragon King and chapter 3 这是一个测试句子'], ['短'], ['aaa'], [Array.from({ length: 100 }, (_, i) => `word${i}`).join(' ')], ['日本語のテキスト and MIXED Case'], ['中文很长的一段话'.repeat(20), 10], ['']]),
-      pinned_context_ids: run(pinnedContextIds, [
-        [[{ id: 'a', pinned: true, chars: 100 }, { id: 'b', chars: 50 }, { id: 'c', pinned: true, chars: 20_000 }, { id: 'd', pinned: true, chars: 300 }], 'c'],
-        [[{ id: 'a', pinned: true, chars: 30_000 }, { id: 'b', pinned: true, chars: 40_000 }, { id: 'c', pinned: true, chars: 20_000 }], null],
-        [[{ id: 'a', pinned: true, chars: 10 }, { id: 'b', pinned: true, chars: 10 }], 'x', 15],
-        [[], null],
-        [[{ id: 'a', pinned: false, chars: 1 }], null]
-      ]),
-      pinned_budget: run(() => PINNED_CONTEXT_CHARS, [[]]),
-      select_reference_chapters: run(selectReferenceChapters, [
-        [SEL({ promptText: '对照大纲，写龙王出场', recentHistory: ['x', '第四章 ok'] })],
-        [SEL({ promptText: 'Dragon king please', activeDocumentId: 'c1', previousAttachedIds: ['c4'], modelReadIds: ['c5'], ledgerIds: ['o', 'c1'] })],
-        [SEL({ activeDocumentId: null })],
-        [SEL({ promptText: 'dragon' }), { maxTotalChars: 100 } as SelectionOptions],
-        [SEL({ promptText: 'dragon', recentHistory: ['大纲', 'a', 'b', 'c', 'd'] }), { scoreThreshold: 0, perDocChars: 5 }],
-        [SEL({ promptText: '大纲 第一章 Notes', activeDocumentId: 'c5', previousAttachedIds: ['c1', 'c2'], ledgerIds: ['c5', 'c2'] })]
-      ])
-    }
-  },
-  {
-    module: 'context_window',
-    cases: {
-      resolve_context_window_tokens: run(resolveContextWindowTokens, [['grok', 'grok-4.6'], ['grok', 'grok-3-mini'], ['openai', 'gpt-4o-mini'], ['openai', 'GPT-4.1-nano'], ['anthropic', 'claude-opus-4-8'], ['gemini', 'gemini-2.5-pro'], ['ollama', 'qwen3'], ['ollama', 'qwen3', 262144], ['runpod', ''], ['grok', 'grok-4.6', 0], ['moonshot', 'kimi-k3'], ['moonshot', 'kimi-k2.7-code'], ['moonshot', ''], ['anthropic', 'claude-sonnet-5-5'], ['anthropic', 'claude-opus-4-6'], ['anthropic', 'claude-opus-4-5-20251101'], ['anthropic', 'claude-haiku-4-5-20251001']]),
-      estimate_tokens: run(estimateTokens, [[''], ['hello world'], ['你好世界'], ['mixed 中文 text'], ['a']]),
-      tokens_to_chars: run(tokensToChars, [[1000, 0], [1000, 1], [1000, 0.5], [1000, 2], [1000, -1], [7, 0.3]]),
-      history_budget_chars: run(historyBudgetChars, [[{ contextTokens: 131072, maxOutputTokens: 16384, fixedTokens: 30000, cjkRatio: 0.8 }], [{ contextTokens: 32768, maxOutputTokens: 16384, fixedTokens: 20000, cjkRatio: 0 }], [{ contextTokens: 200000, maxOutputTokens: 4096, fixedTokens: 0, cjkRatio: 0.123 }]]),
-      cjk_ratio_of: run(cjkRatioOf, [[''], ['abc'], ['你好'], ['你好ab'], ['㐀豈 x']])
-    }
-  },
-  {
-    module: 'provider_profile',
-    cases: {
-      get_cache_profile: run(getCacheProfile, [['grok'], ['ollama'], ['anthropic'], ['openai'], ['gemini'], ['runpod'], ['nope'], ['moonshot']]),
-      target_prompt_tokens: run(targetPromptTokens, [[getCacheProfile('grok'), 256000], [getCacheProfile('grok'), 131072], [getCacheProfile('ollama'), 262144]]),
-      uses_responses_api: run(usesResponsesApi, [['grok', ''], ['openai', 'https://api.openai.com/v1'], ['openai', 'https://API.openai.com'], ['openai', 'https://api.openai.com.evil.example/v1'],
-        ['openai', 'http://127.0.0.1:8090/v1'], ['openai', ''], ['ollama', 'https://api.openai.com/v1'], ['anthropic', 'https://api.anthropic.com/v1']]),
-    }
-  },
-  {
     module: 'protocol_choice',
     cases: {
       resolve_document_protocol: run(resolveDocumentProtocol, [['grok', undefined], ['grok', 'tools'], ['ollama', 'auto' as DocumentProtocol], ['runpod', 'markup'], ['openai', undefined], ['gemini', 'auto' as DocumentProtocol], ['weird', undefined], ['moonshot', undefined]])
@@ -557,20 +296,6 @@ const MODULES: Module[] = [
     }
   },
   {
-    module: 'tool_call_stream',
-    cases: {
-      partial_string_argument: run(partialStringArgument, [['{"html": "<p>Hal', 'html'], ['{"html":"a\\"b\\n\\u00e9', 'html'], ['{"chapter": "3", "html": "<p>x</p>"}', 'html'], ['{"html": 5}', 'html'], ['{"other": "x"}', 'html'], ['{"html"', 'html'], ['{"html" :\n "tail\\', 'html'], ['', 'html']]),
-      apply_tool_call_delta: run(applyDeltas, [
-        [[{ index: 0, id: 'c1', function: { name: 'read_chapter', arguments: '{"cha' } }, { index: 0, function: { arguments: 'pter": "2"}' } }]],
-        [[{ index: 1, function: { name: 'x', arguments: 'junk' } }, { index: 0, id: 'a', function: { name: 'y' } }]],
-        [[{ index: 0, function: { name: 'x', arguments: '{"a":1}' } }, { index: 0, function: { arguments: '{"a":2}' }, replace: true }]],
-        [[{ function: { name: 'n', arguments: '{}' }, signature: 'sig' }, { index: 0, function: { arguments: '' } }]],
-        [[{ index: 0, function: { arguments: '{"no":"name"}' } }]],
-        [[]]
-      ])
-    }
-  },
-  {
     module: 'stream_handlers',
     cases: {
       constants: run(() => ({ NO_ACTION_RETRY_INSTRUCTION, MAX_NO_ACTION_RETRIES, ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, RECONNECT_FAILED_NOTICE, STEP_LIMIT_NOTE }), [[]]),
@@ -580,65 +305,6 @@ const MODULES: Module[] = [
         [{ canvasIssue: 'truncated', editFailedCount: 1, exhaustedNoActionRetries: false, reinsertedImages: 1, strayMarkup: 1 }],
         [{ canvasIssue: 'elided', editFailedCount: 2, exhaustedNoActionRetries: true, reinsertedImages: 2, strayMarkup: 2, selectionGone: true, unretriableFailedUpdate: true, toolCallProducedNothing: true }],
         [{ canvasIssue: null, editFailedCount: 0, exhaustedNoActionRetries: false, reinsertedImages: 0, strayMarkup: 3, unretriableFailedUpdate: true }]
-      ])
-    }
-  },
-  {
-    module: 'edit_hints',
-    cases: {
-      text_similarity: run(textSimilarity, [['abcd', 'abcd'], ['abcd', 'abce'], ['', 'x'], ['a', 'a'], ['你好世界', '你好中国'], ['abcdef', 'xyz']]),
-      describe_differences: run(describeDifferences, [
-        [HINT_HTML, '<p>她说："我们走吧。"他没有回头，风从巷口灌进来 -- 冷得很。</p>'],
-        ['<p>it&#39;s a &amp; b … done</p>', "<p>it's a & b ... done</p>"], ['<p>plain</p>', '<p>plain</p>'], ['<p>a\u00a0b</p>', '<p>a b</p>']
-      ]),
-      nearest_paragraph: run(nearestParagraph, [
-        [HINT_HTML, '<p>她说："我们走吧。"他没有回头，风从巷口灌进来 -- 冷得很。</p>'], [HINT_HTML, '<p>第二段很普通。</p><p>more</p>'],
-        [HINT_HTML, '<p>completely unrelated english text here</p>'], [HINT_HTML, ''], [HINT_HTML, '<p>第二段普通</p>']
-      ]),
-      nearest_hint: run(nearestHint, [[HINT_HTML, '<p>她说："我们走吧。"他没有回头，风从巷口灌进来 -- 冷得很。</p>'], [HINT_HTML, '<p>nothing like it at all</p>'], [`<p>${'长'.repeat(700)}</p>`, `<p>${'长'.repeat(690)}</p>`]])
-    }
-  },
-  {
-    module: 'plan',
-    cases: {
-      apply_plan_update: run(applyPlanUpdate, [
-        [[], [{ title: '第一章' }, { title: '第二章', status: 'in_progress' }], undefined],
-        [PLAN, [{ id: 'b', status: 'done' }, { id: 'c', status: 'in_progress' }], undefined],
-        [PLAN, [{ id: 'zz', status: 'done' }], true], [PLAN, [{ id: 'a', title: '第一章（改）', status: 'completed' }], true],
-        [PLAN, [{ title: 'x' }, { title: 'x' }], undefined], [PLAN, [{ id: 1, title: 'num', status: 'cancelled' }, { id: 1, title: 'dup' }], undefined],
-        [[], [], undefined], [[], [{ status: 'done' }], undefined], [PLAN, 'junk', undefined],
-        [PLAN, [{ id: 'c6', title: '第六章', status: 'in_progress' }, { id: 'a', status: 'done' }], true]
-      ]),
-      previous_turn_plan: run(previousTurnPlan, [
-        [[{ id: 'u1', role: 'user' }, { id: 'a1', role: 'assistant', agent: { plan: PLAN } }, { id: 'u2', role: 'user' }, { id: 'a2', role: 'assistant' }], 'a2'],
-        [[{ id: 'a1', role: 'assistant', agent: { plan: [{ id: 'x', title: 'done', status: 'done' }] } }, { id: 'a2', role: 'assistant' }], 'a2'],
-        [[{ id: 'a1', role: 'assistant', agent: { plan: PLAN } }, { id: 'a0', role: 'assistant' }, { id: 'a2', role: 'assistant' }], 'a2'],
-        [[{ id: 'a1', role: 'assistant', agent: { plan: PLAN } }], 'new']
-      ]),
-      render_plan: run(renderPlan, [[PLAN], [[{ id: 'a', title: 'only', status: 'done' }]], [[]]]),
-      next_plan_item: run(nextPlanItem, [[PLAN], [[{ id: 'a', title: 'x', status: 'done' }]]]),
-      unfinished_plan_items: run(unfinishedPlanItems, [[PLAN]])
-    }
-  },
-  {
-    module: 'conversation_summary',
-    cases: {
-      constants: run(() => ({ SUMMARY_SYSTEM_PROMPT, KEEP_FRACTION, SUMMARY_RESERVE_CHARS, SUMMARY_INPUT_CHARS, SUMMARY_MESSAGE_CHARS, SUMMARY_MIN_KEEP }), [[]]),
-      plan_conversation_summary: run(planConversationSummary, [
-        [SUMMARY_TURNS(5), 20_000, null], [SUMMARY_TURNS(10), 16_000, null], [SUMMARY_TURNS(10), 16_000, { upToId: 'u6', text: 'NOTE' }],
-        [SUMMARY_TURNS(12), 10_000, { upToId: 'u2', text: 'OLD' }], [SUMMARY_TURNS(10), 10_000, { upToId: 'gone', text: 'OLD' }],
-        [SUMMARY_TURNS(3, 5_000), 100, null], [[{ id: 'i', role: 'user', content: '', images: ['data:x'] }, ...SUMMARY_TURNS(4, 3_000)], 7_000, null], [[], 10, null]
-      ]),
-      build_summary_request: run(buildSummaryRequest, [
-        [null, SUMMARY_TURNS(2, 30)], ['PRIOR', SUMMARY_TURNS(2, 30)], [null, [{ id: 'i', role: 'user', content: '  ', images: ['data:x'] }]],
-        ['P', Array.from({ length: 40 }, (_, i) => ({ id: `m${i}`, role: i % 2 ? 'assistant' : 'user', content: `m${i}:` + 'y'.repeat(4_600) }) as SummarizableMessage)]
-      ]),
-      parse_summary_reply: run(parseSummaryReply, [['Here.\n<summary>\n1. x\n</summary>\ndone'], ['plain'], ['<summary>  </summary>'], [''], ['<SUMMARY>a</SUMMARY>']]),
-      summary_messages: run(summaryMessages, [['NOTE'], ['two\nlines']]),
-      build_summary_instruction: run(buildSummaryInstruction, [[null, false], ['  写 \n 第三章  ', true], ['x'.repeat(100), false], ['', true]]),
-      plan_conversation_summary_weighted: run(planConversationSummary, [
-        [SUMMARY_TURNS(4, 100).map((m, i) => (i === 2 ? { ...m, weight: 20_000 } : m)), 10_000, null],
-        [summarizableHistory(TT_ENTRIES, TT_UNITS, TT), 400, null]
       ])
     }
   },
@@ -666,127 +332,8 @@ const MODULES: Module[] = [
         ['claude-sonnet-4-5-20250929', 'low', 2000], ['claude-3-7-sonnet-latest', 'medium', 8192]
       ])
     }
-  },
-  {
-    module: 'turn_transcripts',
-    cases: {
-      plan_history_units: run(planHistoryUnits, [[TT_ENTRIES, TT], [TT_ENTRIES, {}], [[], TT]]),
-      transcript_weight: run(transcriptWeight, [[TT.a0.messages], [[]]]),
-      summarizable_history: run(summarizableHistory, [[TT_ENTRIES, TT_UNITS, TT], [TT_ENTRIES, planHistoryUnits(TT_ENTRIES, {}), {}]]),
-      history_window: run(historyWindow, [
-        [TT_ENTRIES, TT_UNITS, TT, 0, null], [TT_ENTRIES, TT_UNITS, TT, 2, null], [TT_ENTRIES, TT_UNITS, TT, 0, 400],
-        [TT_ENTRIES, TT_UNITS, TT, 0, 10], [TT_ENTRIES, planHistoryUnits(TT_ENTRIES, {}), {}, 0, 30], [TT_ENTRIES, TT_UNITS, TT, 6, null]
-      ])
-    }
-  },
-  {
-    module: 'text_replace',
-    cases: {
-      escape_html_text: run(escapeHtmlText, [['a<b>&c'], ['']]),
-      expand_replacement: run(expandReplacement, [['[$1]', 'ab', ['a']], ['$&-$&', 'x', []], ['$$1', 'x', ['y']], ['$12', 'x', ['a']], ['$12', 'x', Array.from({ length: 12 }, (_, i) => `g${i + 1}`)], ['$2', 'x', ['a']], ['end$', 'x', []]]),
-      replace_in_html_text: run(replaceInHtmlText, [
-        ['<p>小王走了。小王回来。</p><p class="小王"><img alt="小王" src="小王.png">小王</p>', '小王', '阿杰'],
-        ['<p>a & b</p>', '&', 'and'],
-        ['<p>x</p>', 'y', 'z'],
-        ['<p>王小明和王小红</p>', '王(小.)', '李$1', true],
-        ['<p>abc</p>', 'b*', 'x', true],
-        ['<p>abc</p>', '(', 'x', true],
-        ['<p>abc</p>', '', 'x'],
-        ['<p>' + '前'.repeat(20) + '小王' + '后'.repeat(20) + '小王小王小王</p>', '小王', '阿杰'],
-        ['<p>老王<strong>家</strong>的</p>', '王家', '李家']
-      ])
-    }
-  },
-  {
-    module: 'attachments',
-    cases: {
-      constants: run(() => ({ ATTACHMENT_INDEX_LINES, ATTACHMENT_RUN_READ_CAP }), [[]]),
-      attachment_budget_note: run(attachmentBudgetNote, [['A1', 100012]]),
-      parse_chapter_number: run(parseChapterNumber, [['三十五'], ['一百零二'], ['十'], ['十二'], ['两千零五'], ['一万二千三百'], ['３５'], ['42'], ['第三章'], [''], ['abc']]),
-      section_number_of: run(sectionNumberOf, [['第三十章 归来'], ['第30章'], ['第 12 回'], ['Chapter 7: x'], ['30'], ['番外'], ['第一百零二章']]),
-      render_section_list: run(renderSectionList, [
-        [ATTACH_LIST[0], ATTACH_LIST[0].sections], [ATTACH_LIST[1], []], [ATTACH_LIST[0], ATTACH_LIST[0].sections, 2, 1, ' section="第一–二章"'], [ATTACH_LIST[0], ATTACH_LIST[0].sections, 3, 5], [ATTACH_LIST[0], ATTACH_LIST[0].sections, 99, 2]
-      ]),
-      list_section_lines: run(() => LIST_SECTION_LINES, [[]]),
-      find_attachment_range: run(findAttachmentRange, [
-        [SECTIONS, '第1–2章'], [SECTIONS, '1-30'], [SECTIONS, '第三十至二章'], [SECTIONS, '第30章'], [SECTIONS, '番外'], [SECTIONS, '第99–100章'], [SECTIONS, ''], [SECTIONS, '2~2']
-      ]),
-      find_attachment_section: run(findAttachmentSection, [
-        [SECTIONS, '第三十章'], [SECTIONS, '第30章'], [SECTIONS, '30'], [SECTIONS, '归来'], [SECTIONS, '番外'], [SECTIONS, '第99章'], [SECTIONS, ''], [SECTIONS, 'Chapter 2']
-      ]),
-      normalize_attachment_text: run(normalizeAttachmentText, [['\uFEFFa\r\nb\rc'], ['plain'], ['']]),
-      attachment_paragraphs: run(attachmentParagraphs, [[NOVEL_TXT], [WRAPPED_TXT], [''], ['\n\n  \n'], ['一\n\n二\n\n三'], ['a\nb\n\nc\nd\n\ne']]),
-      split_long_paragraph: run(splitLongParagraph, [['短段落'], ['甲'.repeat(2500) + '。' + '乙'.repeat(3000) + '！' + '丙'.repeat(3600)], ['x'.repeat(9001)], ['\u{20000}'.repeat(4500)], [' ' + 'y'.repeat(4000) + ' ']]),
-      attachment_paragraphs_long: run(attachmentParagraphs, [['第一章\n' + '字'.repeat(9000)]]),
-      attachment_sections: run(attachmentSections, [[attachmentParagraphs(NOVEL_TXT)], [['no', 'headings']], [['第一章 起', 'a', '第2章', 'b', 'c']], [[]], [['Chapter IV', 'x', 'chapter 5 the end', 'y', '第一章这一行太长了所以不算标题因为它超过了四十个字符的上限再多写一点再多写一点']]]),
-      resolve_attachment_ref: run(resolveAttachmentRef, [['A2', ATTACH_LIST], ['a1', ATTACH_LIST], ['附件2', ATTACH_LIST], ['原著.txt', ATTACH_LIST], ['原著', ATTACH_LIST], ['A9', ATTACH_LIST], ['', ATTACH_LIST], [null, ATTACH_LIST], ['3', ATTACH_LIST]]),
-      render_attachment_index: run(renderAttachmentIndex, [[ATTACH_LIST], [[]], [ATTACH_LIST, 3]]),
-      render_attachment_part: run(renderAttachmentPart, [[ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 1, null, 20000], [ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 2, 4, 20000], [ATTACH_LIST[0], attachmentParagraphs(NOVEL_TXT), 3, null, 12]]),
-      attachment_chunks: run(attachmentChunks, [[{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 12], [{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 1000, { from: 3, to: 6 }], [{ ref: 'A1', name: '原著.txt' }, attachmentParagraphs(NOVEL_TXT), 1000, { from: 50, to: 60 }], [{ ref: 'A2', name: 'x' }, ['a', 'b', 'c'], 1000, { from: 2, to: 9 }], [{ ref: 'A2', name: 'notes.md' }, ['one', 'two', 'three'], 1000], [{ ref: 'A2', name: 'x' }, [], 10]])
-    }
-  },
-  {
-    module: 'web_text',
-    cases: {
-      constants: run(() => ({ UNTRUSTED_WEB_NOTE, WEB_READ_CAP }), [[]]),
-      render_search_results: run(renderSearchResults, [['红楼梦', [{ title: '甄士隐 - 维基百科', url: 'https://zh.wikipedia.org/wiki/甄士隐', snippet: '谐音"真事隐"' }, { title: 'No snippet', url: 'https://x.org', snippet: '' }]], ['nothing', []]]),
-      render_web_page: run(renderWebPage, [
-        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['# Head', 'one', 'two', 'three'] }, 1, null, 20000],
-        [{ url: 'https://x.org/a', title: '', paragraphs: ['# Head', 'one', 'two', 'three'] }, 2, 3, 20000],
-        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['# Head', 'one', 'two', 'three'] }, 1, null, 12],
-        [{ url: 'https://x.org/a', title: 'A', paragraphs: [] }, 1, null, 100],
-        [{ url: 'https://x.org/a', title: 'A', paragraphs: ['x'] }, 5, null, 100],
-        [{ url: 'https://x.org/p', title: 'P', paragraphs: ['intro', '[image 1: 封面]', 'body', '[image 2]'], images: [{ n: 1, url: 'https://x.org/1.jpg', alt: '封面' }, { n: 2, url: 'https://x.org/2.jpg', alt: '' }] }, 1, null, 20000],
-        [{ url: 'https://x.org/p', title: 'P', paragraphs: ['intro', '[image 1]'], images: [{ n: 1, url: 'https://x.org/1.jpg', alt: '' }] }, 1, 1, 20000]
-      ]),
-      render_web_images: run(renderWebImages, [
-        ['https://x.org/p', [{ n: 1, alt: '封面', bytes: 40_000, placeholder: '{{IMAGE_PLACEHOLDER_0}}' }, { n: 2, alt: '', bytes: 500, placeholder: '{{IMAGE_PLACEHOLDER_1}}' }, { n: 7, error: 'the page has no image 7 (it has 2)' }]],
-        ['https://x.org/p', [{ n: 3, error: 'HTTP 403' }]],
-        ['https://x.org/p', []]
-      ])
-    }
-  },
-  {
-    module: 'retry_policy',
-    cases: {
-      constants: run(() => ({ MAX_TRANSPORT_RETRIES, MAX_RETRY_DELAY_MS, RETRYABLE_STATUSES }), [[]]),
-      is_retryable_status: run(isRetryableStatus, [[429, ''], [503, 'busy'], [400, ''], [401, 'x'], [529, ''], [413, 'prompt is too long'], [408, 'timeout']]),
-      is_context_length_error: run(isContextLengthError, [[400, "This model's maximum context length is 131072 tokens"], [413, 'Prompt is too long'], [422, 'too many tokens in input'], [400, 'bad tool'], [503, 'context length']]),
-      parse_retry_after: run(parseRetryAfter, [['7'], [' 1.5 '], ['0'], ['-3'], ['Wed, 21 Oct 2026 07:28:00 GMT'], [''], [null]]),
-      retry_delay_ms: run(retryDelayMs, [[1, null], [2, null], [4, null], [6, null], [1, 12], [1, 0.4], [3, 600], [0, null]]),
-      with_jitter: run(withJitter, [[1000, 0], [1000, 0.5], [1000, 0.999], [2500, 0.25], [1000, -1], [1000, 2], [1, 0.5]])
-    }
-  },
-  {
-    module: 'system_prompt',
-    cases: {
-      build_chat_system_prompt: run(buildChatSystemPrompt, PROMPT_OPTIONS)
-    }
-  },
-  {
-    module: 'document_tools',
-    cases: {
-      document_tools: run(() => DOCUMENT_TOOLS, [[]]),
-      to_openai_tools: run(toOpenAITools, [[DOCUMENT_TOOLS], [[OTHER_TOOL]]]),
-      to_anthropic_tools: run(toAnthropicTools, [[DOCUMENT_TOOLS]]),
-      to_gemini_tools: run(toGeminiTools, [[DOCUMENT_TOOLS], [[OTHER_TOOL]], [[{ name: 'e', description: '', parameters: { type: 'object', description: '', properties: {}, required: [] } }]], [[]]]),
-      from_openai_tools: run(fromOpenAITools, [[toOpenAITools(DOCUMENT_TOOLS)], [[{ type: 'function', function: { name: 'n', parameters: { type: 'object' } } }, { function: { name: 3, parameters: {} } }, null, 'junk', { function: { name: 'p', parameters: 'bad' } }, { function: { name: 'q', parameters: [] } }]], [[]]])
-    }
   }
 ]
-
-describe('prompt texts', () => {
-  it('the committed prompt texts equal the TypeScript constants', () => {
-    const texts = promptTexts()
-    if (WRITE) {
-      mkdirSync(dirname(PROMPT_TEXTS), { recursive: true })
-      writeFileSync(PROMPT_TEXTS, JSON.stringify(texts, null, 1) + '\n')
-      return
-    }
-    expect(existsSync(PROMPT_TEXTS), `${PROMPT_TEXTS} missing — run: npm run parity:fixtures`).toBe(true)
-    expect(JSON.parse(readFileSync(PROMPT_TEXTS, 'utf8'))).toEqual(texts)
-  })
-})
 
 /**
  * Fixtures whose TypeScript is gone (backend_authority.md phase 4, 2026-10-17):
@@ -795,7 +342,8 @@ describe('prompt texts', () => {
  * scripts/test_parity.py checks; an intended change to the Python rewrites
  * them with `python3 scripts/test_parity.py --rewrite-python-owned`.
  */
-const PYTHON_OWNED = ['freshness', 'policy', 'chapters', 'invocations', 'reminders', 'run_compaction']
+const PYTHON_OWNED = ['freshness', 'policy', 'chapters', 'invocations', 'reminders', 'run_compaction',
+  'llm_context', 'pending_changes', 'image_preservation', 'polish', 'chapter_index', 'dynamic_context', 'context_selection', 'context_window', 'provider_profile', 'tool_call_stream', 'edit_hints', 'plan', 'conversation_summary', 'turn_transcripts', 'text_replace', 'web_text', 'retry_policy', 'system_prompt', 'document_tools', 'attachments']
 
 describe('python-owned fixtures', () => {
   for (const module of PYTHON_OWNED) {

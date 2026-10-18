@@ -1,7 +1,6 @@
 import type { StateCreator } from 'zustand'
 import type { ChatMessage } from '../../types/chat'
 import type { AppState } from '../types'
-import { clearChatSummary } from '../chatSummaryStore'
 
 export interface ChatSlice {
   // Chat state
@@ -80,8 +79,7 @@ export const createChatSlice: StateCreator<AppState, [], [], ChatSlice> = (set) 
       : { editLockedIds: ids }),
   addMessage: (message) => set((state) => ({ messages: [...state.messages, message] })),
   clearChat: () =>
-    set(state => ({
-      ...(state.activeBookId ? (clearChatSummary(state.activeBookId), {}) : {}),
+    set(() => ({
       messages: [
         {
           id: `welcome-${Date.now()}`,

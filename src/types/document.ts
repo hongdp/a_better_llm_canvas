@@ -46,3 +46,20 @@ export interface DocumentVersion {
   title: string
   content: string
 }
+
+/** A book's reference file as the server lists it (attachments_and_web.md §1). */
+export interface AttachmentSection {
+  title: string
+  from: number
+  to: number
+}
+
+export interface AttachmentMeta {
+  id: string
+  /** "A1", "A2"… in the book's order. */
+  ref: string
+  name: string
+  chars: number
+  paragraphs: number
+  sections: AttachmentSection[]
+}
