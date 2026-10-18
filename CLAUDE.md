@@ -55,7 +55,6 @@ src/
     documentSync.ts       # Chapter revisions: unsynced flag, server copies, 409 conflicts
     bookEvents.ts         # SSE subscription: other tabs'/devices' writes, live; run.* → runEvents
     runEvents.ts          # Emitter the chat hook subscribes to for a server run's events
-    chatSummaryStore.ts   # The tab's copy of the conversation summary, per book (localStorage)
     __tests__/            # persistence + storage API tests
   components/             # React UI components
     Editor.tsx            # TipTap editor host (fragile editor↔store sync — see SKILL.md)
@@ -68,20 +67,18 @@ src/
     useChatLLM.ts         # The chat as a renderer of server runs: posts each turn (and the
                           #   Polish button) to /api/books/{id}/runs, renders run.* events
     chat/                 # Extracted chat-flow modules: streamHandlers,
-                          #   dynamicContext, serverRunEvents (pure reducers), types
+                          #   serverRunEvents (pure reducers), selectionReplace, types
     useDiffHandlers.ts  useModelFetcher.ts  useImageUpload.ts
   services/
     llm.ts                # streamLLM: every generation is a backend job (no in-browser transport)
     serverRuns.ts         # The run API client (start / list / stop / resume / start / remove / view)
-    attachments.ts        # Attachment + web API client; an attachment's text fetched once per tab
+    attachments.ts        # Attachment list / upload / remove (reading them is the server run's)
     imageGen.ts  imageGenModels.ts
   utils/
     convert.ts  diff.ts  text.ts  export.ts        # pure helpers (well tested)
-    llmContext.ts  chapterIndex.ts  contextSelection.ts  systemPrompt.ts
+    paragraphs.ts  contextLedger.ts  reasoningEffort.ts  protocolChoice.ts  titleSync.ts  # used + parity
     providers.ts          # The provider registry: one row per provider (defaults, labels, discovery)
-    conversationSummary.ts  # History past the window as a fixed-section note (§0.9)
-    turnTranscripts.ts    # Earlier turns replayed as sent (cache_continuity.md §3.1)
-    attachments.ts  webText.ts  # Attachment paragraphs/sections/index/parts; web result text (parity)
+    runDefaults.ts        # The Settings form's run defaults (the server's wc_text/policy.py applies them)
   i18n/                   # en.ts / zh.ts translation bundles + index.ts hook
   parity/__tests__/       # TS↔Python parity cases; checks fixtures are current, or writes them
 scripts/
@@ -264,9 +261,9 @@ and it was a second copy of every provider to keep in step. All responses
 **stream**; never block the UI. The **Canvas Markup Protocol** wraps document
 updates in `<canvas>...</canvas>` blocks so the frontend can route document
 content to the editor and conversational text to chat. The static system
-prompt (`utils/systemPrompt.ts`) carries the protocol ONLY — channels, markup,
+prompt (`wc_text/system_prompt.py`, texts in `wc_text/data/prompt_texts.json`) carries the protocol ONLY — channels, markup,
 status line. With the agent tools on, a markup model gets ONE consolidated
-text (`agentMarkupPrompt`: what you edit / what you can do / how a turn goes /
+text (`agentMarkupPrompt` in `prompt_texts.json`: what you edit / what you can do / how a turn goes /
 format / examples); the legacy single-document rules stay byte-identical for
 the tools-off configuration. grok also gets `update_document` natively beside
 its tag (`nativeOnMarkup`): grok-4.7 delivers reference documents through a
@@ -330,7 +327,7 @@ mirror in the frontend.
 **Between steps the loop talks back** (agentic_chat_loop.md §0.8, after
 Grok Build's harness): `<system-reminder>` blocks appended to a step's last
 result message — never a message of their own. A failed SEARCH quotes the
-nearest paragraph (`utils/editHints`); three identical steps without a write
+nearest paragraph (`wc_text/edit_hints`); three identical steps without a write
 get one nudge (server runs pause at six); a step that reasoned past
 `longReasoningReminderTokens` without writing makes the step after next
 say "act, don't think" (one step late on purpose, measured on grok-4.7);
@@ -350,7 +347,7 @@ shows the turn split there (`components/chatRows`, display only); the turn after
 previous one was stopped; a no-action reply claiming a write that never
 happened gets the editor's facts once (`claimsOwnWrite`); `wrapReminder`
 escapes its own tag in quoted text. History past the budget is **summarized**, not
-cut (`utils/conversationSummary`, agentic_chat_loop.md §0.9): the dropped
+cut (`wc_text/conversation_summary`, agentic_chat_loop.md §0.9): the dropped
 prefix becomes a fixed-section note placed after the ledger, refreshed only
 when the cut moves past it; each transport keeps its own copy.
 **Across turns the request only grows** (docs/features/cache_continuity.md,
@@ -358,7 +355,7 @@ agent turns): a finished turn's **transcript** (`AgentRun.transcript()`:
 its final user message as sent, every step, the step that ended it) is
 stored — `turn_transcripts` on the server, tab memory otherwise — and the
 next turn replays it in place of the collapsed pair
-(`utils/turnTranscripts`). The tail sends the chapter index, active
+(`wc_text/turn_transcripts`). The tail sends the chapter index, active
 chapter and attachments list in full only when the copy the model has is
 stale or not replayed (`diffTailParts`); the ledger is **frozen** between
 summaries and pin changes go into the tail (`pinnedUpdates`); a summary is
@@ -369,7 +366,7 @@ old read results are elided in place before a step that would not fit the
 window (`agent/runCompaction`, `promptTokenLimit`; the latest step's results
 are never touched), sized by the last step's measured prompt tokens.
 **A failing step** (agentic_chat_loop.md §0.10): a call that produced
-nothing is retried (`utils/retryPolicy`; 429/5xx/connection, `Retry-After`,
+nothing is retried (`wc_text/retry_policy`; 429/5xx/connection, `Retry-After`,
 never a context-length error) by the backend job;
 a server-run step that broke mid-reply or looped (xAI's repetition-check
 headers, which END the generation on a trigger) is redone once; when that
@@ -390,7 +387,7 @@ and `grep` takes `patterns`; a whole rewrite of a plain chapter (bare
 `plan_done` (an attribute on tags); eight look-up-only steps in a row get one
 reminder.
 `replace_text` replaces a word or name across chapters in one call, in the
-text only (`utils/textReplace`), each chapter a reviewable diff; `expect`
+text only (`wc_text/text_replace`), each chapter a reviewable diff; `expect`
 refuses on a different count, `preview` only lists.
 
 **The CHAPTER INDEX lists chapters by position (`#n`) and title only** (with the
@@ -406,18 +403,18 @@ active chapter, and only the chapters the writer pinned
 (`CanvasDocument.pinned`, `documents.pinned`, ≤ 60,000 chars,
 `pinnedContextIds`) in the ledger ahead of the history; the model reads the
 rest with its tools, and the bubble carries no `[Attached Context]` label.
-The keyword scorer (`selectReferenceChapters`) runs only with the tools off.
+The keyword scorer (`select_reference_chapters`) runs only with the tools off.
 Do not reintroduce automatic admissions on agent turns: measured, they went
 unused and their churn cost the cache.
 
 **Two document protocols, one per model.** The markup above is one of them;
-the other is native tool calling (`utils/documentTools.ts`). `ProviderConfig.
+the other is native tool calling (`wc_text/document_tools.py`). `ProviderConfig.
 documentProtocol` picks per provider (`utils/protocolChoice.ts`), default
 `auto`. Neither wins everywhere, and both halves are measured: a local
 Qwen3-14B never emits `<canvas>` but calls `update_document` correctly, while
 grok sends a whole tool call in ONE delta (113 chars) against 54 content
 deltas — so tool calling has no live preview there. Two rules follow:
-`buildChatSystemPrompt` requires `protocol` and teaches exactly one (describing
+`build_chat_system_prompt` requires `protocol` and teaches exactly one (describing
 tools to a request that sends none silently disables editing), and the
 `<doc_status>` machinery above applies to the markup protocol only — a tool
 call IS the declaration, so text-based failure detection is skipped when one is
@@ -426,9 +423,9 @@ present.
 **Adding a provider** (2026-10-11): the id in `LLMProvider` (`types/llm.ts`),
 a row in the registry (`utils/providers.ts`: defaults, labels, placeholders,
 help text, how its models are discovered — the UI, persistence and the model
-fetcher iterate it), a line in each measured table (`reasoningEffort`,
-`providerProfile`, `contextWindow`, `chapterIndex` batch sizes, with their
-`wc_text` ports and parity cases), and the wire format on the server: a
+fetcher iterate it), a line in each measured table (`reasoningEffort` with its
+`wc_text` port and parity cases; `wc_text/provider_profile.py`,
+`context_window.py`, `chapter_index.py` batch sizes, Python only), and the wire format on the server: a
 `Dialect` row in `wc_providers/openai_compat.py` for an OpenAI-compatible
 API, a module of its own otherwise, named in `wc_providers.dispatch`.
 
@@ -546,18 +543,21 @@ localStorage pointer — a new device must land in the book last worked in.
   (inline arrows in effect deps re-run the effect every render, which is exactly
   how that wedge happens).
 - **New logic is not "done" until `npm test` passes and the logic is covered.**
-- **Ported text logic has two implementations.** The functions in
-  `scripts/wc_text/` mirror `src/utils/*` and must agree byte for byte.
-  Changing one of those TypeScript functions: port the change, run
-  `npm run parity:fixtures`, then `pytest scripts/test_parity.py`. The
-  vitest check fails on stale fixtures, so a one-sided change cannot pass
-  `npm test`. The prompt texts live in `scripts/wc_text/data/prompt_texts.json`
-  as data written from `systemPrompt.ts` — never edit that file by hand.
-  Six fixtures are **Python-owned** since phase 4 (`freshness`, `policy`,
-  `chapters`, `invocations`, `reminders`, `run_compaction`: their TypeScript
-  went with the tab's loop) — golden files; after an intended change to that
-  Python, `python3 scripts/test_parity.py --rewrite-python-owned` and review
-  the diff. The loop itself is tested in `scripts/test_agent.py` / `test_runs.py`.
+- **Text logic the frontend still runs has two implementations** (`text`,
+  `paragraphs`, `diff`, `diff_resolution`, `context_ledger`, `protocol_choice`,
+  `title_sync`, `stream_handlers`, `reasoning_effort`): `scripts/wc_text/`
+  mirrors `src/utils/*` byte for byte. Changing one of those TypeScript
+  functions: port the change, run `npm run parity:fixtures`, then
+  `pytest scripts/test_parity.py`. The vitest check fails on stale fixtures,
+  so a one-sided change cannot pass `npm test`.
+- **Everything else is Python only** (2026-10-17/18: the TypeScript nothing in
+  the frontend ran was deleted — the agent loop, then the request assembly,
+  prompts, summaries, transcripts, attachments, web text, polish, retries).
+  Their fixtures are **Python-owned** golden files (`PYTHON_OWNED` in
+  `test_parity.py`): after an intended change, `python3 scripts/test_parity.py
+  --rewrite-python-owned` (it rewrites only outputs that changed) and review
+  the diff. The prompt texts are data: edit `scripts/wc_text/data/prompt_texts.json`
+  itself. The loop is tested in `scripts/test_agent.py` / `test_runs.py`.
 
 ## Git Workflow
 

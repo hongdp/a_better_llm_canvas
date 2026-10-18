@@ -9,7 +9,7 @@ import type { CanvasDocument } from '../types/document'
 import { localStorage } from './persistence'
 import { DEFAULT_CONFIGS, DEFAULT_SYSTEM_PROMPTS, DEFAULT_IMAGE_GEN_CONFIG, DEFAULT_POLISH_PROMPT } from './defaults'
 import { isProviderId } from '../utils/providers'
-import type { PolishPrompt } from '../utils/polish'
+import type { PolishPrompt } from '../types/llm'
 
 // TODO(security): Implement a Backend-for-Frontend (BFF) layer to store API keys
 // in server-side HttpOnly cookies instead of exposing them to client-side JS.

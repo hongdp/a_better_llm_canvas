@@ -24,7 +24,12 @@ from wc_text import (attachments, web_text, chapter_index, chapters, context_led
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parity", "fixtures")
 #: Fixtures with no TypeScript left to write them (src/parity PYTHON_OWNED).
-PYTHON_OWNED = ("freshness", "policy", "chapters", "invocations", "reminders", "run_compaction")
+PYTHON_OWNED = ("freshness", "policy", "chapters", "invocations", "reminders", "run_compaction",
+                # 2026-10-18: the TypeScript of these went too (nothing in the frontend ran it).
+                "llm_context", "pending_changes", "image_preservation", "polish", "chapter_index", "dynamic_context",
+                "context_selection", "context_window", "provider_profile", "tool_call_stream", "edit_hints", "plan",
+                "conversation_summary", "turn_transcripts", "text_replace", "web_text", "retry_policy", "system_prompt",
+                "document_tools", "attachments")
 
 
 def normalize_diff_ids(html: str) -> str:
@@ -345,6 +350,17 @@ def test_every_fixture_function_has_a_port():
     assert missing == []
 
 
+def _js_numbers(value):
+    """Integral floats as integers, the way JSON.stringify wrote the fixtures (1, not 1.0)."""
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, list):
+        return [_js_numbers(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _js_numbers(v) for k, v in value.items()}
+    return value
+
+
 def rewrite_python_owned() -> None:
     """Recompute every PYTHON_OWNED case's output from the Python, inputs unchanged."""
     for module in PYTHON_OWNED:
@@ -353,7 +369,10 @@ def rewrite_python_owned() -> None:
             fixture = json.load(fh)
         for fn, cases in fixture["cases"].items():
             for case in cases:
-                case["output"] = json.loads(json.dumps(FUNCTIONS[(module, fn)](*case["input"])))
+                output = _js_numbers(json.loads(json.dumps(FUNCTIONS[(module, fn)](*case["input"]))))
+                # Only a changed result is rewritten: an equal one keeps its spelling (key order), so the diff shows the change alone.
+                if output != case["output"]:
+                    case["output"] = output
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(fixture, ensure_ascii=False, indent=1) + "\n")
         print(f"rewrote {path}")

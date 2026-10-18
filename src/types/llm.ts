@@ -231,3 +231,11 @@ export interface SystemPromptTemplate {
 
 /** The shipped model lists, from the provider registry (utils/providers). */
 export { PROVIDER_MODELS } from '../utils/providers'
+
+/** The Polish button's prompt (the server's wc_agent/polish.py applies it). */
+export interface PolishPrompt {
+  /** System prompt; the user's active writing preset is appended to it. */
+  system: string
+  /** User prompt: {n} chunk size, {prev} last sentence before it, {part} the chunk. */
+  template: string
+}
