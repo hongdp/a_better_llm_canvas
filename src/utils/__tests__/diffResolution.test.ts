@@ -245,6 +245,10 @@ describe('pictures under review (2026-10-18)', () => {
     expect(resolveDiffMarkupInHtml(diffed, 'accept')).not.toContain('<img')
     expect(resolveDiffMarkupInHtml(diffed, 'reject')).toContain(PIC)
     expect(resolve(makeEditor(diffed), 'reject')).toContain('<img src="https://pics.example/1.jpg">')
+    // One editor per test: a second makeEditor would leave the first undestroyed, and its timers
+    // firing after the environment is torn down fail the run ("document is not defined").
+    editor?.destroy()
+    editor = null
     expect(resolve(makeEditor(diffed), 'accept')).not.toContain('<img')
   })
 })
