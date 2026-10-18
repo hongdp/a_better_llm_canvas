@@ -494,7 +494,11 @@ class AgentRun:
         for inv, r in native:
             if r["ok"] and self._kind_of(inv) == "read":
                 self.elidable.append({"index": self.last_results_start + len(messages), "trace": r["trace"]})
-            messages.append({"role": "tool", "toolCallId": inv["id"], "name": inv["name"], "content": r["content"]})
+            message = {"role": "tool", "toolCallId": inv["id"], "name": inv["name"], "content": r["content"]}
+            if r.get("images"):
+                # view_images: the pictures travel on the result, each provider rendering them its own way.
+                message["images"] = list(r["images"])
+            messages.append(message)
         lost = (f"- NOT APPLIED: {self.step_dropped} document block(s) in your reply did not reach the document — a full rewrite beside <edit> blocks for the same chapter, "
                 "a rewrite beside a selection rewrite, or markup that could not be read. Write what you still want changed in a reply of its own."
                 if self.step_dropped > 0 else "")

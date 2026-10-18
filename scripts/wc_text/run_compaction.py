@@ -12,10 +12,18 @@ def elided_result_note(trace: str) -> str:
     return f"[This result was elided to keep the conversation within the model's context window: {trace}. Read it again if you need its text.]"
 
 
+#: What one image a view_images result carries costs, as the vision APIs count a ~1024 px picture.
+IMAGE_TOKENS = 1_000
+
+
+def _content_tokens(m: Dict[str, Any]) -> int:
+    return estimate_tokens(m.get("content") or "") + IMAGE_TOKENS * len(m.get("images") or [])
+
+
 def prompt_tokens(messages: List[Dict[str, Any]]) -> int:
     total = 0
     for m in messages:
-        total += estimate_tokens(m.get("content") or "")
+        total += _content_tokens(m)
         for call in m.get("toolCalls") or []:
             total += estimate_tokens(call.get("argumentsText") or "")
     return total
@@ -48,7 +56,7 @@ def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]]
         index = entry["index"]
         m = messages[index] if 0 <= index < len(messages) else None
         if m is not None and index < keep_from:
-            elidable_tokens += max(0, estimate_tokens(m.get("content") or "") - estimate_tokens(elided_result_note(entry["trace"]))) * calibrated["ratio"]
+            elidable_tokens += max(0, _content_tokens(m) - estimate_tokens(elided_result_note(entry["trace"]))) * calibrated["ratio"]
     if tokens - elidable_tokens > limit_tokens:
         return untouched
     out = list(messages)
@@ -61,8 +69,9 @@ def plan_elisions(messages: List[Dict[str, Any]], elidable: List[Dict[str, Any]]
             remaining.append(entry)
             continue
         note = elided_result_note(entry["trace"])
-        tokens += (estimate_tokens(note) - estimate_tokens(m.get("content") or "")) * calibrated["ratio"]
-        out[index] = {**m, "content": note}
+        tokens += (estimate_tokens(note) - _content_tokens(m)) * calibrated["ratio"]
+        # An elided view_images result loses its pictures with its text.
+        out[index] = {**{k: v for k, v in m.items() if k != "images"}, "content": note}
         elided.append(entry["trace"])
     if not elided:
         return untouched

@@ -148,8 +148,8 @@ def readable_paragraphs(html: str, base_url: str = "") -> Tuple[str, List[str], 
     return title, out, images
 
 
-def shrink_image(data: bytes, content_type: str) -> Tuple[bytes, str]:
-    """An image small enough to live inline in a chapter: at most IMAGE_MAX_SIDE on its longest side, as JPEG.
+def shrink_image(data: bytes, content_type: str, max_side: int = IMAGE_MAX_SIDE) -> Tuple[bytes, str]:
+    """An image small enough to live inline in a chapter: at most `max_side` (IMAGE_MAX_SIDE) on its longest side, as JPEG.
 
     Pillow when installed; else ffmpeg when present; else the bytes as they came,
     under MAX_RAW_IMAGE_BYTES. Returns (bytes, mime type).
@@ -160,7 +160,7 @@ def shrink_image(data: bytes, content_type: str) -> Tuple[bytes, str]:
             im = ImageOps.exif_transpose(im)
             if getattr(im, "n_frames", 1) > 1:
                 im.seek(0)
-            im.thumbnail((IMAGE_MAX_SIDE, IMAGE_MAX_SIDE))
+            im.thumbnail((max_side, max_side))
             if im.mode in ("RGBA", "LA", "P"):
                 flat = Image.new("RGB", im.size, (255, 255, 255))
                 flat.paste(im.convert("RGBA"), mask=im.convert("RGBA").split()[-1])
@@ -177,7 +177,7 @@ def shrink_image(data: bytes, content_type: str) -> Tuple[bytes, str]:
     ffmpeg = shutil.which("ffmpeg")
     if ffmpeg:
         try:
-            proc = subprocess.run([ffmpeg, "-loglevel", "error", "-i", "pipe:0", "-vf", f"scale='min({IMAGE_MAX_SIDE},iw)':-2",
+            proc = subprocess.run([ffmpeg, "-loglevel", "error", "-i", "pipe:0", "-vf", f"scale='min({max_side},iw)':-2",
                                    "-vframes", "1", "-f", "image2", "-c:v", "mjpeg", "-q:v", "4", "-y", "pipe:1"],
                                   input=data, capture_output=True, timeout=20)
             if proc.returncode == 0 and proc.stdout:
@@ -422,6 +422,58 @@ async def web_images(username: str, url: str, numbers: List[int]) -> List[Dict[s
             await context.close()
     logger.info("Web images %s: %d of %d fetched", page["url"], sum(1 for o in out if "dataUrl" in o), len(out))
     return out
+
+
+#: The longest side of an image shown to a model (view_images): ~800-1,400 tokens on the vision APIs, against
+#: ~2,000 at the chapter size, and the text in a photo stays legible.
+VIEW_IMAGE_MAX_SIDE = 1024
+_DATA_URL_RE = re.compile(r"^data:(image/[a-z0-9.+-]+);base64,(.+)$", re.I | re.S)
+
+
+async def view_images(username: str, srcs: List[str]) -> List[Dict[str, Any]]:
+    """A chapter's images as the model will see them (wc_agent view_images): one entry per src, a JPEG data URL
+    at most VIEW_IMAGE_MAX_SIDE on its longest side, or the reason it could not be shown.
+
+    An image the chapter holds inline (a data URL) is shrunk here; one it links to is fetched through the
+    browser's request channel like a page's images — public addresses only, its own origin as the referrer.
+    """
+    out: List[Optional[Dict[str, Any]]] = [None] * len(srcs)
+    remote: List[int] = []
+    for i, src in enumerate(srcs):
+        m = _DATA_URL_RE.match(src or "")
+        if m:
+            try:
+                small, mime = await asyncio.to_thread(shrink_image, base64.b64decode(m.group(2)), m.group(1).lower(), VIEW_IMAGE_MAX_SIDE)
+                out[i] = {"dataUrl": f"data:{mime};base64,{base64.b64encode(small).decode()}", "bytes": len(small)}
+            except Exception as exc:  # noqa: BLE001 — a broken inline image is that image's to report
+                out[i] = {"error": f"the image could not be read ({str(exc).splitlines()[0][:120] if str(exc) else type(exc).__name__})"}
+        elif urlparse(src or "").scheme in ("http", "https"):
+            remote.append(i)
+        else:
+            out[i] = {"error": "the image has no address the server can fetch"}
+    if remote:
+        if not available():
+            for i in remote:
+                out[i] = {"error": "the image is on the web and the server has no browser to fetch it"}
+        else:
+            async with _slot(username):
+                browser = await _browser.get()
+                context = await browser.new_context(user_agent=_browser.user_agent, locale="en-US", accept_downloads=False)
+                try:
+                    for i in remote:
+                        parsed = urlparse(srcs[i])
+                        try:
+                            data, ctype = await _fetch_image(context, srcs[i], f"{parsed.scheme}://{parsed.netloc}/")
+                            small, mime = await asyncio.to_thread(shrink_image, data, ctype, VIEW_IMAGE_MAX_SIDE)
+                            out[i] = {"dataUrl": f"data:{mime};base64,{base64.b64encode(small).decode()}", "bytes": len(small)}
+                        except WebError as exc:
+                            out[i] = {"error": str(exc)}
+                        except Exception as exc:  # noqa: BLE001 — a network failure on one image is that image's to report
+                            out[i] = {"error": f"the image could not be fetched ({str(exc).splitlines()[0][:120]})"}
+                finally:
+                    await context.close()
+    logger.info("View images: %d of %d shown", sum(1 for o in out if o and "dataUrl" in o), len(srcs))
+    return [o or {"error": "not fetched"} for o in out]
 
 
 async def web_search(username: str, query: str, max_results: int = 8) -> List[Dict[str, str]]:

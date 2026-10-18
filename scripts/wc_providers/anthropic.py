@@ -102,6 +102,15 @@ def build_anthropic_request(
                 "tool_use_id": message.get("toolCallId") or "",
                 "content": content,
             }
+            if images:
+                # view_images: a tool_result may carry image blocks beside its text.
+                blocks: List[Dict[str, Any]] = [{"type": "text", "text": content}] if content else []
+                for idx, img in enumerate(images):
+                    split = _split_data_url(img)
+                    if split:
+                        blocks.append({"type": "text", "text": f"[Image {idx + 1}]:"})
+                        blocks.append({"type": "image", "source": {"type": "base64", "media_type": split[0], "data": split[1]}})
+                result_block["content"] = blocks
             # Anthropic requires every result for one assistant turn in ONE
             # user message, so consecutive tool messages share it.
             if previous_was_tool and anthropic_messages:
