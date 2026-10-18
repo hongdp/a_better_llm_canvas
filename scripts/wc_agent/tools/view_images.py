@@ -48,7 +48,7 @@ def chapter_images(html: str) -> List[Dict[str, Any]]:
             m = _SRC_RE.search(tag)
             src = (m.group(2) if m.group(2) is not None else m.group(3)) if m else ""
             if src:
-                out.append({"n": len(out) + 1, "paragraph": p["number"], "src": src})
+                out.append({"n": len(out) + 1, "paragraph": p["number"], "src": src, "tag": tag})
     return out
 
 
@@ -106,11 +106,14 @@ async def _execute(args: Dict[str, Any], ctx: ToolContext, call: Dict[str, Any])
         shown: List[str] = []
         lines: List[str] = []
         for img, got in zip(shown_now, fetched):
+            # Its token: written into any chapter, it places this picture there (the book's own numbering,
+            # the same in every turn — server_context.stable_image_registry).
+            token = ctx.images.preserve(img["tag"])
             if got.get("dataUrl"):
                 shown.append(got["dataUrl"])
-                lines.append(f"[Image {len(shown)}] = image {img['n']} of {len(images)}, in ¶{img['paragraph']}")
+                lines.append(f"[Image {len(shown)}] = image {img['n']} of {len(images)}, in ¶{img['paragraph']} — its token: {token}")
             else:
-                lines.append(f"image {img['n']} (¶{img['paragraph']}): not shown — {got.get('error') or 'it could not be fetched'}")
+                lines.append(f"image {img['n']} (¶{img['paragraph']}, token {token}): not shown — {got.get('error') or 'it could not be fetched'}")
         ctx.run.images_viewed += len(shown)
         rest = [i for i in chosen if i not in shown_now]
         more = (f" {len(rest)} more of those are not shown: ask for them with images=[{', '.join(str(i['n']) for i in rest[:VIEW_PER_CALL])}]." if rest else "")
@@ -133,7 +136,9 @@ view_images_tool = Tool(
     description=("Look at the pictures in a chapter: they are sent to you as images, in order. A text read shows a picture only as [image]; "
                  "use this when what you write depends on what a picture shows (describing it, writing the scene it illustrates, a caption). "
                  f"Pick them by paragraph (the ¶ numbers of a read) or by their number in the chapter; at most {VIEW_PER_CALL} per call, {VIEW_PER_RUN} per turn — "
-                 "each image costs about a thousand tokens, so look only at the ones you need."),
+                 "each image costs about a thousand tokens, so look only at the ones you need. "
+                 "Each comes with its {{IMAGE_PLACEHOLDER_n}} token: write that token in a chapter (its own paragraph, or the end of the one it illustrates) "
+                 "to place the picture there — in another chapter too, as a copy; the original stays where it is."),
     parameters={"type": "object", "properties": {
         "chapter": {"type": "string", "description": "Optional. Its number in the CHAPTER INDEX or its exact title; omit for the active chapter."},
         "paragraphs": {"type": "string", "description": 'Optional. The images in these paragraphs, like "12-30" or "45".'},

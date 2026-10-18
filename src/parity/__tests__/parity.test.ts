@@ -238,6 +238,9 @@ const MODULES: Module[] = [
         ['<p>a b</p>', '<p>a  b</p>'], ['<p>你好世界</p>', '<p>你好中国</p>'], ['<p>AAA BBB CCC</p>', '<p>AAA ZZZ CCC</p>'],
         ['<p>one</p><p>two</p><p>three</p>', '<p>one</p><p>TWO</p><p>three</p>'], ['<p>one</p><p>two</p>', '<p>one</p><p>new</p><p>two</p>'],
         ['<p>one</p><p>two</p><p>three</p>', '<p>one</p><p>three</p>'], [paras(false), paras(true)],
+        // An <img> is marked like a word: placed (an image copied from another chapter), removed, moved (2026-10-18).
+        ['<p>one</p>', '<p>one</p><p><img src="https://p/1.jpg"></p><p>two</p>'], ['<p>a <img src="x"> b</p>', '<p>a b</p>'],
+        ['<p><img src="x"></p><p>t</p>', '<p>t</p><p><img src="x" alt="m"></p>'],
         [CHAPTER, CHAPTER.replace('风从巷口灌进来', '雨从檐角落下来').replace('<li>一</li>', '<li>壹</li>')],
         ['<h1>T</h1><p>x</p>', '<h2>T</h2><p>x</p>'], ['<p>a</p>', '<p>a</p><ul><li>b</li></ul>']
       ], o => normalizeDiffIds(o as string)),

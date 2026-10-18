@@ -168,6 +168,28 @@ scene it illustrates, a caption) had to guess. `view_images`
   each called it once and named both. Gemini was not measured (the key's
   free-tier quota was spent); its format is unit-tested.
 
+### 2c. Using a picture in another chapter (2026-10-18)
+
+- **Tokens to place a picture.** `view_images` gives each image's
+  `{{IMAGE_PLACEHOLDER_n}}` token beside it, and an HTML read shows them in
+  place. A token written into any chapter puts that picture there as a copy;
+  the original stays. The `read` and `view_images` descriptions say so.
+- **The book numbers its images** (`server_context.stable_image_registry`).
+  Each image is keyed by its src, and the keys are saved in token order
+  (`run_context`, scope `image-numbers`) after every step. Each run starts its
+  registry from them, and an image the book never had before takes the next
+  number. Before this, every run numbered images in the order it met them,
+  so a token the model kept from an earlier turn could name another picture,
+  or none. Matching is by src, so a re-spelled tag (quotes normalized by a
+  paragraph split) keeps its number. A number whose picture left the book
+  keeps its slot and restores to nothing.
+- **A placed picture is under review** (`diffHtml`, both ports). An `<img>`
+  is marked like a word, inside the group's `<ins>` or `<del>`. Before,
+  an inserted image sat outside the markup, so Reject kept it. A removed one
+  was dropped like a tag, so it vanished unmarked and Reject could not bring
+  it back. The editor's `collectDiffRanges` treats a marked inline image like
+  marked text, and CSS frames it green (added) or red and faded (removed).
+
 ## 3. Not built
 
 PDF, EPUB and DOCX attachments (plain text and Markdown only); writing to

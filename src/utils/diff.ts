@@ -11,6 +11,25 @@ function isTag(token: string): boolean {
 }
 
 /**
+ * An `<img>` is content, not structure: it is marked like text.
+ *
+ * Problem: an inserted image was emitted as a bare tag outside any `<ins>`,
+ *   so "Reject" kept a picture the model had placed (an image copied from
+ *   another chapter stayed after its paragraph was rejected); a deleted image
+ *   was dropped like any tag, so it vanished without showing as a deletion and
+ *   "Reject" could not bring it back (2026-10-18).
+ * Fix: an image token goes inside the group's `<ins>` / `<del>` like a word.
+ *   CustomImage is an inline node, so the editor's diff marks cover it and
+ *   accept/reject resolve it with the text around it.
+ */
+function isImageTag(token: string): boolean {
+  return /^<img\b/i.test(token)
+}
+
+/** A token the review markup carries: text, or an image. */
+const isMarkedContent = (token: string): boolean => !isTag(token) || isImageTag(token)
+
+/**
  * Runs the Longest Common Subsequence (LCS) algorithm to find the edits.
  * Since prefix/suffix optimization is applied first, the inputs here are typically small.
  */
@@ -215,9 +234,9 @@ export function diffHtml(oldHtml: string, newHtml: string): string {
         idx++
       }
 
-      // Format deleted content: extract text only, ignore tags to prevent structural breakages
+      // Format deleted content: text and images only, ignore tags to prevent structural breakages
       const deletedText = deletedTokens
-        .filter(t => !isTag(t))
+        .filter(isMarkedContent)
         .join('')
 
       // Format inserted content: output HTML tags as-is and wrap text nodes in <ins>
@@ -232,7 +251,7 @@ export function diffHtml(oldHtml: string, newHtml: string): string {
       }
 
       insertedTokens.forEach(token => {
-        if (isTag(token)) {
+        if (!isMarkedContent(token)) {
           flushInsertText()
           insertedHtml += token
         } else {

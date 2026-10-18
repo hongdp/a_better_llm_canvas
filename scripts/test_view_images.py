@@ -32,7 +32,8 @@ def _book(n_images=3, fail=()):
 
 def test_chapter_images_are_numbered_with_the_paragraph_a_read_shows():
     html = '<p>a</p><p><img src="x1"></p><p>b <img src=\'x2\'></p><p><ins class="diff-addition" data-diff-id="d">new</ins></p>'
-    assert chapter_images(html) == [{"n": 1, "paragraph": 2, "src": "x1"}, {"n": 2, "paragraph": 3, "src": "x2"}]
+    assert [{k: i[k] for k in ("n", "paragraph", "src")} for i in chapter_images(html)] == [{"n": 1, "paragraph": 2, "src": "x1"}, {"n": 2, "paragraph": 3, "src": "x2"}]
+    assert chapter_images(html)[1]["tag"] == '<img src="x2">'  # as the paragraph split re-spells it
 
 
 def test_viewing_sends_the_pictures_on_the_result_in_order():
@@ -47,7 +48,7 @@ def test_pictures_are_chosen_by_paragraph_or_by_number_and_failures_are_named():
     fake = _book(4, fail=("https://pics.example/3",))
     out = run_tool(view_images_tool, {"paragraphs": "5-7"}, fake.ctx)
     assert fake.ctx.vision.asked[-1] == ["https://pics.example/2", "https://pics.example/3"]
-    assert len(out["images"]) == 1 and "image 3 (¶7): not shown — HTTP 404" in out["content"]
+    assert len(out["images"]) == 1 and "image 3 (¶7, token " in out["content"] and "not shown — HTTP 404" in out["content"]
     out = run_tool(view_images_tool, {"images": [4]}, fake.ctx)
     assert fake.ctx.vision.asked[-1] == ["https://pics.example/4"]
     out = run_tool(view_images_tool, {"images": [9]}, fake.ctx)
@@ -115,3 +116,96 @@ def test_compaction_weighs_pictures_and_drops_them_with_an_elided_result():
     plan = plan_elisions(messages, [{"index": 3, "trace": "viewed"}], 2_000, 5)
     assert plan["elided"] == ["viewed"] and "images" not in plan["messages"][3]
     assert plan["messages"][5]["images"] == [PHOTO]
+
+
+# ── through the run engine: tokens to copy a picture, and numbers that hold across turns ──
+
+import json  # noqa: E402
+
+import server_content  # noqa: E402
+import server_context  # noqa: E402
+import server_generation  # noqa: E402
+import server_web  # noqa: E402
+from test_runs import Scripted, book, content_of, request, settle  # noqa: E402,F401
+from wc_text.diff_resolution import resolve_diff_markup_in_html  # noqa: E402
+
+A = '<img src="https://pics.example/a.jpg">'
+B = '<img src="https://pics.example/b.jpg">'
+C = '<img src="https://pics.example/c.jpg">'
+
+
+class Capturing(Scripted):
+    """Keeps every tool result the model was sent."""
+
+    def __init__(self, replies):
+        super().__init__(replies)
+        self.results = []
+
+    async def __call__(self, job, provider, config, messages):
+        self.results = [m for m in messages if m.get("role") == "tool"]
+        return await super().__call__(job, provider, config, messages)
+
+
+def _fake_view(monkeypatch):
+    async def view(username, srcs):
+        return [{"dataUrl": "data:image/jpeg;base64,QUJD"} for _ in srcs]
+    monkeypatch.setattr(server_web, "view_images", view)
+
+
+def _run(engine, replies, monkeypatch, prompt="看图"):
+    provider = Capturing(replies)
+    monkeypatch.setattr(server_generation, "_dispatch_provider", provider)
+
+    async def main():
+        run = engine.submit("alice", "book-1", request(prompt))
+        await settle(run)
+        return run
+    return asyncio.run(main()), provider
+
+
+def test_a_viewed_picture_is_copied_into_another_chapter_by_its_token_and_reject_takes_it_out(book, monkeypatch):
+    _fake_view(monkeypatch)
+    server_content.save_document_content("alice", "book-1", "doc-1", f"<p>开头。</p><p>{A}</p>")
+    view = {"text": "", "calls": [("v1", "view_images", json.dumps({"chapter": "1"}))]}
+    read = {"text": "", "calls": [("r1", "read", json.dumps({"chapters": ["2"]}))]}
+    write = {"text": "", "calls": [("w1", "update_document", json.dumps(
+        {"chapter": "2", "html": "<p>扩写。</p><p>{{IMAGE_PLACEHOLDER_0}}</p>"}, ensure_ascii=False))]}
+    run, provider = _run(book, [view, read, write, "好了。"], monkeypatch)
+    assert run.status == "done", run.error
+    shown = provider.results[0]
+    assert shown["images"] == ["data:image/jpeg;base64,QUJD"] and "its token: {{IMAGE_PLACEHOLDER_0}}" in shown["content"]
+    stored = content_of("doc-2")
+    assert A in stored and '<ins class="diff-addition"' in stored
+    assert A not in resolve_diff_markup_in_html(stored, "reject")
+    assert A in content_of("doc-1")  # a copy: the original stays
+
+
+def test_a_picture_keeps_its_number_when_the_book_gains_one_before_it(book, monkeypatch):
+    """Numbers per run followed the order images were met: a new first picture renumbered every other one."""
+    _fake_view(monkeypatch)
+    server_content.save_document_content("alice", "book-1", "doc-1", f"<p>{A}</p>")
+    server_content.save_document_content("alice", "book-1", "doc-2", f"<p>{B}</p>")
+    view = lambda ch: {"text": "", "calls": [("v", "view_images", json.dumps({"chapter": ch}))]}  # noqa: E731
+    run, provider = _run(book, [view("2"), "好。"], monkeypatch, "一")
+    assert "its token: {{IMAGE_PLACEHOLDER_1}}" in provider.results[0]["content"]
+    server_content.save_document_content("alice", "book-1", "doc-1", f"<p>{C}</p><p>{A}</p>")
+    run, provider = _run(book, [view("1"), "好。"], monkeypatch, "二")
+    content = provider.results[-1]["content"]   # the first turn's result is replayed ahead of it
+    assert "image 1 of 2, in ¶1 — its token: {{IMAGE_PLACEHOLDER_2}}" in content   # C, new: the next number
+    assert "image 2 of 2, in ¶2 — its token: {{IMAGE_PLACEHOLDER_0}}" in content   # A, as before
+    assert len(server_context.load_image_numbers("alice", "book-1")) == 3
+
+
+def test_a_number_whose_picture_left_the_book_keeps_its_slot():
+    keys = [server_context.image_key(A), server_context.image_key(B)]
+    registry = server_context.stable_image_registry(keys, [{"content": f"<p>{B}</p><p>{C}</p>"}])
+    assert [e["tag"] for e in registry] == ["", B, C]
+    assert server_context.registry_keys(registry, keys) == [keys[0], keys[1], server_context.image_key(C)]
+
+
+def test_a_re_spelled_tag_is_the_picture_the_book_already_numbered(book, monkeypatch):
+    _fake_view(monkeypatch)
+    server_content.save_document_content("alice", "book-1", "doc-1", "<p><img src='https://pics.example/a.jpg' alt=\"x\"></p>")
+    run, provider = _run(book, [{"text": "", "calls": [("v", "view_images", json.dumps({}))]}, "好。"], monkeypatch)
+    assert "its token: {{IMAGE_PLACEHOLDER_0}}" in provider.results[-1]["content"]
+    assert len(server_context.load_image_numbers("alice", "book-1")) == 1

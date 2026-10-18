@@ -466,7 +466,11 @@ that refuses private addresses; a bot check is reported, never bypassed.
 the server, registered in the run's image registry, placed by the model as
 `{{IMAGE_PLACEHOLDER_n}}` tokens. `view_images` shows a chapter's own pictures to a
 vision model (by ¶ or number; 6 per call, 30 per run; inline or fetched like
-`web_images`, carried on the tool result as `images`). The Import-from-URL modal and its pipeline
+`web_images`, carried on the tool result as `images`; each with its token).
+Image tokens are numbered by the BOOK (`server_context.stable_image_registry`,
+keyed by src): a token means the same picture in every turn and any chapter,
+so writing one elsewhere copies the picture. `diffHtml` marks an `<img>` like a
+word, so a placed or removed picture is reviewable and Reject undoes it. The Import-from-URL modal and its pipeline
 are gone (2026-10-11): loading a page into a chapter is a chat request.
 
 ### Backend API (`scripts/api_server.py`)
