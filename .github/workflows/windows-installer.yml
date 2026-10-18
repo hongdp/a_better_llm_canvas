@@ -48,17 +48,19 @@ jobs:
       - name: Icon
         run: python -c "from PIL import Image; Image.open('public/icons/icon-512.png').save('build-icon.ico', sizes=[(256,256),(128,128),(64,64),(48,48),(32,32),(16,16)])"
 
+      # Absolute paths: with --specpath, PyInstaller resolves relative ones against the spec's folder.
       - name: Freeze
         shell: bash
         run: >
-          pyinstaller --noconfirm --clean --name WebCanvas --console --icon build-icon.ico
-          --paths scripts
-          --add-data "dist;dist"
-          --add-data "scripts/wc_text/data;wc_text/data"
+          ROOT="$(pwd -W)" &&
+          pyinstaller --noconfirm --clean --name WebCanvas --console --icon "$ROOT/build-icon.ico"
+          --paths "$ROOT/scripts"
+          --add-data "$ROOT/dist;dist"
+          --add-data "$ROOT/scripts/wc_text/data;wc_text/data"
           --collect-submodules uvicorn
           --collect-submodules wc_agent --collect-submodules wc_providers --collect-submodules wc_text
-          --distpath build/pyi --workpath build/pyi-work --specpath build
-          packaging/windows/web_canvas_launcher.py
+          --distpath "$ROOT/build/pyi" --workpath "$ROOT/build/pyi-work" --specpath "$ROOT/build"
+          "$ROOT/packaging/windows/web_canvas_launcher.py"
 
       - name: Smoke test — the exe serves the API and the app
         shell: pwsh
