@@ -1076,7 +1076,13 @@ class RunEngine:
 
     def answer(self, run: Run, answer: str, confirm: bool = False) -> bool:
         """Continue a run paused on a question. `confirm` is the Delete button of a delete_chapter question."""
-        if run.status != "paused" or not run.pause or run.pause.get("reason") != "question" or run.agent is None:
+        # Problem: a run paused on a question when the API restarted came back from the database with no
+        #   agent, and every answer was refused (409 "not waiting for an answer") — the question could never
+        #   be answered (2026-10-18: a deploy restarted the API three seconds after the run asked).
+        # Fix: the run is rebuilt from its snapshot (which keeps the question) when the answer arrives.
+        if run.status != "paused" or not run.pause or run.pause.get("reason") != "question":
+            return False
+        if run.agent is None and not (run.snapshot and run.snapshot.get("stepsTaken")):
             return False
         if self.running(run.username, run.book_id) is not None:
             return False
@@ -1089,6 +1095,10 @@ class RunEngine:
 
     async def _execute_answer(self, run: Run, answer: str, confirm: bool = False) -> None:
         try:
+            if run.agent is None:
+                # Paused across a restart: rebuild it and restore the step it asked at.
+                await self._build(run)
+                run.agent.restore(run.snapshot, lambda doc_id: next((c["content"] for c in run.ports.chapters() if c["id"] == doc_id), None))
             self.publish(run, "started", {"run": run.summary(), "resumed": True})
             await run.agent.resume_with_answer(answer, confirmed=confirm)
         except RunStopped:
