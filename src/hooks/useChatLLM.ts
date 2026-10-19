@@ -10,7 +10,7 @@ import { defaultPolishModel } from '../utils/runDefaults'
 import type { HistorySourceMessage } from './chat/types'
 import { ASSISTANT_PLACEHOLDER, INTERRUPTED_NOTICE, isUnfinishedBubble, REASONING_TAIL_CHARS, REASONING_PAINT_MS, relocateResumedSelection } from './chat/streamHandlers'
 import { replaceSelectionWithHtml } from './chat/selectionReplace'
-import { startServerRun, listServerRuns, serverRunAction, answerServerRun, steerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
+import { startServerRun, listServerRuns, getServerRun, serverRunAction, answerServerRun, steerServerRun, reportRunView, type ServerRunEvent, type ServerRunSummary, type ServerRunAction } from '../services/serverRuns'
 import { onRunCatchUp, onRunEvent } from '../store/runEvents'
 import { resyncBook } from '../store/bookEvents'
 import { CLIENT_ID, needsTextSync } from '../store/documentSync'
@@ -555,6 +555,25 @@ export function useChatLLM({
     } catch {
       return
     }
+    // The run this tab follows may have left the list (finished runs are kept in memory for a while,
+    // and not across an API restart): ask for it alone, or this tab keeps its chapters locked and its
+    // chat "working" for good (2026-10-18: Accept all disabled on the chapter a finished run had written).
+    const followed = serverRunRef.current
+    if (followed && !listed.runs.some(r => r.id === followed.id)) {
+      try {
+        const run = await getServerRun(bookId, followed.id)
+        listed = { ...listed, runs: [...listed.runs, run] }
+      } catch {
+        // Gone from the server too: nothing will finish it, so settle the tab here.
+        if (serverRunRef.current?.id === followed.id) {
+          settleCanvasPreview(storedOpen())
+          serverLockRef.current = []
+          startLockRef.current = null
+          serverRunRef.current = null
+          useAppStore.getState().setStreaming(false)
+        }
+      }
+    }
     if (listed.runs.length === 0) return
     await waitForStore(state => state.messages.length > 0, 15_000)
     if (useAppStore.getState().activeBookId !== bookId) return
@@ -588,7 +607,7 @@ export function useChatLLM({
         }
       }
     }
-  }, [attachServerRun, handleRunEvent])
+  }, [attachServerRun, handleRunEvent, settleCanvasPreview])
   useEffect(() => { void reconcileServerRuns() }, [reconcileServerRuns, activeBookId, user])
   // Events may have been missed (the stream dropped, or the page was in the background): re-read the runs.
   useEffect(() => onRunCatchUp(() => { void reconcileServerRuns() }), [reconcileServerRuns])

@@ -55,6 +55,8 @@ const posted: Array<{ url: string; body: unknown }> = []
 let steerRefused = false
 /** What /api/generate/active answers: the jobs running, or 'down' when the server cannot be asked. */
 let activeJobs: unknown[] | 'down' = []
+/** What GET /runs/run-1 answers: the run, or null for 404. */
+let single: unknown = null
 /** The images attached to the next send (the hook's uploadedImages prop). */
 const images: string[] = []
 /** Every request, in order: "<METHOD> <url>". */
@@ -69,6 +71,7 @@ beforeEach(() => {
   calls.length = 0
   steerRefused = false
   activeJobs = []
+  single = null
   images.length = 0
   serverCopies.clear()
   listed = { runs: [], queueHeld: false }
@@ -85,6 +88,7 @@ beforeEach(() => {
       return json({ run, position: run.status === 'queued' ? 1 : 0, queueHeld: false })
     }
     if (url === '/api/books/book-1/runs') return json(listed)
+    if (url === '/api/books/book-1/runs/run-1' && (init?.method ?? 'GET') === 'GET') return single ? json({ run: single }) : json({ detail: 'Run not found.' }, 404)
     if (url.startsWith('/api/books/book-1/runs/')) {
       posted.push({ url, body: init?.body ? JSON.parse(String(init.body)) : null })
       if (url.endsWith('/steer') && steerRefused) return json({ detail: 'This run is not running; send the request as a new turn.' }, 409)
@@ -251,6 +255,39 @@ describe('a turn', () => {
     expect(bubble().agent?.status).toBe('done')
     expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(false)
     expect(useAppStore.getState().streamingReasoning).toBe('')
+    h.unmount()
+  })
+
+  it('settles a followed run that has left the list, from the run alone', async () => {
+    // 2026-10-18: finished runs leave the list (memory TTL, a restart); the tab kept the chapter locked.
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId: 'run-1', run: summary({ assistantMessageId: bubble().id }) }) })
+    act(() => { emitRunEvent({ type: 'run', kind: 'lock', runId: 'run-1', documentIds: ['doc-1'] }) })
+    expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(true)
+    listed = { runs: [], queueHeld: false }
+    single = { ...summary({ status: 'done', assistantMessageId: bubble().id, userMessageId: 'u' }),
+      result: { content: '写完了。', record: { status: 'done', steps: 1, trace: [], touched: [], timeline: [{ type: 'text', text: '写完了。' }] } } }
+    await act(async () => { emitRunCatchUp() })
+    await flush()
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(false)
+    expect(bubble().content).toBe('写完了。')
+    h.unmount()
+  })
+
+  it('unlocks the tab when the followed run is gone from the server too', async () => {
+    const h = renderChatHook(stubEditor('<p>原文。</p>').editor)
+    await act(async () => { await h.current.handleSendMessage(undefined, '写第一章') })
+    await flush()
+    act(() => { emitRunEvent({ type: 'run', kind: 'started', runId: 'run-1', run: summary({ assistantMessageId: bubble().id }) }) })
+    act(() => { emitRunEvent({ type: 'run', kind: 'lock', runId: 'run-1', documentIds: ['doc-1'] }) })
+    listed = { runs: [], queueHeld: false }
+    await act(async () => { emitRunCatchUp() })
+    await flush()
+    expect(useAppStore.getState().isStreaming).toBe(false)
+    expect(isEditLocked(useAppStore.getState(), 'doc-1')).toBe(false)
     h.unmount()
   })
 
