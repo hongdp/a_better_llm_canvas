@@ -20,3 +20,14 @@ export function defaultContinueAfterWrites(provider: string): boolean {
 export function defaultPolishModel(provider: string, chatModel: string): string {
   return provider === 'grok' ? 'grok-4.20-0309-reasoning' : chatModel
 }
+
+/**
+ * Whether polishing is offered: only with a model other than the chat model
+ * (the server's wc_agent/polish.py polish_offered). The same model re-writing
+ * its own prose in small chunks, without their context, adds nothing.
+ */
+export function polishOffered(provider: string, config: { model?: string; polishModel?: string } | undefined): boolean {
+  const chat = (config?.model ?? '').trim()
+  const polish = (config?.polishModel ?? '').trim() || defaultPolishModel(provider, chat)
+  return polish.trim() !== chat
+}

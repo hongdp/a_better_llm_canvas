@@ -312,7 +312,9 @@ phase 4, 2026-10-17, removed the tab's loop and the `serverRuns` switch).
 with each step a generation job. The tab only renders the run's `run.*` events
 from the book stream (`hooks/chat/serverRunEvents.ts` for the bubble, the
 hook's preview for the editor and the locks); the Polish button is a run too
-(`polish: {documentId}`, `_execute_polish`, no agent loop); a reload or another device lists
+(`polish: {documentId}`, `_execute_polish`, no agent loop) — offered, as
+`polish_chapter` is, only with a polish model other than the chat model
+(`polish_offered`; with the same model the button is hidden); a reload or another device lists
 the book's runs and rejoins — and so does a tab whose stream reconnected or
 that came back to the foreground (`emitRunCatchUp`), or a run that finished
 while a phone slept keeps its bubble "working". The run's state is persisted

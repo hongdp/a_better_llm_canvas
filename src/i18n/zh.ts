@@ -56,7 +56,7 @@ export const zh: TranslationDictionary = {
     longReasoningReminderHint: '某一步没有写入却推理超过这个数量的隐藏 token 时，再下一步会被提醒：读结果、定一个动作、立刻执行，不要长时间思考。这是在 grok-4.7 上测到的循环成因。留空＝关闭。',
     runTokenBudgetHint: '仅服务端运行。一次运行最多消耗的输入加输出 token 数，超出即暂停。留空＝不限。',
     polishModel: '润色模型',
-    polishModelHint: (fallback: string) => `润色按钮、以及你让助手润色章节时使用的模型（同一 provider）。留空即 ${fallback}。`,
+    polishModelHint: (fallback: string) => `润色按钮、以及你让助手润色章节时使用的模型（同一 provider）。留空即 ${fallback}。润色模型和聊天模型相同时，润色功能关闭；填一个不同的模型即可开启。`,
     polishPrompt: '润色提示词',
     polishSystem: '系统提示（会接上你当前的写作预设）',
     polishTemplate: '逐段提示词 —— {n} 段落字数，{prev} 上一段最后一句，{part} 要改写的段落',

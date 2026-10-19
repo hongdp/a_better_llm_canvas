@@ -5,6 +5,7 @@ import type { CanvasDocument } from '../store/useAppStore'
 import { useTranslation } from '../i18n'
 import { exportDocument } from '../utils/export'
 import { contentWithRenamedHeading } from '../utils/titleSync'
+import { polishOffered } from '../utils/runDefaults'
 
 interface CanvasHeaderProps {
   activeDoc: Pick<CanvasDocument, 'title' | 'content'>
@@ -43,7 +44,9 @@ export function CanvasHeader({
     serverSaveStatus,
     syncToServer,
     activeDocumentId,
-    requestPolish
+    requestPolish,
+    activeProvider,
+    providerConfigs
   } = useAppStore()
 
   const [isExportDropdownOpen, setIsExportDropdownOpen] = useState(false)
@@ -167,8 +170,9 @@ export function CanvasHeader({
           <History size={18} />
         </button>
 
-        {/* Polish (agentic_chat_loop.md D9): only ever on the user's request */}
-        <button
+        {/* Polish (agentic_chat_loop.md D9): only ever on the user's request, and only with a
+            polish model other than the chat model (utils/runDefaults polishOffered). */}
+        {polishOffered(activeProvider, providerConfigs[activeProvider]) && <button
           onClick={() => requestPolish(activeDocumentId)}
           className="btn-icon"
           title={t.app.polishHint}
@@ -189,7 +193,7 @@ export function CanvasHeader({
         >
           <Sparkles size={14} />
           {layoutMode !== 'portrait' && t.app.polish}
-        </button>
+        </button>}
 
         {/* Generate Image Button */}
         <button

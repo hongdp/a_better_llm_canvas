@@ -54,7 +54,7 @@ export const en = {
     longReasoningReminderHint: 'When a step that wrote nothing reasoned past this many hidden tokens, the step after next is told to read the result, decide one action and act, instead of thinking at length. Measured on grok-4.7 as what makes it loop. Empty = off.',
     runTokenBudgetHint: 'Server runs only. Prompt and completion tokens one run may spend before it pauses. Empty = no budget.',
     polishModel: 'Polish model',
-    polishModelHint: (fallback: string) => `Used by the Polish button and when you ask the assistant to polish a chapter (same provider). Empty = ${fallback}.`,
+    polishModelHint: (fallback: string) => `Used by the Polish button and when you ask the assistant to polish a chapter (same provider). Empty = ${fallback}. Polishing is off while this is the chat model itself: set a different model to turn it on.`,
     polishPrompt: 'Polish prompt',
     polishSystem: 'System prompt (your active writing preset is appended)',
     polishTemplate: 'Per-chunk prompt — {n} chunk size, {prev} last sentence before it, {part} the chunk',
