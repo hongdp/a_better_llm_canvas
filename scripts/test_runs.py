@@ -646,6 +646,12 @@ def test_endpoints_start_list_and_stop(book, monkeypatch):
         assert listed["runs"][0]["status"] == "done" and listed["runs"][0]["result"]["record"]["steps"] == 2
         assert client.get(f"/api/books/book-1/runs/{run_id}").json()["run"]["id"] == run_id
         assert client.post(f"/api/books/book-1/runs/{run_id}/stop", headers={"x-csrf-token": "tok-1"}).status_code == 200
+        # Gone from memory (the TTL, a restart): the run alone is still read, with its result, from its row.
+        server_runs.engine.runs.pop(run_id)
+        alone = client.get(f"/api/books/book-1/runs/{run_id}")
+        assert alone.status_code == 200 and alone.json()["run"]["status"] == "done"
+        assert alone.json()["run"]["result"]["record"]["steps"] == 2
+        assert client.get("/api/books/book-1/runs/run-missing").status_code == 404
         bad = client.post("/api/books/book-1/runs", json={"prompt": ""}, headers={"x-csrf-token": "tok-1"})
         assert bad.status_code == 400
     assert strip_diff_markup(content_of("doc-1")) == "<p>via http</p>"

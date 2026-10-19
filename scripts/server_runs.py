@@ -1492,11 +1492,28 @@ def _run_or_404(username: str, run_id: str) -> Run:
     return run
 
 
+def _stored_run(username: str, run_id: str) -> Optional[Run]:
+    """A run no longer in memory (pruned after FINISHED_RUN_TTL_SECONDS, or finished before a restart), from its row."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM runs WHERE id = ? AND username = ?", (sanitize_id(run_id, "runId"), username)).fetchone()
+    finally:
+        conn.close()
+    return Run.from_row(row) if row else None
+
+
 @router.get("/api/books/{book_id}/runs/{run_id}")
 async def get_run(request: Request, book_id: str, run_id: str):
     username = get_authenticated_username(request)
     await engine.recover()
-    return {"run": _run_or_404(username, run_id).detail()}
+    # Problem: a tab that missed a run's `finished` (its stream dropped, the API restarted) asks for the run
+    #   it follows; once the run had left memory it got 404, settled nothing, and kept the chapter locked
+    #   and the chat "working" (2026-10-18: Accept all disabled on a chapter the finished run had written).
+    # Fix: a finished run is read from its row; its result settles the tab as the live event would have.
+    run = engine.get(username, sanitize_id(run_id, "runId")) or _stored_run(username, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found.")
+    return {"run": run.detail() if run.status in ACTIVE_STATUSES else run.summary() | {"result": run.result}}
 
 
 @router.post("/api/books/{book_id}/runs/{run_id}/stop")
