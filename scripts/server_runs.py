@@ -34,7 +34,7 @@ from server_auth import get_authenticated_username
 from server_config import sanitize_id
 from server_content import load_document_content
 from server_db import get_db
-from wc_agent.polish import analyze_in_batches, default_polish_model, plan_analysis, polish_html
+from wc_agent.polish import analyze_in_batches, plan_analysis, polish_html, polish_model_for, polish_offered
 from wc_agent.registry import ToolRegistry, to_tool_specs
 from wc_agent.run import AgentRun, StepOutput, StepUnavailable, offered_tools_for
 from wc_agent.tools.ask_user import ask_user_tool
@@ -749,7 +749,7 @@ class RunEngine:
         scope = f"{provider}|{config.get('model') or ''}"
         state = server_context.load_state(run.username, run.book_id, scope)
         ctx = ToolContext(ports, ports, ports, ports, _Ui(ports), create_run_state(ports.start_id),
-                          polish=_PolishPort(self, run), analyze=_AnalyzePort(self, run),
+                          polish=_PolishPort(self, run) if polish_offered(provider, config) else None, analyze=_AnalyzePort(self, run),
                           attachments=_AttachmentsPort(run.username, run.book_id),
                           web=_WebPort(run.username) if config.get("webAccess") is not False and server_web.available() else None,
                           vision=_VisionPort(run.username) if supports_vision(provider, config.get("model") or "") else None)
@@ -1352,7 +1352,7 @@ class _PolishPort:
     async def run(self, html: str, on_progress):
         req = self.owner.request
         cfg = req.get("config") or {}
-        model = js_trim(cfg.get("polishModel") or "") or default_polish_model(req["provider"], cfg.get("model") or "")
+        model = polish_model_for(req["provider"], cfg)
         transport = _ModelCall(self.engine, self.owner, model, "default", f"{self.owner.book_id}:polish")
         prompt = req.get("polishPrompt") or {"system": "", "template": "{part}"}
         return await polish_html(html, transport, prompt, req.get("customInstructions"), self.owner.stop_event, on_progress)

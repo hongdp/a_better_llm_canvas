@@ -18,6 +18,27 @@ def default_polish_model(provider: str, chat_model: str) -> str:
     return "grok-4.20-0309-reasoning" if provider == "grok" else chat_model
 
 
+def polish_model_for(provider: str, config: Dict[str, Any]) -> str:
+    """The model a polish uses: the setting, else the provider's default."""
+    chosen = (config.get("polishModel") or "").strip()
+    return chosen or default_polish_model(provider, config.get("model") or "")
+
+
+def polish_offered(provider: str, config: Dict[str, Any]) -> bool:
+    """Polishing is offered only with a model other than the chat model.
+
+    Problem: the polish exists for grok, whose narration came out choppy; a
+      separate polish model rewrites it chunk by chunk (D9). On every other
+      provider the polish model defaulted to the chat model itself, so
+      polish_chapter had Claude re-write its own prose in small chunks
+      without their context — no better than its own rewrite of the chapter,
+      and a second bill for it (user decision, 2026-10-19).
+    Fix: with the same model the tool is not offered (and the button is
+      hidden); setting a different polish model turns it back on.
+    """
+    return polish_model_for(provider, config).strip() != (config.get("model") or "").strip()
+
+
 async def polish_html(html: str, transport: Transport, prompt: Dict[str, str], writing_preset: Optional[str] = None,
                       stopped: Optional[asyncio.Event] = None, on_progress: Optional[Callable[[int, int], None]] = None) -> Dict[str, Any]:
     segments = split_for_polish(html)

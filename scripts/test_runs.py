@@ -263,6 +263,25 @@ def test_the_polish_button_runs_on_the_server(book, monkeypatch):
     assert run.snapshots, "a version snapshot before the change"
 
 
+def _offered_tools(book, monkeypatch, provider, config):
+    scripted = Scripted(["好的。\n<doc_status>unchanged</doc_status>"])
+    monkeypatch.setattr(server_generation, "_dispatch_provider", scripted)
+
+    async def main():
+        run = book.submit("alice", "book-1", request(provider=provider, config={"apiKey": "k", "baseUrl": "https://x", **config}))
+        await settle(run)
+    asyncio.run(main())
+    return {t.get("function", t).get("name") for t in scripted.requests[0]["config"].get("tools") or []}
+
+
+def test_polish_chapter_is_offered_only_with_a_polish_model_other_than_the_chat_model(book, monkeypatch):
+    """2026-10-19: on Claude the polish model was Claude itself, re-writing its own prose in chunks."""
+    assert "polish_chapter" in _offered_tools(book, monkeypatch, "grok", {"model": "grok-4.6"})
+    assert "polish_chapter" not in _offered_tools(book, monkeypatch, "anthropic", {"model": "claude-sonnet-5-5"})
+    assert "polish_chapter" not in _offered_tools(book, monkeypatch, "anthropic", {"model": "claude-sonnet-5-5", "polishModel": " claude-sonnet-5-5 "})
+    assert "polish_chapter" in _offered_tools(book, monkeypatch, "anthropic", {"model": "claude-sonnet-5-5", "polishModel": "claude-haiku-5-5"})
+
+
 def test_stop_ends_a_polish_and_keeps_the_draft(book, monkeypatch):
     server_content.save_document_content("alice", "book-1", "doc-1", "<p>她推开门，屋里没有人。</p>")
     provider = Scripted(["<p>她推开了门，屋里空无一人。</p>"])
